@@ -1,0 +1,10 @@
+/.idea
+**/*.pyc
+**/__pycache__
+
+**/*.bin
+**/*.ext4
+**/*.zip
+**/*.pyz
+**/data.tgz
+/pydantic/

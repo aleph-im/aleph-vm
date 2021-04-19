@@ -54,8 +54,7 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-if __name__ == '__main__':
-
+def main():
     args = parse_args(sys.argv[1:])
     logging.basicConfig(level=args.loglevel)
     settings.update(
@@ -63,4 +62,10 @@ if __name__ == '__main__':
         PRINT_SYSTEM_LOGS=args.system_logs,
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
     )
+    settings.check()
+    settings.setup()
     supervisor.run()
+
+
+if __name__ == '__main__':
+    main()

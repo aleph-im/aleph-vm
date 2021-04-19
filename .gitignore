@@ -3,5 +3,8 @@
 __pycache__
 
 *.bin
+*.ext4
 *.zip
 *.pyz
+*.tgz
+/pydantic/

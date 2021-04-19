@@ -1,5 +1,11 @@
+import os
 from os import getenv
-from os.path import isfile
+from os.path import isfile, join
+from typing import NewType
+
+from .models import FilePath
+
+Url = NewType('Url', str)
 
 
 class Settings:
@@ -12,6 +18,14 @@ class Settings:
     FIRECRACKER_PATH: str = getenv('ALEPH_FIRECRACKER_PATH', '/opt/firecracker/firecracker')
     JAILER_PATH: str = getenv('ALEPH_JAILER_PATH', '/opt/firecracker/jailer')
 
+    CONNECTOR_URL: Url = getenv('ALEPH_CONNECTOR_URL', 'http://localhost:8000')
+
+    CACHE_ROOT: FilePath = getenv('ALEPH_CACHE_ROOT', '/tmp/aleph/vm_supervisor')
+    MESSAGE_CACHE: FilePath = getenv('ALEPH_MESSAGE_CACHE', join(CACHE_ROOT, 'message'))
+    CODE_CACHE: FilePath = getenv('ALEPH_CODE_CACHE', join(CACHE_ROOT, 'code'))
+    RUNTIME_CACHE: FilePath = getenv('ALEPH_RUNTIME_CACHE', join(CACHE_ROOT, 'runtime'))
+    DATA_CACHE: FilePath = getenv('ALEPH_DATA_CACHE', join(CACHE_ROOT, 'data'))
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):
@@ -22,6 +36,14 @@ class Settings:
     def check(self):
         assert isfile(self.FIRECRACKER_PATH)
         assert isfile(self.JAILER_PATH)
+        assert self.CONNECTOR_URL.startswith('http://') \
+               or self.CONNECTOR_URL.startswith('https://')
+
+    def setup(self):
+        os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
+        os.makedirs(self.CODE_CACHE, exist_ok=True)
+        os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
+        os.makedirs(self.DATA_CACHE, exist_ok=True)
 
 # Settings singleton
 settings = Settings()
