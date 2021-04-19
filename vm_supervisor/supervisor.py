@@ -6,22 +6,24 @@ At it's core, it is currently an asynchronous HTTP server using aiohttp, but thi
 evolve in the future.
 """
 
-import asyncio
 import logging
 import os.path
 from os import system
 
-from aiohttp import web
+from aiohttp import web, ClientResponseError
+from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest
 
 from .conf import settings
+from .models import FilePath
 from .pool import VmPool
-from .storage import get_code
+from .storage import get_code, get_runtime, get_message
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
 
 
 async def index(request: web.Request):
+    assert request
     return web.Response(text="Hello, world")
 
 
@@ -29,12 +31,33 @@ async def run_code(request: web.Request):
     """
     Execute the code corresponding to the 'code id' in the path.
     """
-    code_id = request.match_info['code_id']
-    code, entrypoint, encoding = get_code(code_id)
+    msg_ref: str = request.match_info['ref']
 
-    runtime = 'aleph-alpine-3.13-python'
+    try:
+        msg = await get_message(msg_ref)
+    except ClientResponseError as error:
+        if error.status == 404:
+            raise HTTPNotFound(reason="Hash not found")
+        else:
+            raise
+
+    code_ref: str = msg.content.code.ref
+    runtime_ref: str = msg.content.runtime.ref
+    # data_ref: str = msg.content['data']['ref']
+
+    try:
+        code_path: FilePath = await get_code(code_ref)
+        rootfs_path: FilePath = await get_runtime(runtime_ref)
+        # data_path: FilePath = await get_data(data_ref)
+    except ClientResponseError as error:
+        if error.status == 404:
+            raise HTTPBadRequest(reason="Code or runtime not found")
+        else:
+            raise
+
+    logger.debug("Got files")
+
     kernel_image_path = os.path.abspath('./kernels/vmlinux.bin')
-    rootfs_path = os.path.abspath(f"./runtimes/{runtime}/rootfs.ext4")
 
     vm = await pool.get_a_vm(
         kernel_image_path=kernel_image_path,
@@ -52,36 +75,32 @@ async def run_code(request: web.Request):
         "query_string": request.query_string,
         "headers": request.raw_headers,
     }
-    result = {
-        'output': (await vm.run_code(code, entrypoint=entrypoint,
-                                     encoding=encoding, scope=scope)).decode()
-    }
+    with open(code_path, 'rb') as code_file:
+        result = (await vm.run_code(code_file.read(), entrypoint=msg.content.code.entrypoint,
+                                    encoding=msg.content.code.encoding, scope=scope))
     await vm.stop()
     system(f"rm -fr {vm.jailer_path}")
-    return web.json_response(result)
+    # TODO: Handle other content-types
+    return web.Response(body=result,
+                        content_type='application/json')
 
 
 app = web.Application()
 
 app.add_routes([web.get('/', index)])
-app.add_routes([web.route('*', '/run/{code_id}{suffix:.*}', run_code)])
+app.add_routes([web.route('*', '/vm/function/{ref}{suffix:.*}', run_code)])
 
 def run():
     """Run the VM Supervisor."""
 
-    runtime = 'aleph-alpine-3.13-python'
+    # runtime = 'aleph-alpine-3.13-python'
     kernel_image_path = os.path.abspath('./kernels/vmlinux.bin')
-    rootfs_path = os.path.abspath(f"./runtimes/{runtime}/rootfs.ext4")
+    # rootfs_path = os.path.abspath(f"./runtimes/{runtime}/rootfs.ext4")
 
     for path in (settings.FIRECRACKER_PATH,
                  settings.JAILER_PATH,
-                 kernel_image_path,
-                 rootfs_path):
+                 kernel_image_path):
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
 
-    loop = asyncio.get_event_loop()
-    for i in range(settings.PREALLOC_VM_COUNT):
-        loop.create_task(pool.provision(kernel_image_path=kernel_image_path,
-                                        rootfs_path=rootfs_path))
     web.run_app(app)

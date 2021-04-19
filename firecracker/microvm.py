@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os.path
+from enum import Enum
 from functools import lru_cache
 from os import getuid
 from pathlib import Path
@@ -11,9 +12,11 @@ from pwd import getpwnam
 import aiohttp
 from aiohttp import ClientResponse
 
-from vm_supervisor.storage import Encoding
-
 logger = logging.getLogger(__name__)
+
+class Encoding(str, Enum):
+    plain = 'plain'
+    zip = 'zip'
 
 VSOCK_PATH = '/tmp/v.sock'
 
