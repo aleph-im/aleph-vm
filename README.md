@@ -1,88 +1,32 @@
-# Aleph VM Supervisor
+# Aleph VM
 
-> Note: This is still early prototyping.
+> Note: This project is still early prototyping.
 
-Web service to run Python code in Firecracker VMs for the [Aleph.im](https://aleph.im/) project.
+The Aleph VM project allows you to run programs on [Aleph.im](https://aleph.im/).
 
-This project provides a service that runs untrusted Python code in Firecracker
-"micro virtual machines".
+These programs can currently be written in Python using ASGI compatible frameworks (
+[FastAPI](https://github.com/tiangolo/fastapi), 
+[Django](https://docs.djangoproject.com/en/3.0/topics/async/), 
+[Sanic](https://sanicframework.org/),
+...) and respond to HTTP requests.
 
-The following instructions are tested while running as root, either on bare metal or on a
-VM that allows virtualisation (`/dev/kvm`) such as a DigitalOcean droplet.
+## Architecture
 
-## Installation
+![image](https://user-images.githubusercontent.com/404665/115885445-452f5180-a450-11eb-856e-f4071023a105.png)
 
-These instructions have been tested on Debian 10 Buster, and should work on recent versions
-of Ubuntu as well.
+### VM Supervisor
 
-Install system dependencies
+Actually runs the programs in a secure environment on virtualization enabled systems. 
 
-```shell
-apt update
-apt -y upgrade
-apt install -y git python3 python3-aiohttp sudo acl curl systemd-container
-useradd jailman
-```
+See [vm_supervisor/README.md](./vm_supervisor/README.md).
 
-Download Firecracker and Jailer from the 
-[Firecracker project releases](https://github.com/firecracker-microvm/firecracker/releases):
-```shell
-mkdir /opt/firecracker
-chown $(whoami) /opt/firecracker
-curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.24.2/firecracker-v0.24.2-x86_64.tgz | tar -xz --directory /opt/firecracker
+### VM Connector
 
-# Link binaries on version-agnostic paths:
-ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
-ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
-```
+Schedules the execution of programs on VM Supervisors and assists
+them with operations related to the Aleph network.
 
-Clone this reposotiry on the host machine and enter it.
+See [vm_connector/README.md](./vm_connector/README.md).
 
-```shell
-git clone https://github.com/aleph-im/aleph-vm.git
-cd aleph-vm/
-````
+---
 
-Build the runtime rootfs (will be distributed as binary in the future):
-
-```shell
-cd ./runtimes/aleph-alpine-3.13-python
-bash ./create_disk_image.sh
-# Run it a second time to solve a bug
-bash ./create_disk_image.sh
-cd ../..
-```
-
-Setup the jailer working directory:
-
-```shell
-mkdir /srv/jailer
-```
-
-## Running
-
-Run the VM Supervisor with Python:
-```shell
-export PYTHONPATH=$(pwd)
-python3 -m vm_supervisor
-```
-
-Test running code from an Aleph.im post on:
-http://localhost:8080/run/fastapi/
-
-## Production
-
-https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md
-
-## Compile your kernel
-
-A lot of time at boot is saved by disabling keyboard support in the kernel.
-See `dmesg` logs for the exact timing saved.
-
-Start from https://github.com/firecracker-microvm/firecracker/blob/master/docs/rootfs-and-kernel-setup.md
-
-Then disable:
-`CONFIG_INPUT_KEYBOARD`
-`CONFIG_INPUT_MISC`
-`CONFIG_INPUT_FF_MEMLESS`
-`CONFIG_SERIO`
+![aleph.im logo](https://aleph.im/assets/img/logo-wide.1832dbae.svg)

@@ -10,8 +10,8 @@ import logging
 import os.path
 from os import system
 
-from aiohttp import web, ClientResponseError
-from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest
+from aiohttp import web, ClientResponseError, ClientConnectorError
+from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnavailable
 
 from .conf import settings
 from .models import FilePath
@@ -24,7 +24,7 @@ pool = VmPool()
 
 async def index(request: web.Request):
     assert request
-    return web.Response(text="Hello, world")
+    return web.Response(text="Server: Aleph VM Supervisor")
 
 
 async def run_code(request: web.Request):
@@ -35,6 +35,8 @@ async def run_code(request: web.Request):
 
     try:
         msg = await get_message(msg_ref)
+    except ClientConnectorError:
+        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
     except ClientResponseError as error:
         if error.status == 404:
             raise HTTPNotFound(reason="Hash not found")
@@ -57,7 +59,7 @@ async def run_code(request: web.Request):
 
     logger.debug("Got files")
 
-    kernel_image_path = os.path.abspath("./kernels/vmlinux.bin")
+    kernel_image_path = settings.LINUX_PATH
 
     vm = await pool.get_a_vm(
         kernel_image_path=kernel_image_path, rootfs_path=rootfs_path

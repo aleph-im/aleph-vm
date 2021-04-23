@@ -14,11 +14,12 @@ class Settings:
     API_SERVER: str = getenv("ALEPH_API_SERVER", "https://api2.aleph.im")
     USE_JAILER: bool = getenv("ALEPH_USER_JAILER", "true") == "true"
     # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS: bool = getenv("ALEPH_PRINT_SYSTEM_LOGS", "true") == "false"
+    PRINT_SYSTEM_LOGS: bool = getenv("ALEPH_PRINT_SYSTEM_LOGS", "false") == "true"
     FIRECRACKER_PATH: str = getenv(
         "ALEPH_FIRECRACKER_PATH", "/opt/firecracker/firecracker"
     )
     JAILER_PATH: str = getenv("ALEPH_JAILER_PATH", "/opt/firecracker/jailer")
+    LINUX_PATH: str = getenv("ALEPH_LINUX_PATH", os.path.abspath("./kernels/vmlinux.bin"))
 
     CONNECTOR_URL: Url = getenv("ALEPH_CONNECTOR_URL", "http://localhost:8000")
 
@@ -38,6 +39,7 @@ class Settings:
     def check(self):
         assert isfile(self.FIRECRACKER_PATH)
         assert isfile(self.JAILER_PATH)
+        assert isfile(self.LINUX_PATH)
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
@@ -47,6 +49,12 @@ class Settings:
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
         os.makedirs(self.DATA_CACHE, exist_ok=True)
+
+    def display(self) -> str:
+        result = ""
+        for annotation, value in self.__annotations__.items():
+            result += f"{annotation} ({value.__name__}) = {getattr(self, annotation)}"
+        return result
 
 
 # Settings singleton

@@ -52,6 +52,18 @@ def parse_args(args):
         action="store_const",
         const=logging.DEBUG,
     )
+    parser.add_argument(
+        "-p",
+        "--print-config",
+        dest="print_config",
+        default=False,
+    )
+    parser.add_argument(
+        "-n",
+        "--do-not-run",
+        dest="do_not_run",
+        default=False,
+    )
     return parser.parse_args(args)
 
 
@@ -63,9 +75,16 @@ def main():
         PRINT_SYSTEM_LOGS=args.system_logs,
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
     )
+    if args.print_settings:
+        print(settings.display())
+
     settings.check()
-    settings.setup()
-    supervisor.run()
+
+    if args.do_not_run:
+        logger.info("Option --do-not-run, exiting")
+    else:
+        settings.setup()
+        supervisor.run()
 
 
 if __name__ == "__main__":
