@@ -31,7 +31,7 @@ async def run_code(request: web.Request):
     """
     Execute the code corresponding to the 'code id' in the path.
     """
-    msg_ref: str = request.match_info['ref']
+    msg_ref: str = request.match_info["ref"]
 
     try:
         msg = await get_message(msg_ref)
@@ -57,15 +57,15 @@ async def run_code(request: web.Request):
 
     logger.debug("Got files")
 
-    kernel_image_path = os.path.abspath('./kernels/vmlinux.bin')
+    kernel_image_path = os.path.abspath("./kernels/vmlinux.bin")
 
     vm = await pool.get_a_vm(
-        kernel_image_path=kernel_image_path,
-        rootfs_path=rootfs_path)
+        kernel_image_path=kernel_image_path, rootfs_path=rootfs_path
+    )
 
-    path = request.match_info['suffix']
-    if not path.startswith('/'):
-        path = '/' + path
+    path = request.match_info["suffix"]
+    if not path.startswith("/"):
+        path = "/" + path
 
     logger.debug(f"Using vm={vm.vm_id}")
     scope = {
@@ -75,31 +75,33 @@ async def run_code(request: web.Request):
         "query_string": request.query_string,
         "headers": request.raw_headers,
     }
-    with open(code_path, 'rb') as code_file:
-        result = (await vm.run_code(code_file.read(), entrypoint=msg.content.code.entrypoint,
-                                    encoding=msg.content.code.encoding, scope=scope))
+    with open(code_path, "rb") as code_file:
+        result = await vm.run_code(
+            code_file.read(),
+            entrypoint=msg.content.code.entrypoint,
+            encoding=msg.content.code.encoding,
+            scope=scope,
+        )
     await vm.stop()
     system(f"rm -fr {vm.jailer_path}")
     # TODO: Handle other content-types
-    return web.Response(body=result,
-                        content_type='application/json')
+    return web.Response(body=result, content_type="application/json")
 
 
 app = web.Application()
 
-app.add_routes([web.get('/', index)])
-app.add_routes([web.route('*', '/vm/function/{ref}{suffix:.*}', run_code)])
+app.add_routes([web.get("/", index)])
+app.add_routes([web.route("*", "/vm/function/{ref}{suffix:.*}", run_code)])
+
 
 def run():
     """Run the VM Supervisor."""
 
     # runtime = 'aleph-alpine-3.13-python'
-    kernel_image_path = os.path.abspath('./kernels/vmlinux.bin')
+    kernel_image_path = os.path.abspath("./kernels/vmlinux.bin")
     # rootfs_path = os.path.abspath(f"./runtimes/{runtime}/rootfs.ext4")
 
-    for path in (settings.FIRECRACKER_PATH,
-                 settings.JAILER_PATH,
-                 kernel_image_path):
+    for path in (settings.FIRECRACKER_PATH, settings.JAILER_PATH, kernel_image_path):
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
 

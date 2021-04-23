@@ -23,8 +23,8 @@ def read_root():
 
 
 class Encoding:
-    plain = 'plain'
-    zip = 'zip'
+    plain = "plain"
+    zip = "zip"
 
 
 async def get_message(hash_: str) -> Optional[Dict]:
@@ -33,7 +33,7 @@ async def get_message(hash_: str) -> Optional[Dict]:
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
-        return resp_data['messages'][0] if resp_data['messages'] else None
+        return resp_data["messages"][0] if resp_data["messages"] else None
 
 
 async def stream_url_chunks(url):
@@ -52,8 +52,9 @@ async def stream_url_chunks(url):
 
 
 @app.get("/download/message/{ref}")
-async def download_message(ref: str, last_amend: Optional[bool] = True) -> \
-        Union[Dict, Response]:
+async def download_message(
+    ref: str, last_amend: Optional[bool] = True
+) -> Union[Dict, Response]:
     """
     Fetch on Aleph and return a VM function message, after checking its validity.
     Used by the VM Supervisor run the code.
@@ -64,7 +65,7 @@ async def download_message(ref: str, last_amend: Optional[bool] = True) -> \
     """
 
     if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath('./tests/test_message.json')
+        filepath = os.path.abspath("./tests/test_message.json")
         with open(filepath) as fd:
             return json.load(fd)
 
@@ -76,8 +77,9 @@ async def download_message(ref: str, last_amend: Optional[bool] = True) -> \
 
 
 @app.get("/download/code/{ref}")
-async def download_code(ref: str, last_amend: Optional[bool] = True
-                  ) -> Union[StreamingResponse, Response]:
+async def download_code(
+    ref: str, last_amend: Optional[bool] = True
+) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM code file, after checking its validity.
     Used by the VM Supervisor to download function source code.
@@ -88,22 +90,22 @@ async def download_code(ref: str, last_amend: Optional[bool] = True
     """
 
     if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath('./examples/example_fastapi_2.zip')
+        filepath = os.path.abspath("./examples/example_fastapi_2.zip")
         return FileResponse(filepath, filename=f"{ref}")
 
     msg = await get_message(hash_=ref)
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
-    data_hash = msg['content']['item_hash']
+    data_hash = msg["content"]["item_hash"]
     url = f"{settings.IPFS_SERVER}/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url),
-                             media_type='application/zip')
+    return StreamingResponse(stream_url_chunks(url), media_type="application/zip")
 
 
 @app.get("/download/data/{ref}")
-async def download_data(ref: str, last_amend: Optional[bool] = True
-                        ) -> Union[StreamingResponse, Response]:
+async def download_data(
+    ref: str, last_amend: Optional[bool] = True
+) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM data file, after checking its validity.
     Used by the VM Supervisor to download state data.
@@ -114,7 +116,7 @@ async def download_data(ref: str, last_amend: Optional[bool] = True
     """
 
     if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath('./examples/data.tgz')
+        filepath = os.path.abspath("./examples/data.tgz")
         return FileResponse(filepath, filename=f"{ref}.tgz")
 
     # Download message
@@ -122,15 +124,15 @@ async def download_data(ref: str, last_amend: Optional[bool] = True
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
-    data_hash = msg['content']['item_hash']
+    data_hash = msg["content"]["item_hash"]
     url = f"{settings.IPFS_SERVER}/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url),
-                             media_type='application/gzip')
+    return StreamingResponse(stream_url_chunks(url), media_type="application/gzip")
 
 
 @app.get("/download/runtime/{ref}")
-async def download_runtime(ref: str, last_amend: Optional[bool] = True
-                     ) -> Union[StreamingResponse, Response]:
+async def download_runtime(
+    ref: str, last_amend: Optional[bool] = True
+) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM runtime, after checking its validity.
     Used by the VM Supervisor to download a runtime.
@@ -141,7 +143,7 @@ async def download_runtime(ref: str, last_amend: Optional[bool] = True
     """
 
     if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath('./runtimes/aleph-alpine-3.13-python/rootfs.ext4')
+        filepath = os.path.abspath("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
         return FileResponse(filepath, filename=f"{ref}.ext4")
 
     # Download message
@@ -149,10 +151,9 @@ async def download_runtime(ref: str, last_amend: Optional[bool] = True
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
-    data_hash = msg['content']['item_hash']
+    data_hash = msg["content"]["item_hash"]
     url = f"{settings.IPFS_SERVER}/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url),
-                             media_type='application/ext4')
+    return StreamingResponse(stream_url_chunks(url), media_type="application/ext4")
 
 
 @app.post("/publish/data/")

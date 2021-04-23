@@ -26,7 +26,7 @@ async def download_file(url: str, local_path: FilePath) -> None:
             resp = await session.get(url)
             resp.raise_for_status()
             try:
-                with open(local_path, 'wb') as cache_file:
+                with open(local_path, "wb") as cache_file:
                     while True:
                         chunk = await resp.content.read(65536)
                         if not chunk:
@@ -40,15 +40,15 @@ async def download_file(url: str, local_path: FilePath) -> None:
 
 
 async def get_message(ref) -> FunctionMessage:
-    cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + '.json')
+    cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + ".json")
     url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
 
     await download_file(url, cache_path)
 
-    with open(cache_path, 'r') as cache_file:
+    with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
         # TODO: Define VM Function type instead of wrapping in 'content' key
-        msg_content = msg['content']
+        msg_content = msg["content"]
         return FunctionMessage(**msg_content)
 
 

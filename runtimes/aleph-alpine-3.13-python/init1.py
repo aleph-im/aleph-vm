@@ -22,19 +22,20 @@ s0.close()
 
 print("INIT1 READY")
 
+
 class Encoding:
-    plain = 'plain'
-    zip = 'zip'
+    plain = "plain"
+    zip = "zip"
 
 
 async def run_python_code_http(code: str, entrypoint: str, encoding: str, scope: dict):
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         decoded: bytes = b64decode(code)
-        open('/opt/archive.zip', 'wb').write(decoded)
-        os.system('unzip /opt/archive.zip -d /opt')
-        sys.path.append('/opt')
-        module_name, app_name = entrypoint.split(':', 1)
+        open("/opt/archive.zip", "wb").write(decoded)
+        os.system("unzip /opt/archive.zip -d /opt")
+        sys.path.append("/opt")
+        module_name, app_name = entrypoint.split(":", 1)
         module = __import__(module_name)
         app = getattr(module, app_name)
     elif encoding == Encoding.plain:
@@ -49,9 +50,12 @@ async def run_python_code_http(code: str, entrypoint: str, encoding: str, scope:
         # Execute in the same process, saves ~20ms than a subprocess
         async def receive():
             pass
+
         send_queue = asyncio.Queue()
+
         async def send(dico):
             await send_queue.put(dico)
+
         await app(scope, receive, send)
         headers = await send_queue.get()
         body = await send_queue.get()
@@ -66,33 +70,35 @@ while True:
 
     msg = data.decode().strip()
 
-    print('msg', [msg])
-    if msg == 'halt':
-        system('sync')
-        client.send(b'STOP\n')
+    print("msg", [msg])
+    if msg == "halt":
+        system("sync")
+        client.send(b"STOP\n")
         sys.exit()
-    elif msg.startswith('!'):
+    elif msg.startswith("!"):
         # Shell
         msg = msg[1:]
         try:
             output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
             client.send(output)
         except subprocess.CalledProcessError as error:
-            client.send(str(error).encode() + b'\n' + error.output)
+            client.send(str(error).encode() + b"\n" + error.output)
     else:
         # Python
         msg_ = json.loads(msg)
-        code = msg_['code']
-        entrypoint = msg_['entrypoint']
-        scope = msg_['scope']
-        encoding = msg_['encoding']
+        code = msg_["code"]
+        entrypoint = msg_["entrypoint"]
+        scope = msg_["scope"]
+        encoding = msg_["encoding"]
         try:
             headers, body, output = asyncio.get_event_loop().run_until_complete(
-                run_python_code_http(code, entrypoint=entrypoint, encoding=encoding, scope=scope)
+                run_python_code_http(
+                    code, entrypoint=entrypoint, encoding=encoding, scope=scope
+                )
             )
-            client.send(body['body'])
+            client.send(body["body"])
         except Exception as error:
             client.send(str(error).encode() + str(traceback.format_exc()).encode())
 
-    print('...DONE')
+    print("...DONE")
     client.close()

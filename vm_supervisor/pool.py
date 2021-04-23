@@ -10,6 +10,7 @@ class VmPool:
     The counter is used by the VMs to set their tap interface name and the corresponding
     IPv4 subnet.
     """
+
     queue: asyncio.Queue
     counter: int  # Used for network interfaces
 
@@ -19,9 +20,11 @@ class VmPool:
 
     async def provision(self, kernel_image_path, rootfs_path):
         self.counter += 1
-        vm = await start_new_vm(vm_id=self.counter,
-                                kernel_image_path=kernel_image_path,
-                                rootfs_path=rootfs_path)
+        vm = await start_new_vm(
+            vm_id=self.counter,
+            kernel_image_path=kernel_image_path,
+            rootfs_path=rootfs_path,
+        )
         await self.queue.put(vm)
         return vm
 

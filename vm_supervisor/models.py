@@ -3,12 +3,12 @@ from typing import NewType
 
 from pydantic import BaseModel
 
-FilePath = NewType('FilePath', str)
+FilePath = NewType("FilePath", str)
 
 
 class Encoding(str, Enum):
-    plain = 'plain'
-    zip = 'zip'
+    plain = "plain"
+    zip = "zip"
 
 
 class CodeContent(BaseModel):
@@ -53,4 +53,3 @@ class FunctionMessage(BaseModel):
     address: str
     content: FunctionContent
     time: float
-
