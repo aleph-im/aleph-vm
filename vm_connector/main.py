@@ -9,12 +9,10 @@ import aiohttp
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, Response, FileResponse
 
+from .conf import settings
+
 logger = logging.getLogger(__file__)
 
-ALEPH_SERVER = "https://api2.aleph.im"
-# ALEPH_SERVER = "http://163.172.70.92:4024"
-IPFS_SERVER = "https://ipfs.aleph.im/ipfs/{}"
-OFFLINE_TEST_MODE: bool = False
 
 app = FastAPI()
 
@@ -31,7 +29,7 @@ class Encoding:
 
 async def get_message(hash_: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
-        url = f"{ALEPH_SERVER}/api/v0/messages.json?hashes={hash_}"
+        url = f"{settings.ALEPH_SERVER}/api/v0/messages.json?hashes={hash_}"
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
@@ -65,7 +63,7 @@ async def download_message(ref: str, last_amend: Optional[bool] = True) -> \
     :return: a file containing the code file
     """
 
-    if OFFLINE_TEST_MODE:
+    if settings.OFFLINE_TEST_MODE:
         filepath = os.path.abspath('./tests/test_message.json')
         with open(filepath) as fd:
             return json.load(fd)
@@ -89,7 +87,7 @@ async def download_code(ref: str, last_amend: Optional[bool] = True
     :return: a file containing the code file
     """
 
-    if OFFLINE_TEST_MODE:
+    if settings.OFFLINE_TEST_MODE:
         filepath = os.path.abspath('./examples/example_fastapi_2.zip')
         return FileResponse(filepath, filename=f"{ref}")
 
@@ -98,8 +96,7 @@ async def download_code(ref: str, last_amend: Optional[bool] = True
         return Response(status_code=404, content="Hash not found")
 
     data_hash = msg['content']['item_hash']
-    # url = f"{ALEPH_SERVER}/api/v0/storage/raw/{data_hash}"
-    url = IPFS_SERVER.format(data_hash)
+    url = f"{settings.IPFS_SERVER}/{data_hash}"
     return StreamingResponse(stream_url_chunks(url),
                              media_type='application/zip')
 
@@ -116,7 +113,7 @@ async def download_data(ref: str, last_amend: Optional[bool] = True
     :return: a file containing the data
     """
 
-    if OFFLINE_TEST_MODE:
+    if settings.OFFLINE_TEST_MODE:
         filepath = os.path.abspath('./examples/data.tgz')
         return FileResponse(filepath, filename=f"{ref}.tgz")
 
@@ -126,8 +123,7 @@ async def download_data(ref: str, last_amend: Optional[bool] = True
         return Response(status_code=404, content="Hash not found")
 
     data_hash = msg['content']['item_hash']
-    # url = f"{ALEPH_SERVER}/api/v0/storage/raw/{data_hash}"
-    url = IPFS_SERVER.format(data_hash)
+    url = f"{settings.IPFS_SERVER}/{data_hash}"
     return StreamingResponse(stream_url_chunks(url),
                              media_type='application/gzip')
 
@@ -144,7 +140,7 @@ async def download_runtime(ref: str, last_amend: Optional[bool] = True
     :return: a file containing the runtime
     """
 
-    if OFFLINE_TEST_MODE:
+    if settings.OFFLINE_TEST_MODE:
         filepath = os.path.abspath('./runtimes/aleph-alpine-3.13-python/rootfs.ext4')
         return FileResponse(filepath, filename=f"{ref}.ext4")
 
@@ -154,7 +150,7 @@ async def download_runtime(ref: str, last_amend: Optional[bool] = True
         return Response(status_code=404, content="Hash not found")
 
     data_hash = msg['content']['item_hash']
-    url = IPFS_SERVER.format(data_hash)
+    url = f"{settings.IPFS_SERVER}/{data_hash}"
     return StreamingResponse(stream_url_chunks(url),
                              media_type='application/ext4')
 
