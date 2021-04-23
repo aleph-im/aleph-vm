@@ -27,6 +27,10 @@ them with operations related to the Aleph network.
 
 See [vm_connector/README.md](./vm_connector/README.md).
 
+## Creating and running an Aleph Program 
+
+See [examples/README.md](./examples/README.md).
+
 ---
 
 ![aleph.im logo](https://aleph.im/assets/img/logo-wide.1832dbae.svg)
