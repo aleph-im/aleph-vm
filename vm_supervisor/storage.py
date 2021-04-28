@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def download_file(url: str, local_path: FilePath) -> None:
+    # TODO: Limit max size of download to the message specification
     if isfile(local_path):
         logger.debug(f"File already exists: {local_path}")
     else:
@@ -41,7 +42,8 @@ async def download_file(url: str, local_path: FilePath) -> None:
 
 async def get_message(ref) -> FunctionMessage:
     if settings.FAKE_DATA:
-        cache_path = os.path.abspath(join(__file__, '../examples/message_from_aleph.json'))
+        cache_path = os.path.abspath(join(__file__,
+            '../../examples/message_from_aleph.json'))
     else:
         cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + ".json")
         url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
@@ -57,7 +59,7 @@ async def get_message(ref) -> FunctionMessage:
 async def get_code_path(ref) -> FilePath:
     if settings.FAKE_DATA:
         return FilePath(os.path.abspath(join(__file__,
-            '../examples/example_fastapi_2.zip')))
+            '../../examples/example_fastapi_2.zip')))
 
     cache_path = FilePath(join(settings.CODE_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
@@ -68,7 +70,7 @@ async def get_code_path(ref) -> FilePath:
 async def get_data_path(ref) -> FilePath:
     if settings.FAKE_DATA:
         return FilePath(os.path.abspath(join(__file__,
-            '../examples/example_fastapi_2.zip')))
+            '../../examples/example_fastapi_2.zip')))
 
     cache_path = FilePath(join(settings.DATA_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
@@ -79,7 +81,7 @@ async def get_data_path(ref) -> FilePath:
 async def get_runtime_path(ref) -> FilePath:
     if settings.FAKE_DATA:
         return FilePath(os.path.abspath(join(__file__,
-            '../runtimes/aleph-alpine-3.13-python/rootfs.ext4')))
+            '../../runtimes/aleph-alpine-3.13-python/rootfs.ext4')))
 
     cache_path = FilePath(join(settings.RUNTIME_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
