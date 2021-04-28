@@ -21,13 +21,13 @@ class Settings:
     JAILER_PATH: str = getenv("ALEPH_JAILER_PATH", "/opt/firecracker/jailer")
     LINUX_PATH: str = getenv("ALEPH_LINUX_PATH", os.path.abspath("./kernels/vmlinux.bin"))
 
-    CONNECTOR_URL: Url = getenv("ALEPH_CONNECTOR_URL", "http://localhost:8000")
+    CONNECTOR_URL: Url = Url(getenv("ALEPH_CONNECTOR_URL", "http://localhost:8000"))
 
-    CACHE_ROOT: FilePath = getenv("ALEPH_CACHE_ROOT", "/tmp/aleph/vm_supervisor")
-    MESSAGE_CACHE: FilePath = getenv("ALEPH_MESSAGE_CACHE", join(CACHE_ROOT, "message"))
-    CODE_CACHE: FilePath = getenv("ALEPH_CODE_CACHE", join(CACHE_ROOT, "code"))
-    RUNTIME_CACHE: FilePath = getenv("ALEPH_RUNTIME_CACHE", join(CACHE_ROOT, "runtime"))
-    DATA_CACHE: FilePath = getenv("ALEPH_DATA_CACHE", join(CACHE_ROOT, "data"))
+    CACHE_ROOT: FilePath = FilePath(getenv("ALEPH_CACHE_ROOT", "/tmp/aleph/vm_supervisor"))
+    MESSAGE_CACHE: FilePath = FilePath(getenv("ALEPH_MESSAGE_CACHE", join(CACHE_ROOT, "message")))
+    CODE_CACHE: FilePath = FilePath(getenv("ALEPH_CODE_CACHE", join(CACHE_ROOT, "code")))
+    RUNTIME_CACHE: FilePath = FilePath(getenv("ALEPH_RUNTIME_CACHE", join(CACHE_ROOT, "runtime")))
+    DATA_CACHE: FilePath = FilePath(getenv("ALEPH_DATA_CACHE", join(CACHE_ROOT, "data")))
 
     FAKE_DATA: bool = getenv("ALEPH_FAKE_DATA", "false") == "true"
 

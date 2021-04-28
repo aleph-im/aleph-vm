@@ -8,6 +8,7 @@ from functools import lru_cache
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
+from typing import Optional
 
 import aiohttp
 from aiohttp import ClientResponse
@@ -61,8 +62,8 @@ class MicroVM:
     vm_id: int
     use_jailer: bool
     firecracker_bin_path: str
-    jailer_bin_path: str
-    proc: asyncio.subprocess.Process = None
+    jailer_bin_path: Optional[str]
+    proc: Optional[asyncio.subprocess.Process] = None
 
     @property
     def jailer_path(self):
@@ -88,7 +89,7 @@ class MicroVM:
         vm_id: int,
         firecracker_bin_path: str,
         use_jailer: bool = True,
-        jailer_bin_path: str = None,
+        jailer_bin_path: Optional[str] = None,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
@@ -143,6 +144,8 @@ class MicroVM:
         return self.proc
 
     async def start_jailed_firecracker(self) -> asyncio.subprocess.Process:
+        if not self.jailer_bin_path:
+            raise ValueError("Jailer binary path is missing")
         uid = str(getpwnam("jailman").pw_uid)
         gid = str(getpwnam("jailman").pw_gid)
         logger.debug(

@@ -77,7 +77,7 @@ async def get_data_path(ref) -> FilePath:
 
 
 async def get_runtime_path(ref) -> FilePath:
-    if settings.FAKE_DATA
+    if settings.FAKE_DATA:
         return FilePath(os.path.abspath(join(__file__,
             '../runtimes/aleph-alpine-3.13-python/rootfs.ext4')))
 
