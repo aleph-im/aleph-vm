@@ -297,20 +297,25 @@ class MicroVM:
         logger.debug("...signal from init received")
 
     async def run_code(
-        self, code: bytes, entrypoint: str, encoding: str = "plain", scope: dict = None
+            self, code: bytes, entrypoint: str, input_data: bytes = b"",
+            encoding: str = "plain", scope: dict = None
     ):
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
 
+        code_for_json: str
         if encoding == Encoding.zip:
-            code = base64.b64encode(code).decode()
+            code_for_json = base64.b64encode(code).decode()
         elif encoding == Encoding.plain:
-            code = code.decode()
+            code_for_json = code.decode()
         else:
             raise ValueError(f"Unknown encoding '{encoding}'")
 
+        input_data_b64: str = base64.b64encode(input_data).decode()
+
         msg = {
-            "code": code,
+            "code": code_for_json,
+            "input_data": input_data_b64,
             "entrypoint": entrypoint,
             "encoding": encoding,
             "scope": scope,

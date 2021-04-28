@@ -46,12 +46,12 @@ async def run_code(request: web.Request):
 
     code_ref: str = msg.content.code.ref
     runtime_ref: str = msg.content.runtime.ref
-    data_ref: str = msg.content['data']['ref']
+    data_ref: Optional[str] = msg.content.data.ref if msg.content.data else None
 
     try:
         code_path: FilePath = await get_code_path(code_ref)
         rootfs_path: FilePath = await get_runtime_path(runtime_ref)
-        data_path: FilePath = await get_data_path(data_ref)
+        data_path: Optional[FilePath] = await get_data_path(data_ref) if data_ref else None
     except ClientResponseError as error:
         if error.status == 404:
             raise HTTPBadRequest(reason="Code or runtime not found")
@@ -80,9 +80,18 @@ async def run_code(request: web.Request):
         "headers": request.raw_headers,
     }
     with open(code_path, "rb") as code_file:
+
+        input_data: bytes
+        if data_path:
+            with open(data_path, "rb") as data_file:
+                input_data = data_file.read()
+        else:
+            input_data = b''
+
         result = await vm.run_code(
-            code_file.read(),
+            code=code_file.read(),
             entrypoint=msg.content.code.entrypoint,
+            input_data=input_data,
             encoding=msg.content.code.encoding,
             scope=scope,
         )
