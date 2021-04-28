@@ -54,8 +54,9 @@ def parse_args(args):
     )
     parser.add_argument(
         "-p",
-        "--print-config",
-        dest="print_config",
+        "--print-settings",
+        dest="print_settings",
+        action="store_true",
         default=False,
     )
     parser.add_argument(
