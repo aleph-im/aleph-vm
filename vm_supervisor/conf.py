@@ -53,10 +53,10 @@ class Settings:
         os.makedirs(self.DATA_CACHE, exist_ok=True)
 
     def display(self) -> str:
-        result = ""
-        for annotation, value in self.__annotations__.items():
-            result += f"{annotation} ({value.__name__}) = {getattr(self, annotation)}"
-        return result
+        return "\n".join(
+            f"{annotation:<17} = {getattr(self, annotation)}"
+            for annotation, value in self.__annotations__.items()
+        )
 
 
 # Settings singleton
