@@ -9,6 +9,7 @@ evolve in the future.
 import logging
 import os.path
 from os import system
+from typing import Optional
 
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnavailable
@@ -23,7 +24,7 @@ pool = VmPool()
 
 
 async def index(request: web.Request):
-    assert request
+    assert request.method == "GET"
     return web.Response(text="Server: Aleph VM Supervisor")
 
 
@@ -62,7 +63,8 @@ async def run_code(request: web.Request):
     kernel_image_path = settings.LINUX_PATH
 
     vm = await pool.get_a_vm(
-        kernel_image_path=kernel_image_path, rootfs_path=rootfs_path
+        kernel_image_path=kernel_image_path,
+        rootfs_path=rootfs_path,
     )
 
     path = request.match_info["suffix"]
