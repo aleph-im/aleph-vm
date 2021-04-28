@@ -84,7 +84,7 @@ async def run_code(request: web.Request):
             encoding=msg.content.code.encoding,
             scope=scope,
         )
-    await vm.stop()
+    await vm.teardown()
     system(f"rm -fr {vm.jailer_path}")
     # TODO: Handle other content-types
     return web.Response(body=result, content_type="application/json")
