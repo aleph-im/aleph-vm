@@ -16,7 +16,7 @@ from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnav
 from .conf import settings
 from .models import FilePath
 from .pool import VmPool
-from .storage import get_code, get_runtime, get_message
+from .storage import get_code_path, get_runtime_path, get_message, get_data_path
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
@@ -45,12 +45,12 @@ async def run_code(request: web.Request):
 
     code_ref: str = msg.content.code.ref
     runtime_ref: str = msg.content.runtime.ref
-    # data_ref: str = msg.content['data']['ref']
+    data_ref: str = msg.content['data']['ref']
 
     try:
-        code_path: FilePath = await get_code(code_ref)
-        rootfs_path: FilePath = await get_runtime(runtime_ref)
-        # data_path: FilePath = await get_data(data_ref)
+        code_path: FilePath = await get_code_path(code_ref)
+        rootfs_path: FilePath = await get_runtime_path(runtime_ref)
+        data_path: FilePath = await get_data_path(data_ref)
     except ClientResponseError as error:
         if error.status == 404:
             raise HTTPBadRequest(reason="Code or runtime not found")

@@ -40,10 +40,12 @@ async def download_file(url: str, local_path: FilePath) -> None:
 
 
 async def get_message(ref) -> FunctionMessage:
-    cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + ".json")
-    url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
-
-    await download_file(url, cache_path)
+    if settings.FAKE_DATA:
+        cache_path = os.path.abspath(join(__file__, '../examples/message_from_aleph.json'))
+    else:
+        cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + ".json")
+        url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
+        await download_file(url, cache_path)
 
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
@@ -52,21 +54,33 @@ async def get_message(ref) -> FunctionMessage:
         return FunctionMessage(**msg_content)
 
 
-async def get_code(ref) -> FilePath:
+async def get_code_path(ref) -> FilePath:
+    if settings.FAKE_DATA:
+        return FilePath(os.path.abspath(join(__file__,
+            '../examples/example_fastapi_2.zip')))
+
     cache_path = FilePath(join(settings.CODE_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
     await download_file(url, cache_path)
     return cache_path
 
 
-async def get_data(ref) -> FilePath:
+async def get_data_path(ref) -> FilePath:
+    if settings.FAKE_DATA:
+        return FilePath(os.path.abspath(join(__file__,
+            '../examples/example_fastapi_2.zip')))
+
     cache_path = FilePath(join(settings.DATA_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
     await download_file(url, cache_path)
     return cache_path
 
 
-async def get_runtime(ref) -> FilePath:
+async def get_runtime_path(ref) -> FilePath:
+    if settings.FAKE_DATA
+        return FilePath(os.path.abspath(join(__file__,
+            '../runtimes/aleph-alpine-3.13-python/rootfs.ext4')))
+
     cache_path = FilePath(join(settings.RUNTIME_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
     await download_file(url, cache_path)
