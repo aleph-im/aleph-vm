@@ -327,12 +327,21 @@ class MicroVM:
         if self.proc:
             self.proc.terminate()
             self.proc.kill()
+
         await self.get_session().close()
         self.get_session.cache_clear()
+
+
+    async def teardown(self):
+        """Stop the VM, cleanup network interface and remove data directory."""
+        await self.stop()
 
         name = f"tap{self.vm_id}"
         system(f"ip tuntap del {name} mode tap")
 
+        system(f"rm -fr {self.jailer_path}")
+
+
     def __del__(self):
         loop = asyncio.get_running_loop()
-        loop.create_task(self.stop())
+        loop.create_task(self.teardown())
