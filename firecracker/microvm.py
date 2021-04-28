@@ -326,7 +326,7 @@ class MicroVM:
         ack = await reader.readline()
         logger.debug(f"ack={ack.decode()}")
         response = await reader.read()
-        logger.debug(f"response= <<<\n{response.decode()}>>>")
+        logger.debug(f"response= <<<\n{response}>>>")
         writer.close()
         await writer.wait_closed()
         return response

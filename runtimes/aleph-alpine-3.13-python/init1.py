@@ -7,10 +7,13 @@ import subprocess
 import sys
 import traceback
 from base64 import b64decode
-from os import system
-from io import StringIO
 from contextlib import redirect_stdout
-from typing import Optional, Dict, Any
+from io import StringIO
+from os import system
+from shutil import make_archive
+from typing import Optional, Dict, Any, Tuple
+
+import msgpack
 
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
 s.bind((socket.VMADDR_CID_ANY, 52))
@@ -30,7 +33,8 @@ class Encoding:
 
 
 async def run_python_code_http(code: str, input_data: Optional[str],
-                               entrypoint: str, encoding: str, scope: dict):
+                               entrypoint: str, encoding: str, scope: dict
+                               ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         decoded: bytes = b64decode(code)
@@ -54,8 +58,8 @@ async def run_python_code_http(code: str, input_data: Optional[str],
         decoded_data: bytes = b64decode(code)
         open("/opt/input.zip", "wb").write(decoded_data)
         del decoded_data
-        os.makedirs("/input", exist_ok=True)
-        os.system("unzip /opt/input.zip -d /input")
+        os.makedirs("/data", exist_ok=True)
+        os.system("unzip /opt/input.zip -d /data")
 
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
@@ -68,10 +72,22 @@ async def run_python_code_http(code: str, input_data: Optional[str],
             await send_queue.put(dico)
 
         await app(scope, receive, send)
-        headers = await send_queue.get()
-        body = await send_queue.get()
+        headers: Dict = await send_queue.get()
+        body: Dict = await send_queue.get()
         output = buf.getvalue()
-    return headers, body, output
+
+    os.makedirs("/data", exist_ok=True)
+    open('/data/hello.txt', 'w').write("Hello !")
+
+    output_data: bytes
+    if os.listdir('/data'):
+        make_archive("/opt/output", 'zip', "/data")
+        with open("/opt/output.zip", "rb") as output_zipfile:
+            output_data = output_zipfile.read()
+    else:
+        output_data = b''
+
+    return headers, body, output, output_data
 
 
 while True:
@@ -91,8 +107,8 @@ while True:
         # Shell
         msg = msg[1:]
         try:
-            output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
-            client.send(output)
+            process_output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
+            client.send(process_output)
         except subprocess.CalledProcessError as error:
             client.send(str(error).encode() + b"\n" + error.output)
     else:
@@ -104,13 +120,24 @@ while True:
         scope = msg_["scope"]
         encoding = msg_["encoding"]
         try:
-            headers, body, output = asyncio.get_event_loop().run_until_complete(
+            headers: Dict
+            body: Dict
+            output: str
+            output_data: Optional[bytes]
+
+            headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
                 run_python_code_http(
                     code, input_data=input_data,
                     entrypoint=entrypoint, encoding=encoding, scope=scope
                 )
             )
-            client.send(body["body"])
+            result = {
+                "headers": headers,
+                "body": body,
+                "output": output,
+                "output_data": output_data,
+            }
+            client.send(msgpack.packb(result, use_bin_type=True))
         except Exception as error:
             client.send(str(error).encode() + str(traceback.format_exc()).encode())
 

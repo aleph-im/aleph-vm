@@ -11,6 +11,7 @@ import os.path
 from os import system
 from typing import Optional
 
+import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnavailable
 
@@ -88,17 +89,21 @@ async def run_code(request: web.Request):
         else:
             input_data = b''
 
-        result = await vm.run_code(
+        result_raw: bytes = await vm.run_code(
             code=code_file.read(),
             entrypoint=msg.content.code.entrypoint,
             input_data=input_data,
             encoding=msg.content.code.encoding,
             scope=scope,
         )
+
+        result = msgpack.loads(result_raw, raw=False)
+
     await vm.teardown()
     system(f"rm -fr {vm.jailer_path}")
     # TODO: Handle other content-types
-    return web.Response(body=result, content_type="application/json")
+    return web.Response(body=result['body']['body'],
+                        content_type="application/json")
 
 
 app = web.Application()

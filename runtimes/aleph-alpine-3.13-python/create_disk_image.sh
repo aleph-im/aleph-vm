@@ -19,7 +19,7 @@ apk add python3
 apk add openssh-server
 apk add py3-pip
 
-pip install fastapi
+pip install msgpack fastapi
 
 #echo -e "toor\ntoor" | passwd root
 
