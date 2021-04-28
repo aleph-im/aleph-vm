@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import NewType
+from typing import NewType, Optional
 
 from pydantic import BaseModel
 
@@ -9,11 +9,19 @@ FilePath = NewType("FilePath", str)
 class Encoding(str, Enum):
     plain = "plain"
     zip = "zip"
+    targz = "tar.gzip"
 
 
 class CodeContent(BaseModel):
     encoding: Encoding
     entrypoint: str
+    ref: str
+    latest_amend: bool = True
+
+
+class DataContent(BaseModel):
+    encoding: Encoding
+    mount: str
     ref: str
     latest_amend: bool = True
 
@@ -42,6 +50,7 @@ class FunctionRuntime(BaseModel):
 
 class FunctionContent(BaseModel):
     code: CodeContent
+    data: Optional[DataContent]
     on: FunctionTriggers
     environment: FunctionEnvironment
     resources: FunctionResources
