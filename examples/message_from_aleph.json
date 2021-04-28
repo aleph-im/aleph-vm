@@ -1,0 +1,64 @@
+{
+    "_id": {
+        "$oid": "6080402d7f44efefd611dc1e"
+    },
+    "chain": "ETH",
+    "item_hash": "91c83eff3ba23d6b501a2aa3c4364ec235eb8283b6fa8ac20d235642a48791b8",
+    "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+    "type": "POST",
+    "channel": "VM",
+    "confirmed": true,
+    "content": {
+        "type": "vm-function",
+        "address": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+        "content": {
+            "code": {
+                "encoding": "zip",
+                "entrypoint": "example_fastapi_2:app",
+                "ref": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
+                "latest_amend": true
+            },
+            "on": {
+                "http": true
+            },
+            "environment": {
+                "reproducible": true,
+                "internet": false,
+                "aleph_api": false
+            },
+            "resources": {
+                "vcpus": 1,
+                "memory": 128,
+                "seconds": 1
+            },
+            "runtime": {
+                "ref": "5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51",
+                "latest_amend": true,
+                "comment": "Aleph Alpine Linux with Python 3.8"
+            },
+            "data": {
+                "encoding": "tar.gzip",
+                "mount": "/mnt",
+                "ref": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
+                "latest_amend": true
+            },
+            "export": {
+                "encoding": "tar.gzip",
+                "mount": "/mnt"
+            }
+        },
+        "time": 1619017773.8950517
+    },
+    "item_content": "{\"type\":\"vm-function\",\"address\":\"0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba\",\"content\":{\"code\":{\"encoding\":\"zip\",\"entrypoint\":\"example_fastapi_2:app\",\"ref\":\"7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003\",\"latest_amend\":true},\"on\":{\"http\":true},\"environment\":{\"reproducible\":true,\"internet\":false,\"aleph_api\":false},\"resources\":{\"vcpus\":1,\"memory\":128,\"seconds\":1},\"runtime\":{\"ref\":\"5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51\",\"latest_amend\":true,\"comment\":\"Aleph Alpine Linux with Python 3.8\"},\"data\":{\"encoding\":\"tar.gzip\",\"mount\":\"/mnt\",\"ref\":\"7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003\",\"latest_amend\":true},\"export\":{\"encoding\":\"tar.gzip\",\"mount\":\"/mnt\"}},\"time\":1619017773.8950517}",
+    "item_type": "inline",
+    "signature": "0x372da8230552b8c3e65c05b31a0ff3a24666d66c575f8e11019f62579bf48c2b7fe2f0bbe907a2a5bf8050989cdaf8a59ff8a1cbcafcdef0656c54279b4aa0c71b",
+    "size": 749,
+    "time": 1619017773.8950577,
+    "confirmations": [
+        {
+            "chain": "ETH",
+            "height": 12284734,
+            "hash": "0x67f2f3cde5e94e70615c92629c70d22dc959a118f46e9411b29659c2fce87cdc"
+        }
+    ]
+}
