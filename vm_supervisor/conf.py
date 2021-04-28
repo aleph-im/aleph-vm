@@ -29,6 +29,8 @@ class Settings:
     RUNTIME_CACHE: FilePath = getenv("ALEPH_RUNTIME_CACHE", join(CACHE_ROOT, "runtime"))
     DATA_CACHE: FilePath = getenv("ALEPH_DATA_CACHE", join(CACHE_ROOT, "data"))
 
+    FAKE_DATA: bool = getenv("ALEPH_FAKE_DATA", "false") == "true"
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):
