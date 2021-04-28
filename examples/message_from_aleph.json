@@ -37,7 +37,7 @@
                 "comment": "Aleph Alpine Linux with Python 3.8"
             },
             "data": {
-                "encoding": "tar.gzip",
+                "encoding": "zip",
                 "mount": "/mnt",
                 "ref": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
                 "latest_amend": true
