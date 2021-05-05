@@ -32,17 +32,17 @@ mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mount -t tmpfs shm /dev/shm -omode=1777,nosuid,nodev
 
 # TODO: Move in init1
-ip addr add 172.16.0.2/24 dev eth0
+ip addr add 172.0.5.2/24 dev eth0
 ip link set eth0 up
-ip route add default via 172.16.0.1 dev eth0
+ip route add default via 172.0.5.1 dev eth0
 ip addr
 
 echo "Net up"
+cat /proc/sys/kernel/random/entropy_avail
 
 # TODO: Move in init1
-#/usr/sbin/sshd -E /var/log/sshd &
-#
-#echo "SSH UP"
+/usr/sbin/sshd -E /var/log/sshd &
+echo "SSH UP"
 
 # Replace this script with the manager
 exec /root/init1.py
