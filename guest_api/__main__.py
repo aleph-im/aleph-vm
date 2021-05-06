@@ -1,4 +1,3 @@
-from os import system
 import logging
 from aiohttp import web
 
@@ -6,10 +5,10 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 async def hello(request):
-    system("chown jailman:jailman /srv/jailer/firecracker/5/root/tmp/v.sock_53")
-    return web.Response(text="Hello, world")
+    return web.json_response({"Hello": "From API"})
 
-app = web.Application()
-app.router.add_get('/', hello)
 
-web.run_app(app=app, path='/srv/jailer/firecracker/5/root/tmp/v.sock_53')
+def run_guest_api(unix_socket_path):
+    app = web.Application()
+    app.router.add_get('/get', hello)
+    web.run_app(app=app, path=unix_socket_path)

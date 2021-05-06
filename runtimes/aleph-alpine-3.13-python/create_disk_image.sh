@@ -4,7 +4,7 @@ set -euf
 
 curl -fsSL -o ./alpine-miniroot.tgz https://dl-cdn.alpinelinux.org/alpine/v3.13/releases/x86_64/alpine-minirootfs-3.13.3-x86_64.tar.gz
 
-dd if=/dev/zero of=./rootfs.ext4 bs=1M count=100
+dd if=/dev/zero of=./rootfs.ext4 bs=1M count=120
 mkfs.ext4 ./rootfs.ext4
 mkdir -p /mnt/rootfs
 mount ./rootfs.ext4 /mnt/rootfs
@@ -17,11 +17,13 @@ apk update
 apk add util-linux
 apk add python3
 apk add openssh-server
+apk add socat
+
 apk add py3-pip
+apk add py3-aiohttp py3-msgpack
+pip install fastapi
 
-pip install msgpack fastapi
-
-#echo -e "toor\ntoor" | passwd root
+echo -e "toor\ntoor" | passwd root
 
 mkdir -p /overlay
 

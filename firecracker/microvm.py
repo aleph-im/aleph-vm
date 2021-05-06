@@ -347,7 +347,7 @@ class MicroVM:
         name = f"tap{self.vm_id}"
         system(f"ip tuntap del {name} mode tap")
 
-        system(f"rm -fr {self.jailer_path}")
+        # system(f"rm -fr {self.jailer_path}")
 
 
     def __del__(self):

@@ -5,9 +5,10 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
-
+import asyncio
 import logging
 import os.path
+from multiprocessing import Process, set_start_method
 from os import system
 from typing import Optional
 
@@ -15,6 +16,7 @@ import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnavailable
 
+from guest_api.__main__ import run_guest_api
 from .conf import settings
 from .models import FilePath
 from .pool import VmPool
@@ -22,6 +24,8 @@ from .storage import get_code_path, get_runtime_path, get_message, get_data_path
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
+
+set_start_method('spawn')
 
 
 async def index(request: web.Request):
@@ -68,6 +72,12 @@ async def run_code(request: web.Request):
         rootfs_path=rootfs_path,
     )
 
+    guest_api_process = Process(target=run_guest_api,
+                                args=(f"{vm.vsock_path}_53",))
+    guest_api_process.start()
+    await asyncio.sleep(0.5)
+    system(f"chown jailman:jailman {vm.vsock_path}_53")
+
     path = request.match_info["suffix"]
     if not path.startswith("/"):
         path = "/" + path
@@ -89,8 +99,6 @@ async def run_code(request: web.Request):
         else:
             input_data = b''
 
-        input("Create your socket...")
-
         result_raw: bytes = await vm.run_code(
             code=code_file.read(),
             entrypoint=msg.content.code.entrypoint,
@@ -102,6 +110,7 @@ async def run_code(request: web.Request):
         result = msgpack.loads(result_raw, raw=False)
 
     await vm.teardown()
+    guest_api_process.terminate()
     # TODO: Handle other content-types
     return web.Response(body=result['body']['body'],
                         content_type="application/json")
