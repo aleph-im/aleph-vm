@@ -44,5 +44,9 @@ cat /proc/sys/kernel/random/entropy_avail
 /usr/sbin/sshd -E /var/log/sshd &
 echo "SSH UP"
 
+echo "Setup socat"
+socat UNIX-LISTEN:/tmp/socat-socket,fork,reuseaddr VSOCK-CONNECT:2:53 &
+echo "Socat ready"
+
 # Replace this script with the manager
 exec /root/init1.py
