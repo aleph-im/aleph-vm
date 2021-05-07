@@ -1,18 +1,34 @@
 import asyncio
+import dataclasses
 import logging
-from base64 import b64encode
+from dataclasses import dataclass
 from multiprocessing import Process
 from os import system
 from os.path import isfile
-from typing import Optional
+from typing import Optional, Dict
 
-from firecracker.microvm import MicroVM, setfacl, JSONBytesEncoder
+import msgpack
+
+from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..models import FunctionMessage, FilePath, Encoding
+from ..models import FunctionMessage, FilePath
 from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RunCodePayload:
+    code: bytes
+    input_data: bytes
+    entrypoint: str
+    encoding: str
+    scope: Dict
+
+    def as_msgpack(self) -> bytes:
+        return msgpack.dumps(dataclasses.asdict(self),
+                             use_bin_type=True)
 
 
 class AlephFirecrackerResources:
@@ -28,7 +44,7 @@ class AlephFirecrackerResources:
         self.message = message
 
     async def download_kernel(self):
-        # Assuming the kernel is already present on the host
+        # Assumes kernel is already present on the host
         self.kernel_image_path = settings.LINUX_PATH
         assert isfile(self.kernel_image_path)
 
@@ -67,9 +83,11 @@ class AlephFirecrackerVM:
     guest_api_process: Process
 
     def __init__(self, vm_id: int, resources: AlephFirecrackerResources,
-                 enable_console: bool = settings.PRINT_SYSTEM_LOGS):
+                 enable_console: Optional[bool] = None):
         self.vm_id = vm_id
         self.resources = resources
+        if enable_console is None:
+            enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
 
     async def setup(self):
@@ -136,34 +154,31 @@ class AlephFirecrackerVM:
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
-        # Todo: Change communication protocol with the VM init1 - use msgpack ?
+        payload = RunCodePayload(
+            code=code,
+            input_data=input_data,
+            entrypoint=entrypoint,
+            encoding=encoding,
+            scope=scope,
+        )
 
-        code_for_json: str
-        if encoding == Encoding.zip:
-            code_for_json = b64encode(code).decode()
-        elif encoding == Encoding.plain:
-            code_for_json = code.decode()
-        else:
-            raise ValueError(f"Unknown encoding '{encoding}'")
-
-        input_data_b64: str = b64encode(input_data).decode()
-
-        msg = {
-            "code": code_for_json,
-            "input_data": input_data_b64,
-            "entrypoint": entrypoint,
-            "encoding": encoding,
-            "scope": scope,
-        }
-        writer.write(("CONNECT 52\n" + JSONBytesEncoder().encode(msg) + "\n").encode())
+        writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()
 
-        ack = await reader.readline()
+        ack: bytes = await reader.readline()
         logger.debug(f"ack={ack.decode()}")
-        response = await reader.read()
-        logger.debug(f"response= <<<\n{response}>>>")
-        if b'Traceback' in response:
-            print(response.decode())
+
+        response: bytes = await reader.read()
+
+        print("Response = [[[")
+        print(response)
+        print("]]]")
+        result = msgpack.loads(response)
+
+        logger.debug(f"response= <<<")
+        print(result)
+        logger.debug(f">>>")
+
         writer.close()
         await writer.wait_closed()
         return response
