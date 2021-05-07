@@ -1,5 +1,3 @@
-import asyncio
-import socket
 from typing import Optional
 import logging
 logging.basicConfig(level=logging.DEBUG)
@@ -15,7 +13,10 @@ async def get_data():
     # conn = aiohttp.TCPConnector(family=socket.AF_VSOCK)
     conn = aiohttp.UnixConnector(path='/tmp/socat-socket')
     async with aiohttp.ClientSession(connector=conn) as session:
-        async with session.get('http://localhost/get') as resp:
+        async with session.get('https://api2.aleph.im/api/v0/messages.json?hashes='
+                               '750468b3e4ed31f66630c5dff5081d8e7e071ae669beb3955dec6edb28145787'
+                               '&chain=ETH&addresses=0xE255493a528F639b739C9cbA8736f03d7Cbe094c'
+                               '&msgType=POST') as resp:
             print(resp.status)
             return await resp.text()
 
