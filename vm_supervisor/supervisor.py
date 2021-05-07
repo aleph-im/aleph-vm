@@ -5,23 +5,17 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
-import asyncio
 import logging
-import os.path
-from multiprocessing import Process, set_start_method
-from os import system
-from typing import Optional, Tuple
+from multiprocessing import set_start_method
 
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
-from aiohttp.web_exceptions import HTTPNotFound, HTTPBadRequest, HTTPServiceUnavailable
+from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 
-from guest_api.__main__ import run_guest_api
 from .conf import settings
 from .models import FilePath, FunctionMessage
 from .pool import VmPool
-from .storage import get_code_path, get_runtime_path, get_message, get_data_path
-from .vm.firecracker_microvm import AlephFirecrackerResources
+from .storage import get_message
 
 logger = logging.getLogger(__name__)
 pool = VmPool()

@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+
 import asyncio
 import json
 import os
@@ -15,21 +16,23 @@ from typing import Optional, Dict, Any, Tuple
 
 import msgpack
 
-s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-s.bind((socket.VMADDR_CID_ANY, 52))
-s.listen()
-
-# Send we are ready
-s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-s0.connect((2, 52))
-s0.close()
-
-print("INIT1 READY")
-
 
 class Encoding:
     plain = "plain"
     zip = "zip"
+
+
+# Open a socket to receive instructions from the host
+s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+s.bind((socket.VMADDR_CID_ANY, 52))
+s.listen()
+
+# Send the host that we are ready
+s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+s0.connect((2, 52))
+s0.close()
+
+print("Python init1 is ready")
 
 
 async def run_python_code_http(code: str, input_data: Optional[str],
@@ -90,56 +93,61 @@ async def run_python_code_http(code: str, input_data: Optional[str],
     return headers, body, output, output_data
 
 
-while True:
-    client, addr = s.accept()
-    data = client.recv(1000_1000)  # Max 1 Mo
-    print("CID: {} port:{} data: {}".format(addr[0], addr[1], data.decode()))
+def main():
+    while True:
+        client, addr = s.accept()
+        data = client.recv(1000_1000)  # Max 1 Mo
+        print("CID: {} port:{} data: {}".format(addr[0], addr[1], data.decode()))
 
-    msg = data.decode().strip()
-    del data
+        msg = data.decode().strip()
+        del data
 
-    print("msg", [msg])
-    if msg == "halt":
-        system("sync")
-        client.send(b"STOP\n")
-        sys.exit()
-    elif msg.startswith("!"):
-        # Shell
-        msg = msg[1:]
-        try:
-            process_output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
-            client.send(process_output)
-        except subprocess.CalledProcessError as error:
-            client.send(str(error).encode() + b"\n" + error.output)
-    else:
-        # Python
-        msg_ = json.loads(msg)
-        code = msg_["code"]
-        input_data = msg_.get("input_data")
-        entrypoint = msg_["entrypoint"]
-        scope = msg_["scope"]
-        encoding = msg_["encoding"]
-        try:
-            headers: Dict
-            body: Dict
-            output: str
-            output_data: Optional[bytes]
+        print("msg", [msg])
+        if msg == "halt":
+            system("sync")
+            client.send(b"STOP\n")
+            sys.exit()
+        elif msg.startswith("!"):
+            # Shell
+            msg = msg[1:]
+            try:
+                process_output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
+                client.send(process_output)
+            except subprocess.CalledProcessError as error:
+                client.send(str(error).encode() + b"\n" + error.output)
+        else:
+            # Python
+            msg_ = json.loads(msg)
+            code = msg_["code"]
+            input_data = msg_.get("input_data")
+            entrypoint = msg_["entrypoint"]
+            scope = msg_["scope"]
+            encoding = msg_["encoding"]
+            try:
+                headers: Dict
+                body: Dict
+                output: str
+                output_data: Optional[bytes]
 
-            headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                run_python_code_http(
-                    code, input_data=input_data,
-                    entrypoint=entrypoint, encoding=encoding, scope=scope
+                headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
+                    run_python_code_http(
+                        code, input_data=input_data,
+                        entrypoint=entrypoint, encoding=encoding, scope=scope
+                    )
                 )
-            )
-            result = {
-                "headers": headers,
-                "body": body,
-                "output": output,
-                "output_data": output_data,
-            }
-            client.send(msgpack.packb(result, use_bin_type=True))
-        except Exception as error:
-            client.send(str(error).encode() + str(traceback.format_exc()).encode())
+                result = {
+                    "headers": headers,
+                    "body": body,
+                    "output": output,
+                    "output_data": output_data,
+                }
+                client.send(msgpack.packb(result, use_bin_type=True))
+            except Exception as error:
+                client.send(str(error).encode() + str(traceback.format_exc()).encode())
 
-    print("...DONE")
-    client.close()
+        print("...DONE")
+        client.close()
+
+
+if __name__ == '__main__':
+    main()
