@@ -41,7 +41,7 @@ async def download_file(url: str, local_path: FilePath) -> None:
                 raise
 
 
-async def get_message(ref) -> FunctionMessage:
+async def get_message(ref: str) -> FunctionMessage:
     if settings.FAKE_DATA:
         cache_path = os.path.abspath(join(__file__,
             '../../examples/message_from_aleph.json'))
@@ -57,7 +57,7 @@ async def get_message(ref) -> FunctionMessage:
         return FunctionMessage(**msg_content)
 
 
-async def get_code_path(ref) -> FilePath:
+async def get_code_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         root_dir = abspath(join(__file__, "../../examples/"))
         archive_path = join(root_dir, "example_fastapi_2")
@@ -71,7 +71,7 @@ async def get_code_path(ref) -> FilePath:
     return cache_path
 
 
-async def get_data_path(ref) -> FilePath:
+async def get_data_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         data_dir = abspath(join(__file__, "../../examples/data"))
         make_archive(data_dir, "zip", data_dir)
@@ -83,7 +83,7 @@ async def get_data_path(ref) -> FilePath:
     return cache_path
 
 
-async def get_runtime_path(ref) -> FilePath:
+async def get_runtime_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         return FilePath(os.path.abspath(join(__file__,
             '../../runtimes/aleph-alpine-3.13-python/rootfs.ext4')))

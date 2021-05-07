@@ -1,41 +1,202 @@
 import asyncio
 import logging
+from base64 import b64encode
+from multiprocessing import Process
+from os import system
 from os.path import isfile
+from typing import Optional
 
-from vm_supervisor.conf import settings
-from firecracker.microvm import MicroVM, setfacl
+from firecracker.microvm import MicroVM, setfacl, JSONBytesEncoder
+from guest_api.__main__ import run_guest_api
+from ..conf import settings
+from ..models import FunctionMessage, FilePath, Encoding
+from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
 
 
-async def start_new_vm(vm_id: int, kernel_image_path: str, rootfs_path: str) -> MicroVM:
-    logger.info("Created VM= %s", vm_id)
+# async def start_new_vm(vm_id: int, kernel_image_path: str, rootfs_path: str) -> MicroVM:
+#     logger.info("Created VM= %s", vm_id)
+#
+#     assert isfile(kernel_image_path)
+#     assert isfile(rootfs_path)
+#
+#     await setfacl()
+#     vm = MicroVM(
+#         vm_id,
+#         firecracker_bin_path=settings.FIRECRACKER_PATH,
+#         use_jailer=settings.USE_JAILER,
+#         jailer_bin_path=settings.JAILER_PATH,
+#     )
+#     vm.prepare_jailer()
+#     await vm.start()
+#     await vm.socket_is_ready()
+#     await vm.set_boot_source(
+#         kernel_image_path, enable_console=settings.PRINT_SYSTEM_LOGS
+#     )
+#     await vm.set_rootfs(rootfs_path)
+#     await vm.set_vsock()
+#     await vm.set_network()
+#
+#     if settings.PRINT_SYSTEM_LOGS:
+#         asyncio.get_running_loop().create_task(vm.print_logs())
+#
+#     await asyncio.gather(
+#         vm.start_instance(),
+#         vm.wait_for_init(),
+#     )
+#     return vm
 
-    assert isfile(kernel_image_path)
-    assert isfile(rootfs_path)
 
-    await setfacl()
-    vm = MicroVM(
-        vm_id,
-        firecracker_bin_path=settings.FIRECRACKER_PATH,
-        use_jailer=settings.USE_JAILER,
-        jailer_bin_path=settings.JAILER_PATH,
-    )
-    vm.cleanup_jailer()
-    await vm.start()
-    await vm.socket_is_ready()
-    await vm.set_boot_source(
-        kernel_image_path, enable_console=settings.PRINT_SYSTEM_LOGS
-    )
-    await vm.set_rootfs(rootfs_path)
-    await vm.set_vsock()
-    await vm.set_network()
+class AlephFirecrackerResources:
 
-    if settings.PRINT_SYSTEM_LOGS:
-        asyncio.get_running_loop().create_task(vm.print_logs())
+    message: FunctionMessage
 
-    await asyncio.gather(
-        vm.start_instance(),
-        vm.wait_for_init(),
-    )
-    return vm
+    kernel_image_path: FilePath
+    code_path: FilePath
+    rootfs_path: FilePath
+    data_path: Optional[FilePath]
+
+    def __init__(self, message: FunctionMessage):
+        self.message = message
+
+    async def download_kernel(self):
+        # Assuming the kernel is already present on the host
+        self.kernel_image_path = settings.LINUX_PATH
+        assert isfile(self.kernel_image_path)
+
+    async def download_code(self):
+        code_ref: str = self.message.content.code.ref
+        self.code_path = await get_code_path(code_ref)
+        assert isfile(self.code_path)
+
+    async def download_runtime(self):
+        runtime_ref: str = self.message.content.runtime.ref
+        self.rootfs_path = await get_runtime_path(runtime_ref)
+        assert isfile(self.rootfs_path)
+
+    async def download_data(self):
+        if self.message.content.data:
+            data_ref: str = self.message.content.data.ref
+            self.data_path = await get_data_path(data_ref)
+            assert isfile(self.data_path)
+        else:
+            self.data_path = None
+
+    async def download_all(self):
+        await asyncio.gather(
+            self.download_kernel(),
+            self.download_code(),
+            self.download_runtime(),
+            self.download_data(),
+        )
+
+
+class AlephFirecrackerVM:
+    vm_id: int
+    resources: AlephFirecrackerResources
+    enable_console: bool
+    fvm: MicroVM
+    guest_api_process: Process
+
+    def __init__(self, vm_id: int, resources: AlephFirecrackerResources,
+                 enable_console: bool = settings.PRINT_SYSTEM_LOGS):
+        self.vm_id = vm_id
+        self.resources = resources
+        self.enable_console = enable_console
+
+    async def setup(self):
+        logger.debug("setup started")
+        await setfacl()
+        fvm = MicroVM(
+            vm_id=self.vm_id,
+            firecracker_bin_path=settings.FIRECRACKER_PATH,
+            use_jailer=settings.USE_JAILER,
+            jailer_bin_path=settings.JAILER_PATH,
+        )
+        fvm.prepare_jailer()
+        await fvm.start()
+        await fvm.socket_is_ready()
+        await fvm.set_boot_source(
+            self.resources.kernel_image_path,
+            enable_console=self.enable_console,
+        )
+        await fvm.set_rootfs(self.resources.rootfs_path)
+        await fvm.set_vsock()
+        await fvm.set_network()
+        logger.debug("setup done")
+        self.fvm = fvm
+
+    async def start(self):
+        logger.debug(f"starting vm {self.vm_id}")
+        if not self.fvm:
+            raise ValueError("No VM found. Call setup() before start()")
+
+        fvm = self.fvm
+        if self.enable_console:
+            asyncio.get_running_loop().create_task(fvm.print_logs())
+            asyncio.get_running_loop().create_task(fvm.print_logs_stderr())
+
+        await asyncio.gather(
+            fvm.start_instance(),
+            fvm.wait_for_init(),
+        )
+        logger.debug(f"started fvm {self.vm_id}")
+
+    async def start_guest_api(self):
+        logger.debug(f"starting guest API for {self.vm_id}")
+        vsock_path = f"{self.fvm.vsock_path}_53"
+        self.guest_api_process = Process(target=run_guest_api,
+                                         args=(vsock_path,))
+        self.guest_api_process.start()
+        # FIXME: Wait for the API to open the socket
+        await asyncio.sleep(1)
+        system(f"chown jailman:jailman {vsock_path}")
+        logger.debug(f"started guest API for {self.vm_id}")
+
+    async def stop_guest_api(self):
+        self.guest_api_process.terminate()
+
+    async def teardown(self):
+        await self.fvm.teardown()
+        await self.stop_guest_api()
+
+    async def run_code(
+            self, code: bytes, entrypoint: str,
+            input_data: bytes = b"",
+            encoding: str = "plain", scope: dict = None
+    ):
+        scope = scope or {}
+        reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+
+        # Todo: Change communication protocol with the VM init1 - use msgpack ?
+
+        code_for_json: str
+        if encoding == Encoding.zip:
+            code_for_json = b64encode(code).decode()
+        elif encoding == Encoding.plain:
+            code_for_json = code.decode()
+        else:
+            raise ValueError(f"Unknown encoding '{encoding}'")
+
+        input_data_b64: str = b64encode(input_data).decode()
+
+        msg = {
+            "code": code_for_json,
+            "input_data": input_data_b64,
+            "entrypoint": entrypoint,
+            "encoding": encoding,
+            "scope": scope,
+        }
+        writer.write(("CONNECT 52\n" + JSONBytesEncoder().encode(msg) + "\n").encode())
+        await writer.drain()
+
+        ack = await reader.readline()
+        logger.debug(f"ack={ack.decode()}")
+        response = await reader.read()
+        logger.debug(f"response= <<<\n{response}>>>")
+        if b'Traceback' in response:
+            print(response.decode())
+        writer.close()
+        await writer.wait_closed()
+        return response
