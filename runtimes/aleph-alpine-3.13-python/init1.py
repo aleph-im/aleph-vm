@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
 import asyncio
-import json
 import os
 import socket
 import subprocess
@@ -41,7 +40,7 @@ s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
 s0.connect((2, 52))
 s0.close()
 
-print("Python init1 is ready")
+print("init1.py is launching")
 
 
 async def run_python_code_http(code: bytes, input_data: Optional[bytes],
@@ -145,7 +144,7 @@ def main():
         data = client.recv(1000_1000)  # Max 1 Mo
         print("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
 
-        print("Init received msg", [data])
+        print("Init received msg <<<\n\n", data, "\n\n>>>")
         for result in process_instruction(instruction=data):
             client.send(result)
 

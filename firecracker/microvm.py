@@ -36,7 +36,7 @@ class JSONBytesEncoder(json.JSONEncoder):
 
 
 def system(command):
-    logger.debug(f"system: {command}")
+    logger.debug(f"shell {command}")
     return os.system(command)
 
 
