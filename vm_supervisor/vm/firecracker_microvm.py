@@ -2,7 +2,7 @@ import asyncio
 import dataclasses
 import logging
 from dataclasses import dataclass
-from multiprocessing import Process
+from multiprocessing import Process, set_start_method
 from os import system
 from os.path import isfile
 from typing import Optional, Dict
@@ -16,6 +16,7 @@ from ..models import FunctionMessage, FilePath
 from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
+set_start_method("spawn")
 
 
 @dataclass

@@ -62,7 +62,6 @@ async def get_code_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         root_dir = abspath(join(__file__, "../../examples/"))
         archive_path = join(root_dir, "example_fastapi_2")
-        # app_dir = abspath(join(__file__, "../../examples/visit_counter"))
         make_archive(
             archive_path, "zip", root_dir=root_dir, base_dir="example_fastapi_2"
         )

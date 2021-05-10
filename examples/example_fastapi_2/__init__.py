@@ -1,10 +1,14 @@
 import logging
 from typing import Optional
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.DEBUG)
+logger.debug("")
+
+logger.debug("import aleph_client")
 from aleph_client.asynchronous import get_messages
-
+logger.debug("import fastapi")
 from fastapi import FastAPI
+logger.debug("imports done")
 
 app = FastAPI()
 

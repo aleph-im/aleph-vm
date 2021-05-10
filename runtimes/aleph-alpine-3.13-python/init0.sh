@@ -2,9 +2,12 @@
 
 set -euf
 
-echo "init0.sh is launching"
-
 mount -t proc proc /proc -o nosuid,noexec,nodev
+
+function log() {
+    echo `cat /proc/uptime | awk '{printf $1}'` '|S' $@
+}
+log "init0.sh is launching"
 
 # Switch root from read-only ext4 to to read-write overlay
 mkdir -p /overlay
@@ -38,17 +41,17 @@ if [[ -d /sys/class/net/eth0 ]]; then
   ip addr
 fi
 
-echo "Net up"
+log "Net up"
 
 #cat /proc/sys/kernel/random/entropy_avail
 
 # TODO: Move in init1
 /usr/sbin/sshd -E /var/log/sshd &
-echo "SSH UP"
+log "SSH UP"
 
-echo "Setup socat"
+log "Setup socat"
 socat UNIX-LISTEN:/tmp/socat-socket,fork,reuseaddr VSOCK-CONNECT:2:53 &
-echo "Socat ready"
+log "Socat ready"
 
 # Replace this script with the manager
 exec /root/init1.py

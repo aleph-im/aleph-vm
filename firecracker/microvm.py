@@ -233,6 +233,8 @@ class MicroVM:
 
     async def set_network(self):
         """Configure the host network with a tap interface to the VM."""
+        logger.debug("Network setup")
+
         name = f"tap{self.vm_id}"
         self.network_tap = name
 
