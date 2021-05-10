@@ -109,7 +109,7 @@ async def run_code(request: web.Request):
         logger.debug(f"Result from VM: <<<\n\n{str(result)}\n\n>>>")
 
         if "traceback" in result:
-            print(result["traceback"])
+            logger.warning(result["traceback"])
             return web.Response(
                 status=500,
                 reason="Error in VM execution",

@@ -266,9 +266,6 @@ class MicroVM:
         }
         session = self.get_session()
         response = await session.put("http://localhost/actions", json=data)
-        logger.debug('start_instance' + str(response))
-        print('REASON', [response.reason])
-        logger.debug('start_instance' + await response.text())
         response.raise_for_status()
 
     async def print_logs(self):
