@@ -27,8 +27,7 @@ class RunCodePayload:
     scope: Dict
 
     def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self),
-                             use_bin_type=True)
+        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
 class AlephFirecrackerResources:
@@ -82,8 +81,12 @@ class AlephFirecrackerVM:
     fvm: MicroVM
     guest_api_process: Process
 
-    def __init__(self, vm_id: int, resources: AlephFirecrackerResources,
-                 enable_console: Optional[bool] = None):
+    def __init__(
+        self,
+        vm_id: int,
+        resources: AlephFirecrackerResources,
+        enable_console: Optional[bool] = None,
+    ):
         self.vm_id = vm_id
         self.resources = resources
         if enable_console is None:
@@ -131,8 +134,7 @@ class AlephFirecrackerVM:
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")
         vsock_path = f"{self.fvm.vsock_path}_53"
-        self.guest_api_process = Process(target=run_guest_api,
-                                         args=(vsock_path,))
+        self.guest_api_process = Process(target=run_guest_api, args=(vsock_path,))
         self.guest_api_process.start()
         # FIXME: Wait for the API to open the socket
         await asyncio.sleep(1)
@@ -147,9 +149,12 @@ class AlephFirecrackerVM:
         await self.stop_guest_api()
 
     async def run_code(
-            self, code: bytes, entrypoint: str,
-            input_data: bytes = b"",
-            encoding: str = "plain", scope: dict = None
+        self,
+        code: bytes,
+        entrypoint: str,
+        input_data: bytes = b"",
+        encoding: str = "plain",
+        scope: dict = None,
     ):
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)

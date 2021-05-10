@@ -16,14 +16,17 @@ async def get_data_http():
 @app.get("/")
 async def index():
     data = await get_data_http()
-    return {"Example": "example_fastapi_2",
-            "endpoints": ["/messages", "/run/{item_id}"]}
+    return {
+        "Example": "example_fastapi_2",
+        "endpoints": ["/messages", "/run/{item_id}"],
+    }
 
 
 @app.get("/messages")
 async def read_aleph_messages():
     data = await get_messages(
-        hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
+        hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"]
+    )
     return {"Messages": data}
 
 

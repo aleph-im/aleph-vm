@@ -4,8 +4,10 @@ from typing import Dict, List
 from firecracker.microvm import MicroVM
 from vm_supervisor.conf import settings
 from vm_supervisor.models import FunctionMessage
-from vm_supervisor.vm.firecracker_microvm import AlephFirecrackerVM, \
-    AlephFirecrackerResources
+from vm_supervisor.vm.firecracker_microvm import (
+    AlephFirecrackerVM,
+    AlephFirecrackerResources,
+)
 
 
 # class VmPool:

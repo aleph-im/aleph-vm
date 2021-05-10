@@ -21,7 +21,7 @@ from .storage import get_message
 logger = logging.getLogger(__name__)
 pool = VmPool()
 
-set_start_method('spawn')
+set_start_method("spawn")
 
 
 async def index(request: web.Request):
@@ -61,7 +61,7 @@ def load_file_content(path: FilePath) -> bytes:
         with open(path, "rb") as fd:
             return fd.read()
     else:
-        return b''
+        return b""
 
 
 async def run_code(request: web.Request):
@@ -110,12 +110,16 @@ async def run_code(request: web.Request):
 
         if "traceback" in result:
             print(result["traceback"])
-            return web.Response(status=500, reason="Error in VM execution",
-                                body=result["traceback"],
-                                content_type="text/plain")
+            return web.Response(
+                status=500,
+                reason="Error in VM execution",
+                body=result["traceback"],
+                content_type="text/plain",
+            )
 
-        return web.Response(body=result['body']['body'],
-                            content_type="application/json")
+        return web.Response(
+            body=result["body"]["body"], content_type="application/json"
+        )
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
