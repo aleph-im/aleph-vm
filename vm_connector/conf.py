@@ -22,5 +22,6 @@ class Settings:
             result += f"{annotation} ({value.__name__}) = {getattr(self, annotation)}"
         return result
 
+
 # Settings singleton
 settings = Settings()

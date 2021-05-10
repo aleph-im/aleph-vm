@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import logging
 import os.path
@@ -37,7 +36,7 @@ class JSONBytesEncoder(json.JSONEncoder):
 
 
 def system(command):
-    logger.debug(command)
+    logger.debug(f"shell {command}")
     return os.system(command)
 
 
@@ -101,7 +100,7 @@ class MicroVM:
         conn = aiohttp.UnixConnector(path=self.socket_path)
         return aiohttp.ClientSession(connector=conn)
 
-    def cleanup_jailer(self):
+    def prepare_jailer(self):
         system(f"rm -fr {self.jailer_path}")
 
         # system(f"rm -fr {self.jailer_path}/run/")
@@ -268,14 +267,22 @@ class MicroVM:
         session = self.get_session()
         response = await session.put("http://localhost/actions", json=data)
         response.raise_for_status()
-        logger.debug(response)
-        logger.debug(await response.text())
 
     async def print_logs(self):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
             stdout = await self.proc.stdout.readline()
+            if stdout:
+                print(stdout.decode().strip())
+            else:
+                await asyncio.sleep(0.001)
+
+    async def print_logs_stderr(self):
+        while not self.proc:
+            await asyncio.sleep(0.01)  # Todo: Use signal here
+        while True:
+            stdout = await self.proc.stderr.readline()
             if stdout:
                 print(stdout.decode().strip())
             else:
@@ -295,41 +302,6 @@ class MicroVM:
         os.system(f"chown jailman:jailman {self.vsock_path}_52")
         await queue.get()
         logger.debug("...signal from init received")
-
-    async def run_code(
-            self, code: bytes, entrypoint: str, input_data: bytes = b"",
-            encoding: str = "plain", scope: dict = None
-    ):
-        scope = scope or {}
-        reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
-
-        code_for_json: str
-        if encoding == Encoding.zip:
-            code_for_json = base64.b64encode(code).decode()
-        elif encoding == Encoding.plain:
-            code_for_json = code.decode()
-        else:
-            raise ValueError(f"Unknown encoding '{encoding}'")
-
-        input_data_b64: str = base64.b64encode(input_data).decode()
-
-        msg = {
-            "code": code_for_json,
-            "input_data": input_data_b64,
-            "entrypoint": entrypoint,
-            "encoding": encoding,
-            "scope": scope,
-        }
-        writer.write(("CONNECT 52\n" + JSONBytesEncoder().encode(msg) + "\n").encode())
-        await writer.drain()
-
-        ack = await reader.readline()
-        logger.debug(f"ack={ack.decode()}")
-        response = await reader.read()
-        logger.debug(f"response= <<<\n{response.decode()}>>>")
-        writer.close()
-        await writer.wait_closed()
-        return response
 
     async def stop(self):
         if self.proc:
