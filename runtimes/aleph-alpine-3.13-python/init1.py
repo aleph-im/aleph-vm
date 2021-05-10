@@ -40,6 +40,9 @@ s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
 s0.connect((2, 52))
 s0.close()
 
+# Configure aleph-client to use the guest API
+os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
+
 print("init1.py is launching")
 
 
@@ -78,6 +81,7 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
         async def send(dico):
             await send_queue.put(dico)
 
+        # TODO: Better error handling
         await app(scope, receive, send)
         headers: Dict = await send_queue.get()
         body: Dict = await send_queue.get()
@@ -135,7 +139,11 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
             }
             yield msgpack.dumps(result, use_bin_type=True)
         except Exception as error:
-            yield str(error).encode() + str(traceback.format_exc()).encode()
+            yield msgpack.dumps({
+                "error": str(error),
+                "traceback": str(traceback.format_exc()),
+                "output": output
+            })
 
 
 def main():

@@ -105,6 +105,15 @@ async def run_code(request: web.Request):
     try:
         result = msgpack.loads(result_raw, raw=False)
         # TODO: Handle other content-types
+
+        logger.debug(f"Result from VM: <<<\n\n{str(result)}\n\n>>>")
+
+        if "traceback" in result:
+            print(result["traceback"])
+            return web.Response(status=500, reason="Error in VM execution",
+                                body=result["traceback"],
+                                content_type="text/plain")
+
         return web.Response(body=result['body']['body'],
                             content_type="application/json")
     except UnpackValueError as error:

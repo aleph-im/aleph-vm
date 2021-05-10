@@ -169,9 +169,6 @@ class AlephFirecrackerVM:
         logger.debug(f"ack={ack.decode()}")
 
         response: bytes = await reader.read()
-        result = msgpack.loads(response)
-
-        logger.debug(f"Result from VM: <<<\n\n{str(result)}\n\n>>>")
 
         writer.close()
         await writer.wait_closed()

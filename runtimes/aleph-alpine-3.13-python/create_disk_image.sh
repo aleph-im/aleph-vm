@@ -1,10 +1,12 @@
 #!/bin/sh
 
+umount /mnt/rootfs
+
 set -euf
 
 curl -fsSL -o ./alpine-miniroot.tgz https://dl-cdn.alpinelinux.org/alpine/v3.13/releases/x86_64/alpine-minirootfs-3.13.3-x86_64.tar.gz
 
-dd if=/dev/zero of=./rootfs.ext4 bs=1M count=120
+dd if=/dev/zero of=./rootfs.ext4 bs=1M count=500
 mkfs.ext4 ./rootfs.ext4
 mkdir -p /mnt/rootfs
 mount ./rootfs.ext4 /mnt/rootfs
@@ -22,6 +24,9 @@ apk add socat
 apk add py3-pip
 apk add py3-aiohttp py3-msgpack
 pip install fastapi
+
+apk add git pkgconf gcc py3-wheel python3-dev musl-dev py3-cffi libffi-dev autoconf automake libtool make
+pip install -e git+https://github.com/aleph-im/aleph-client@hoh-remove-secp256k1#egg=aleph-client coincurve==15.0.0
 
 echo -e "toor\ntoor" | passwd root
 

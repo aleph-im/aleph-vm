@@ -10,9 +10,10 @@ ALEPH_API_SERVER = "https://api2.aleph.im/"
 
 async def proxy(request):
     path = request.match_info.get('tail')
+    url = ALEPH_API_SERVER + path
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(ALEPH_API_SERVER + path) as response:
+        async with session.get(url) as response:
             data = await response.read()
             return web.Response(body=data,
                                 status=response.status,
