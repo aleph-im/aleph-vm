@@ -1,27 +1,19 @@
 #!/usr/bin/python3
+
 import asyncio
-import json
 import os
 import socket
 import subprocess
 import sys
 import traceback
-from base64 import b64decode
-from os import system
-from io import StringIO
 from contextlib import redirect_stdout
-from typing import Optional, Dict, Any
+from dataclasses import dataclass
+from io import StringIO
+from os import system
+from shutil import make_archive
+from typing import Optional, Dict, Any, Tuple, Iterator
 
-s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-s.bind((socket.VMADDR_CID_ANY, 52))
-s.listen()
-
-# Send we are ready
-s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-s0.connect((2, 52))
-s0.close()
-
-print("INIT1 READY")
+import msgpack
 
 
 class Encoding:
@@ -29,13 +21,37 @@ class Encoding:
     zip = "zip"
 
 
-async def run_python_code_http(code: str, input_data: Optional[str],
-                               entrypoint: str, encoding: str, scope: dict):
+@dataclass
+class RunCodePayload:
+    code: bytes
+    input_data: Optional[bytes]
+    entrypoint: str
+    encoding: str
+    scope: Dict
+
+
+# Open a socket to receive instructions from the host
+s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+s.bind((socket.VMADDR_CID_ANY, 52))
+s.listen()
+
+# Send the host that we are ready
+s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+s0.connect((2, 52))
+s0.close()
+
+# Configure aleph-client to use the guest API
+os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
+
+print("init1.py is launching")
+
+
+async def run_python_code_http(code: bytes, input_data: Optional[bytes],
+                               entrypoint: str, encoding: str, scope: dict
+                               ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
-        decoded: bytes = b64decode(code)
-        open("/opt/archive.zip", "wb").write(decoded)
-        del decoded
+        open("/opt/archive.zip", "wb").write(code)
         os.system("unzip /opt/archive.zip -d /opt")
         sys.path.append("/opt")
         module_name, app_name = entrypoint.split(":", 1)
@@ -51,11 +67,9 @@ async def run_python_code_http(code: str, input_data: Optional[str],
 
     if input_data:
         # Unzip in /data
-        decoded_data: bytes = b64decode(code)
-        open("/opt/input.zip", "wb").write(decoded_data)
-        del decoded_data
-        os.makedirs("/input", exist_ok=True)
-        os.system("unzip /opt/input.zip -d /input")
+        open("/opt/input.zip", "wb").write(input_data)
+        os.makedirs("/data", exist_ok=True)
+        os.system("unzip /opt/input.zip -d /data")
 
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
@@ -67,52 +81,84 @@ async def run_python_code_http(code: str, input_data: Optional[str],
         async def send(dico):
             await send_queue.put(dico)
 
+        # TODO: Better error handling
         await app(scope, receive, send)
-        headers = await send_queue.get()
-        body = await send_queue.get()
+        headers: Dict = await send_queue.get()
+        body: Dict = await send_queue.get()
         output = buf.getvalue()
-    return headers, body, output
+
+    os.makedirs("/data", exist_ok=True)
+    open('/data/hello.txt', 'w').write("Hello !")
+
+    output_data: bytes
+    if os.listdir('/data'):
+        make_archive("/opt/output", 'zip', "/data")
+        with open("/opt/output.zip", "rb") as output_zipfile:
+            output_data = output_zipfile.read()
+    else:
+        output_data = b''
+
+    return headers, body, output, output_data
 
 
-while True:
-    client, addr = s.accept()
-    data = client.recv(1000_1000)  # Max 1 Mo
-    print("CID: {} port:{} data: {}".format(addr[0], addr[1], data.decode()))
-
-    msg = data.decode().strip()
-    del data
-
-    print("msg", [msg])
-    if msg == "halt":
+def process_instruction(instruction: bytes) -> Iterator[bytes]:
+    if instruction == b"halt":
         system("sync")
-        client.send(b"STOP\n")
+        yield b"STOP\n"
         sys.exit()
-    elif msg.startswith("!"):
-        # Shell
-        msg = msg[1:]
+    elif instruction.startswith(b"!"):
+        # Execute shell commands in the form `!ls /`
+        msg = instruction[1:].decode()
         try:
-            output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
-            client.send(output)
+            process_output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
+            yield process_output
         except subprocess.CalledProcessError as error:
-            client.send(str(error).encode() + b"\n" + error.output)
+            yield str(error).encode() + b"\n" + error.output
     else:
         # Python
-        msg_ = json.loads(msg)
-        code = msg_["code"]
-        input_data = msg_.get("input_data")
-        entrypoint = msg_["entrypoint"]
-        scope = msg_["scope"]
-        encoding = msg_["encoding"]
+        msg_ = msgpack.loads(instruction, raw=False)
+        payload = RunCodePayload(**msg_)
+
         try:
-            headers, body, output = asyncio.get_event_loop().run_until_complete(
+            headers: Dict
+            body: Dict
+            output: str
+            output_data: Optional[bytes]
+
+            headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
                 run_python_code_http(
-                    code, input_data=input_data,
-                    entrypoint=entrypoint, encoding=encoding, scope=scope
+                    payload.code, input_data=payload.input_data,
+                    entrypoint=payload.entrypoint, encoding=payload.encoding, scope=payload.scope
                 )
             )
-            client.send(body["body"])
+            result = {
+                "headers": headers,
+                "body": body,
+                "output": output,
+                "output_data": output_data,
+            }
+            yield msgpack.dumps(result, use_bin_type=True)
         except Exception as error:
-            client.send(str(error).encode() + str(traceback.format_exc()).encode())
+            yield msgpack.dumps({
+                "error": str(error),
+                "traceback": str(traceback.format_exc()),
+                "output": output
+            })
 
-    print("...DONE")
-    client.close()
+
+def main():
+    while True:
+        client, addr = s.accept()
+        data = client.recv(1000_1000)  # Max 1 Mo
+        print("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
+
+        print("Init received msg <<<\n\n", data, "\n\n>>>")
+        for result in process_instruction(instruction=data):
+            client.send(result)
+
+        print("...DONE")
+        client.close()
+
+
+if __name__ == '__main__':
+    main()
