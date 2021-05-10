@@ -11,6 +11,7 @@ from multiprocessing import set_start_method
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
+from msgpack import UnpackValueError
 
 from .conf import settings
 from .models import FilePath, FunctionMessage
@@ -89,21 +90,28 @@ async def run_code(request: web.Request):
     code: bytes = load_file_content(vm.resources.code_path)
     input_data: bytes = load_file_content(vm.resources.data_path)
 
-    result_raw: bytes = await vm.run_code(
-        code=code,
-        entrypoint=message.content.code.entrypoint,
-        input_data=input_data,
-        encoding=message.content.code.encoding,
-        scope=scope,
-    )
+    try:
+        result_raw: bytes = await vm.run_code(
+            code=code,
+            entrypoint=message.content.code.entrypoint,
+            input_data=input_data,
+            encoding=message.content.code.encoding,
+            scope=scope,
+        )
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
 
-    result = msgpack.loads(result_raw, raw=False)
-
-    await vm.teardown()
-
-    # TODO: Handle other content-types
-    return web.Response(body=result['body']['body'],
-                        content_type="application/json")
+    try:
+        result = msgpack.loads(result_raw, raw=False)
+        # TODO: Handle other content-types
+        return web.Response(body=result['body']['body'],
+                            content_type="application/json")
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
+    finally:
+        await vm.teardown()
 
 
 app = web.Application()
