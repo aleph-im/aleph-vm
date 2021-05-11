@@ -6,7 +6,6 @@ At it's core, it is currently an asynchronous HTTP server using aiohttp, but thi
 evolve in the future.
 """
 import logging
-from multiprocessing import set_start_method
 
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
@@ -20,8 +19,6 @@ from .storage import get_message
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
-
-set_start_method("spawn")
 
 
 async def index(request: web.Request):
@@ -64,7 +61,7 @@ def load_file_content(path: FilePath) -> bytes:
         return b""
 
 
-async def run_code(request: web.Request):
+async def run_code(request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """

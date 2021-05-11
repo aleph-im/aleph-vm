@@ -1,5 +1,14 @@
 #!/usr/bin/python3
 
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(relativeCreated)4f |V %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+logger.debug("Imports starting")
+
 import asyncio
 import os
 import socket
@@ -15,6 +24,7 @@ from typing import Optional, Dict, Any, Tuple, Iterator
 
 import msgpack
 
+logger.debug("Imports finished")
 
 class Encoding:
     plain = "plain"
@@ -43,18 +53,21 @@ s0.close()
 # Configure aleph-client to use the guest API
 os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 
-print("init1.py is launching")
+logger.debug("init1.py is launching")
 
 
 async def run_python_code_http(code: bytes, input_data: Optional[bytes],
                                entrypoint: str, encoding: str, scope: dict
                                ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
+    logger.debug("Extracting code")
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         open("/opt/archive.zip", "wb").write(code)
+        logger.debug("Run unzip")
         os.system("unzip /opt/archive.zip -d /opt")
         sys.path.append("/opt")
         module_name, app_name = entrypoint.split(":", 1)
+        logger.debug("import module")
         module = __import__(module_name)
         app = getattr(module, app_name)
     elif encoding == Encoding.plain:
@@ -65,12 +78,14 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
 
+    logger.debug("Extracting data")
     if input_data:
         # Unzip in /data
         open("/opt/input.zip", "wb").write(input_data)
         os.makedirs("/data", exist_ok=True)
         os.system("unzip /opt/input.zip -d /data")
 
+    logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
         async def receive():
@@ -87,9 +102,7 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
         body: Dict = await send_queue.get()
         output = buf.getvalue()
 
-    os.makedirs("/data", exist_ok=True)
-    open('/data/hello.txt', 'w').write("Hello !")
-
+    logger.debug("Getting output data")
     output_data: bytes
     if os.listdir('/data'):
         make_archive("/opt/output", 'zip', "/data")
@@ -98,6 +111,7 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
     else:
         output_data = b''
 
+    logger.debug("Returning result")
     return headers, body, output, output_data
 
 
@@ -116,7 +130,9 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
             yield str(error).encode() + b"\n" + error.output
     else:
         # Python
+        logger.debug("msgpack.loads (")
         msg_ = msgpack.loads(instruction, raw=False)
+        logger.debug("msgpack.loads )")
         payload = RunCodePayload(**msg_)
 
         try:
@@ -150,13 +166,14 @@ def main():
     while True:
         client, addr = s.accept()
         data = client.recv(1000_1000)  # Max 1 Mo
-        print("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
+        logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
 
-        print("Init received msg <<<\n\n", data, "\n\n>>>")
+        logger.debug("Init received msg")
+        print(f"<<<\n\n{data}\n\n>>>")
         for result in process_instruction(instruction=data):
             client.send(result)
 
-        print("...DONE")
+        logger.debug("...DONE")
         client.close()
 
 

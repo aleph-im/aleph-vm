@@ -1,9 +1,12 @@
+import logging
 import os
 from os import getenv
 from os.path import isfile, join
 from typing import NewType
 
 from .models import FilePath
+
+logger = logging.getLogger(__name__)
 
 Url = NewType("Url", str)
 
@@ -47,6 +50,8 @@ class Settings:
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
+            if key != key.upper():
+                logger.warning(f"Setting {key} is not uppercase")
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
