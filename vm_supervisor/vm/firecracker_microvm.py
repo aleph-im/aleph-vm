@@ -78,6 +78,7 @@ class AlephFirecrackerVM:
     vm_id: int
     resources: AlephFirecrackerResources
     enable_console: bool
+    enable_networking: bool
     fvm: MicroVM
     guest_api_process: Process
 
@@ -85,10 +86,12 @@ class AlephFirecrackerVM:
         self,
         vm_id: int,
         resources: AlephFirecrackerResources,
+        enable_networking: bool = False,
         enable_console: Optional[bool] = None,
     ):
         self.vm_id = vm_id
         self.resources = resources
+        self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         if enable_console is None:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
@@ -111,7 +114,8 @@ class AlephFirecrackerVM:
         )
         await fvm.set_rootfs(self.resources.rootfs_path)
         await fvm.set_vsock()
-        await fvm.set_network()
+        if self.enable_networking:
+            await fvm.set_network()
         logger.debug("setup done")
         self.fvm = fvm
 

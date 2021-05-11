@@ -15,6 +15,8 @@ class Settings:
     USE_JAILER: bool = getenv("ALEPH_USER_JAILER", "true") == "true"
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS: bool = getenv("ALEPH_PRINT_SYSTEM_LOGS", "false") == "true"
+    # Networking does not work inside Docker/Podman
+    ALLOW_VM_NETWORKING: bool = getenv("ALEPH_PRINT_SYSTEM_LOGS", "true") == "true"
     FIRECRACKER_PATH: str = getenv(
         "ALEPH_FIRECRACKER_PATH", "/opt/firecracker/firecracker"
     )
