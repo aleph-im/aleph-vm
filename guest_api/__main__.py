@@ -1,9 +1,6 @@
-import logging
-
 import aiohttp
 from aiohttp import web
 
-logging.basicConfig(level=logging.DEBUG)
 
 ALEPH_API_SERVER = "https://api2.aleph.im/"
 

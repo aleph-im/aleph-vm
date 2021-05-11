@@ -1,6 +1,12 @@
 import argparse
+import asyncio
 import logging
 import sys
+import time
+from statistics import mean
+from typing import List
+
+from aiohttp.web import Response
 
 from . import supervisor
 from .conf import settings
@@ -71,12 +77,33 @@ def parse_args(args):
         dest="do_not_run",
         default=False,
     )
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        action="store_true",
+        default=False,
+        help="Add extra info for profiling",
+    )
+    parser.add_argument(
+        "--benchmark",
+        dest="benchmark",
+        type=int,
+        default=0,
+        help="Number of benchmarks to run",
+    )
     return parser.parse_args(args)
 
 
 def main():
     args = parse_args(sys.argv[1:])
-    logging.basicConfig(level=args.loglevel)
+
+    log_format = "%(relativeCreated)4f | %(levelname)s | %(message)s" if args.profile \
+        else "%(asctime)s | %(levelname)s | %(message)s"
+    logging.basicConfig(
+        level=args.loglevel,
+        format=log_format,
+    )
+
     settings.update(
         USE_JAILER=args.use_jailer,
         PRINT_SYSTEM_LOGS=args.system_logs,
@@ -87,6 +114,27 @@ def main():
         print(settings.display())
 
     settings.check()
+
+    if args.benchmark > 0:
+        class FakeRequest: pass
+        fake_request = FakeRequest()
+        fake_request.match_info = {"ref": "vmid", "suffix": "/path"}
+        fake_request.method = "GET"
+        fake_request.query_string = ""
+        fake_request.headers = []
+        fake_request.raw_headers = []
+
+        logger.info("--- Start benchmark ---")
+
+        bench: List[float] = []
+        for run in range(args.benchmark):
+            t0 = time.time()
+            response: Response = asyncio.run(supervisor.run_code(request=fake_request))
+            assert response.status == 200
+            bench.append(time.time() - t0)
+
+        logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
+                    f"min={min(bench):03f} max={max(bench):03f}")
 
     if args.do_not_run:
         logger.info("Option --do-not-run, exiting")
