@@ -63,6 +63,7 @@ class MicroVM:
     firecracker_bin_path: str
     jailer_bin_path: Optional[str]
     proc: Optional[asyncio.subprocess.Process] = None
+    network_tap: Optional[str] = None
 
     @property
     def jailer_path(self):
@@ -233,6 +234,7 @@ class MicroVM:
     async def set_network(self):
         """Configure the host network with a tap interface to the VM."""
         name = f"tap{self.vm_id}"
+        self.network_tap = name
 
         system(f"ip tuntap add {name} mode tap")
         system(
@@ -316,8 +318,8 @@ class MicroVM:
         """Stop the VM, cleanup network interface and remove data directory."""
         await self.stop()
 
-        name = f"tap{self.vm_id}"
-        system(f"ip tuntap del {name} mode tap")
+        if self.network_tap:
+            system(f"ip tuntap del {self.network_tap} mode tap")
 
         system(f"rm -fr {self.jailer_path}")
 
