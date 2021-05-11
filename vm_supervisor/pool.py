@@ -49,7 +49,10 @@ class VmPool:
     async def get_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
         vm_resources = AlephFirecrackerResources(message)
         await vm_resources.download_all()
-        vm = AlephFirecrackerVM(vm_id=self.counter, resources=vm_resources)
+        vm = AlephFirecrackerVM(
+            vm_id=self.counter,
+            resources=vm_resources,
+            enable_networking=message.content.environment.internet)
         await vm.setup()
         await vm.start()
         return vm

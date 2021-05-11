@@ -19,6 +19,12 @@ def parse_args(args):
         default=settings.PRINT_SYSTEM_LOGS,
     )
     parser.add_argument(
+        "--no-network",
+        action="store_false",
+        dest="allow_vm_networking",
+        default=settings.ALLOW_VM_NETWORKING,
+    )
+    parser.add_argument(
         "--no-jailer",
         action="store_false",
         dest="use_jailer",
@@ -75,6 +81,7 @@ def main():
         USE_JAILER=args.use_jailer,
         PRINT_SYSTEM_LOGS=args.system_logs,
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
+        ALLOW_VM_NETWORKING=args.allow_vm_networking,
     )
     if args.print_settings:
         print(settings.display())
