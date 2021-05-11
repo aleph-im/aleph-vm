@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from multiprocessing import Process, set_start_method
 from os import system
-from os.path import isfile
+from os.path import isfile, exists
 from typing import Optional, Dict
 
 import msgpack
@@ -141,8 +141,8 @@ class AlephFirecrackerVM:
         vsock_path = f"{self.fvm.vsock_path}_53"
         self.guest_api_process = Process(target=run_guest_api, args=(vsock_path,))
         self.guest_api_process.start()
-        # FIXME: Wait for the API to open the socket
-        await asyncio.sleep(1)
+        while not exists(vsock_path):
+            await asyncio.sleep(0.01)
         system(f"chown jailman:jailman {vsock_path}")
         logger.debug(f"started guest API for {self.vm_id}")
 
