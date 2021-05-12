@@ -105,7 +105,7 @@ async def run_code(request: web.Request) -> web.Response:
         result = msgpack.loads(result_raw, raw=False)
         # TODO: Handle other content-types
 
-        logger.debug(f"Result from VM: <<<\n\n{str(result)}\n\n>>>")
+        logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
 
         if "traceback" in result:
             logger.warning(result["traceback"])
