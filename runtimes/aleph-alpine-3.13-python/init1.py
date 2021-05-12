@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -OO
 
 import logging
 logging.basicConfig(
@@ -135,10 +135,10 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
         logger.debug("msgpack.loads )")
         payload = RunCodePayload(**msg_)
 
+        output: Optional[str] = None
         try:
             headers: Dict
             body: Dict
-            output: str
             output_data: Optional[bytes]
 
             headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
