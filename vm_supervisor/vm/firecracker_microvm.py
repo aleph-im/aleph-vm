@@ -126,9 +126,9 @@ class AlephFirecrackerVM:
             raise ValueError("No VM found. Call setup() before start()")
 
         fvm = self.fvm
+
         if self.enable_console:
-            asyncio.get_running_loop().create_task(fvm.print_logs())
-            asyncio.get_running_loop().create_task(fvm.print_logs_stderr())
+            fvm.start_printing_logs()
 
         await asyncio.gather(
             fvm.start_instance(),

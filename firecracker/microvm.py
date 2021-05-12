@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import os.path
+from asyncio import Task
 from enum import Enum
 from functools import lru_cache
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
-from typing import Optional
+from typing import Optional, Tuple
 
 import aiohttp
 from aiohttp import ClientResponse
@@ -64,6 +65,8 @@ class MicroVM:
     jailer_bin_path: Optional[str]
     proc: Optional[asyncio.subprocess.Process] = None
     network_tap: Optional[str] = None
+    stdout_task: Optional[Task] = None
+    stderr_task: Optional[Task] = None
 
     @property
     def jailer_path(self):
@@ -292,6 +295,12 @@ class MicroVM:
             else:
                 await asyncio.sleep(0.001)
 
+    def start_printing_logs(self) -> Tuple[Task, Task]:
+        loop = asyncio.get_running_loop()
+        self.stdout_task = loop.create_task(self.print_logs())
+        self.stderr_task = loop.create_task(self.print_logs_stderr())
+        return self.stdout_task, self.stderr_task
+
     async def wait_for_init(self):
         """Wait for a connection from the init in the VM"""
         logger.debug("Waiting for init...")
@@ -319,6 +328,11 @@ class MicroVM:
     async def teardown(self):
         """Stop the VM, cleanup network interface and remove data directory."""
         await self.stop()
+
+        if self.stdout_task:
+            self.stdout_task.cancel()
+        if self.stderr_task:
+            self.stderr_task.cancel()
 
         if self.network_tap:
             system(f"ip tuntap del {self.network_tap} mode tap")
