@@ -136,8 +136,8 @@ def main():
         logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
                     f"min={min(bench):03f} max={max(bench):03f}")
 
-    if args.do_not_run:
-        logger.info("Option --do-not-run, exiting")
+    if args.do_not_run or args.benchmark:
+        logger.info("Option --do-not-run or --benchmark, exiting")
     else:
         settings.setup()
         supervisor.run()
