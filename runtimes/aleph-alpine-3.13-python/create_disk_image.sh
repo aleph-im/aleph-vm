@@ -29,7 +29,7 @@ apk add git pkgconf gcc py3-wheel python3-dev musl-dev py3-cffi libffi-dev autoc
 pip install git+https://github.com/aleph-im/aleph-client coincurve==15.0.0
 
 # Compile all Python bytecode
-python3 -m compileall /usr/lib/python3.8/site-packages
+python3 -m compileall -o 1 -o 2 -f /usr/lib/python3.8/site-packages
 
 echo -e "toor\ntoor" | passwd root
 
