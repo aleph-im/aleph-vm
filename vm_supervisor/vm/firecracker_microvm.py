@@ -161,6 +161,7 @@ class AlephFirecrackerVM:
         encoding: str = "plain",
         scope: dict = None,
     ):
+        logger.debug("running code")
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
@@ -178,8 +179,10 @@ class AlephFirecrackerVM:
         ack: bytes = await reader.readline()
         logger.debug(f"ack={ack.decode()}")
 
+        logger.debug("waiting for VM response")
         response: bytes = await reader.read()
 
+        logger.debug("cleaning VM resources")
         writer.close()
         await writer.wait_closed()
         return response
