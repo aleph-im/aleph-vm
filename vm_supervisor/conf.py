@@ -14,6 +14,8 @@ Url = NewType("Url", str)
 class Settings:
     VM_ID_START_INDEX: int = int(getenv("ALEPH_VM_START_ID_INDEX", 4))
     PREALLOC_VM_COUNT: int = int(getenv("ALEPH_PREALLOC_VM_COUNT", 0))
+    REUSE_TIMEOUT: float = float(getenv("ALEPH_REUSE_TIMEOUT", 120.))
+
     API_SERVER: str = getenv("ALEPH_API_SERVER", "https://api2.aleph.im")
     USE_JAILER: bool = getenv("ALEPH_USER_JAILER", "true") == "true"
     # System logs make boot ~2x slower

@@ -5,7 +5,6 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
-import asyncio
 import logging
 
 import msgpack
@@ -80,8 +79,6 @@ async def run_code(request: web.Request) -> web.Response:
     #         raise
 
     vm = await pool.get_a_vm(message)
-    loop = asyncio.get_event_loop()
-    guest_api = loop.create_task(vm.start_guest_api())
     logger.debug(f"Using vm={vm.vm_id}")
 
     scope = build_asgi_scope(request)
@@ -97,6 +94,7 @@ async def run_code(request: web.Request) -> web.Response:
             encoding=message.content.code.encoding,
             scope=scope,
         )
+
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
@@ -123,8 +121,10 @@ async def run_code(request: web.Request) -> web.Response:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
-        await vm.teardown()
-        guest_api.cancel()
+        if settings.REUSE_TIMEOUT > 0:
+            pool.keep_in_cache(vm, message, timeout=settings.REUSE_TIMEOUT)
+        else:
+            await vm.teardown()
 
 
 app = web.Application()
