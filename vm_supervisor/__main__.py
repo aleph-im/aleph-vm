@@ -94,6 +94,34 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
+async def benchmark(runs: int):
+    """Measure performance by immediately running the supervisor
+    with fake requests.
+    """
+    class FakeRequest: pass
+
+    fake_request = FakeRequest()
+    fake_request.match_info = {"ref": "vmid", "suffix": "/path"}
+    fake_request.method = "GET"
+    fake_request.query_string = ""
+    fake_request.headers = []
+    fake_request.raw_headers = []
+
+    logger.info("--- Start benchmark ---")
+
+    bench: List[float] = []
+
+    for run in range(runs):
+        t0 = time.time()
+        response: Response = await supervisor.run_code(request=fake_request)
+        assert response.status == 200
+        bench.append(time.time() - t0)
+
+    logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
+                f"min={min(bench):03f} max={max(bench):03f}")
+    logger.info(bench)
+
+
 def main():
     args = parse_args(sys.argv[1:])
 
@@ -116,28 +144,11 @@ def main():
     settings.check()
 
     if args.benchmark > 0:
-        class FakeRequest: pass
-        fake_request = FakeRequest()
-        fake_request.match_info = {"ref": "vmid", "suffix": "/path"}
-        fake_request.method = "GET"
-        fake_request.query_string = ""
-        fake_request.headers = []
-        fake_request.raw_headers = []
-
-        logger.info("--- Start benchmark ---")
-
-        bench: List[float] = []
-        for run in range(args.benchmark):
-            t0 = time.time()
-            response: Response = asyncio.run(supervisor.run_code(request=fake_request))
-            assert response.status == 200
-            bench.append(time.time() - t0)
-
-        logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
-                    f"min={min(bench):03f} max={max(bench):03f}")
-
-    if args.do_not_run or args.benchmark:
-        logger.info("Option --do-not-run or --benchmark, exiting")
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(benchmark(runs=args.benchmark))
+        print("Finished")
+    elif args.do_not_run:
+        logger.info("Option --do-not-run, exiting")
     else:
         settings.setup()
         supervisor.run()

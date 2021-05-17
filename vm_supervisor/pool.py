@@ -1,7 +1,7 @@
 import asyncio
-from typing import Dict, List
+import logging
+from typing import Dict, Optional
 
-from firecracker.microvm import MicroVM
 from vm_supervisor.conf import settings
 from vm_supervisor.models import FunctionMessage
 from vm_supervisor.vm.firecracker_microvm import (
@@ -9,50 +9,78 @@ from vm_supervisor.vm.firecracker_microvm import (
     AlephFirecrackerResources,
 )
 
+logger = logging.getLogger(__name__)
 
-# class VmPool:
-#     """Pool of VMs pre-allocated in order to decrease response time.
-#     The counter is used by the VMs to set their tap interface name and the corresponding
-#     IPv4 subnet.
-#     """
-#
-#     queue: asyncio.Queue
-#     counter: int  # Used for network interfaces
-#
-#     def __init__(self):
-#         self.queue = asyncio.Queue()
-#         self.counter = settings.VM_ID_START_INDEX
-#
-#     async def provision(self, kernel_image_path, rootfs_path):
-#         self.counter += 1
-#         vm = await start_new_vm(
-#             vm_id=self.counter,
-#             kernel_image_path=kernel_image_path,
-#             rootfs_path=rootfs_path,
-#         )
-#         await self.queue.put(vm)
-#         return vm
-#
-#     async def get_a_vm(self, kernel_image_path, rootfs_path) -> MicroVM:
-#         loop = asyncio.get_event_loop()
-#         loop.create_task(self.provision(kernel_image_path, rootfs_path))
-#         # Return the first VM from the pool
-#         return await self.queue.get()
+
+class StartedVM:
+    vm: AlephFirecrackerVM
+    timeout_task: Optional[asyncio.Task]
+
+    def __init__(self, vm: AlephFirecrackerVM):
+        self.vm = vm
+        self.timeout_task = None
 
 
 class VmPool:
-    counter: int  # Used for network interfaces
+    """Pool of VMs already started and used to decrease response time.
+    After running, a VM is saved for future reuse from the same function during a
+    configurable duration.
+
+    The counter is used by the VMs to set their tap interface name and the corresponding
+    IPv4 subnet.
+    """
+
+    counter: int  # Used to provide distinct ids to network interfaces
+    started_vms_cache: Dict[FunctionMessage, StartedVM]
 
     def __init__(self):
         self.counter = settings.VM_ID_START_INDEX
+        self.started_vms_cache = {}
 
-    async def get_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
+    async def create_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
+        """Create a new Aleph Firecracker VM from an Aleph function message."""
         vm_resources = AlephFirecrackerResources(message)
         await vm_resources.download_all()
+        self.counter += 1
         vm = AlephFirecrackerVM(
             vm_id=self.counter,
             resources=vm_resources,
-            enable_networking=message.content.environment.internet)
+            enable_networking=message.content.environment.internet,
+        )
         await vm.setup()
         await vm.start()
+        await vm.start_guest_api()
         return vm
+
+    async def get_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
+        """Provision a VM in the pool, then return the first VM from the pool."""
+        try:
+            started_vm = self.started_vms_cache.pop(message)
+            started_vm.timeout_task.cancel()
+            return started_vm.vm
+        except KeyError:
+            return await self.create_a_vm(message)
+
+    def keep_in_cache(
+        self, vm: AlephFirecrackerVM, message: FunctionMessage, timeout: float = 1.0
+    ) -> None:
+        """Keep a VM running for `timeout` seconds in case another query comes by."""
+
+        if message in self.started_vms_cache:
+            logger.warning("VM already in keep_in_cache, not caching")
+            return
+
+        started_vm = StartedVM(vm=vm)
+        self.started_vms_cache[message] = started_vm
+
+        loop = asyncio.get_event_loop()
+        started_vm.timeout_task = loop.create_task(self.expire(vm, message, timeout))
+
+    async def expire(
+        self, vm: AlephFirecrackerVM, message: FunctionMessage, timeout: float
+    ):
+        """Coroutine that will stop the VM after 'timeout' seconds."""
+        await asyncio.sleep(timeout)
+        assert self.started_vms_cache[message].vm is vm
+        del self.started_vms_cache[message]
+        await vm.teardown()
