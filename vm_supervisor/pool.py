@@ -34,7 +34,7 @@ class VmPool:
     started_vms_cache: Dict[FunctionMessage, StartedVM]
 
     def __init__(self):
-        self.counter = settings.VM_ID_START_INDEX
+        self.counter = settings.START_ID_INDEX
         self.started_vms_cache = {}
 
     async def create_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
