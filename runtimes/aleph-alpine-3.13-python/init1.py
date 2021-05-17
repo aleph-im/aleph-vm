@@ -62,9 +62,10 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
     logger.debug("Extracting code")
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
-        open("/opt/archive.zip", "wb").write(code)
-        logger.debug("Run unzip")
-        os.system("unzip /opt/archive.zip -d /opt")
+        if not os.path.exists("/opt/archive.zip"):
+            open("/opt/archive.zip", "wb").write(code)
+            logger.debug("Run unzipp")
+            os.system("unzip /opt/archive.zip -d /opt")
         sys.path.append("/opt")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
@@ -81,9 +82,10 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
     logger.debug("Extracting data")
     if input_data:
         # Unzip in /data
-        open("/opt/input.zip", "wb").write(input_data)
-        os.makedirs("/data", exist_ok=True)
-        os.system("unzip /opt/input.zip -d /data")
+        if not os.path.exists("/opt/input.zip"):
+            open("/opt/input.zip", "wb").write(input_data)
+            os.makedirs("/data", exist_ok=True)
+            os.system("unzip /opt/input.zip -d /data")
 
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
