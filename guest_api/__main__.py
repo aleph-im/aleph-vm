@@ -7,7 +7,8 @@ ALEPH_API_SERVER = "https://api2.aleph.im/"
 
 async def proxy(request):
     path = request.match_info.get('tail')
-    url = ALEPH_API_SERVER + path
+    query_string = request.rel_url.query_string
+    url = f"{ALEPH_API_SERVER}{path}?{query_string}"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
