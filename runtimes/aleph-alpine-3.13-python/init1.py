@@ -32,6 +32,12 @@ class Encoding:
 
 
 @dataclass
+class ConfigurationPayload:
+    ip: str
+    route: str
+
+
+@dataclass
 class RunCodePayload:
     code: bytes
     input_data: Optional[bytes]
@@ -54,6 +60,17 @@ s0.close()
 os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 
 logger.debug("init1.py is launching")
+
+
+def setup_network(ip: str, route: str):
+    """Setup the system with info from the host."""
+    if os.path.exists("/sys/class/net/eth0"):
+        logger.debug("Setting up networking")
+        system(f"ip addr add {ip}/24 dev eth0")
+        system("ip link set eth0 up")
+        system(f"ip route add default via {route} dev eth0")
+    else:
+        logger.info("No network interface eth0")
 
 
 async def run_python_code_http(code: bytes, input_data: Optional[bytes],
@@ -165,6 +182,13 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
 
 
 def main():
+    client, addr = s.accept()
+    data = client.recv(1000_1000)
+    msg_ = msgpack.loads(data, raw=False)
+
+    payload = ConfigurationPayload(**msg_)
+    setup_network(payload.ip, payload.route)
+
     while True:
         client, addr = s.accept()
         data = client.recv(1000_1000)  # Max 1 Mo

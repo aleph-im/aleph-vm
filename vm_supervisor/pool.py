@@ -49,6 +49,7 @@ class VmPool:
         )
         await vm.setup()
         await vm.start()
+        await vm.configure()
         await vm.start_guest_api()
         return vm
 

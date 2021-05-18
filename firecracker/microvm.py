@@ -87,6 +87,14 @@ class MicroVM:
         else:
             return f"{VSOCK_PATH}"
 
+    @property
+    def guest_ip(self):
+        return f"172.{self.vm_id // 256}.{self.vm_id % 256}.2"
+
+    @property
+    def host_ip(self):
+        return f"172.{self.vm_id // 256}.{self.vm_id % 256}.1"
+
     def __init__(
         self,
         vm_id: int,
@@ -238,12 +246,12 @@ class MicroVM:
         """Configure the host network with a tap interface to the VM."""
         logger.debug("Network setup")
 
-        name = f"tap{self.vm_id}"
+        name = f"vmtap{self.vm_id}"
         self.network_tap = name
 
         system(f"ip tuntap add {name} mode tap")
         system(
-            f"ip addr add 172.{self.vm_id // 256}.{self.vm_id % 256}.1/24 dev {name}"
+            f"ip addr add {self.host_ip}/24 dev {name}"
         )
         system(f"ip link set {name} up")
         system('sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"')
@@ -320,6 +328,7 @@ class MicroVM:
         if self.proc:
             self.proc.terminate()
             self.proc.kill()
+            self.proc = None
 
         await self.get_session().close()
         self.get_session.cache_clear()
@@ -335,6 +344,8 @@ class MicroVM:
             self.stderr_task.cancel()
 
         if self.network_tap:
+            await asyncio.sleep(0.01)  # Used to prevent `ioctl(TUNSETIFF): Device or resource busy`
+            logger.debug(f"Removing interface {self.network_tap}")
             system(f"ip tuntap del {self.network_tap} mode tap")
 
         system(f"rm -fr {self.jailer_path}")
