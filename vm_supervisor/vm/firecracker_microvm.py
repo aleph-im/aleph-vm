@@ -20,6 +20,15 @@ set_start_method("spawn")
 
 
 @dataclass
+class ConfigurationPayload:
+    ip: Optional[str]
+    route: Optional[str]
+
+    def as_msgpack(self) -> bytes:
+        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
+
+
+@dataclass
 class RunCodePayload:
     code: bytes
     input_data: bytes
@@ -135,6 +144,16 @@ class AlephFirecrackerVM:
             fvm.wait_for_init(),
         )
         logger.debug(f"started fvm {self.vm_id}")
+
+    async def configure(self):
+        """Configure the VM by sending configuration info to it's init"""
+        reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+        payload = ConfigurationPayload(
+            ip=self.fvm.guest_ip if self.enable_networking else None,
+            route=self.fvm.host_ip if self.enable_console else None,
+        )
+        writer.write(b"CONNECT 52\n" + payload.as_msgpack())
+        await writer.drain()
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")
