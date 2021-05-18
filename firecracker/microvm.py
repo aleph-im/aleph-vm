@@ -65,6 +65,7 @@ class MicroVM:
     jailer_bin_path: Optional[str]
     proc: Optional[asyncio.subprocess.Process] = None
     network_tap: Optional[str] = None
+    network_interface: Optional[str] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
 
@@ -242,9 +243,11 @@ class MicroVM:
         response = await session.put("http://localhost/vsock", json=data)
         response.raise_for_status()
 
-    async def set_network(self):
+    async def set_network(self, interface: str = "eth0"):
         """Configure the host network with a tap interface to the VM."""
         logger.debug("Network setup")
+
+        self.network_interface = interface
 
         name = f"vmtap{self.vm_id}"
         self.network_tap = name
@@ -256,11 +259,11 @@ class MicroVM:
         system(f"ip link set {name} up")
         system('sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"')
         # TODO: Don't fill iptables with duplicate rules; purge rules on delete
-        system("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
+        system(f"iptables -t nat -A POSTROUTING -o {interface} -j MASQUERADE")
         system(
             "iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
         )
-        system(f"iptables -A FORWARD -i {name} -o eth0 -j ACCEPT")
+        system(f"iptables -A FORWARD -i {name} -o {interface} -j ACCEPT")
 
         data = {
             "iface_id": "eth0",
@@ -347,7 +350,16 @@ class MicroVM:
             await asyncio.sleep(0.01)  # Used to prevent `ioctl(TUNSETIFF): Device or resource busy`
             logger.debug(f"Removing interface {self.network_tap}")
             system(f"ip tuntap del {self.network_tap} mode tap")
+            logger.debug("Removing iptables rules")
+            system(f"iptables -t nat -D POSTROUTING -o {self.network_interface} -j MASQUERADE")
+            system(
+                "iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+            )
+            system(
+                f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
+            )
 
+        logger.debug("Removing files")
         system(f"rm -fr {self.jailer_path}")
 
 

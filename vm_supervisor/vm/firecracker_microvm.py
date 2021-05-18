@@ -125,7 +125,7 @@ class AlephFirecrackerVM:
         await fvm.set_rootfs(self.resources.rootfs_path)
         await fvm.set_vsock()
         if self.enable_networking:
-            await fvm.set_network()
+            await fvm.set_network(interface=settings.NETWORK_INTERFACE)
         logger.debug("setup done")
         self.fvm = fvm
 

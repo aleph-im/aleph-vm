@@ -1,6 +1,6 @@
 import logging
 import os
-from os.path import isfile, join
+from os.path import isfile, join, exists
 from typing import NewType
 
 from pydantic import BaseSettings
@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
+    NETWORK_INTERFACE: str = "eth0"
 
     API_SERVER: str = "https://api2.aleph.im"
     USE_JAILER: bool = True
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
+        assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
