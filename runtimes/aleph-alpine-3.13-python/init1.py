@@ -33,8 +33,8 @@ class Encoding:
 
 @dataclass
 class ConfigurationPayload:
-    ip: str
-    route: str
+    ip: Optional[str]
+    route: Optional[str]
 
 
 @dataclass
@@ -62,15 +62,25 @@ os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 logger.debug("init1.py is launching")
 
 
-def setup_network(ip: str, route: str):
+def setup_network(ip: Optional[str], route: Optional[str]):
     """Setup the system with info from the host."""
-    if os.path.exists("/sys/class/net/eth0"):
-        logger.debug("Setting up networking")
-        system(f"ip addr add {ip}/24 dev eth0")
-        system("ip link set eth0 up")
-        system(f"ip route add default via {route} dev eth0")
-    else:
+    if not os.path.exists("/sys/class/net/eth0"):
         logger.info("No network interface eth0")
+        return
+
+    if not ip:
+        logger.info("No network IP")
+        return
+
+    logger.debug("Setting up networking")
+    system(f"ip addr add {ip}/24 dev eth0")
+    system("ip link set eth0 up")
+
+    if route:
+        system(f"ip route add default via {route} dev eth0")
+        logger.debug("IP and route set")
+    else:
+        logger.warning("IP set with no network route")
 
 
 async def run_python_code_http(code: bytes, input_data: Optional[bytes],
