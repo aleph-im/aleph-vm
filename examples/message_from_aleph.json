@@ -23,7 +23,7 @@
             },
             "environment": {
                 "reproducible": true,
-                "internet": false,
+                "internet": true,
                 "aleph_api": false
             },
             "resources": {

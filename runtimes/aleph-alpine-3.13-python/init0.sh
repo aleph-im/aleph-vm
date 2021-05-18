@@ -33,16 +33,6 @@ mount -t tmpfs run /run -o mode=0755,nosuid,nodev
 mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mount -t tmpfs shm /dev/shm -omode=1777,nosuid,nodev
 
-# TODO: Move in init1
-if [[ -d /sys/class/net/eth0 ]]; then
-  ip addr add 172.0.5.2/24 dev eth0
-  ip link set eth0 up
-  ip route add default via 172.0.5.1 dev eth0
-  ip addr
-fi
-
-log "Net up"
-
 #cat /proc/sys/kernel/random/entropy_avail
 
 # TODO: Move in init1
