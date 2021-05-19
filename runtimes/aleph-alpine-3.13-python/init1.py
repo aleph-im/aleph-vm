@@ -205,7 +205,10 @@ def main():
         logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
 
         logger.debug("Init received msg")
-        print(f"<<<\n\n{data}\n\n>>>")
+        if logger.level <= logging.DEBUG:
+            data_to_print = f"{data[:500]}..." if len(data) > 500 else data
+            logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
+
         for result in process_instruction(instruction=data):
             client.send(result)
 
@@ -214,4 +217,5 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
     main()
