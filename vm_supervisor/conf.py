@@ -53,7 +53,8 @@ class Settings(BaseSettings):
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
-        assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
+        if self.ALLOW_VM_NETWORKING:
+            assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
