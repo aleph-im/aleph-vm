@@ -5,13 +5,14 @@ from aiohttp import web
 ALEPH_API_SERVER = "https://api2.aleph.im/"
 
 
-async def proxy(request):
+async def proxy(request: web.Request):
+
     path = request.match_info.get('tail')
     query_string = request.rel_url.query_string
     url = f"{ALEPH_API_SERVER}{path}?{query_string}"
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
+        async with session.request(method=request.method, url=url) as response:
             data = await response.read()
             return web.Response(body=data,
                                 status=response.status,
@@ -21,6 +22,8 @@ async def proxy(request):
 def run_guest_api(unix_socket_path):
     app = web.Application()
     app.router.add_route(method='GET', path='/{tail:.*}', handler=proxy)
+    app.router.add_route(method='HEAD', path='/{tail:.*}', handler=proxy)
+    app.router.add_route(method='OPTIONS', path='/{tail:.*}', handler=proxy)
     web.run_app(app=app, path=unix_socket_path)
 
 
