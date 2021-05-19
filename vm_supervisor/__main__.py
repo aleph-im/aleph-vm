@@ -98,10 +98,12 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
+    ref = "vmid"
+
     class FakeRequest: pass
 
     fake_request = FakeRequest()
-    fake_request.match_info = {"ref": "vmid", "suffix": "/path"}
+    fake_request.match_info = {"ref": ref, "suffix": "/path"}
     fake_request.method = "GET"
     fake_request.query_string = ""
     fake_request.headers = []
@@ -113,7 +115,7 @@ async def benchmark(runs: int):
 
     for run in range(runs):
         t0 = time.time()
-        response: Response = await supervisor.run_code(request=fake_request)
+        response: Response = await supervisor.run_code(message_ref=ref, request=fake_request)
         assert response.status == 200
         bench.append(time.time() - t0)
 
