@@ -6,6 +6,7 @@ At it's core, it is currently an asynchronous HTTP server using aiohttp, but thi
 evolve in the future.
 """
 import logging
+from typing import Awaitable
 
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
@@ -61,11 +62,11 @@ def load_file_content(path: FilePath) -> bytes:
         return b""
 
 
-async def run_code(request: web.Request) -> web.Response:
+async def run_code(message_ref: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
-    message_ref: str = request.match_info["ref"]
+
     message = await try_get_message(message_ref)
 
     # vm_resources = AlephFirecrackerResources(message)
@@ -127,10 +128,26 @@ async def run_code(request: web.Request) -> web.Response:
             await vm.teardown()
 
 
+def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
+    message_ref: str = request.match_info["ref"]
+    return run_code(message_ref, request)
+
+
+async def run_code_from_hostname(request: web.Request) -> web.Response:
+    hostname = request.host
+    split = hostname.split(".")
+
+    if len(split) < 3 or split[1] != "vm":
+        return web.Response(status=404, reason="Domain does not contain a message ref")
+
+    message_ref = hostname.split(".")[0]
+    return await run_code(message_ref, request)
+
+
 app = web.Application()
 
-app.add_routes([web.get("/", index)])
-app.add_routes([web.route("*", "/vm/function/{ref}{suffix:.*}", run_code)])
+app.add_routes([web.route("*", "/vm/function/{ref}{suffix:.*}", run_code_from_path)])
+app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 
 
 def run():
