@@ -140,6 +140,7 @@ def main():
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
     )
+    settings.setup()
     if args.print_settings:
         print(settings.display())
 
@@ -152,7 +153,6 @@ def main():
     elif args.do_not_run:
         logger.info("Option --do-not-run, exiting")
     else:
-        settings.setup()
         supervisor.run()
 
 
