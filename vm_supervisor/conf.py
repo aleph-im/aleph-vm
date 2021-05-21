@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     class Config:
         env_prefix = "ALEPH_VM_"
         case_sensitive = False
+        env_file = '.env'
 
 
 # Settings singleton
