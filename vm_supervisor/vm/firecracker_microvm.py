@@ -8,6 +8,7 @@ from os.path import isfile, exists
 from typing import Optional, Dict
 
 import msgpack
+from aiohttp import ClientResponseError
 
 from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
@@ -18,6 +19,18 @@ from ..storage import get_code_path, get_runtime_path, get_data_path
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
 
+
+class ResourceDownloadError(ClientResponseError):
+    """An error occurred while downloading a VM resource file"""
+
+    def __init__(self, error: ClientResponseError):
+        super().__init__(
+            request_info=error.request_info,
+            history=error.history,
+            status=error.status,
+            message=error.message,
+            headers=error.headers,
+        )
 
 @dataclass
 class ConfigurationPayload:
@@ -59,18 +72,27 @@ class AlephFirecrackerResources:
 
     async def download_code(self):
         code_ref: str = self.message.content.code.ref
-        self.code_path = await get_code_path(code_ref)
+        try:
+            self.code_path = await get_code_path(code_ref)
+        except ClientResponseError as error:
+            raise ResourceDownloadError(error)
         assert isfile(self.code_path)
 
     async def download_runtime(self):
         runtime_ref: str = self.message.content.runtime.ref
-        self.rootfs_path = await get_runtime_path(runtime_ref)
+        try:
+            self.rootfs_path = await get_runtime_path(runtime_ref)
+        except ClientResponseError as error:
+            raise ResourceDownloadError(error)
         assert isfile(self.rootfs_path)
 
     async def download_data(self):
         if self.message.content.data:
             data_ref: str = self.message.content.data.ref
-            self.data_path = await get_data_path(data_ref)
+            try:
+                self.data_path = await get_data_path(data_ref)
+            except ClientResponseError as error:
+                raise ResourceDownloadError(error)
             assert isfile(self.data_path)
         else:
             self.data_path = None
