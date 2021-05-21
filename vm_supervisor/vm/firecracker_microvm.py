@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from multiprocessing import Process, set_start_method
 from os import system
 from os.path import isfile, exists
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import msgpack
 from aiohttp import ClientResponseError
@@ -36,6 +36,7 @@ class ResourceDownloadError(ClientResponseError):
 class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
+    dns_servers: List[str]
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -173,6 +174,7 @@ class AlephFirecrackerVM:
         payload = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
             route=self.fvm.host_ip if self.enable_console else None,
+            dns_servers=settings.DNS_NAMESERVERS,
         )
         writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()

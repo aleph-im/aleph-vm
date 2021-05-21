@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, Iterator
+from typing import Optional, Dict, Any, Tuple, Iterator, List
 
 import msgpack
 
@@ -35,6 +35,7 @@ class Encoding:
 class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
+    dns_servers: List[str]
 
 
 @dataclass
@@ -62,7 +63,7 @@ os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 logger.debug("init1.py is launching")
 
 
-def setup_network(ip: Optional[str], route: Optional[str]):
+def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str] = []):
     """Setup the system with info from the host."""
     if not os.path.exists("/sys/class/net/eth0"):
         logger.info("No network interface eth0")
@@ -81,6 +82,10 @@ def setup_network(ip: Optional[str], route: Optional[str]):
         logger.debug("IP and route set")
     else:
         logger.warning("IP set with no network route")
+
+    with open("/etc/resolv.conf", "wb") as resolvconf_fd:
+        for server in dns_servers:
+            resolvconf_fd.write(f"nameserver {server}\n".encode())
 
 
 async def run_python_code_http(code: bytes, input_data: Optional[bytes],
@@ -197,7 +202,7 @@ def main():
     msg_ = msgpack.loads(data, raw=False)
 
     payload = ConfigurationPayload(**msg_)
-    setup_network(payload.ip, payload.route)
+    setup_network(payload.ip, payload.route, payload.dns_servers)
 
     while True:
         client, addr = s.accept()
