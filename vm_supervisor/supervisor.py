@@ -6,17 +6,18 @@ At it's core, it is currently an asynchronous HTTP server using aiohttp, but thi
 evolve in the future.
 """
 import logging
-from typing import Awaitable
+from typing import Awaitable, Dict, Any
 
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
-from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
+from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest
 from msgpack import UnpackValueError
 
 from .conf import settings
 from .models import FilePath, FunctionMessage
 from .pool import VmPool
 from .storage import get_message
+from .vm.firecracker_microvm import ResourceDownloadError
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
@@ -40,11 +41,7 @@ async def try_get_message(ref: str) -> FunctionMessage:
             raise
 
 
-def build_asgi_scope(request: web.Request):
-    path = request.match_info["suffix"]
-    if not path.startswith("/"):
-        path = "/" + path
-
+def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     return {
         "type": "http",
         "path": path,
@@ -62,27 +59,22 @@ def load_file_content(path: FilePath) -> bytes:
         return b""
 
 
-async def run_code(message_ref: str, request: web.Request) -> web.Response:
+async def run_code(message_ref: str, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
 
     message = await try_get_message(message_ref)
 
-    # vm_resources = AlephFirecrackerResources(message)
-    #
-    # try:
-    #     await vm_resources.download_all()
-    # except ClientResponseError as error:
-    #     if error.status == 404:
-    #         raise HTTPBadRequest(reason="Code, runtime or data not found")
-    #     else:
-    #         raise
+    try:
+        vm = await pool.get_a_vm(message)
+    except ResourceDownloadError as error:
+        logger.exception(error)
+        raise HTTPBadRequest(reason="Code, runtime or data not available")
 
-    vm = await pool.get_a_vm(message)
     logger.debug(f"Using vm={vm.vm_id}")
 
-    scope = build_asgi_scope(request)
+    scope: Dict = build_asgi_scope(path, request)
 
     code: bytes = load_file_content(vm.resources.code_path)
     input_data: bytes = load_file_content(vm.resources.data_path)
@@ -129,19 +121,29 @@ async def run_code(message_ref: str, request: web.Request) -> web.Response:
 
 
 def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
+    """Allow running an Aleph VM function from a URL path
+
+    The path is expected to follow the scheme defined in `app.add_routes` below,
+    where the identifier of the message is named `ref`.
+    """
+    path = request.match_info["suffix"]
+    path = path if path.startswith("/") else f"/{path}"
+
     message_ref: str = request.match_info["ref"]
-    return run_code(message_ref, request)
+    return run_code(message_ref, path, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
-    hostname = request.host
-    split = hostname.split(".")
+    """Allow running an Aleph VM function from a hostname
 
-    if len(split) < 3 or split[1] != "vm":
-        return web.Response(status=404, reason="Domain does not contain a message ref")
+    The first component of the hostname is used as identifier of the message defining the
+    Aleph VM function.
+    """
+    path = request.match_info["suffix"]
+    path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = hostname.split(".")[0]
-    return await run_code(message_ref, request)
+    message_ref = request.host.split(".")[0]
+    return await run_code(message_ref, path, request)
 
 
 app = web.Application()
