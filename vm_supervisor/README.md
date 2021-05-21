@@ -198,7 +198,10 @@ cat >/etc/caddy/Caddyfile <<EOL
 
 vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
-    respond "Aleph.im VM Executor"
+    reverse_proxy http://127.0.0.1:8080 {
+        # Forward Host header to the backend
+        header_up Host {host}
+    }
 }
 
 *.vm.yourdomain.org:443 {
