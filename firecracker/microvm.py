@@ -108,7 +108,6 @@ class MicroVM:
         self.firecracker_bin_path = firecracker_bin_path
         self.jailer_bin_path = jailer_bin_path
 
-    @lru_cache()
     def get_session(self) -> aiohttp.ClientSession:
         conn = aiohttp.UnixConnector(path=self.socket_path)
         return aiohttp.ClientSession(connector=conn)
@@ -210,10 +209,10 @@ class MicroVM:
             # Add console=ttyS0 for debugging, but it makes the boot twice slower
             "boot_args": f"{console} reboot=k panic=1 pci=off ro noapic nomodules random.trust_cpu=on",
         }
-        session = self.get_session()
-        response: ClientResponse = await session.put(
-            "http://localhost/boot-source", json=data
-        )
+        async with self.get_session() as session:
+            response: ClientResponse = await session.put(
+                "http://localhost/boot-source", json=data
+            )
         response.raise_for_status()
 
     async def set_rootfs(self, path_on_host: str):
@@ -229,8 +228,8 @@ class MicroVM:
             "is_root_device": True,
             "is_read_only": True,
         }
-        session = self.get_session()
-        response = await session.put("http://localhost/drives/rootfs", json=data)
+        async with self.get_session() as session:
+            response = await session.put("http://localhost/drives/rootfs", json=data)
         response.raise_for_status()
 
     async def set_vsock(self):
@@ -239,8 +238,8 @@ class MicroVM:
             "guest_cid": 3,
             "uds_path": VSOCK_PATH,
         }
-        session = self.get_session()
-        response = await session.put("http://localhost/vsock", json=data)
+        async with self.get_session() as session:
+            response = await session.put("http://localhost/vsock", json=data)
         response.raise_for_status()
 
     async def set_network(self, interface: str = "eth0"):
@@ -270,10 +269,10 @@ class MicroVM:
             "guest_mac": f"AA:FC:00:00:00:01",
             "host_dev_name": name,
         }
-        session = self.get_session()
-        response = await session.put(
-            "http://localhost/network-interfaces/eth0", json=data
-        )
+        async with self.get_session() as session:
+            response = await session.put(
+                "http://localhost/network-interfaces/eth0", json=data
+            )
         logger.debug(response)
         logger.debug(await response.text())
         response.raise_for_status()
@@ -282,8 +281,8 @@ class MicroVM:
         data = {
             "action_type": "InstanceStart",
         }
-        session = self.get_session()
-        response = await session.put("http://localhost/actions", json=data)
+        async with self.get_session() as session:
+            response = await session.put("http://localhost/actions", json=data)
         response.raise_for_status()
 
     async def print_logs(self):
@@ -332,10 +331,6 @@ class MicroVM:
             self.proc.terminate()
             self.proc.kill()
             self.proc = None
-
-        await self.get_session().close()
-        self.get_session.cache_clear()
-
 
     async def teardown(self):
         """Stop the VM, cleanup network interface and remove data directory."""
