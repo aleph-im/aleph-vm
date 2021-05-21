@@ -107,8 +107,13 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
                 content_type="text/plain",
             )
 
+        headers = {key.decode(): value.decode()
+                   for key, value in result['headers']['headers']}
+
         return web.Response(
-            body=result["body"]["body"], content_type="application/json"
+            status=result['headers']['status'],
+            body=result["body"]["body"],
+            headers=headers,
         )
     except UnpackValueError as error:
         logger.exception(error)
