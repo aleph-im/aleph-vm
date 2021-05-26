@@ -2,8 +2,8 @@ import asyncio
 import logging
 from typing import Dict, Optional
 
+from aleph_message.models import ProgramContent
 from vm_supervisor.conf import settings
-from vm_supervisor.models import FunctionMessage
 from vm_supervisor.vm.firecracker_microvm import (
     AlephFirecrackerVM,
     AlephFirecrackerResources,
@@ -31,22 +31,22 @@ class VmPool:
     """
 
     counter: int  # Used to provide distinct ids to network interfaces
-    started_vms_cache: Dict[FunctionMessage, StartedVM]
+    started_vms_cache: Dict[ProgramContent, StartedVM]
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.started_vms_cache = {}
 
-    async def create_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
+    async def create_a_vm(self, message_content: ProgramContent) -> AlephFirecrackerVM:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        vm_resources = AlephFirecrackerResources(message)
+        vm_resources = AlephFirecrackerResources(message_content)
         await vm_resources.download_all()
         self.counter += 1
         vm = AlephFirecrackerVM(
             vm_id=self.counter,
             resources=vm_resources,
-            enable_networking=message.content.environment.internet,
-            hardware_resources=message.content.resources,
+            enable_networking=message_content.environment.internet,
+            hardware_resources=message_content.resources,
         )
         await vm.setup()
         await vm.start()
@@ -54,7 +54,7 @@ class VmPool:
         await vm.start_guest_api()
         return vm
 
-    async def get_a_vm(self, message: FunctionMessage) -> AlephFirecrackerVM:
+    async def get_a_vm(self, message: ProgramContent) -> AlephFirecrackerVM:
         """Provision a VM in the pool, then return the first VM from the pool."""
         try:
             started_vm = self.started_vms_cache.pop(message)
@@ -64,7 +64,7 @@ class VmPool:
             return await self.create_a_vm(message)
 
     def keep_in_cache(
-        self, vm: AlephFirecrackerVM, message: FunctionMessage, timeout: float = 1.0
+        self, vm: AlephFirecrackerVM, message: ProgramContent, timeout: float = 1.0
     ) -> None:
         """Keep a VM running for `timeout` seconds in case another query comes by."""
 
@@ -79,7 +79,7 @@ class VmPool:
         started_vm.timeout_task = loop.create_task(self.expire(vm, message, timeout))
 
     async def expire(
-        self, vm: AlephFirecrackerVM, message: FunctionMessage, timeout: float
+        self, vm: AlephFirecrackerVM, message: ProgramContent, timeout: float
     ):
         """Coroutine that will stop the VM after 'timeout' seconds."""
         await asyncio.sleep(timeout)
