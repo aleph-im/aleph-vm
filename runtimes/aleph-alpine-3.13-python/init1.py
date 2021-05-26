@@ -138,7 +138,7 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
 
     logger.debug("Getting output data")
     output_data: bytes
-    if os.listdir('/data'):
+    if os.path.isdir('/data') and os.listdir('/data'):
         make_archive("/opt/output", 'zip', "/data")
         with open("/opt/output.zip", "rb") as output_zipfile:
             output_data = output_zipfile.read()
