@@ -4,7 +4,6 @@ import logging
 import os.path
 from asyncio import Task
 from enum import Enum
-from functools import lru_cache
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
