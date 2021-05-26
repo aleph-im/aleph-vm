@@ -13,8 +13,9 @@ from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest
 from msgpack import UnpackValueError
 
+from aleph_message.models import ProgramMessage, ProgramContent
 from .conf import settings
-from .models import FilePath, FunctionMessage
+from .models import FilePath
 from .pool import VmPool
 from .storage import get_message
 from .vm.firecracker_microvm import ResourceDownloadError
@@ -28,7 +29,7 @@ async def index(request: web.Request):
     return web.Response(text="Server: Aleph VM Supervisor")
 
 
-async def try_get_message(ref: str) -> FunctionMessage:
+async def try_get_message(ref: str) -> ProgramMessage:
     # Get the message or raise an aiohttp HTTP error
     try:
         return await get_message(ref)
@@ -64,10 +65,11 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    message = await try_get_message(message_ref)
+    message: ProgramMessage = await try_get_message(message_ref)
+    message_content: ProgramContent = message.content
 
     try:
-        vm = await pool.get_a_vm(message)
+        vm = await pool.get_a_vm(message_content)
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -82,9 +84,9 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     try:
         result_raw: bytes = await vm.run_code(
             code=code,
-            entrypoint=message.content.code.entrypoint,
+            entrypoint=message_content.code.entrypoint,
             input_data=input_data,
-            encoding=message.content.code.encoding,
+            encoding=message_content.code.encoding,
             scope=scope,
         )
 
@@ -120,7 +122,7 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
-            pool.keep_in_cache(vm, message, timeout=settings.REUSE_TIMEOUT)
+            pool.keep_in_cache(vm, message_content, timeout=settings.REUSE_TIMEOUT)
         else:
             await vm.teardown()
 

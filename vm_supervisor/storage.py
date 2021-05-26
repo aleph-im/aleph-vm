@@ -12,8 +12,9 @@ from shutil import make_archive
 
 import aiohttp
 
+from aleph_message.models import ProgramMessage
 from .conf import settings
-from .models import FunctionMessage, FilePath
+from .models import FilePath
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ async def download_file(url: str, local_path: FilePath) -> None:
                 raise
 
 
-async def get_message(ref: str) -> FunctionMessage:
+async def get_message(ref: str) -> ProgramMessage:
     if settings.FAKE_DATA:
         cache_path = os.path.abspath(
             join(__file__, "../../examples/message_from_aleph.json")
@@ -53,9 +54,7 @@ async def get_message(ref: str) -> FunctionMessage:
 
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
-        # TODO: Define VM Function type instead of wrapping in 'content' key
-        msg_content = msg["content"]
-        return FunctionMessage(**msg_content)
+        return ProgramMessage(**msg)
 
 
 async def get_code_path(ref: str) -> FilePath:
