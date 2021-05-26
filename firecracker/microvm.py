@@ -277,6 +277,18 @@ class MicroVM:
         logger.debug(await response.text())
         response.raise_for_status()
 
+    async def set_resources(self, vcpus: int = 1, memory: int = 128,
+                            ht_enabled: bool = False):
+        """Set machine resources (number of CPU cores, memory)"""
+        data = {
+            "vcpu_count": vcpus,
+            "mem_size_mib": memory,
+            "ht_enabled": ht_enabled,
+        }
+        async with self.get_session() as session:
+            response = await session.put("http://localhost/machine-config", json=data)
+        response.raise_for_status()
+
     async def start_instance(self):
         data = {
             "action_type": "InstanceStart",
