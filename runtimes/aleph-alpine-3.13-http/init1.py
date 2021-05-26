@@ -78,6 +78,9 @@ def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str
         return
 
     logger.debug("Setting up networking")
+    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
+    system("ip addr add ::1/128 dev lo")
+    system("ip link set lo up")
     system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
@@ -108,8 +111,9 @@ async def run_code_http(code: bytes, input_data: Optional[bytes],
                 os.system("unzip /opt/archive.zip -d /opt")
             sys.path.append("/opt")
             PROCESSES[entrypoint] = subprocess.Popen(
-                entrypoint, stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+                os.path.join("/opt", entrypoint))
             logger.debug("launching command")
+            await asyncio.sleep(.1)
         else:
             raise ValueError(f"Unknown encoding '{encoding}'")
     logger.debug("Extracting data")
@@ -121,19 +125,24 @@ async def run_code_http(code: bytes, input_data: Optional[bytes],
             os.system("unzip /opt/input.zip -d /data")
 
     logger.debug("Running code")
-    async with aiohttp.ClientSession() as session:
+    logger.debug(scope)
+    output = ""
+    async with aiohttp.ClientSession(conn_timeout=2) as session:
         async with session.request(
             scope["method"],
-            url="http://127.0.0.1:8080{}".format(scope["path"]),
+            url="http://localhost:8080{}".format(scope["path"]),
             params=scope["query_string"],
-            headers=scope["raw_headers"]
+            headers=[(a.decode('utf-8'), b.decode('utf-8'))
+                     for a, b in scope['headers']]
             ) as resp:
-            headers = resp.headers
-            headers["status"] = resp.status
-            body = {
-                'body': resp.content.read()
+            headers = {
+                'headers': [(a.encode('utf-8'), b.encode('utf-8'))
+                            for a, b in resp.headers.items()],
+                'status': resp.status
             }
-            output = PROCESSES[entrypoint].stdout.read()
+            body = {
+                'body': await resp.content.read()
+            }
 
     logger.debug("Getting output data")
     output_data: bytes
@@ -175,7 +184,7 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
             output_data: Optional[bytes]
 
             headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                run_python_code_http(
+                run_code_http(
                     payload.code, input_data=payload.input_data,
                     entrypoint=payload.entrypoint, encoding=payload.encoding, scope=payload.scope
                 )
@@ -195,9 +204,23 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
             })
 
 
+BUFF_SIZE = 1024*8
+
+def read_data(client):
+    data = b""
+        
+    while True:
+        part = client.recv(BUFF_SIZE)
+        data += part
+        if len(part) < BUFF_SIZE:
+            # either 0 or end of data
+            break
+
+    return data
+
 def main():
     client, addr = s.accept()
-    data = client.recv(1000_1000)
+    data = read_data(client)
     msg_ = msgpack.loads(data, raw=False)
 
     payload = ConfigurationPayload(**msg_)
@@ -205,7 +228,9 @@ def main():
 
     while True:
         client, addr = s.accept()
-        data = client.recv(1000_1000)  # Max 1 Mo
+        data = read_data(client)
+            
+        print(len(data))
         logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
 
         logger.debug("Init received msg")

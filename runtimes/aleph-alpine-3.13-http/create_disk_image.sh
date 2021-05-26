@@ -79,6 +79,11 @@ ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
 ::shutdown:/sbin/init shutdown
 EOT
 
+cat <<EOT > /mnt/rootfs/etc/network/interfaces
+auto lo
+iface lo inet loopback
+EOT
+
 # Custom init
 mv /mnt/rootfs/sbin/init /mnt/rootfs/sbin/init.copy
 cp ./init0.sh /mnt/rootfs/sbin/init
