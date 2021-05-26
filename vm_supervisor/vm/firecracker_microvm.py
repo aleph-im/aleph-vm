@@ -13,7 +13,7 @@ from aiohttp import ClientResponseError
 from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..models import FunctionMessage, FilePath
+from ..models import FunctionMessage, FilePath, FunctionResources
 from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,7 @@ class AlephFirecrackerVM:
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
+    hardware_resources: FunctionResources
     fvm: MicroVM
     guest_api_process: Process
 
@@ -121,6 +122,7 @@ class AlephFirecrackerVM:
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
+        hardware_resources: FunctionResources = FunctionResources()
     ):
         self.vm_id = vm_id
         self.resources = resources
@@ -128,6 +130,7 @@ class AlephFirecrackerVM:
         if enable_console is None:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
+        self.hardware_resources = hardware_resources
 
     async def setup(self):
         logger.debug("setup started")
@@ -147,6 +150,8 @@ class AlephFirecrackerVM:
         )
         await fvm.set_rootfs(self.resources.rootfs_path)
         await fvm.set_vsock()
+        await fvm.set_resources(vcpus=self.hardware_resources.vcpus,
+                                memory=self.hardware_resources.memory)
         if self.enable_networking:
             await fvm.set_network(interface=settings.NETWORK_INTERFACE)
         logger.debug("setup done")

@@ -46,6 +46,7 @@ class VmPool:
             vm_id=self.counter,
             resources=vm_resources,
             enable_networking=message.content.environment.internet,
+            hardware_resources=message.content.resources,
         )
         await vm.setup()
         await vm.start()
