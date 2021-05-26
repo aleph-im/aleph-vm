@@ -10,10 +10,12 @@ from typing import Optional, Dict, List
 import msgpack
 from aiohttp import ClientResponseError
 
+from aleph_message.models import ProgramContent
+from aleph_message.models.program import MachineResources
 from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..models import FunctionMessage, FilePath, FunctionResources
+from ..models import FilePath
 from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
@@ -56,15 +58,15 @@ class RunCodePayload:
 
 class AlephFirecrackerResources:
 
-    message: FunctionMessage
+    message_content: ProgramContent
 
     kernel_image_path: FilePath
     code_path: FilePath
     rootfs_path: FilePath
     data_path: Optional[FilePath]
 
-    def __init__(self, message: FunctionMessage):
-        self.message = message
+    def __init__(self, message_content: ProgramContent):
+        self.message_content = message_content
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
@@ -72,7 +74,7 @@ class AlephFirecrackerResources:
         assert isfile(self.kernel_image_path)
 
     async def download_code(self):
-        code_ref: str = self.message.content.code.ref
+        code_ref: str = self.message_content.code.ref
         try:
             self.code_path = await get_code_path(code_ref)
         except ClientResponseError as error:
@@ -80,7 +82,7 @@ class AlephFirecrackerResources:
         assert isfile(self.code_path)
 
     async def download_runtime(self):
-        runtime_ref: str = self.message.content.runtime.ref
+        runtime_ref: str = self.message_content.runtime.ref
         try:
             self.rootfs_path = await get_runtime_path(runtime_ref)
         except ClientResponseError as error:
@@ -88,8 +90,8 @@ class AlephFirecrackerResources:
         assert isfile(self.rootfs_path)
 
     async def download_data(self):
-        if self.message.content.data:
-            data_ref: str = self.message.content.data.ref
+        if self.message_content.data:
+            data_ref: str = self.message_content.data.ref
             try:
                 self.data_path = await get_data_path(data_ref)
             except ClientResponseError as error:
@@ -112,7 +114,7 @@ class AlephFirecrackerVM:
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
-    hardware_resources: FunctionResources
+    hardware_resources: MachineResources
     fvm: MicroVM
     guest_api_process: Process
 
@@ -122,7 +124,7 @@ class AlephFirecrackerVM:
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
-        hardware_resources: FunctionResources = FunctionResources()
+        hardware_resources: MachineResources = MachineResources()
     ):
         self.vm_id = vm_id
         self.resources = resources
