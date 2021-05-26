@@ -98,7 +98,10 @@ async def download_code(
         return Response(status_code=404, content="Hash not found")
 
     data_hash = msg["content"]["item_hash"]
-    url = f"{settings.IPFS_SERVER}/{data_hash}"
+    if msg["content"]["item_type"] == "ipfs":
+        url = f"{settings.IPFS_SERVER}/{data_hash}"
+    else:
+        url = f"{settings.ALEPH_SERVER}/api/v0/storage/raw/{data_hash}"
     return StreamingResponse(stream_url_chunks(url), media_type="application/zip")
 
 
