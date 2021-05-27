@@ -74,6 +74,9 @@ def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str
         return
 
     logger.debug("Setting up networking")
+    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
+    system("ip addr add ::1/128 dev lo")
+    system("ip link set lo up")
     system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
