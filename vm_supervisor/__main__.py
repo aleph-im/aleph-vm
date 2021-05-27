@@ -98,7 +98,7 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = "7dbf00da1c2b88ab32c0ba98504b499d13dceb62abdb928022f8420fc5d692a4"
+    ref = "fe488a08a7bed020515f069ce9a52847092af468beca79c66c8c0108bdab98a1"
 
     class FakeRequest: pass
 
