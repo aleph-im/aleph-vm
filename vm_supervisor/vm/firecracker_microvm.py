@@ -12,7 +12,7 @@ from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
 from aleph_message.models.program import MachineResources
-from firecracker.microvm import MicroVM, setfacl
+from firecracker.microvm import MicroVM, setfacl, Encoding
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..models import FilePath
@@ -20,6 +20,14 @@ from ..storage import get_code_path, get_runtime_path, get_data_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
+
+
+def load_file_content(path: FilePath) -> bytes:
+    if path:
+        with open(path, "rb") as fd:
+            return fd.read()
+    else:
+        return b""
 
 
 class ResourceDownloadError(ClientResponseError):
@@ -39,6 +47,10 @@ class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
     dns_servers: List[str]
+    code: bytes
+    encoding: str
+    entrypoint: str
+    input_data: bytes
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -46,10 +58,6 @@ class ConfigurationPayload:
 
 @dataclass
 class RunCodePayload:
-    code: bytes
-    input_data: bytes
-    entrypoint: str
-    encoding: str
     scope: Dict
 
     def as_msgpack(self) -> bytes:
@@ -62,11 +70,15 @@ class AlephFirecrackerResources:
 
     kernel_image_path: FilePath
     code_path: FilePath
+    code_encoding: Encoding
+    code_entrypoint: str
     rootfs_path: FilePath
     data_path: Optional[FilePath]
 
     def __init__(self, message_content: ProgramContent):
         self.message_content = message_content
+        self.code_encoding = message_content.code.encoding
+        self.code_entrypoint = message_content.code.entrypoint
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
@@ -177,11 +189,19 @@ class AlephFirecrackerVM:
 
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
+
+        code: bytes = load_file_content(self.resources.code_path)
+        input_data: bytes = load_file_content(self.resources.data_path)
+
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         payload = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
             route=self.fvm.host_ip if self.enable_console else None,
             dns_servers=settings.DNS_NAMESERVERS,
+            code=code,
+            encoding=self.resources.code_encoding,
+            entrypoint=self.resources.code_entrypoint,
+            input_data=input_data,
         )
         writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()
@@ -205,23 +225,13 @@ class AlephFirecrackerVM:
 
     async def run_code(
         self,
-        code: bytes,
-        entrypoint: str,
-        input_data: bytes = b"",
-        encoding: str = "plain",
         scope: dict = None,
     ):
         logger.debug("running code")
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
-        payload = RunCodePayload(
-            code=code,
-            input_data=input_data,
-            entrypoint=entrypoint,
-            encoding=encoding,
-            scope=scope,
-        )
+        payload = RunCodePayload(scope=scope)
 
         writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()
