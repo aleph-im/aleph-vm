@@ -15,7 +15,6 @@ from msgpack import UnpackValueError
 
 from aleph_message.models import ProgramMessage, ProgramContent
 from .conf import settings
-from .models import FilePath
 from .pool import VmPool
 from .storage import get_message
 from .vm.firecracker_microvm import ResourceDownloadError
@@ -52,14 +51,6 @@ def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     }
 
 
-def load_file_content(path: FilePath) -> bytes:
-    if path:
-        with open(path, "rb") as fd:
-            return fd.read()
-    else:
-        return b""
-
-
 async def run_code(message_ref: str, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
@@ -78,18 +69,8 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
 
     scope: Dict = build_asgi_scope(path, request)
 
-    code: bytes = load_file_content(vm.resources.code_path)
-    input_data: bytes = load_file_content(vm.resources.data_path)
-
     try:
-        result_raw: bytes = await vm.run_code(
-            code=code,
-            entrypoint=message_content.code.entrypoint,
-            input_data=input_data,
-            encoding=message_content.code.encoding,
-            scope=scope,
-        )
-
+        result_raw: bytes = await vm.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
