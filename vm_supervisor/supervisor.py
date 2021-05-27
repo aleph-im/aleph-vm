@@ -136,7 +136,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
 app = web.Application()
 
-app.add_routes([web.route("*", "/vm/function/{ref}{suffix:.*}", run_code_from_path)])
+app.add_routes([web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)])
 app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 
 
