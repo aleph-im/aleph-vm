@@ -12,14 +12,15 @@ from typing import Awaitable, Dict, Any
 
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
-from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest
+from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest, \
+    HTTPInternalServerError
 from msgpack import UnpackValueError
 
 from aleph_message.models import ProgramMessage, ProgramContent
 from .conf import settings
 from .pool import VmPool
 from .storage import get_message
-from .vm.firecracker_microvm import ResourceDownloadError
+from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
@@ -66,6 +67,9 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available")
+    except VmSetupError as error:
+        logger.exception(error)
+        raise HTTPInternalServerError(reason="Error during program initialisation")
 
     logger.debug(f"Using vm={vm.vm_id}")
 
