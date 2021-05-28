@@ -226,7 +226,9 @@ class AlephFirecrackerVM:
             input_data=input_data,
             interface=interface,
         )
-        writer.write(b"CONNECT 52\n" + payload.as_msgpack())
+        payload = config.as_msgpack()
+        length = f"{len(payload)}\n".encode()
+        writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()
 
         await reader.readline()  # Ignore the acknowledgement from the socket
