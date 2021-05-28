@@ -147,7 +147,7 @@ class AlephFirecrackerVM:
     enable_networking: bool
     hardware_resources: MachineResources
     fvm: MicroVM
-    guest_api_process: Process
+    guest_api_process: Optional[Process] = None
 
     def __init__(
         self,
@@ -253,7 +253,8 @@ class AlephFirecrackerVM:
         logger.debug(f"started guest API for {self.vm_id}")
 
     async def stop_guest_api(self):
-        self.guest_api_process.terminate()
+        if self.guest_api_process:
+            self.guest_api_process.terminate()
 
     async def teardown(self):
         await self.fvm.teardown()
