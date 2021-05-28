@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     DATA_CACHE: FilePath = FilePath(join(CACHE_ROOT, "data"))
 
     FAKE_DATA: bool = False
+    FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
 
     def update(self, **kwargs):
         for key, value in kwargs.items():

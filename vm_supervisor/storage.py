@@ -60,9 +60,9 @@ async def get_message(ref: str) -> ProgramMessage:
 async def get_code_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         root_dir = abspath(join(__file__, "../../examples/"))
-        archive_path = join(root_dir, "example_fastapi_2")
+        archive_path = join(root_dir, settings.FAKE_DATA_EXAMPLE)
         make_archive(
-            archive_path, "zip", root_dir=root_dir, base_dir="example_fastapi_2"
+            archive_path, "zip", root_dir=root_dir, base_dir=settings.FAKE_DATA_EXAMPLE
         )
         return FilePath(f"{archive_path}.zip")
 
