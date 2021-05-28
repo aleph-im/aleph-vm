@@ -149,10 +149,13 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     path = path if path.startswith("/") else f"/{path}"
 
     message_ref_base32 = request.host.split(".")[0]
-    try:
-        message_ref = b32_to_b16(message_ref_base32).decode()
-    except binascii.Error:
-        raise HTTPNotFound(reason="Invalid message reference")
+    if settings.FAKE_DATA:
+        message_ref = "test"
+    else:
+        try:
+            message_ref = b32_to_b16(message_ref_base32).decode()
+        except binascii.Error:
+            raise HTTPNotFound(reason="Invalid message reference")
 
     return await run_code(message_ref, path, request)
 
