@@ -176,19 +176,23 @@ class AlephFirecrackerVM:
         )
         fvm.prepare_jailer()
         await fvm.start()
-        await fvm.socket_is_ready()
-        await fvm.set_boot_source(
-            self.resources.kernel_image_path,
-            enable_console=self.enable_console,
-        )
-        await fvm.set_rootfs(self.resources.rootfs_path)
-        await fvm.set_vsock()
-        await fvm.set_resources(vcpus=self.hardware_resources.vcpus,
-                                memory=self.hardware_resources.memory)
-        if self.enable_networking:
-            await fvm.set_network(interface=settings.NETWORK_INTERFACE)
-        logger.debug("setup done")
-        self.fvm = fvm
+        try:
+            await fvm.socket_is_ready()
+            await fvm.set_boot_source(
+                self.resources.kernel_image_path,
+                enable_console=self.enable_console,
+            )
+            await fvm.set_rootfs(self.resources.rootfs_path)
+            await fvm.set_vsock()
+            await fvm.set_resources(vcpus=self.hardware_resources.vcpus,
+                                    memory=self.hardware_resources.memory)
+            if self.enable_networking:
+                await fvm.set_network(interface=settings.NETWORK_INTERFACE)
+            logger.debug("setup done")
+            self.fvm = fvm
+        except Exception:
+            await fvm.teardown()
+            raise
 
     async def start(self):
         logger.debug(f"starting vm {self.vm_id}")
@@ -216,7 +220,7 @@ class AlephFirecrackerVM:
             else Interface.executable
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
-        payload = ConfigurationPayload(
+        config = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
             route=self.fvm.host_ip if self.enable_console else None,
             dns_servers=settings.DNS_NAMESERVERS,
