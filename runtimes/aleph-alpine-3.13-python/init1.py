@@ -12,6 +12,7 @@ logger.debug("Imports starting")
 import asyncio
 import os
 import socket
+from enum import Enum
 import subprocess
 import sys
 import traceback
@@ -20,8 +21,9 @@ from dataclasses import dataclass
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, Iterator, List, NewType
+from typing import Optional, Dict, Any, Tuple, Iterator, List, NewType, Union
 
+import aiohttp
 import msgpack
 
 logger.debug("Imports finished")
@@ -29,9 +31,14 @@ logger.debug("Imports finished")
 ASGIApplication = NewType('AsgiApplication', Any)
 
 
-class Encoding:
+class Encoding(str, Enum):
     plain = "plain"
     zip = "zip"
+
+
+class Interface(str, Enum):
+    asgi = "asgi"
+    executable = "executable"
 
 
 @dataclass
@@ -43,6 +50,7 @@ class ConfigurationPayload:
     encoding: Encoding
     entrypoint: str
     input_data: bytes
+    interface: Interface
 
 
 @dataclass
@@ -66,8 +74,10 @@ os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 logger.debug("init1.py is launching")
 
 
-def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str] = []):
+def setup_network(ip: Optional[str], route: Optional[str],
+                  dns_servers: Optional[List[str]] = None):
     """Setup the system with info from the host."""
+    dns_servers = dns_servers or []
     if not os.path.exists("/sys/class/net/eth0"):
         logger.info("No network interface eth0")
         return
@@ -104,7 +114,7 @@ def setup_input_data(input_data: bytes):
             os.system("unzip /opt/input.zip -d /data")
 
 
-def setup_code(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
+def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
     logger.debug("Extracting code")
     if encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
@@ -127,8 +137,41 @@ def setup_code(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplicat
     return app
 
 
+def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> subprocess.Popen:
+    logger.debug("Extracting code")
+    if encoding == Encoding.zip:
+        open("/opt/archive.zip", "wb").write(code)
+        logger.debug("Run unzip")
+        os.system("unzip /opt/archive.zip -d /opt")
+        path = f"/opt/{entrypoint}"
+        if not os.path.isfile(path):
+            os.system("find /opt")
+            raise FileNotFoundError(f"No such file: {path}")
+        os.system(f"chmod +x {path}")
+    elif encoding == Encoding.plain:
+        path = f"/opt/executable {entrypoint}"
+        open(path, "wb").write(code)
+        os.system(f"chmod +x {path}")
+    else:
+        raise ValueError(f"Unknown encoding '{encoding}'. This should never happen.")
+
+    process = subprocess.Popen(path)
+    return process
+
+
+def setup_code(code: bytes, encoding: Encoding, entrypoint: str, interface: Interface
+               ) -> Union[ASGIApplication, subprocess.Popen]:
+
+    if interface == Interface.asgi:
+        return setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
+    elif interface == Interface.executable:
+        return setup_code_executable(code=code, encoding=encoding, entrypoint=entrypoint)
+    else:
+        raise ValueError("Invalid interface. This should never happen.")
+
+
 async def run_python_code_http(application: ASGIApplication, scope: dict
-                               ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
+                               ) -> Tuple[Dict, Dict, str, Optional[bytes]]:
 
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
@@ -160,7 +203,33 @@ async def run_python_code_http(application: ASGIApplication, scope: dict
     return headers, body, output, output_data
 
 
-def process_instruction(instruction: bytes, application: ASGIApplication) -> Iterator[bytes]:
+async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+    logger.debug("Calling localhost")
+
+    async with aiohttp.ClientSession(conn_timeout=2) as session:
+        async with session.request(
+                scope["method"],
+                url="http://localhost:8080{}".format(scope["path"]),
+                params=scope["query_string"],
+                headers=[(a.decode('utf-8'), b.decode('utf-8'))
+                         for a, b in scope['headers']]
+        ) as resp:
+            headers = {
+                'headers': [(a.encode('utf-8'), b.encode('utf-8'))
+                            for a, b in resp.headers.items()],
+                'status': resp.status
+            }
+            body = {
+                'body': await resp.content.read()
+            }
+
+    output = ""
+    output_data = None
+    logger.debug("Returning result")
+    return headers, body, output, output_data
+
+
+def process_instruction(instruction: bytes, interface: Interface, application) -> Iterator[bytes]:
     if instruction == b"halt":
         system("sync")
         yield b"STOP\n"
@@ -186,9 +255,17 @@ def process_instruction(instruction: bytes, application: ASGIApplication) -> Ite
             body: Dict
             output_data: Optional[bytes]
 
-            headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                run_python_code_http(application=application, scope=payload.scope)
-            )
+            if interface == Interface.asgi:
+                headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
+                    run_python_code_http(application=application, scope=payload.scope)
+                )
+            elif interface == Interface.executable:
+                headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
+                    run_executable_http(scope=payload.scope)
+                )
+            else:
+                raise ValueError("Unknown interface. This should never happen")
+
             result = {
                 "headers": headers,
                 "body": body,
@@ -204,25 +281,46 @@ def process_instruction(instruction: bytes, application: ASGIApplication) -> Ite
             })
 
 
+def receive_data_length(client) -> int:
+    """Receive the length of the data to follow."""
+    buffer = b""
+    for _ in range(9):
+        byte = client.recv(1)
+        if byte == b"\n":
+            break
+        else:
+            buffer += byte
+    return int(buffer)
+
+
 def main():
     client, addr = s.accept()
-    data = client.recv(1000_1000)
+
+    logger.debug("Receiving setup...")
+    length = receive_data_length(client)
+    data = b""
+    while len(data) < length:
+        data += client.recv(1024*1024)
+
     msg_ = msgpack.loads(data, raw=False)
 
-    payload = ConfigurationPayload(**msg_)
-    setup_network(payload.ip, payload.route, payload.dns_servers)
-    setup_input_data(payload.input_data)
+    config = ConfigurationPayload(**msg_)
+    setup_network(config.ip, config.route, config.dns_servers)
+    setup_input_data(config.input_data)
+    logger.debug("Setup finished")
 
     try:
-        app: ASGIApplication = setup_code(payload.code, payload.encoding, payload.entrypoint)
+        app: Union[ASGIApplication, subprocess.Popen] = setup_code(
+            config.code, config.encoding, config.entrypoint, config.interface)
         client.send(msgpack.dumps({"success": True}))
     except Exception as error:
-        logger.exception("Program could not be started")
         client.send(msgpack.dumps({
             "success": False,
             "error": str(error),
             "traceback": str(traceback.format_exc()),
         }))
+        logger.exception("Program could not be started")
+        raise
 
     while True:
         client, addr = s.accept()
@@ -234,7 +332,8 @@ def main():
             data_to_print = f"{data[:500]}..." if len(data) > 500 else data
             logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
 
-        for result in process_instruction(instruction=data, application=app):
+        for result in process_instruction(instruction=data, interface=config.interface,
+                                          application=app):
             client.send(result)
 
         logger.debug("...DONE")
