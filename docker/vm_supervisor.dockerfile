@@ -17,14 +17,14 @@ RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/downl
 RUN ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
 RUN ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
 
-RUN pip3 install typing-extensions
+RUN pip3 install typing-extensions aleph-message pydantic
 
 RUN mkdir /srv/jailer
 
 ENV PYTHONPATH /mnt
 
 # Networking does not work in Docker containers
-ENV ALLOW_VM_NETWORKING False
+ENV ALEPH_VM_ALLOW_VM_NETWORKING False
 # Jailer does not work in Docker containers
 ENV ALEPH_VM_USE_JAILER False
 # Use fake test data
