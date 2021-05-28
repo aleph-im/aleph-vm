@@ -144,6 +144,9 @@ def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> s
         logger.debug("Run unzip")
         os.system("unzip /opt/archive.zip -d /opt")
         path = f"/opt/{entrypoint}"
+        if not os.path.isfile(path):
+            os.system("find /opt")
+            raise FileNotFoundError(f"No such file: {path}")
         os.system(f"chmod +x {path}")
     elif encoding == Encoding.plain:
         path = f"/opt/executable {entrypoint}"
