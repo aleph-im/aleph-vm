@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from multiprocessing import Process, set_start_method
 from os import system
 from os.path import isfile, exists
@@ -42,6 +43,12 @@ class ResourceDownloadError(ClientResponseError):
             headers=error.headers,
         )
 
+
+class Interface(str, Enum):
+    asgi = "asgi"
+    executable = "executable"
+
+
 @dataclass
 class ConfigurationPayload:
     ip: Optional[str]
@@ -51,6 +58,7 @@ class ConfigurationPayload:
     encoding: str
     entrypoint: str
     input_data: bytes
+    interface: Interface
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -204,6 +212,9 @@ class AlephFirecrackerVM:
         code: bytes = load_file_content(self.resources.code_path)
         input_data: bytes = load_file_content(self.resources.data_path)
 
+        interface = Interface.asgi if ":" in self.resources.code_entrypoint \
+            else Interface.executable
+
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         payload = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
@@ -213,6 +224,7 @@ class AlephFirecrackerVM:
             encoding=self.resources.code_encoding,
             entrypoint=self.resources.code_entrypoint,
             input_data=input_data,
+            interface=interface,
         )
         writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()
