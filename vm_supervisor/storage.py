@@ -60,9 +60,9 @@ async def get_message(ref: str) -> ProgramMessage:
 async def get_code_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         root_dir = abspath(join(__file__, "../../examples/"))
-        archive_path = join(root_dir, "example_fastapi_2")
+        archive_path = join(root_dir, "example_http_go")
         make_archive(
-            archive_path, "zip", root_dir=root_dir, base_dir="example_fastapi_2"
+            archive_path, "zip", root_dir=root_dir, base_dir="example_http_go"
         )
         return FilePath(f"{archive_path}.zip")
 
@@ -88,7 +88,7 @@ async def get_runtime_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         return FilePath(
             os.path.abspath(
-                join(__file__, "../../runtimes/aleph-alpine-3.13-python/rootfs.ext4")
+                join(__file__, "../../runtimes/aleph-alpine-3.13-http/rootfs.ext4")
             )
         )
 

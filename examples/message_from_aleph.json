@@ -3,7 +3,7 @@
     "$oid": "60ae674509e67ee2839b67cb"
   },
   "chain": "ETH",
-  "item_hash": "2197b6d13fbeecee029807b2de5d3576e71364b94e9379f500ac26eb0d529ae9",
+  "item_hash": "d143620e56e23cbc91c518e85900aec1f079c9cc8a1b7010ccfb84abfdd286a1",
   "sender": "0x0bE24CB9568dA8ec4d33c8E2aA25Fb841550e607",
   "type": "PROGRAM",
   "channel": "TEST",
@@ -15,7 +15,7 @@
     "allow_amend": false,
     "code": {
       "encoding": "zip",
-      "entrypoint": "example_fastapi_2:app",
+      "entrypoint": "example_http_go/server",
       "ref": "78eda627a1a51cb783197cda49c24b66864c4f18843adfec6d9675a5337eb48a",
       "use_latest": false
     },
@@ -31,17 +31,17 @@
     },
     "resources": {
       "vcpus": 1,
-      "memory": 128,
+      "memory": 512,
       "seconds": 30
     },
     "runtime": {
       "ref": "c05879dd0229e686eeaaf3e1a55cf7d1503a3d9ae11854a2cf6e5a3913e1a080",
       "use_latest": true,
-      "comment": "Aleph Alpine Linux with Python 3.8"
+      "comment": "Aleph Alpine Linux with HTTP"
     },
     "replaces": null
   },
-  "item_content": "{\"address\":\"0x0bE24CB9568dA8ec4d33c8E2aA25Fb841550e607\",\"time\":1622042437.3603787,\"type\":\"vm-function\",\"allow_amend\":false,\"code\":{\"encoding\":\"zip\",\"entrypoint\":\"example_fastapi_2:app\",\"ref\":\"78eda627a1a51cb783197cda49c24b66864c4f18843adfec6d9675a5337eb48a\",\"use_latest\":false},\"data\":null,\"export\":null,\"on\":{\"http\":true},\"environment\":{\"reproducible\":false,\"internet\":true,\"aleph_api\":true},\"resources\":{\"vcpus\":1,\"memory\":128,\"seconds\":30},\"runtime\":{\"ref\":\"c05879dd0229e686eeaaf3e1a55cf7d1503a3d9ae11854a2cf6e5a3913e1a080\",\"use_latest\":true,\"comment\":\"Aleph Alpine Linux with Python 3.8\"},\"replaces\":null}",
+  "item_content": "{\"address\":\"0x0bE24CB9568dA8ec4d33c8E2aA25Fb841550e607\",\"time\":1622042437.3603787,\"type\":\"vm-function\",\"allow_amend\":false,\"code\":{\"encoding\":\"zip\",\"entrypoint\":\"example_http_go/server\",\"ref\":\"78eda627a1a51cb783197cda49c24b66864c4f18843adfec6d9675a5337eb48a\",\"use_latest\":false},\"data\":null,\"export\":null,\"on\":{\"http\":true},\"environment\":{\"reproducible\":false,\"internet\":true,\"aleph_api\":true},\"resources\":{\"vcpus\":1,\"memory\":512,\"seconds\":30},\"runtime\":{\"ref\":\"c05879dd0229e686eeaaf3e1a55cf7d1503a3d9ae11854a2cf6e5a3913e1a080\",\"use_latest\":true,\"comment\":\"Aleph Alpine Linux with HTTP\"},\"replaces\":null}",
   "item_type": "inline",
   "signature": "0x6d26aed5d9968d32e5536e058f558d3c5ef9524686a17bfe0e944517276cd308578f746a403a911c7ef07bd60833bb5bfbc42e48c5f3a800a58971da81ab15d61b",
   "size": 609,
