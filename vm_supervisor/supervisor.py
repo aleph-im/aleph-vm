@@ -5,7 +5,9 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
+import binascii
 import logging
+from base64 import b32decode, b16encode
 from typing import Awaitable, Dict, Any
 
 import msgpack
@@ -121,16 +123,33 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     return run_code(message_ref, path, request)
 
 
+def b32_to_b16(hash: str) -> bytes:
+    """Convert base32 encoded bytes to base16 encoded bytes."""
+    # Add padding
+    hash_b32: str = hash.upper() + "=" * (56 - len(hash))
+    hash_bytes: bytes = b32decode(hash_b32.encode())
+    return b16encode(hash_bytes).lower()
+
+
 async def run_code_from_hostname(request: web.Request) -> web.Response:
     """Allow running an Aleph VM function from a hostname
 
     The first component of the hostname is used as identifier of the message defining the
     Aleph VM function.
+
+    Since hostname labels are limited to 63 characters and hex(sha256(...)) has a length of 64,
+    we expect the hash to be encoded in base32 instead of hexadecimal. Padding is added
+    automatically.
     """
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = request.host.split(".")[0]
+    message_ref_base32 = request.host.split(".")[0]
+    try:
+        message_ref = b32_to_b16(message_ref_base32).decode()
+    except binascii.Error:
+        raise HTTPNotFound(reason="Invalid message reference")
+
     return await run_code(message_ref, path, request)
 
 
