@@ -35,21 +35,20 @@ class Encoding:
     zip = "zip"
 
 
+
 @dataclass
 class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
     dns_servers: List[str]
-
-
+    code: bytes
+    encoding: Encoding
+    entrypoint: str
+    input_data: bytes
+    
 @dataclass
 class RunCodePayload:
-    code: bytes
-    input_data: Optional[bytes]
-    entrypoint: str
-    encoding: str
     scope: Dict
-
 
 # Open a socket to receive instructions from the host
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -98,9 +97,17 @@ def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str
 PROCESSES = {}
 
 
-async def run_code_http(code: bytes, input_data: Optional[bytes],
-                        entrypoint: str, encoding: str, scope: dict
-                        ) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+def setup_input_data(input_data: bytes):
+    logger.debug("Extracting data")
+    if input_data:
+        # Unzip in /data
+        if not os.path.exists("/opt/input.zip"):
+            open("/opt/input.zip", "wb").write(input_data)
+            os.makedirs("/data", exist_ok=True)
+            os.system("unzip /opt/input.zip -d /data")
+
+
+def setup_code(code: bytes, encoding: Encoding, entrypoint: str):
     logger.debug("Extracting code")
     if entrypoint not in PROCESSES:
         if encoding == Encoding.zip:
@@ -113,16 +120,14 @@ async def run_code_http(code: bytes, input_data: Optional[bytes],
             PROCESSES[entrypoint] = subprocess.Popen(
                 os.path.join("/opt", entrypoint))
             logger.debug("launching command")
-            await asyncio.sleep(.1)
         else:
             raise ValueError(f"Unknown encoding '{encoding}'")
-    logger.debug("Extracting data")
-    if input_data:
-        # Unzip in /data
-        if not os.path.exists("/opt/input.zip"):
-            open("/opt/input.zip", "wb").write(input_data)
-            os.makedirs("/data", exist_ok=True)
-            os.system("unzip /opt/input.zip -d /data")
+    else:
+        raise ValueError("Process already started")
+
+
+async def run_code_http(scope: dict
+                        ) -> Tuple[Dict, Dict, str, Optional[bytes]]:
 
     logger.debug("Running code")
     logger.debug(scope)
@@ -134,7 +139,7 @@ async def run_code_http(code: bytes, input_data: Optional[bytes],
             params=scope["query_string"],
             headers=[(a.decode('utf-8'), b.decode('utf-8'))
                      for a, b in scope['headers']]
-            ) as resp:
+                ) as resp:
             headers = {
                 'headers': [(a.encode('utf-8'), b.encode('utf-8'))
                             for a, b in resp.headers.items()],
@@ -185,8 +190,7 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
 
             headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
                 run_code_http(
-                    payload.code, input_data=payload.input_data,
-                    entrypoint=payload.entrypoint, encoding=payload.encoding, scope=payload.scope
+                    scope=payload.scope
                 )
             )
             result = {
@@ -206,9 +210,10 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
 
 BUFF_SIZE = 1024*8
 
+
 def read_data(client):
     data = b""
-        
+
     while True:
         part = client.recv(BUFF_SIZE)
         data += part
@@ -218,6 +223,7 @@ def read_data(client):
 
     return data
 
+
 def main():
     client, addr = s.accept()
     data = read_data(client)
@@ -225,13 +231,14 @@ def main():
 
     payload = ConfigurationPayload(**msg_)
     setup_network(payload.ip, payload.route, payload.dns_servers)
+    setup_input_data(payload.input_data)
+    setup_code(payload.code, payload.encoding, payload.entrypoint)
 
     while True:
         client, addr = s.accept()
         data = read_data(client)
-            
-        print(len(data))
-        logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
+        logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1],
+                                                       len(data)))
 
         logger.debug("Init received msg")
         if logger.level <= logging.DEBUG:
