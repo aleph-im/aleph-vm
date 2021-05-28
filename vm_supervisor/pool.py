@@ -48,11 +48,16 @@ class VmPool:
             enable_networking=message_content.environment.internet,
             hardware_resources=message_content.resources,
         )
-        await vm.setup()
-        await vm.start()
-        await vm.configure()
-        await vm.start_guest_api()
-        return vm
+        try:
+            await vm.setup()
+            await vm.start()
+            await vm.configure()
+            await vm.start_guest_api()
+            return vm
+        except Exception:
+            await vm.teardown()
+            raise
+
 
     async def get_a_vm(self, message: ProgramContent) -> AlephFirecrackerVM:
         """Provision a VM in the pool, then return the first VM from the pool."""
