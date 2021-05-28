@@ -20,11 +20,14 @@ from dataclasses import dataclass
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, Iterator, List
+from typing import Optional, Dict, Any, Tuple, Iterator, List, NewType
 
 import msgpack
 
 logger.debug("Imports finished")
+
+ASGIApplication = NewType('AsgiApplication', Any)
+
 
 class Encoding:
     plain = "plain"
@@ -36,14 +39,14 @@ class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
     dns_servers: List[str]
+    code: bytes
+    encoding: Encoding
+    entrypoint: str
+    input_data: bytes
 
 
 @dataclass
 class RunCodePayload:
-    code: bytes
-    input_data: Optional[bytes]
-    entrypoint: str
-    encoding: str
     scope: Dict
 
 
@@ -74,6 +77,9 @@ def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str
         return
 
     logger.debug("Setting up networking")
+    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
+    system("ip addr add ::1/128 dev lo")
+    system("ip link set lo up")
     system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
@@ -88,29 +94,7 @@ def setup_network(ip: Optional[str], route: Optional[str], dns_servers: List[str
             resolvconf_fd.write(f"nameserver {server}\n".encode())
 
 
-async def run_python_code_http(code: bytes, input_data: Optional[bytes],
-                               entrypoint: str, encoding: str, scope: dict
-                               ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
-    logger.debug("Extracting code")
-    if encoding == Encoding.zip:
-        # Unzip in /opt and import the entrypoint from there
-        if not os.path.exists("/opt/archive.zip"):
-            open("/opt/archive.zip", "wb").write(code)
-            logger.debug("Run unzipp")
-            os.system("unzip /opt/archive.zip -d /opt")
-        sys.path.append("/opt")
-        module_name, app_name = entrypoint.split(":", 1)
-        logger.debug("import module")
-        module = __import__(module_name)
-        app = getattr(module, app_name)
-    elif encoding == Encoding.plain:
-        # Execute the code and extract the entrypoint
-        locals: Dict[str, Any] = {}
-        exec(code, globals(), locals)
-        app = locals[entrypoint]
-    else:
-        raise ValueError(f"Unknown encoding '{encoding}'")
-
+def setup_input_data(input_data: bytes):
     logger.debug("Extracting data")
     if input_data:
         # Unzip in /data
@@ -118,6 +102,33 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
             open("/opt/input.zip", "wb").write(input_data)
             os.makedirs("/data", exist_ok=True)
             os.system("unzip /opt/input.zip -d /data")
+
+
+def setup_code(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
+    logger.debug("Extracting code")
+    if encoding == Encoding.zip:
+        # Unzip in /opt and import the entrypoint from there
+        if not os.path.exists("/opt/archive.zip"):
+            open("/opt/archive.zip", "wb").write(code)
+            logger.debug("Run unzip")
+            os.system("unzip /opt/archive.zip -d /opt")
+        sys.path.append("/opt")
+        module_name, app_name = entrypoint.split(":", 1)
+        logger.debug("import module")
+        module = __import__(module_name)
+        app: ASGIApplication = getattr(module, app_name)
+    elif encoding == Encoding.plain:
+        # Execute the code and extract the entrypoint
+        locals: Dict[str, Any] = {}
+        exec(code, globals(), locals)
+        app: ASGIApplication = locals[entrypoint]
+    else:
+        raise ValueError(f"Unknown encoding '{encoding}'")
+    return app
+
+
+async def run_python_code_http(application: ASGIApplication, scope: dict
+                               ) ->  Tuple[Dict, Dict, str, Optional[bytes]]:
 
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
@@ -131,14 +142,14 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
             await send_queue.put(dico)
 
         # TODO: Better error handling
-        await app(scope, receive, send)
+        await application(scope, receive, send)
         headers: Dict = await send_queue.get()
         body: Dict = await send_queue.get()
         output = buf.getvalue()
 
     logger.debug("Getting output data")
     output_data: bytes
-    if os.listdir('/data'):
+    if os.path.isdir('/data') and os.listdir('/data'):
         make_archive("/opt/output", 'zip', "/data")
         with open("/opt/output.zip", "rb") as output_zipfile:
             output_data = output_zipfile.read()
@@ -149,7 +160,7 @@ async def run_python_code_http(code: bytes, input_data: Optional[bytes],
     return headers, body, output, output_data
 
 
-def process_instruction(instruction: bytes) -> Iterator[bytes]:
+def process_instruction(instruction: bytes, application: ASGIApplication) -> Iterator[bytes]:
     if instruction == b"halt":
         system("sync")
         yield b"STOP\n"
@@ -176,10 +187,7 @@ def process_instruction(instruction: bytes) -> Iterator[bytes]:
             output_data: Optional[bytes]
 
             headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                run_python_code_http(
-                    payload.code, input_data=payload.input_data,
-                    entrypoint=payload.entrypoint, encoding=payload.encoding, scope=payload.scope
-                )
+                run_python_code_http(application=application, scope=payload.scope)
             )
             result = {
                 "headers": headers,
@@ -203,6 +211,8 @@ def main():
 
     payload = ConfigurationPayload(**msg_)
     setup_network(payload.ip, payload.route, payload.dns_servers)
+    setup_input_data(payload.input_data)
+    app: ASGIApplication = setup_code(payload.code, payload.encoding, payload.entrypoint)
 
     while True:
         client, addr = s.accept()
@@ -214,7 +224,7 @@ def main():
             data_to_print = f"{data[:500]}..." if len(data) > 500 else data
             logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
 
-        for result in process_instruction(instruction=data):
+        for result in process_instruction(instruction=data, application=app):
             client.send(result)
 
         logger.debug("...DONE")

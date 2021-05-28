@@ -13,8 +13,8 @@ from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest
 from msgpack import UnpackValueError
 
+from aleph_message.models import ProgramMessage, ProgramContent
 from .conf import settings
-from .models import FilePath, FunctionMessage
 from .pool import VmPool
 from .storage import get_message
 from .vm.firecracker_microvm import ResourceDownloadError
@@ -28,7 +28,7 @@ async def index(request: web.Request):
     return web.Response(text="Server: Aleph VM Supervisor")
 
 
-async def try_get_message(ref: str) -> FunctionMessage:
+async def try_get_message(ref: str) -> ProgramMessage:
     # Get the message or raise an aiohttp HTTP error
     try:
         return await get_message(ref)
@@ -51,23 +51,16 @@ def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     }
 
 
-def load_file_content(path: FilePath) -> bytes:
-    if path:
-        with open(path, "rb") as fd:
-            return fd.read()
-    else:
-        return b""
-
-
 async def run_code(message_ref: str, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    message = await try_get_message(message_ref)
+    message: ProgramMessage = await try_get_message(message_ref)
+    message_content: ProgramContent = message.content
 
     try:
-        vm = await pool.get_a_vm(message)
+        vm = await pool.get_a_vm(message_content)
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -76,18 +69,8 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
 
     scope: Dict = build_asgi_scope(path, request)
 
-    code: bytes = load_file_content(vm.resources.code_path)
-    input_data: bytes = load_file_content(vm.resources.data_path)
-
     try:
-        result_raw: bytes = await vm.run_code(
-            code=code,
-            entrypoint=message.content.code.entrypoint,
-            input_data=input_data,
-            encoding=message.content.code.encoding,
-            scope=scope,
-        )
-
+        result_raw: bytes = await vm.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
@@ -120,7 +103,7 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
-            pool.keep_in_cache(vm, message, timeout=settings.REUSE_TIMEOUT)
+            pool.keep_in_cache(vm, message_content, timeout=settings.REUSE_TIMEOUT)
         else:
             await vm.teardown()
 
@@ -153,7 +136,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
 app = web.Application()
 
-app.add_routes([web.route("*", "/vm/function/{ref}{suffix:.*}", run_code_from_path)])
+app.add_routes([web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)])
 app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 
 

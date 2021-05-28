@@ -84,16 +84,10 @@ cd aleph-vm/
 [PyDantic](https://pydantic-docs.helpmanual.io/) 
 is used to parse and validate Aleph messages.
 
-Via `apt` if available (on Debian 11+, Ubuntu 20.04+):
-
-```shell
-apt install -y python3-pydantic
-```
-
-else (on Debian 10):
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
-pip3 install pydantic
+pip3 install pydantic[dotenv]
+pip3 install aleph-message>=0.1.6
 ```
 
 ### 2.f. Create the jailer working directory:
@@ -130,13 +124,24 @@ http://localhost:8080/
 
 ## 4. Configuration
 
-The VM Supervisor can be configured using command-line arguments:
+The VM Supervisor can be configured using command-line arguments or using environment variables.
+
+List the available command-lien arguments using:
 ```shell
 python3 -m vm_supervisor --help
 ```
-and using environment variables, which can be found using:
+
+List available using environment variables using:
 ```shell
 python3 -m vm_supervisor --print-config --do-not-run
+```
+
+Configuration environment variables can be stored in a file named `.env` in the local directory.
+
+Example content for `.env`:
+```shell
+ALEPH_VM_DNS_RESOLUTION=resolvectl
+ALEPH_VM_NETWORK_INTERFACE=enp7s0
 ```
 
 ## 5. Reverse-proxy
