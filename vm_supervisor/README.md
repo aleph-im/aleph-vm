@@ -124,13 +124,24 @@ http://localhost:8080/
 
 ## 4. Configuration
 
-The VM Supervisor can be configured using command-line arguments:
+The VM Supervisor can be configured using command-line arguments or using environment variables.
+
+List the available command-lien arguments using:
 ```shell
 python3 -m vm_supervisor --help
 ```
-and using environment variables, which can be found using:
+
+List available using environment variables using:
 ```shell
 python3 -m vm_supervisor --print-config --do-not-run
+```
+
+Configuration environment variables can be stored in a file named `.env` in the local directory.
+
+Example content for `.env`:
+```shell
+ALEPH_VM_DNS_RESOLUTION=resolvectl
+ALEPH_VM_NETWORK_INTERFACE=enp7s0
 ```
 
 ## 5. Reverse-proxy
