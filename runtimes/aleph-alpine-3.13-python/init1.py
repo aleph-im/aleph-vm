@@ -212,7 +212,17 @@ def main():
     payload = ConfigurationPayload(**msg_)
     setup_network(payload.ip, payload.route, payload.dns_servers)
     setup_input_data(payload.input_data)
-    app: ASGIApplication = setup_code(payload.code, payload.encoding, payload.entrypoint)
+
+    try:
+        app: ASGIApplication = setup_code(payload.code, payload.encoding, payload.entrypoint)
+        client.send(msgpack.dumps({"success": True}))
+    except Exception as error:
+        logger.exception("Program could not be started")
+        client.send(msgpack.dumps({
+            "success": False,
+            "error": str(error),
+            "traceback": str(traceback.format_exc()),
+        }))
 
     while True:
         client, addr = s.accept()

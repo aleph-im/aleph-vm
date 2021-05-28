@@ -57,6 +57,13 @@ class ConfigurationPayload:
 
 
 @dataclass
+class ConfigurationResponse:
+    success: bool
+    error: Optional[str] = None
+    traceback: Optional[str] = None
+
+
+@dataclass
 class RunCodePayload:
     scope: Dict
 
@@ -119,6 +126,10 @@ class AlephFirecrackerResources:
             self.download_runtime(),
             self.download_data(),
         )
+
+
+class VmSetupError(Exception):
+    pass
 
 
 class AlephFirecrackerVM:
@@ -205,6 +216,13 @@ class AlephFirecrackerVM:
         )
         writer.write(b"CONNECT 52\n" + payload.as_msgpack())
         await writer.drain()
+
+        await reader.readline()  # Ignore the acknowledgement from the socket
+        response_raw = await reader.read(1000_000)
+        response = ConfigurationResponse(
+            **msgpack.loads(response_raw, raw=False))
+        if response.success is False:
+            raise VmSetupError(response.error)
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")
