@@ -278,14 +278,33 @@ def process_instruction(instruction: bytes, interface: Interface, application) -
             })
 
 
+def receive_data_length(client) -> int:
+    """Receive the length of the data to follow."""
+    buffer = b""
+    for _ in range(9):
+        byte = client.recv(1)
+        if byte == b"\n":
+            break
+        else:
+            buffer += byte
+    return int(buffer)
+
+
 def main():
     client, addr = s.accept()
-    data = client.recv(1000_1000)
+
+    logger.debug("Receiving setup...")
+    length = receive_data_length(client)
+    data = b""
+    while len(data) < length:
+        data += client.recv(1024*1024)
+
     msg_ = msgpack.loads(data, raw=False)
 
     config = ConfigurationPayload(**msg_)
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
+    logger.debug("Setup finished")
 
     try:
         app: Union[ASGIApplication, subprocess.Popen] = setup_code(
