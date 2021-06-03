@@ -203,25 +203,41 @@ async def run_python_code_http(application: ASGIApplication, scope: dict
     return headers, body, output, output_data
 
 
-async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
-    logger.debug("Calling localhost")
-
-    async with aiohttp.ClientSession(conn_timeout=2) as session:
-        async with session.request(
+async def make_request(session, scope):
+    async with session.request(
                 scope["method"],
                 url="http://localhost:8080{}".format(scope["path"]),
                 params=scope["query_string"],
                 headers=[(a.decode('utf-8'), b.decode('utf-8'))
                          for a, b in scope['headers']]
-        ) as resp:
-            headers = {
-                'headers': [(a.encode('utf-8'), b.encode('utf-8'))
-                            for a, b in resp.headers.items()],
-                'status': resp.status
-            }
-            body = {
-                'body': await resp.content.read()
-            }
+            ) as resp:
+        headers = {
+            'headers': [(a.encode('utf-8'), b.encode('utf-8'))
+                        for a, b in resp.headers.items()],
+            'status': resp.status
+        }
+        body = {
+            'body': await resp.content.read()
+        }
+    return headers, body
+
+
+async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+    logger.debug("Calling localhost")
+
+    tries = 0
+    headers = None
+    body = None
+
+    async with aiohttp.ClientSession(conn_timeout=2) as session:
+        while not body:
+            try:
+                tries += 1
+                headers, body = await make_request(session, scope)
+            except aiohttp.ClientConnectorError:
+                if tries > 20:
+                    raise
+                await asyncio.sleep(.05)
 
     output = ""
     output_data = None
