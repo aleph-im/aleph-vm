@@ -5,6 +5,7 @@ In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
 import json
+import hashlib
 import logging
 import os
 from os.path import isfile, join, abspath
@@ -54,6 +55,9 @@ async def get_message(ref: str) -> ProgramMessage:
 
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
+        if settings.FAKE_DATA:
+            msg['item_content'] = json.dumps(msg['content'])
+            msg['item_hash'] = hashlib.sha256(msg['item_content'].encode('utf-8')).hexdigest()
         return ProgramMessage(**msg)
 
 
