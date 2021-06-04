@@ -37,13 +37,14 @@ class VmPool:
         self.counter = settings.START_ID_INDEX
         self.started_vms_cache = {}
 
-    async def create_a_vm(self, message_content: ProgramContent) -> AlephFirecrackerVM:
+    async def create_a_vm(self, message_content: ProgramContent, vm_hash: str) -> AlephFirecrackerVM:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
         vm_resources = AlephFirecrackerResources(message_content)
         await vm_resources.download_all()
         self.counter += 1
         vm = AlephFirecrackerVM(
             vm_id=self.counter,
+            vm_hash=vm_hash,
             resources=vm_resources,
             enable_networking=message_content.environment.internet,
             hardware_resources=message_content.resources,
@@ -59,14 +60,14 @@ class VmPool:
             raise
 
 
-    async def get_a_vm(self, message: ProgramContent) -> AlephFirecrackerVM:
+    async def get_a_vm(self, message: ProgramContent, vm_hash: str, ) -> AlephFirecrackerVM:
         """Provision a VM in the pool, then return the first VM from the pool."""
         try:
             started_vm = self.started_vms_cache.pop(message)
             started_vm.timeout_task.cancel()
             return started_vm.vm
         except KeyError:
-            return await self.create_a_vm(message)
+            return await self.create_a_vm(message_content=message, vm_hash=vm_hash)
 
     def keep_in_cache(
         self, vm: AlephFirecrackerVM, message: ProgramContent, timeout: float = 1.0

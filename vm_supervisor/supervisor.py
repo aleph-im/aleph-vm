@@ -64,7 +64,7 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     message_content: ProgramContent = message.content
 
     try:
-        vm = await pool.get_a_vm(message_content)
+        vm = await pool.get_a_vm(message_content, vm_hash=message.item_hash)
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available")
