@@ -250,7 +250,8 @@ class AlephFirecrackerVM:
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")
         vsock_path = f"{self.fvm.vsock_path}_53"
-        self.guest_api_process = Process(target=run_guest_api, args=(vsock_path,))
+        vm_hash = self.vm_hash
+        self.guest_api_process = Process(target=run_guest_api, args=(vsock_path, vm_hash))
         self.guest_api_process.start()
         while not exists(vsock_path):
             await asyncio.sleep(0.01)
