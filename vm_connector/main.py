@@ -3,11 +3,16 @@ import logging
 import os.path
 from typing import Optional, Dict, Union
 
-# from aleph_client.chains.common import get_fallback_private_key
-# from aleph_client.asynchronous import get_posts
+from aleph_client.asynchronous import get_posts, create_post
+from aleph_client.chains.common import get_fallback_private_key
+from aleph_client.chains.ethereum import ETHAccount
+
 import aiohttp
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, Response, FileResponse
+
+from fastapi import Request
+from pydantic import BaseModel
 
 from .conf import settings
 
@@ -159,11 +164,57 @@ async def download_runtime(
     return StreamingResponse(stream_url_chunks(url), media_type="application/ext4")
 
 
-@app.post("/publish/data/")
-async def publish_data(encoding: str):
+class PostBody(BaseModel):
+    topic: str
+    data: str
+
+
+@app.post("/api/v0/ipfs/pubsub/pub")
+@app.post("/api/v0/p2p/pubsub/pub")
+async def publish_data(body: PostBody):
     """
-    Publish a new state on the Aleph Network.
-    :param encoding:
-    :return:
+    Publish a new POST message on the Aleph Network.
     """
-    raise NotImplementedError()
+    private_key = get_fallback_private_key()
+    account: ETHAccount = ETHAccount(private_key=private_key)
+
+    message = json.loads(body.data)
+    content = json.loads(message["item_content"])
+    content_content = content["content"]
+
+    result = await create_post(
+        account=account,
+        post_content=content_content,
+        post_type=content["type"],
+        address=content["address"],
+        ref=None,
+        channel=message["channel"],
+        inline=True,
+        storage_engine="storage",
+    )
+    return {"status": "success"}
+
+
+@app.get("/properties")
+async def properties(request: Request):
+    """Get signing key properties"""
+    private_key = get_fallback_private_key()
+    account: ETHAccount = ETHAccount(private_key=private_key)
+
+    return {
+        "chain": account.CHAIN,
+        "curve": account.CURVE,
+        "address": account.get_address(),
+        "public_key": account.get_public_key(),
+    }
+
+
+@app.post("/sign")
+async def sign_message(request: Request):
+    """Sign a message"""
+    private_key = get_fallback_private_key()
+    account: ETHAccount = ETHAccount(private_key=private_key)
+
+    message = await request.json()
+    message = account.sign_message(message)
+    return message
