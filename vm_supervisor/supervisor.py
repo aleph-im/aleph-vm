@@ -44,13 +44,14 @@ async def try_get_message(ref: str) -> ProgramMessage:
             raise
 
 
-def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
+async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     return {
         "type": "http",
         "path": path,
         "method": request.method,
         "query_string": request.query_string,
         "headers": request.raw_headers,
+        "body": await request.text()
     }
 
 
@@ -73,7 +74,7 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
 
     logger.debug(f"Using vm={vm.vm_id}")
 
-    scope: Dict = build_asgi_scope(path, request)
+    scope: Dict = await build_asgi_scope(path, request)
 
     try:
         result_raw: bytes = await vm.run_code(scope=scope)
