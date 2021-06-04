@@ -209,7 +209,8 @@ async def make_request(session, scope):
                 url="http://localhost:8080{}".format(scope["path"]),
                 params=scope["query_string"],
                 headers=[(a.decode('utf-8'), b.decode('utf-8'))
-                         for a, b in scope['headers']]
+                         for a, b in scope['headers']],
+                data=scope.get("body", None)
             ) as resp:
         headers = {
             'headers': [(a.encode('utf-8'), b.encode('utf-8'))
