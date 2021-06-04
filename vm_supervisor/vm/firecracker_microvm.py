@@ -245,6 +245,7 @@ class AlephFirecrackerVM:
         response = ConfigurationResponse(
             **msgpack.loads(response_raw, raw=False))
         if response.success is False:
+            logger.exception(response.traceback)
             raise VmSetupError(response.error)
 
     async def start_guest_api(self):
