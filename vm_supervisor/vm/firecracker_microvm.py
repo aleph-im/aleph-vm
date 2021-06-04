@@ -59,6 +59,7 @@ class ConfigurationPayload:
     entrypoint: str
     input_data: bytes
     interface: Interface
+    vm_hash: str
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -142,6 +143,7 @@ class VmSetupError(Exception):
 
 class AlephFirecrackerVM:
     vm_id: int
+    vm_hash: str
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
@@ -152,12 +154,14 @@ class AlephFirecrackerVM:
     def __init__(
         self,
         vm_id: int,
+        vm_hash: str,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources()
     ):
         self.vm_id = vm_id
+        self.vm_hash = vm_hash
         self.resources = resources
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         if enable_console is None:
@@ -229,6 +233,7 @@ class AlephFirecrackerVM:
             entrypoint=self.resources.code_entrypoint,
             input_data=input_data,
             interface=interface,
+            vm_hash=self.vm_hash,
         )
         payload = config.as_msgpack()
         length = f"{len(payload)}\n".encode()

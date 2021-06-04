@@ -51,6 +51,7 @@ class ConfigurationPayload:
     entrypoint: str
     input_data: bytes
     interface: Interface
+    vm_hash: str
 
 
 @dataclass
@@ -72,6 +73,11 @@ s0.close()
 os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 
 logger.debug("init1.py is launching")
+
+
+def setup_hostname(hostname: str):
+    os.environ["ALEPH_ADDRESS_TO_USE"] = hostname
+    system(f"hostname {hostname}")
 
 
 def setup_network(ip: Optional[str], route: Optional[str],
@@ -322,6 +328,7 @@ def main():
     msg_ = msgpack.loads(data, raw=False)
 
     config = ConfigurationPayload(**msg_)
+    setup_hostname(config.vm_hash)
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")
