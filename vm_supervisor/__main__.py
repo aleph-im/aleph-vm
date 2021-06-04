@@ -3,6 +3,7 @@ import asyncio
 import logging
 import sys
 import time
+from asyncio import coroutine
 from statistics import mean
 from typing import List
 
@@ -108,6 +109,7 @@ async def benchmark(runs: int):
     fake_request.query_string = ""
     fake_request.headers = []
     fake_request.raw_headers = []
+    fake_request.text = coroutine(lambda: None)
 
     logger.info("--- Start benchmark ---")
 
