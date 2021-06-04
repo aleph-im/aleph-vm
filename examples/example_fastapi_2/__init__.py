@@ -1,12 +1,15 @@
 import logging
+from datetime import datetime
+
 logger = logging.getLogger(__name__)
 
 logger.debug("import aiohttp")
 import aiohttp
 
-
 logger.debug("import aleph_client")
-from aleph_client.asynchronous import get_messages
+from aleph_client.asynchronous import get_messages, create_post
+from aleph_client.chains.remote import RemoteAccount
+
 logger.debug("import fastapi")
 from fastapi import FastAPI
 logger.debug("imports done")
@@ -38,3 +41,30 @@ async def read_internet():
         async with session.get("https://aleph.im/") as resp:
             resp.raise_for_status()
             return {"result": resp.status, "headers": resp.headers}
+
+
+@app.get("/post_a_message")
+async def post_a_message():
+    """Post a message on the Aleph network"""
+
+    account = await RemoteAccount.from_crypto_host(
+        host="http://localhost", unix_socket="/tmp/socat-socket")
+
+    content = {
+        "date": datetime.utcnow().isoformat(),
+        "test": True,
+        "answer": 42,
+        "something": "interesting",
+    }
+    response = await create_post(
+        account=account,
+        post_content=content,
+        post_type="test",
+        ref=None,
+        channel="TEST",
+        inline=True,
+        storage_engine="storage",
+    )
+    return {
+        "response": response,
+    }
