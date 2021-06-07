@@ -119,7 +119,7 @@ def setup_input_data(input_data: bytes):
         if not os.path.exists("/opt/input.zip"):
             open("/opt/input.zip", "wb").write(input_data)
             os.makedirs("/data", exist_ok=True)
-            os.system("unzip /opt/input.zip -d /data")
+            os.system("unzip -q /opt/input.zip -d /data")
 
 
 def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
@@ -129,7 +129,7 @@ def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApp
         if not os.path.exists("/opt/archive.zip"):
             open("/opt/archive.zip", "wb").write(code)
             logger.debug("Run unzip")
-            os.system("unzip /opt/archive.zip -d /opt")
+            os.system("unzip -q /opt/archive.zip -d /opt")
         sys.path.append("/opt")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
