@@ -10,6 +10,7 @@ import logging
 from base64 import b32decode, b16encode
 from typing import Awaitable, Dict, Any
 
+import aiodns
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest, \
@@ -136,6 +137,12 @@ def b32_to_b16(hash: str) -> bytes:
     return b16encode(hash_bytes).lower()
 
 
+async def get_ref_from_dns(domain):
+    resolver = aiodns.DNSResolver()
+    record = await resolver.query(domain, 'TXT')
+    return record[0].text
+
+
 async def run_code_from_hostname(request: web.Request) -> web.Response:
     """Allow running an Aleph VM function from a hostname
 
@@ -155,8 +162,13 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     else:
         try:
             message_ref = b32_to_b16(message_ref_base32).decode()
+            logger.debug(f"Using base32 message id from hostname to obtain '{message_ref}")
         except binascii.Error:
-            raise HTTPNotFound(reason="Invalid message reference")
+            try:
+                message_ref = await get_ref_from_dns(domain=f"_aleph-id.{request.host}")
+                logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
+            except aiodns.error.DNSError:
+                raise HTTPNotFound(reason="Invalid message reference")
 
     return await run_code(message_ref, path, request)
 
