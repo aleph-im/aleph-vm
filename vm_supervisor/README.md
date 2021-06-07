@@ -56,7 +56,7 @@ when running the VM Supervisor.
 
 ```shell
 apt update
-apt install -y git python3 python3-aiohttp python3-msgpack sudo acl curl systemd-container
+apt install -y git python3 python3-aiohttp python3-msgpack python3-dnspython sudo acl curl systemd-container
 useradd jailman
 ```
 
@@ -211,6 +211,46 @@ vm.yourdomain.org:443 {
 
 *.vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
+    reverse_proxy http://127.0.0.1:8080 {
+        # Forward Host header to the backend
+        header_up Host {host}
+    }
+}
+EOL
+```
+
+Optionally, you can allow users to host their website using their own domains using the following
+configuration. Be careful about rate limits if you enable `on_demand` TLS, 
+see the [Caddy documentation on On-Demand TLS](https://caddyserver.com/docs/automatic-https#on-demand-tls).
+```shell
+cat >/etc/caddy/Caddyfile <<EOL
+{
+    on_demand_tls {
+        interval 60s
+        burst    5
+    }
+}
+
+
+vm.yourdomain.org:443 {
+    tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
+    reverse_proxy http://127.0.0.1:8080 {
+        header_up Host {host}
+    }
+}
+
+*.vm.yourdomain.org:443 {
+    tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
+    reverse_proxy http://127.0.0.1:8080 {
+        # Forward Host header to the backend
+        header_up Host {host}
+    }
+}
+
+*:443 {
+    tls {
+        on_demand
+    }
     reverse_proxy http://127.0.0.1:8080 {
         # Forward Host header to the backend
         header_up Host {host}
