@@ -58,14 +58,14 @@ async def stream_url_chunks(url):
 
 @app.get("/download/message/{ref}")
 async def download_message(
-    ref: str, last_amend: Optional[bool] = True
+    ref: str, use_latest: Optional[bool] = True
 ) -> Union[Dict, Response]:
     """
     Fetch on Aleph and return a VM function message, after checking its validity.
     Used by the VM Supervisor run the code.
-
+K
     :param ref: item_hash of the code file
-    :param last_amend: should the last amend to the code be used
+    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
 
@@ -83,14 +83,14 @@ async def download_message(
 
 @app.get("/download/code/{ref}")
 async def download_code(
-    ref: str, last_amend: Optional[bool] = True
+    ref: str, use_latest: Optional[bool] = True
 ) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM code file, after checking its validity.
     Used by the VM Supervisor to download function source code.
 
     :param ref: item_hash of the code file
-    :param last_amend: should the last amend to the code be used
+    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
 
@@ -112,14 +112,14 @@ async def download_code(
 
 @app.get("/download/data/{ref}")
 async def download_data(
-    ref: str, last_amend: Optional[bool] = True
+    ref: str, use_latest: Optional[bool] = True
 ) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM data file, after checking its validity.
     Used by the VM Supervisor to download state data.
 
     :param ref: item_hash of the data
-    :param last_amend: should the last amend to the data be used
+    :param use_latest: should the last amend to the data be used
     :return: a file containing the data
     """
 
@@ -139,14 +139,14 @@ async def download_data(
 
 @app.get("/download/runtime/{ref}")
 async def download_runtime(
-    ref: str, last_amend: Optional[bool] = True
+    ref: str, use_latest: Optional[bool] = True
 ) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM runtime, after checking its validity.
     Used by the VM Supervisor to download a runtime.
 
     :param ref: item_hash of the runtime
-    :param last_amend: should the last amend to the runtime be used
+    :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
 
