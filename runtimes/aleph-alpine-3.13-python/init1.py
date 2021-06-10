@@ -70,6 +70,7 @@ s0.connect((2, 52))
 s0.close()
 
 # Configure aleph-client to use the guest API
+os.environ["ALEPH_API_HOST"] = "http://localhost"
 os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 os.environ["ALEPH_REMOTE_CRYPTO_HOST"] = "http://localhost"
 os.environ["ALEPH_REMOTE_CRYPTO_UNIX_SOCKET"] = "/tmp/socat-socket"
