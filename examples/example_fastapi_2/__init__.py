@@ -9,12 +9,14 @@ import aiohttp
 logger.debug("import aleph_client")
 from aleph_client.asynchronous import get_messages, create_post
 from aleph_client.chains.remote import RemoteAccount
+from aleph_client.vm.cache import VmCache
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
 logger.debug("imports done")
 
 app = FastAPI()
+cache = VmCache()
 
 
 @app.get("/")
@@ -68,3 +70,22 @@ async def post_a_message():
     return {
         "response": response,
     }
+
+
+@app.get("/cache/get/{key}")
+async def get_from_cache(key: str):
+    """Get data in the VM cache"""
+    return await cache.get(key)
+
+
+@app.get("/cache/set/{key}/{value}")
+async def store_in_cache(key: str, value: str):
+    """Store data in the VM cache"""
+    return await cache.set(key, value)
+
+
+@app.get("/cache/remove/{key}")
+async def remove_from_cache(key: str):
+    """Store data in the VM cache"""
+    result = await cache.delete(key)
+    return result == 1
