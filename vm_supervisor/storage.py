@@ -43,6 +43,19 @@ async def download_file(url: str, local_path: FilePath) -> None:
                 raise
 
 
+async def get_latest_amend(item_hash: str) -> str:
+    if settings.FAKE_DATA:
+        return item_hash
+    else:
+        url = f"{settings.CONNECTOR_URL}/compute/latest_amend/{item_hash}"
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(url)
+            resp.raise_for_status()
+            result: str = await resp.json()
+            assert isinstance(result, str)
+            return result or item_hash
+
+
 async def get_message(ref: str) -> ProgramMessage:
     if settings.FAKE_DATA:
         cache_path = os.path.abspath(

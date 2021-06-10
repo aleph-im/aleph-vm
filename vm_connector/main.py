@@ -32,6 +32,19 @@ class Encoding:
     zip = "zip"
 
 
+async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
+    async with aiohttp.ClientSession() as session:
+        url = f"{settings.ALEPH_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1" \
+              f"&refs={ref}&addresses={sender}"
+        resp = await session.get(url)
+        resp.raise_for_status()
+        resp_data = await resp.json()
+        if resp_data["messages"]:
+            return resp_data["messages"][0]
+        else:
+            return None
+
+
 async def get_message(hash_: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
         url = f"{settings.ALEPH_SERVER}/api/v0/messages.json?hashes={hash_}"
@@ -162,6 +175,22 @@ async def download_runtime(
     data_hash = msg["content"]["item_hash"]
     url = f"{settings.IPFS_SERVER}/{data_hash}"
     return StreamingResponse(stream_url_chunks(url), media_type="application/ext4")
+
+
+@app.get("/compute/latest_amend/{item_hash}")
+async def compute_latest_amend(item_hash: str) -> str:
+    msg = await get_message(hash_=item_hash)
+    sender = msg['sender']
+    latest_amend = await get_latest_message_amend(ref=item_hash, sender=sender)
+    if latest_amend:
+        # Validation
+        assert latest_amend['sender'] == sender
+        assert latest_amend['content']['ref'] == item_hash
+
+        return latest_amend['item_hash']
+    else:
+        # Original message is the latest
+        return item_hash
 
 
 class PostBody(BaseModel):

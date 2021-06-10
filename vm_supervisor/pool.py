@@ -60,7 +60,7 @@ class VmPool:
             raise
 
 
-    async def get_a_vm(self, message: ProgramContent, vm_hash: str, ) -> AlephFirecrackerVM:
+    async def get_a_vm(self, message: ProgramContent, vm_hash: str) -> AlephFirecrackerVM:
         """Provision a VM in the pool, then return the first VM from the pool."""
         try:
             started_vm = self.started_vms_cache.pop(message)

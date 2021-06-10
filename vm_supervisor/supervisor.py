@@ -20,7 +20,7 @@ from msgpack import UnpackValueError
 from aleph_message.models import ProgramMessage, ProgramContent
 from .conf import settings
 from .pool import VmPool
-from .storage import get_message
+from .storage import get_message, get_latest_amend
 from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,18 @@ async def try_get_message(ref: str) -> ProgramMessage:
     # Get the message or raise an aiohttp HTTP error
     try:
         return await get_message(ref)
+    except ClientConnectorError:
+        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
+    except ClientResponseError as error:
+        if error.status == 404:
+            raise HTTPNotFound(reason="Hash not found")
+        else:
+            raise
+
+
+async def get_latest_ref(item_hash: str) -> str:
+    try:
+        return await get_latest_amend(item_hash)
     except ClientConnectorError:
         raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
     except ClientResponseError as error:
@@ -63,6 +75,12 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
 
     message: ProgramMessage = await try_get_message(message_ref)
     message_content: ProgramContent = message.content
+
+    # Load amends
+    if message_content.runtime.use_latest:
+        message_content.runtime.ref = await get_latest_ref(message_content.runtime.ref)
+
+    # TODO: Cache message content after amends
 
     try:
         vm = await pool.get_a_vm(message_content, vm_hash=message.item_hash)
