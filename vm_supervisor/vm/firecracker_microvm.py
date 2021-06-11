@@ -51,17 +51,23 @@ class Interface(str, Enum):
 
 
 @dataclass
+class Volume:
+    mount: str
+    device: str
+
+
+@dataclass
 class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
     dns_servers: List[str]
     code: bytes
-    encoding: str
+    encoding: Encoding
     entrypoint: str
     input_data: bytes
     interface: Interface
     vm_hash: str
-    volumes: Dict[str, str]
+    volumes: List[Volume]
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -239,10 +245,10 @@ class AlephFirecrackerVM:
             else Interface.executable
 
         # Start at vdb since vda is already used by the root filesystem
-        volumes: Dict[str, str] = {
-            volume.mount: f"vd{string.ascii_lowercase[index+1]}"
+        volumes: List[Volume] = [
+            Volume(mount=volume.mount, device=f"vd{string.ascii_lowercase[index+1]}")
             for index, volume in enumerate(self.resources.volumes)
-        }
+        ]
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
