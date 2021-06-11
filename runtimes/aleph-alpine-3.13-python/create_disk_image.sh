@@ -4,7 +4,7 @@ umount /mnt/rootfs
 
 set -euf
 
-curl -fsSL -o ./alpine-miniroot.tgz https://dl-cdn.alpinelinux.org/alpine/v3.13/releases/x86_64/alpine-minirootfs-3.13.3-x86_64.tar.gz
+curl -fsSL -o ./alpine-miniroot.tgz https://dl-cdn.alpinelinux.org/alpine/v3.13/releases/x86_64/alpine-minirootfs-3.13.5-x86_64.tar.gz
 
 dd if=/dev/zero of=./rootfs.ext4 bs=1M count=500
 mkfs.ext4 ./rootfs.ext4
