@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import string
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import Process, set_start_method
@@ -12,12 +13,12 @@ import msgpack
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources
+from aleph_message.models.program import MachineResources, MachineVolume
 from firecracker.microvm import MicroVM, setfacl, Encoding
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..models import FilePath
-from ..storage import get_code_path, get_runtime_path, get_data_path
+from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -60,6 +61,7 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
+    volumes: Dict[str, str]
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -89,12 +91,15 @@ class AlephFirecrackerResources:
     code_encoding: Encoding
     code_entrypoint: str
     rootfs_path: FilePath
+    volumes: List[MachineVolume]
+    volume_paths: Dict[str, FilePath]
     data_path: Optional[FilePath]
 
     def __init__(self, message_content: ProgramContent):
         self.message_content = message_content
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint
+        self.volumes = message_content.volumes
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
@@ -128,11 +133,19 @@ class AlephFirecrackerResources:
         else:
             self.data_path = None
 
+    async def download_volumes(self):
+        volume_paths = {}
+        # TODO: Download in parallel
+        for volume in self.volumes:
+            volume_paths[volume.mount] = await get_volume_path(volume.ref)
+        self.volume_paths = volume_paths
+
     async def download_all(self):
         await asyncio.gather(
             self.download_kernel(),
             self.download_code(),
             self.download_runtime(),
+            self.download_volumes(),
             self.download_data(),
         )
 
@@ -148,7 +161,7 @@ class AlephFirecrackerVM:
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    fvm: MicroVM
+    fvm: MicroVM = None
     guest_api_process: Optional[Process] = None
 
     def __init__(
@@ -187,6 +200,8 @@ class AlephFirecrackerVM:
                 enable_console=self.enable_console,
             )
             await fvm.set_rootfs(self.resources.rootfs_path)
+            await fvm.mount(self.resources.volume_paths)
+
             await fvm.set_vsock()
             await fvm.set_resources(vcpus=self.hardware_resources.vcpus,
                                     memory=self.hardware_resources.memory)
@@ -223,6 +238,12 @@ class AlephFirecrackerVM:
         interface = Interface.asgi if ":" in self.resources.code_entrypoint \
             else Interface.executable
 
+        # Start at vdb since vda is already used by the root filesystem
+        volumes: Dict[str, str] = {
+            volume.mount: f"vd{string.ascii_lowercase[index+1]}"
+            for index, volume in enumerate(self.resources.volumes)
+        }
+
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
@@ -234,6 +255,7 @@ class AlephFirecrackerVM:
             input_data=input_data,
             interface=interface,
             vm_hash=self.vm_hash,
+            volumes=volumes,
         )
         payload = config.as_msgpack()
         length = f"{len(payload)}\n".encode()

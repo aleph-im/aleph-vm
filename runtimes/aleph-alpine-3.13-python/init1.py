@@ -52,6 +52,7 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
+    volumes: Dict[str, str]
 
 
 @dataclass
@@ -121,6 +122,14 @@ def setup_input_data(input_data: bytes):
             open("/opt/input.zip", "wb").write(input_data)
             os.makedirs("/data", exist_ok=True)
             os.system("unzip -q /opt/input.zip -d /data")
+
+
+def setup_volumes(volumes: Dict[str, str]):
+    for path, device in volumes.items():
+        logger.debug(f"Mounting /dev/{device} on {path}")
+        os.makedirs(path, exist_ok=True)
+        system(f"mount -t squashfs -o ro /dev/{device} {path}")
+    system("mount")
 
 
 def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
@@ -332,6 +341,7 @@ def main():
 
     config = ConfigurationPayload(**msg_)
     setup_hostname(config.vm_hash)
+    setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")

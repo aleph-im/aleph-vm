@@ -9,3 +9,4 @@ __pycache__
 *.tgz
 /pydantic/
 node_modules
+*.squashfs
