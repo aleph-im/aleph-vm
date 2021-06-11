@@ -235,9 +235,8 @@ class MicroVM:
         response.raise_for_status()
 
     async def mount(self, volume_paths: Dict[str, FilePath]):
-        counter = 1
-        for path, partition_path in volume_paths.items():
-            device_name = f"vd{string.ascii_lowercase[counter]}"
+        for index, (path, partition_path) in enumerate(volume_paths.items()):
+            device_name = f"vd{string.ascii_lowercase[index + 1]}"
             if self.use_jailer:
                 partition_filename = Path(partition_path).name
                 jailer_path_on_host = f"/opt/{partition_filename}"
@@ -253,7 +252,6 @@ class MicroVM:
             async with self.get_session() as session:
                 response = await session.put(f"http://localhost/drives/{device_name}", json=data)
             response.raise_for_status()
-            counter += 1
 
 
     async def set_vsock(self):

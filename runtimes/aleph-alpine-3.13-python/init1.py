@@ -42,6 +42,12 @@ class Interface(str, Enum):
 
 
 @dataclass
+class Volume:
+    mount: str
+    device: str
+
+
+@dataclass
 class ConfigurationPayload:
     ip: Optional[str]
     route: Optional[str]
@@ -52,7 +58,7 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    volumes: Dict[str, str]
+    volumes: List[Volume]
 
 
 @dataclass
@@ -124,11 +130,11 @@ def setup_input_data(input_data: bytes):
             os.system("unzip -q /opt/input.zip -d /data")
 
 
-def setup_volumes(volumes: Dict[str, str]):
-    for path, device in volumes.items():
-        logger.debug(f"Mounting /dev/{device} on {path}")
-        os.makedirs(path, exist_ok=True)
-        system(f"mount -t squashfs -o ro /dev/{device} {path}")
+def setup_volumes(volumes: List[Volume]):
+    for volume in volumes:
+        logger.debug(f"Mounting /dev/{volume.device} on {volume.mount}")
+        os.makedirs(volume.mount, exist_ok=True)
+        system(f"mount -t squashfs -o ro /dev/{volume.device} {volume.mount}")
     system("mount")
 
 
@@ -338,8 +344,10 @@ def main():
         data += client.recv(1024*1024)
 
     msg_ = msgpack.loads(data, raw=False)
-
+    msg_['volumes'] = [Volume(**volume_dict)
+                       for volume_dict in msg_.get('volumes')]
     config = ConfigurationPayload(**msg_)
+
     setup_hostname(config.vm_hash)
     setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)
