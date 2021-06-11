@@ -286,7 +286,8 @@ class AlephFirecrackerVM:
             self.guest_api_process.terminate()
 
     async def teardown(self):
-        await self.fvm.teardown()
+        if self.fvm:
+            await self.fvm.teardown()
         await self.stop_guest_api()
 
     async def run_code(
