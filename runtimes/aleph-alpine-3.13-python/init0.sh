@@ -20,10 +20,6 @@ pivot_root /mnt /mnt/rom
 mount --move /rom/proc /proc
 mount --move /rom/dev /dev
 
-#echo "Mounts"
-#ls /
-#ls /dev
-
 mkdir -p /dev/pts
 mkdir -p /dev/shm
 
