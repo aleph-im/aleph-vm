@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from os import listdir
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,10 @@ cache = VmCache()
 async def index():
     return {
         "Example": "example_fastapi_2",
-        "endpoints": ["/messages", "/internet"],
+        "endpoints": ["/messages", "/internet", "/post_a_message"],
+        "files_in_volumes": {
+            "/opt/venv": list(listdir("/opt/venv"))
+        },
     }
 
 

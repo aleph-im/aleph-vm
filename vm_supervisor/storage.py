@@ -113,3 +113,14 @@ async def get_runtime_path(ref: str) -> FilePath:
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
     await download_file(url, cache_path)
     return cache_path
+
+
+async def get_volume_path(ref: str) -> FilePath:
+    if settings.FAKE_DATA:
+        data_dir = abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+        return FilePath(data_dir)
+
+    cache_path = FilePath(join(settings.DATA_CACHE, ref))
+    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    await download_file(url, cache_path)
+    return cache_path

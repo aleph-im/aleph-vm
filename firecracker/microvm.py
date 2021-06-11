@@ -2,15 +2,18 @@ import asyncio
 import json
 import logging
 import os.path
+import string
 from asyncio import Task
 from enum import Enum
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import aiohttp
 from aiohttp import ClientResponse
+
+from vm_supervisor.models import FilePath
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +233,28 @@ class MicroVM:
         async with self.get_session() as session:
             response = await session.put("http://localhost/drives/rootfs", json=data)
         response.raise_for_status()
+
+    async def mount(self, volume_paths: Dict[str, FilePath]):
+        counter = 1
+        for path, partition_path in volume_paths.items():
+            device_name = f"vd{string.ascii_lowercase[counter]}"
+            if self.use_jailer:
+                partition_filename = Path(partition_path).name
+                jailer_path_on_host = f"/opt/{partition_filename}"
+                os.link(partition_path, f"{self.jailer_path}/{jailer_path_on_host}")
+                partition_path = jailer_path_on_host
+
+            data = {
+                "drive_id": device_name,
+                "path_on_host": partition_path,
+                "is_root_device": False,
+                "is_read_only": True,
+            }
+            async with self.get_session() as session:
+                response = await session.put(f"http://localhost/drives/{device_name}", json=data)
+            response.raise_for_status()
+            counter += 1
+
 
     async def set_vsock(self):
         data = {
