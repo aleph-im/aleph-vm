@@ -115,10 +115,24 @@ async def benchmark(runs: int):
 
     bench: List[float] = []
 
+    # First test all methods
+    settings.REUSE_TIMEOUT = 0.1
+    for path in ("/", "/messages", "/internet", "/post_a_message",
+                 "/cache/set/foo/bar", "/cache/get/foo"):
+        fake_request.match_info["suffix"] = path
+        response: Response = await supervisor.run_code(message_ref=ref,
+                                                       path=path,
+                                                       request=fake_request)
+        assert response.status == 200
+
+    # Disable VM timeout to exit benchmark properly
+    settings.REUSE_TIMEOUT = 0 if runs == 1 else 0.1
+    path = "/"
     for run in range(runs):
         t0 = time.time()
+        fake_request.match_info["suffix"] = path
         response: Response = await supervisor.run_code(message_ref=ref,
-                                                       path="/",
+                                                       path=path,
                                                        request=fake_request)
         assert response.status == 200
         bench.append(time.time() - t0)
