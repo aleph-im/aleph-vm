@@ -56,7 +56,7 @@ when running the VM Supervisor.
 
 ```shell
 apt update
-apt install -y git python3 python3-aiohttp python3-msgpack python3-dnspython redis python3-aioredis sudo acl curl systemd-container
+apt install -y git python3 python3-aiohttp python3-msgpack python3-aiodns redis python3-aioredis sudo acl curl systemd-container
 useradd jailman
 ```
 
