@@ -245,5 +245,5 @@ async def sign_message(request: Request):
     account: ETHAccount = ETHAccount(private_key=private_key)
 
     message = await request.json()
-    message = account.sign_message(message)
+    message = await account.sign_message(message)
     return message
