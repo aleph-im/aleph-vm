@@ -27,10 +27,6 @@ def read_root():
     return {"Server": "Aleph.im VM Connector"}
 
 
-class Encoding:
-    plain = "plain"
-    zip = "zip"
-
 
 async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
