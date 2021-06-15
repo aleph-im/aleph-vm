@@ -1,7 +1,6 @@
 import asyncio
 import dataclasses
 import logging
-import string
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import Process, set_start_method
@@ -14,6 +13,8 @@ from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
 from aleph_message.models.program import MachineResources, MachineVolume
+from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
+    NetworkInterface
 from firecracker.microvm import MicroVM, setfacl, Encoding
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
@@ -198,21 +199,40 @@ class AlephFirecrackerVM:
             jailer_bin_path=settings.JAILER_PATH,
         )
         fvm.prepare_jailer()
-        await fvm.start()
-        try:
-            await fvm.socket_is_ready()
-            await fvm.set_boot_source(
-                self.resources.kernel_image_path,
-                enable_console=self.enable_console,
-            )
-            await fvm.set_rootfs(self.resources.rootfs_path)
-            await fvm.mount(self.resources.volume_paths)
 
-            await fvm.set_vsock()
-            await fvm.set_resources(vcpus=self.hardware_resources.vcpus,
-                                    memory=self.hardware_resources.memory)
-            if self.enable_networking:
-                await fvm.set_network(interface=settings.NETWORK_INTERFACE)
+        config = FirecrackerConfig(
+            boot_source=BootSource(
+                kernel_image_path=FilePath(fvm.enable_kernel(self.resources.kernel_image_path)),
+                boot_args=BootSource.args(enable_console=self.enable_console),
+            ),
+            drives=[
+                Drive(
+                    drive_id="rootfs",
+                    path_on_host=FilePath(fvm.enable_rootfs(self.resources.rootfs_path)),
+                    is_root_device=True,
+                    is_read_only=True,
+                ),
+            ] + [
+                fvm.enable_drive(volume)
+                for volume in self.resources.volume_paths.values()
+            ],
+            machine_config=MachineConfig(
+                vcpu_count=self.hardware_resources.vcpus,
+                mem_size_mib=self.hardware_resources.memory,
+            ),
+            vsock=Vsock(),
+            network_interfaces = [
+                NetworkInterface(
+                    iface_id="eth0",
+                    host_dev_name=await fvm.create_network_interface(interface="eth0"),
+                )
+            ] if self.enable_networking else [],
+        )
+
+        logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
+
+        try:
+            await fvm.start(config)
             logger.debug("setup done")
             self.fvm = fvm
         except Exception:
@@ -229,10 +249,7 @@ class AlephFirecrackerVM:
         if self.enable_console:
             fvm.start_printing_logs()
 
-        await asyncio.gather(
-            fvm.start_instance(),
-            fvm.wait_for_init(),
-        )
+        await fvm.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")
 
     async def configure(self):
@@ -246,7 +263,7 @@ class AlephFirecrackerVM:
 
         # Start at vdb since vda is already used by the root filesystem
         volumes: List[Volume] = [
-            Volume(mount=volume.mount, device=f"vd{string.ascii_lowercase[index+1]}")
+            Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id)
             for index, volume in enumerate(self.resources.volumes)
         ]
 

@@ -1,1 +1,2 @@
-from firecracker.microvm import MicroVM
+from .microvm import MicroVM
+from .config import FirecrackerConfig
