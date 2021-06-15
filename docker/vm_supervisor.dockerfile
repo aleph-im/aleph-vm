@@ -4,8 +4,8 @@ FROM debian:buster
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl systemd-container  \
-     python3 python3-aiohttp python3-msgpack python3-pip \
-     && rm -rf /var/lib/apt/lists/*
+    python3 python3-aiohttp python3-msgpack python3-pip python3-aiodns python3-aioredis \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN useradd jailman
 
