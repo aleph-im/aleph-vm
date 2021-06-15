@@ -9,22 +9,13 @@ from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Optional, Tuple, Dict, List
-
-import aiohttp
-from aiohttp import ClientResponse
+from typing import Optional, Tuple, List
 
 from firecracker.config import FirecrackerConfig
 from vm_supervisor.models import FilePath
 from .config import Drive
 
 logger = logging.getLogger(__name__)
-
-
-class Encoding(str, Enum):
-    plain = "plain"
-    zip = "zip"
-
 
 VSOCK_PATH = "/tmp/v.sock"
 

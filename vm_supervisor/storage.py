@@ -14,6 +14,7 @@ from shutil import make_archive
 import aiohttp
 
 from aleph_message.models import ProgramMessage
+from aleph_message.models.program import Encoding
 from .conf import settings
 from .models import FilePath
 
@@ -78,10 +79,20 @@ async def get_code_path(ref: str) -> FilePath:
     if settings.FAKE_DATA:
         root_dir = abspath(join(__file__, "../../examples/"))
         archive_path = join(root_dir, settings.FAKE_DATA_EXAMPLE)
-        make_archive(
-            archive_path, "zip", root_dir=root_dir, base_dir=settings.FAKE_DATA_EXAMPLE
-        )
-        return FilePath(f"{archive_path}.zip")
+
+        encoding: Encoding = (await get_message(ref="fake-message")).content.code.encoding
+        if encoding == Encoding.squashfs:
+            if os.path.exists(f"{archive_path}.squashfs"):
+                os.remove(f"{archive_path}.squashfs")
+            os.system(f"mksquashfs {archive_path} {archive_path}.squashfs")
+            return FilePath(f"{archive_path}.squashfs")
+        elif encoding == Encoding.zip:
+            make_archive(
+                archive_path, "zip", root_dir=archive_path)
+            return FilePath(f"{archive_path}.zip")
+        else:
+            raise ValueError(f"Unsupported encoding: {encoding}")
+
 
     cache_path = FilePath(join(settings.CODE_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
