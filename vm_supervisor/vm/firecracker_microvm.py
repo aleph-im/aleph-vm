@@ -12,10 +12,10 @@ import msgpack
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources, MachineVolume
+from aleph_message.models.program import MachineResources, MachineVolume, Encoding
 from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
     NetworkInterface
-from firecracker.microvm import MicroVM, setfacl, Encoding
+from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..models import FilePath
@@ -212,7 +212,10 @@ class AlephFirecrackerVM:
                     is_root_device=True,
                     is_read_only=True,
                 ),
-            ] + [
+            ] + (
+                [fvm.enable_drive(self.resources.code_path)]
+                if self.resources.code_encoding == Encoding.squashfs else []
+            ) + [
                 fvm.enable_drive(volume)
                 for volume in self.resources.volume_paths.values()
             ],
@@ -255,17 +258,24 @@ class AlephFirecrackerVM:
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
 
-        code: bytes = load_file_content(self.resources.code_path)
         input_data: bytes = load_file_content(self.resources.data_path)
 
         interface = Interface.asgi if ":" in self.resources.code_entrypoint \
             else Interface.executable
 
-        # Start at vdb since vda is already used by the root filesystem
-        volumes: List[Volume] = [
-            Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id)
-            for index, volume in enumerate(self.resources.volumes)
-        ]
+        volumes: List[Volume]
+        if self.resources.code_encoding == Encoding.squashfs:
+            code = b''
+            volumes = [Volume(mount="/opt/code", device="vdb")] + [
+                Volume(mount=volume.mount, device=self.fvm.drives[index+1].drive_id)
+                for index, volume in enumerate(self.resources.volumes)
+            ]
+        else:
+            code: bytes = load_file_content(self.resources.code_path)
+            volumes = [
+                Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id)
+                for index, volume in enumerate(self.resources.volumes)
+            ]
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
