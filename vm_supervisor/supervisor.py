@@ -19,6 +19,7 @@ from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBad
 from msgpack import UnpackValueError
 
 from aleph_message.models import ProgramMessage, ProgramContent
+from firecracker.microvm import MicroVMFailedInit
 from .conf import settings
 from .pool import VmPool
 from .storage import get_message, get_latest_amend
@@ -110,6 +111,9 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     except VmSetupError as error:
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during program initialisation")
+    except MicroVMFailedInit as error:
+        logger.exception(error)
+        raise HTTPInternalServerError(reason="Error during runtime initialisation")
 
     logger.debug(f"Using vm={vm.vm_id}")
 

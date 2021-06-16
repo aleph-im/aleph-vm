@@ -197,6 +197,7 @@ class AlephFirecrackerVM:
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
+            init_timeout=settings.INIT_TIMEOUT,
         )
         fvm.prepare_jailer()
 
