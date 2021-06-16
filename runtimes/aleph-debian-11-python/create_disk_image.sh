@@ -1,5 +1,7 @@
 #!/bin/sh
 
+rm ./rootfs.squashfs
+
 set -euf
 
 rm -fr ./rootfs
@@ -15,7 +17,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   \
   python3-aiohttp python3-msgpack \
   python3-setuptools \
-  python3-pip python3-cytoolz \
+  python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip
 
 pip3 install fastapi
@@ -67,6 +69,13 @@ ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
 # Stuff to do before rebooting
 ::shutdown:/sbin/init shutdown
 EOT
+
+# Reduce size
+rm -fr ./rootfs/root/.cache
+rm -fr ./rootfs/var/cache
+rm -fr ./rootfs/usr/share/doc
+rm -fr ./rootfs/usr/share/man
+rm -fr ./rootfs/var/lib/apt/lists/
 
 # Custom init
 cp ./init0.sh ./rootfs/sbin/init
