@@ -11,13 +11,17 @@ from pwd import getpwnam
 from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, List
 
-from firecracker.config import FirecrackerConfig
+from .config import FirecrackerConfig
 from vm_supervisor.models import FilePath
 from .config import Drive
 
 logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
+
+
+class MicroVMFailedInit(Exception):
+    pass
 
 
 # extend the json.JSONEncoder class to support bytes
@@ -66,6 +70,7 @@ class MicroVM:
     stderr_task: Optional[Task] = None
     config_file = None
     drives: List[Drive] = None
+    init_timeout: float
 
     @property
     def jailer_path(self):
@@ -100,12 +105,14 @@ class MicroVM:
         firecracker_bin_path: str,
         use_jailer: bool = True,
         jailer_bin_path: Optional[str] = None,
+        init_timeout: float = 5.,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
         self.firecracker_bin_path = firecracker_bin_path
         self.jailer_bin_path = jailer_bin_path
         self.drives = []
+        self.init_timeout = init_timeout
 
     def prepare_jailer(self):
         system(f"rm -fr {self.jailer_path}")
@@ -167,7 +174,8 @@ class MicroVM:
         uid = str(getpwnam("jailman").pw_uid)
         gid = str(getpwnam("jailman").pw_gid)
 
-        config_file = NamedTemporaryFile(dir=f"{self.jailer_path}/tmp/", suffix='.json')
+        # config_file = NamedTemporaryFile(dir=f"{self.jailer_path}/tmp/", suffix='.json')
+        config_file = open(f"{self.jailer_path}/tmp/config.json", 'wb')
         config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
         config_file.flush()
         os.chmod(config_file.name, 0o644)
@@ -325,13 +333,20 @@ class MicroVM:
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
         os.system(f"chown jailman:jailman {self.vsock_path}_52")
-        await queue.get()
-        logger.debug("...signal from init received")
+        try:
+            await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
+            logger.debug("...signal from init received")
+        except asyncio.TimeoutError:
+            logger.warning("Never received signal from init")
+            raise MicroVMFailedInit()
 
     async def stop(self):
         if self.proc:
-            self.proc.terminate()
-            self.proc.kill()
+            try:
+                self.proc.terminate()
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
             self.proc = None
 
     async def teardown(self):
@@ -361,5 +376,11 @@ class MicroVM:
 
 
     def __del__(self):
-        loop = asyncio.get_running_loop()
-        loop.create_task(self.teardown())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.teardown())
+        except RuntimeError as error:
+            if error.args == ('no running event loop',):
+                return
+            else:
+                raise
