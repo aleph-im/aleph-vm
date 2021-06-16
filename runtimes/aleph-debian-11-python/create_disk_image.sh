@@ -1,17 +1,13 @@
 #!/bin/sh
 
-umount /mnt/rootfs
-
 set -euf
 
-dd if=/dev/zero of=./rootfs.ext4 bs=1M count=1000
-mkfs.ext4 ./rootfs.ext4
-mkdir -p /mnt/rootfs
-mount ./rootfs.ext4 /mnt/rootfs
+rm -fr ./rootfs
+mkdir ./rootfs
 
-debootstrap --variant=minbase bullseye /mnt/rootfs http://deb.debian.org/debian/
+debootstrap --variant=minbase bullseye ./rootfs http://deb.debian.org/debian/
 
-chroot /mnt/rootfs /bin/sh <<EOT
+chroot ./rootfs /bin/sh <<EOT
 apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
@@ -39,15 +35,15 @@ ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 EOT
 
-echo "PermitRootLogin yes" >> /mnt/rootfs/etc/ssh/sshd_config
+echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
 
 # Generate SSH host keys
-#systemd-nspawn -D /mnt/rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
-#systemd-nspawn -D /mnt/rootfs/ ssh-keygen -q -N "" -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key
-#systemd-nspawn -D /mnt/rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
-#systemd-nspawn -D /mnt/rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
+#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
+#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key
+#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
+#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
 
-cat <<EOT > /mnt/rootfs/etc/inittab
+cat <<EOT > ./rootfs/etc/inittab
 # /etc/inittab
 
 ::sysinit:/sbin/init sysinit
@@ -73,9 +69,9 @@ ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
 EOT
 
 # Custom init
-cp ./init0.sh /mnt/rootfs/sbin/init
-cp ./init1.py /mnt/rootfs/root/init1.py
-chmod +x /mnt/rootfs/sbin/init
-chmod +x /mnt/rootfs/root/init1.py
+cp ./init0.sh ./rootfs/sbin/init
+cp ./init1.py ./rootfs/root/init1.py
+chmod +x ./rootfs/sbin/init
+chmod +x ./rootfs/root/init1.py
 
-umount /mnt/rootfs
+mksquashfs ./rootfs/ ./rootfs.squashfs

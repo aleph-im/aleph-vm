@@ -20,10 +20,10 @@ jobs:
           cd examples/volumes
           bash build_squashfs.sh
 
-      - name: Build the rootfs
+      - name: Update the rootfs
         run: |
-          cd runtimes/aleph-alpine-3.13-python/
-          cp /var/tmp/rootfs.ext4 ./
+          cd runtimes/aleph-debian-11-python/
+          cp -pr /var/tmp/rootfs-debian ./rootfs
           bash update_inits.sh
 #          bash ./create_disk_image.sh
 
