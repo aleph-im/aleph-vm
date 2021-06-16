@@ -1,0 +1,1 @@
+../aleph-alpine-3.13-python/update_inits.sh
