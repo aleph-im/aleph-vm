@@ -5,6 +5,7 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
+import asyncio
 import binascii
 import logging
 from base64 import b32decode, b16encode
@@ -57,6 +58,18 @@ async def get_latest_ref(item_hash: str) -> str:
             raise
 
 
+async def update_with_latest_ref(obj):
+    """
+    Update the reference `ref` inplace if a newer version is available.
+
+    Useful to update references in parallel with asyncio.gather.
+    """
+    if obj is None:
+        return obj
+    if obj.use_latest:
+        obj.ref = await get_latest_ref(obj.ref)
+
+
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     return {
         "type": "http",
@@ -77,8 +90,15 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
     message_content: ProgramContent = message.content
 
     # Load amends
-    if message_content.runtime.use_latest:
-        message_content.runtime.ref = await get_latest_ref(message_content.runtime.ref)
+    await asyncio.gather(
+        update_with_latest_ref(message_content.runtime),
+        update_with_latest_ref(message_content.code),
+        update_with_latest_ref(message_content.data),
+        *(
+            update_with_latest_ref(volume)
+            for volume in (message_content.volumes or [])
+        ),
+    )
 
     # TODO: Cache message content after amends
 
