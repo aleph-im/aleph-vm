@@ -127,9 +127,23 @@ async def delete_from_cache(request: web.Request):
         return web.HTTPBadRequest(text="Invalid key")
 
     redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
-    logger.debug("DEL", f"{prefix}:{key}")
     result = await redis.delete(f"{prefix}:{key}")
     return web.json_response(result)
+
+
+async def list_keys_from_cache(request: web.Request):
+    prefix: str = request.app.meta_vm_hash
+    pattern: str = request.rel_url.query.get('pattern', '*')
+    if not re.match(r'^[\w?*^\-]+$', pattern):
+        return web.HTTPBadRequest(text="Invalid key")
+
+    redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
+    result = await redis.keys(f"{prefix}:{pattern}")
+    keys = [
+        key.decode()[len(prefix)+1:]
+        for key in result
+    ]
+    return web.json_response(keys)
 
 
 def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
@@ -139,6 +153,7 @@ def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
     app.router.add_route(method='GET', path='/properties', handler=properties)
     app.router.add_route(method='POST', path='/sign', handler=sign)
 
+    app.router.add_route(method='GET', path='/cache/', handler=list_keys_from_cache)
     app.router.add_route(method='GET', path='/cache/{key:.*}', handler=get_from_cache)
     app.router.add_route(method='PUT', path='/cache/{key:.*}', handler=put_in_cache)
     app.router.add_route(method='DELETE', path='/cache/{key:.*}', handler=delete_from_cache)
@@ -150,6 +165,7 @@ def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
     app.router.add_route(method='POST', path='/api/v0/ipfs/pubsub/pub', handler=repost)
     app.router.add_route(method='POST', path='/api/v0/p2p/pubsub/pub', handler=repost)
 
+    # web.run_app(app=app, port=9000)
     web.run_app(app=app, path=unix_socket_path)
 
 
