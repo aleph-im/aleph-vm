@@ -118,7 +118,7 @@ async def benchmark(runs: int):
     # First test all methods
     settings.REUSE_TIMEOUT = 0.1
     for path in ("/", "/messages", "/internet", "/post_a_message",
-                 "/cache/set/foo/bar", "/cache/get/foo"):
+                 "/cache/set/foo/bar", "/cache/get/foo", "/cache/keys"):
         fake_request.match_info["suffix"] = path
         response: Response = await supervisor.run_code(message_ref=ref,
                                                        path=path,

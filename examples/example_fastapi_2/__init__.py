@@ -93,3 +93,8 @@ async def remove_from_cache(key: str):
     """Store data in the VM cache"""
     result = await cache.delete(key)
     return result == 1
+
+@app.get("/cache/keys")
+async def keys_from_cache(pattern: str = '*'):
+    """List keys from the VM cache"""
+    return await cache.keys(pattern)
