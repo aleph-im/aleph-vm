@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     FIRECRACKER_PATH: str = "/opt/firecracker/firecracker"
     JAILER_PATH: str = "/opt/firecracker/jailer"
     LINUX_PATH: str = os.path.abspath("./kernels/vmlinux.bin")
+    INIT_TIMEOUT: float = 20
 
     CONNECTOR_URL: Url = Url("http://localhost:8000")
 
