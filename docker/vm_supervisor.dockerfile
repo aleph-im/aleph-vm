@@ -18,7 +18,7 @@ RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/downl
 RUN ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
 RUN ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
 
-RUN pip3 install typing-extensions aleph-message>=0.1.8 pydantic
+RUN pip3 install typing-extensions aleph-message>=0.1.10 pydantic
 
 RUN mkdir /srv/jailer
 
