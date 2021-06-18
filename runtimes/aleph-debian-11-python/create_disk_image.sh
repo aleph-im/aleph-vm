@@ -74,6 +74,7 @@ EOT
 # Reduce size
 rm -fr ./rootfs/root/.cache
 rm -fr ./rootfs/var/cache
+mkdir -p ./rootfs/var/cache/apt/archives/partial
 rm -fr ./rootfs/usr/share/doc
 rm -fr ./rootfs/usr/share/man
 rm -fr ./rootfs/var/lib/apt/lists/
