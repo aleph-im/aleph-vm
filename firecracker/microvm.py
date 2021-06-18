@@ -4,7 +4,6 @@ import logging
 import os.path
 import string
 from asyncio import Task
-from enum import Enum
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
@@ -244,10 +243,11 @@ class MicroVM:
         else:
             return path_on_host
 
-    def compute_device_name(self, index: int) -> str:
+    @staticmethod
+    def compute_device_name(index: int) -> str:
         return f"vd{string.ascii_lowercase[index + 1]}"
 
-    def enable_drive(self, drive_path: str) -> Drive:
+    def enable_drive(self, drive_path: str, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
         Creates a symlink to the volume file if jailer is in use.
@@ -264,7 +264,7 @@ class MicroVM:
             drive_id=device_name,
             path_on_host=FilePath(drive_path),
             is_root_device=False,
-            is_read_only=True,
+            is_read_only=read_only,
         )
         self.drives.append(drive)
         return drive

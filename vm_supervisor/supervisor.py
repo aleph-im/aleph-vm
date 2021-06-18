@@ -65,10 +65,10 @@ async def update_with_latest_ref(obj):
 
     Useful to update references in parallel with asyncio.gather.
     """
-    if obj is None:
-        return obj
-    if obj.use_latest:
+    if hasattr(obj, 'use_latest') and obj.use_latest:
         obj.ref = await get_latest_ref(obj.ref)
+    else:
+        return obj
 
 
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
