@@ -12,7 +12,7 @@ import msgpack
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources, MachineVolume, Encoding
+from aleph_message.models.program import MachineResources, Encoding
 from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
     NetworkInterface
 from firecracker.microvm import MicroVM, setfacl
@@ -55,6 +55,14 @@ class Interface(str, Enum):
 class Volume:
     mount: str
     device: str
+    read_only: bool
+
+
+@dataclass
+class HostVolume:
+    mount: str
+    path_on_host: str
+    read_only: bool
 
 
 @dataclass
@@ -98,15 +106,16 @@ class AlephFirecrackerResources:
     code_encoding: Encoding
     code_entrypoint: str
     rootfs_path: FilePath
-    volumes: List[MachineVolume]
+    volumes: List[HostVolume]
     volume_paths: Dict[str, FilePath]
     data_path: Optional[FilePath]
+    vm_hash: str
 
-    def __init__(self, message_content: ProgramContent):
+    def __init__(self, message_content: ProgramContent, vm_hash: str):
         self.message_content = message_content
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint
-        self.volumes = message_content.volumes
+        self.vm_hash = vm_hash
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
@@ -141,11 +150,18 @@ class AlephFirecrackerResources:
             self.data_path = None
 
     async def download_volumes(self):
-        volume_paths = {}
+        volumes = []
         # TODO: Download in parallel
-        for volume in self.volumes:
-            volume_paths[volume.mount] = await get_volume_path(volume.ref)
-        self.volume_paths = volume_paths
+        for volume in self.message_content.volumes:
+            volumes.append(HostVolume(
+                mount=volume.mount,
+                path_on_host=(await get_volume_path(
+                    volume=volume, vm_hash=self.vm_hash)),
+
+                read_only=volume.is_read_only(),
+            ))
+        self.volumes = volumes
+
 
     async def download_all(self):
         await asyncio.gather(
@@ -217,8 +233,8 @@ class AlephFirecrackerVM:
                 [fvm.enable_drive(self.resources.code_path)]
                 if self.resources.code_encoding == Encoding.squashfs else []
             ) + [
-                fvm.enable_drive(volume)
-                for volume in self.resources.volume_paths.values()
+                fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                for volume in self.resources.volumes
             ],
             machine_config=MachineConfig(
                 vcpu_count=self.hardware_resources.vcpus,
@@ -267,14 +283,16 @@ class AlephFirecrackerVM:
         volumes: List[Volume]
         if self.resources.code_encoding == Encoding.squashfs:
             code = b''
-            volumes = [Volume(mount="/opt/code", device="vdb")] + [
-                Volume(mount=volume.mount, device=self.fvm.drives[index+1].drive_id)
+            volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
+                Volume(mount=volume.mount, device=self.fvm.drives[index+1].drive_id,
+                       read_only=volume.read_only)
                 for index, volume in enumerate(self.resources.volumes)
             ]
         else:
             code: bytes = load_file_content(self.resources.code_path)
             volumes = [
-                Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id)
+                Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id,
+                       read_only=volume.read_only)
                 for index, volume in enumerate(self.resources.volumes)
             ]
 

@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     RUNTIME_CACHE: FilePath = FilePath(join(CACHE_ROOT, "runtime"))
     DATA_CACHE: FilePath = FilePath(join(CACHE_ROOT, "data"))
 
+    PERSISTENT_VOLUMES_DIR: FilePath = FilePath(join("/var/tmp/aleph", "volumes", "persistent"))
+
     FAKE_DATA: bool = False
     FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
 

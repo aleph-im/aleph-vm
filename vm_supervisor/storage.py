@@ -4,17 +4,20 @@ This module is in charge of providing the source code corresponding to a 'code i
 In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
+import asyncio
 import json
 import hashlib
 import logging
 import os
+import re
 from os.path import isfile, join, abspath
 from shutil import make_archive
 
 import aiohttp
 
 from aleph_message.models import ProgramMessage
-from aleph_message.models.program import Encoding
+from aleph_message.models.program import Encoding, MachineVolume, ImmutableVolume, PersistentVolume, \
+    VolumePersistence
 from .conf import settings
 from .models import FilePath
 
@@ -126,12 +129,37 @@ async def get_runtime_path(ref: str) -> FilePath:
     return cache_path
 
 
-async def get_volume_path(ref: str) -> FilePath:
-    if settings.FAKE_DATA:
-        data_dir = abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
-        return FilePath(data_dir)
+def create_ext4(path: FilePath) -> bool:
+    if os.path.isfile(path):
+        return False
+    tmp_path = f"{path}.tmp"
+    os.system(f"dd if=/dev/zero of={tmp_path} bs=1M count=500")
+    os.system(f"mkfs.ext4 {tmp_path}")
+    if settings.USE_JAILER:
+        os.system(f"chown jailman:jailman {tmp_path}")
+    os.rename(tmp_path, path)
+    return True
 
-    cache_path = FilePath(join(settings.DATA_CACHE, ref))
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
-    await download_file(url, cache_path)
-    return cache_path
+
+async def get_volume_path(volume: MachineVolume, vm_hash: str) -> FilePath:
+    if isinstance(volume, ImmutableVolume):
+        ref = volume.ref
+        if settings.FAKE_DATA:
+            data_dir = abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+            return FilePath(data_dir)
+
+        cache_path = FilePath(join(settings.DATA_CACHE, ref))
+        url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+        await download_file(url, cache_path)
+        return cache_path
+    elif isinstance(volume, PersistentVolume):
+        if volume.persistence != VolumePersistence.host:
+            raise NotImplementedError("Only 'host' persistence is supported")
+        if not re.match(r'^[\w\-_/]+$', volume.name):
+            raise ValueError(f"Invalid value for volume name: {volume.name}")
+        os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash), exist_ok=True)
+        volume_path = FilePath(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash, f"{volume.name}.ext4"))
+        await asyncio.get_event_loop().run_in_executor(None, create_ext4, volume_path)
+        return volume_path
+    else:
+        raise NotImplementedError("Only immutable volumes are supported")

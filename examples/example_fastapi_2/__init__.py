@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime
 from os import listdir
@@ -98,3 +99,16 @@ async def remove_from_cache(key: str):
 async def keys_from_cache(pattern: str = '*'):
     """List keys from the VM cache"""
     return await cache.keys(pattern)
+
+@app.get("/state/increment")
+async def increment():
+    path = "/var/lib/sqlite/mydb"
+    try:
+        with open(path) as fd:
+            data = json.load(fd)
+        data["counter"] += 1
+    except:
+        data = {"counter": 0}
+    with open(path, 'w') as fd:
+        json.dump(data, fd)
+    return data
