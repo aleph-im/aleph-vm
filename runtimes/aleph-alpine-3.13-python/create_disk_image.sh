@@ -27,7 +27,7 @@ pip install fastapi
 
 apk add git pkgconf gcc py3-wheel python3-dev musl-dev py3-cffi libffi-dev autoconf automake libtool make
 echo "Pip installing aleph-client"
-pip install aleph-client>=0.2.7 coincurve==15.0.0
+pip install 'aleph-client>=0.2.7' 'coincurve==15.0.0'
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/lib/python3.8/site-packages

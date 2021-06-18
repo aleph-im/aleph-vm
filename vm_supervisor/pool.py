@@ -39,7 +39,7 @@ class VmPool:
 
     async def create_a_vm(self, message_content: ProgramContent, vm_hash: str) -> AlephFirecrackerVM:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        vm_resources = AlephFirecrackerResources(message_content)
+        vm_resources = AlephFirecrackerResources(message_content, vm_hash)
         await vm_resources.download_all()
         self.counter += 1
         vm = AlephFirecrackerVM(

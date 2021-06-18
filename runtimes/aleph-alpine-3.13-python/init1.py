@@ -46,6 +46,7 @@ class Interface(str, Enum):
 class Volume:
     mount: str
     device: str
+    read_only: bool
 
 
 @dataclass
@@ -135,7 +136,11 @@ def setup_volumes(volumes: List[Volume]):
     for volume in volumes:
         logger.debug(f"Mounting /dev/{volume.device} on {volume.mount}")
         os.makedirs(volume.mount, exist_ok=True)
-        system(f"mount -t squashfs -o ro /dev/{volume.device} {volume.mount}")
+        if volume.read_only:
+            system(f"mount -t squashfs -o ro /dev/{volume.device} {volume.mount}")
+        else:
+            system(f"mount -o rw /dev/{volume.device} {volume.mount}")
+
     system("mount")
 
 
