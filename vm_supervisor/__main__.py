@@ -9,6 +9,7 @@ from typing import List
 
 from aiohttp.web import Response
 
+from vm_supervisor.models import VmHash
 from . import supervisor
 from .conf import settings
 
@@ -99,7 +100,7 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = "fe488a08a7bed020515f069ce9a52847092af468beca79c66c8c0108bdab98a1"
+    ref = VmHash("652da037fe24ae9376946da6e50079881212cd6bb6274d043f34d74dc3339ab4")
 
     class FakeRequest: pass
 
@@ -109,6 +110,7 @@ async def benchmark(runs: int):
     fake_request.query_string = ""
     fake_request.headers = []
     fake_request.raw_headers = []
+    # noinspection PyDeprecation
     fake_request.text = coroutine(lambda: None)
 
     logger.info("--- Start benchmark ---")
