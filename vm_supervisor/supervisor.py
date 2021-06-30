@@ -21,9 +21,10 @@ from msgpack import UnpackValueError
 from aleph_message.models import ProgramMessage, ProgramContent
 from firecracker.microvm import MicroVMFailedInit
 from .conf import settings
+from .models import VmHash
 from .pool import VmPool
 from .storage import get_message, get_latest_amend
-from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
+from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, AlephFirecrackerVM
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
@@ -82,38 +83,41 @@ async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     }
 
 
-async def run_code(message_ref: str, path: str, request: web.Request) -> web.Response:
+async def run_code(message_ref: VmHash, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    message: ProgramMessage = await try_get_message(message_ref)
-    message_content: ProgramContent = message.content
+    vm: AlephFirecrackerVM = await pool.get(vm_hash=message_ref)
+    if not vm:
+        message: ProgramMessage = await try_get_message(message_ref)
+        message_content: ProgramContent = message.content
 
-    # Load amends
-    await asyncio.gather(
-        update_with_latest_ref(message_content.runtime),
-        update_with_latest_ref(message_content.code),
-        update_with_latest_ref(message_content.data),
-        *(
-            update_with_latest_ref(volume)
-            for volume in (message_content.volumes or [])
-        ),
-    )
+        # Load amends
+        await asyncio.gather(
+            update_with_latest_ref(message_content.runtime),
+            update_with_latest_ref(message_content.code),
+            update_with_latest_ref(message_content.data),
+            *(
+                update_with_latest_ref(volume)
+                for volume in (message_content.volumes or [])
+            ),
+        )
 
-    # TODO: Cache message content after amends
+        # TODO: Cache message content after amends
+        # TODO: Update VM in case a new version has been released
 
-    try:
-        vm = await pool.get_a_vm(message_content, vm_hash=message.item_hash)
-    except ResourceDownloadError as error:
-        logger.exception(error)
-        raise HTTPBadRequest(reason="Code, runtime or data not available")
-    except VmSetupError as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Error during program initialisation")
-    except MicroVMFailedInit as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation")
+        try:
+            vm = await pool.get_or_create(message_content, vm_hash=VmHash(message.item_hash))
+        except ResourceDownloadError as error:
+            logger.exception(error)
+            raise HTTPBadRequest(reason="Code, runtime or data not available")
+        except VmSetupError as error:
+            logger.exception(error)
+            raise HTTPInternalServerError(reason="Error during program initialisation")
+        except MicroVMFailedInit as error:
+            logger.exception(error)
+            raise HTTPInternalServerError(reason="Error during runtime initialisation")
 
     logger.debug(f"Using vm={vm.vm_id}")
 
@@ -153,7 +157,7 @@ async def run_code(message_ref: str, path: str, request: web.Request) -> web.Res
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
-            pool.keep_in_cache(vm, message_content, timeout=settings.REUSE_TIMEOUT)
+            pool.stop_after_timeout(vm_hash=message_ref, timeout=settings.REUSE_TIMEOUT)
         else:
             await vm.teardown()
 
@@ -167,7 +171,7 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref: str = request.match_info["ref"]
+    message_ref: VmHash = request.match_info["ref"]
     return run_code(message_ref, path, request)
 
 
