@@ -100,7 +100,7 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = VmHash("652da037fe24ae9376946da6e50079881212cd6bb6274d043f34d74dc3339ab4")
+    ref = VmHash("9b1ef4d969e393c871cef25bab345c8eaabfe81d1fc6536f287be4f6bb7c852a")
 
     class FakeRequest: pass
 

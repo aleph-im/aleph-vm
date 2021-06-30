@@ -129,11 +129,11 @@ async def get_runtime_path(ref: str) -> FilePath:
     return cache_path
 
 
-def create_ext4(path: FilePath) -> bool:
+def create_ext4(path: FilePath, size_mib: int) -> bool:
     if os.path.isfile(path):
         return False
     tmp_path = f"{path}.tmp"
-    os.system(f"dd if=/dev/zero of={tmp_path} bs=1M count=500")
+    os.system(f"dd if=/dev/zero of={tmp_path} bs=1M count={size_mib}")
     os.system(f"mkfs.ext4 {tmp_path}")
     if settings.USE_JAILER:
         os.system(f"chown jailman:jailman {tmp_path}")
@@ -159,7 +159,8 @@ async def get_volume_path(volume: MachineVolume, vm_hash: str) -> FilePath:
             raise ValueError(f"Invalid value for volume name: {volume.name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash), exist_ok=True)
         volume_path = FilePath(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash, f"{volume.name}.ext4"))
-        await asyncio.get_event_loop().run_in_executor(None, create_ext4, volume_path)
+        await asyncio.get_event_loop().run_in_executor(
+            None, create_ext4, volume_path, volume.size_mib)
         return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")
