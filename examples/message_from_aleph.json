@@ -47,7 +47,8 @@
                 "comment": "Working data persisted on the VM supervisor, not available on other nodes",
                 "mount": "/var/lib/sqlite",
                 "name": "database",
-                "persistence": "host"
+                "persistence": "host",
+                "size_mib": 5
             }
         ],
         "data": {
