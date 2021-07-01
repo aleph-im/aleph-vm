@@ -218,8 +218,14 @@ async def run_python_code_http(application: ASGIApplication, scope: dict
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
+
+        # The body should not be part of the ASGI scope itself
+        body: bytes = scope.pop('body')
+
         async def receive():
-            pass
+            return {'type': 'http.request',
+                    'body': body,
+                    'more_body': False}
 
         send_queue: asyncio.Queue = asyncio.Queue()
 
