@@ -82,7 +82,7 @@ async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
         "method": request.method,
         "query_string": request.query_string,
         "headers": headers,
-        "body": await request.text()
+        "body": await request.read()
     }
 
 
