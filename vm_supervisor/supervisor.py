@@ -73,12 +73,15 @@ async def update_with_latest_ref(obj):
 
 
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
+    # ASGI mandates lowercase header names
+    headers = tuple((name.lower(), value)
+                    for name, value in request.raw_headers)
     return {
         "type": "http",
         "path": path,
         "method": request.method,
         "query_string": request.query_string,
-        "headers": request.raw_headers,
+        "headers": headers,
         "body": await request.text()
     }
 
