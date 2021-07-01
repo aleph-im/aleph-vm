@@ -93,6 +93,10 @@ class VmPool:
     def stop_after_timeout(self, vm_hash: VmHash, timeout: float = 1.0) -> None:
         """Keep a VM running for `timeout` seconds in case another query comes by."""
         print('SS', self.started_vms)
+
+        if settings.FAKE_DATA:
+            vm_hash = list(self.started_vms.keys())[0]
+
         started_vm = self.started_vms[vm_hash]
 
         if started_vm.timeout_task:
