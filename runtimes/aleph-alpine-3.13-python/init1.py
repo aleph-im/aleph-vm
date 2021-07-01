@@ -151,6 +151,8 @@ def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApp
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
         module = __import__(module_name)
+        for level in module_name.split('.')[1:]:
+            module = getattr(module, level)
         app: ASGIApplication = getattr(module, app_name)
     elif encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
