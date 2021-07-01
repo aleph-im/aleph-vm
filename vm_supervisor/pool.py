@@ -32,8 +32,8 @@ class VmPool:
     """
 
     counter: int  # Used to provide distinct ids to network interfaces
-    starting_vms: Dict[VmHash, bool]
-    started_vms: Dict[VmHash, StartedVM]
+    starting_vms: Dict[VmHash, bool]  # Lock containing hash of VMs being started
+    started_vms: Dict[VmHash, StartedVM]  # Shared pool of VMs already started
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
