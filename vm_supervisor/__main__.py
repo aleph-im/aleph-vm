@@ -100,7 +100,7 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = VmHash("9b1ef4d969e393c871cef25bab345c8eaabfe81d1fc6536f287be4f6bb7c852a")
+    ref = VmHash("TEST_HASH")
 
     class FakeRequest:
         headers: Dict[str, str]
@@ -132,7 +132,7 @@ async def benchmark(runs: int):
     for path in ("/", "/messages", "/internet", "/post_a_message",
                  "/cache/set/foo/bar", "/cache/get/foo", "/cache/keys"):
         fake_request.match_info["suffix"] = path
-        response: Response = await supervisor.run_code(message_ref=ref,
+        response: Response = await supervisor.run_code(vm_hash=ref,
                                                        path=path,
                                                        request=fake_request)
         assert response.status == 200
@@ -143,7 +143,7 @@ async def benchmark(runs: int):
     for run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response: Response = await supervisor.run_code(message_ref=ref,
+        response: Response = await supervisor.run_code(vm_hash=ref,
                                                        path=path,
                                                        request=fake_request)
         assert response.status == 200
