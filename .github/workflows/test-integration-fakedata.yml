@@ -3,7 +3,7 @@ on: [push]
 jobs:
   Run-VM-Supervisor-Fake-Data:
     runs-on: self-hosted
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       ALEPH_VM_FAKE_DATA: true
       ALEPH_VM_LINUX_PATH: /opt/vmlinux.bin
