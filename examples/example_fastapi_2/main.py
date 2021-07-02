@@ -2,6 +2,8 @@ import json
 import logging
 from datetime import datetime
 from os import listdir
+from fastapi import Request
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -112,3 +114,13 @@ async def increment():
     with open(path, 'w') as fd:
         json.dump(data, fd)
     return data
+
+
+class Data(BaseModel):
+    text: str
+    number: int
+
+
+@app.post("/post")
+async def receive_post(data: Data):
+    return str(data)
