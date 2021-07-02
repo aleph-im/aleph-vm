@@ -14,7 +14,7 @@
         "allow_amend": false,
         "code": {
             "encoding": "squashfs",
-            "entrypoint": "__init__:app",
+            "entrypoint": "main:app",
             "ref": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
             "use_latest": false
         },
