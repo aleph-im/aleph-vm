@@ -86,14 +86,14 @@ async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     }
 
 
-async def run_code(message_ref: VmHash, path: str, request: web.Request) -> web.Response:
+async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    vm: AlephFirecrackerVM = await pool.get(vm_hash=message_ref)
+    vm: AlephFirecrackerVM = await pool.get(vm_hash=vm_hash)
     if not vm:
-        message: ProgramMessage = await try_get_message(message_ref)
+        message: ProgramMessage = await try_get_message(vm_hash)
         message_content: ProgramContent = message.content
 
         # Load amends
@@ -111,7 +111,7 @@ async def run_code(message_ref: VmHash, path: str, request: web.Request) -> web.
         # TODO: Update VM in case a new version has been released
 
         try:
-            vm = await pool.get_or_create(message_content, vm_hash=VmHash(message.item_hash))
+            vm = await pool.get_or_create(message_content, vm_hash=vm_hash)
         except ResourceDownloadError as error:
             logger.exception(error)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -160,7 +160,7 @@ async def run_code(message_ref: VmHash, path: str, request: web.Request) -> web.
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
-            pool.stop_after_timeout(vm_hash=message_ref, timeout=settings.REUSE_TIMEOUT)
+            pool.stop_after_timeout(vm_hash=vm_hash, timeout=settings.REUSE_TIMEOUT)
         else:
             await vm.teardown()
 
@@ -207,7 +207,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
     message_ref_base32 = request.host.split(".")[0]
     if settings.FAKE_DATA:
-        message_ref = "test"
+        message_ref = "TEST_HASH"
     else:
         try:
             message_ref = b32_to_b16(message_ref_base32).decode()
