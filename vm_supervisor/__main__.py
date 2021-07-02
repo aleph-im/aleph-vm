@@ -5,7 +5,7 @@ import sys
 import time
 from asyncio import coroutine
 from statistics import mean
-from typing import List
+from typing import List, Tuple, Dict
 
 from aiohttp.web import Response
 
@@ -102,16 +102,26 @@ async def benchmark(runs: int):
     """
     ref = VmHash("9b1ef4d969e393c871cef25bab345c8eaabfe81d1fc6536f287be4f6bb7c852a")
 
-    class FakeRequest: pass
+    class FakeRequest:
+        headers: Dict[str, str]
+        raw_headers: List[Tuple[bytes, bytes]]
 
     fake_request = FakeRequest()
     fake_request.match_info = {"ref": ref, "suffix": "/"}
     fake_request.method = "GET"
     fake_request.query_string = ""
-    fake_request.headers = []
-    fake_request.raw_headers = []
+
+    fake_request.headers = {
+        'host': '127.0.0.1',
+        'content-type': 'application/json'
+    }
+    fake_request.raw_headers = [
+        (name.encode(), value.encode())
+        for name, value in fake_request.headers.items()
+    ]
+
     # noinspection PyDeprecation
-    fake_request.text = coroutine(lambda: None)
+    fake_request.read = coroutine(lambda: b'')
 
     logger.info("--- Start benchmark ---")
 
