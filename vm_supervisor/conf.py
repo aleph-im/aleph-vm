@@ -88,6 +88,7 @@ class Settings(BaseSettings):
 
     FAKE_DATA: bool = False
     FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
+    # FAKE_DATA_EXAMPLE: str = "example_django"
 
     def update(self, **kwargs):
         for key, value in kwargs.items():

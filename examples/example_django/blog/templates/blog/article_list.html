@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>My Django Blog</title></head>
+<style>
+    html {
+        background-color: rebeccapurple;
+    }
+
+    body {
+        font-family: "Bitstream Vera Sans Mono", Monaco, "Courier New", Courier, monospace;
+        max-width: min(800px, 80vw);
+        margin-left: auto;
+        margin-right: auto;
+        padding: 2em;
+        background-color: white;
+    }
+    article div {
+        font-size: small;
+    }
+    article div.comments p {
+        padding-left: 2em;
+        color: blue;
+        border-left: solid 1px blue;
+    }
+    footer {
+        margin-top: 2em;
+    }
+</style>
+<body>
+
+<h1>My Django Blog</h1>
+
+{% for article in object_list %}
+  <article>
+    <h2 id="{{ article.id }}">{{ article.title }}</h2>
+    <div>Published on <time>{{ article.date|date }}</time><br/></div>
+    <p>
+      {{ article.body }}
+    </p>
+    <div class="comments">
+      {% for comment in article.comment_set.all %}
+        <p>{{ comment.text }}</p>
+      {% endfor %}
+
+      <form action="{% url 'comment' %}" method="post">
+        {% csrf_token %}
+        {{ form }}
+        <input type="hidden" name="article" value="{{ article.id }}">
+        <input type="submit" value="Submit">
+      </form>
+    </div>
+  </article>
+{% empty %}
+  <li>No articles yet.</li>
+{% endfor %}
+
+<footer>
+  <a href="{% url 'admin:index' %}">Admin panel</a>
+</footer>
+</body>
+</html>

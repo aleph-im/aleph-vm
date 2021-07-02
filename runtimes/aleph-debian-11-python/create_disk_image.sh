@@ -21,7 +21,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   iproute2 unzip \
   nodejs
 
-pip3 install fastapi
+pip3 install fastapi django
 
 echo "Pip installing aleph-client"
 pip3 install 'aleph-client>=0.2.7' 'coincurve==15.0.0'
