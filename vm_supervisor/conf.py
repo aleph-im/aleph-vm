@@ -58,6 +58,8 @@ def systemd_resolved_dns_servers(interface):
 
 
 class Settings(BaseSettings):
+    SUPERVISOR_PORT: int = 4020
+
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
