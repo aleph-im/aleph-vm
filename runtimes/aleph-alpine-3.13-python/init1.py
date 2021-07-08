@@ -360,25 +360,35 @@ def receive_data_length(client) -> int:
     return int(buffer)
 
 
-def main():
-    client, addr = s.accept()
-
-    logger.debug("Receiving setup...")
-    length = receive_data_length(client)
-    data = b""
-    while len(data) < length:
-        data += client.recv(1024*1024)
-
+def load_configuration(data: bytes) -> ConfigurationPayload:
     msg_ = msgpack.loads(data, raw=False)
     msg_['volumes'] = [Volume(**volume_dict)
                        for volume_dict in msg_.get('volumes')]
-    config = ConfigurationPayload(**msg_)
+    return ConfigurationPayload(**msg_)
 
+
+def receive_config(client) -> ConfigurationPayload:
+    length = receive_data_length(client)
+    data = b""
+    while len(data) < length:
+        data += client.recv(1024 * 1024)
+    return load_configuration(data)
+
+
+def setup_system(config: ConfigurationPayload):
     setup_hostname(config.vm_hash)
     setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")
+
+
+def main():
+    client, addr = s.accept()
+
+    logger.debug("Receiving setup...")
+    config = receive_config(client)
+    setup_system(config)
 
     try:
         app: Union[ASGIApplication, subprocess.Popen] = setup_code(
