@@ -121,7 +121,7 @@ python3 -m vm_supervisor -vv --system-logs
 ```
 
 Test accessing the service on
-http://localhost:8080/
+http://localhost:4020/
 
 ## 4. Configuration
 
@@ -204,7 +204,7 @@ cat >/etc/caddy/Caddyfile <<EOL
 
 vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}
     }
@@ -212,7 +212,7 @@ vm.yourdomain.org:443 {
 
 *.vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}
     }
@@ -235,14 +235,14 @@ cat >/etc/caddy/Caddyfile <<EOL
 
 vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:4020 {
         header_up Host {host}
     }
 }
 
 *.vm.yourdomain.org:443 {
     tls /etc/letsencrypt/live/vm.yourdomain.org/fullchain.pem /etc/letsencrypt/live/vm.yourdomain.org/privkey.pem
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}
     }
@@ -252,7 +252,7 @@ vm.yourdomain.org:443 {
     tls {
         on_demand
     }
-    reverse_proxy http://127.0.0.1:8080 {
+    reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}
     }

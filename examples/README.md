@@ -80,4 +80,4 @@ Update the `entrypoint` field according to your app if necessary.
 
 Open the HTTP interface of a node running the VM Supervisor:
 
-http://ip-of-supervisor:8080/vm/{message_hash}/
+http://ip-of-supervisor:4020/vm/{message_hash}/

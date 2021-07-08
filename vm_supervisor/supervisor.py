@@ -231,4 +231,4 @@ app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 def run():
     """Run the VM Supervisor."""
     settings.check()
-    web.run_app(app)
+    web.run_app(app, port=settings.SUPERVISOR_PORT)
