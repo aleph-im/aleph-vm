@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, Iterator, List, NewType, Union
+from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
 
 import aiohttp
 import msgpack
@@ -296,7 +296,10 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
     return headers, body, output, output_data
 
 
-def process_instruction(instruction: bytes, interface: Interface, application) -> Iterator[bytes]:
+async def process_instruction(
+        instruction: bytes, interface: Interface, application
+) -> AsyncIterable[bytes]:
+
     if instruction == b"halt":
         system("sync")
         yield b"STOP\n"
@@ -323,13 +326,11 @@ def process_instruction(instruction: bytes, interface: Interface, application) -
             output_data: Optional[bytes]
 
             if interface == Interface.asgi:
-                headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                    run_python_code_http(application=application, scope=payload.scope)
-                )
+                headers, body, output, output_data = \
+                    await run_python_code_http(application=application, scope=payload.scope)
             elif interface == Interface.executable:
-                headers, body, output, output_data = asyncio.get_event_loop().run_until_complete(
-                    run_executable_http(scope=payload.scope)
-                )
+                headers, body, output, output_data = \
+                    await run_executable_http(scope=payload.scope)
             else:
                 raise ValueError("Unknown interface. This should never happen")
 
@@ -383,7 +384,7 @@ def setup_system(config: ConfigurationPayload):
     logger.debug("Setup finished")
 
 
-def main():
+async def main():
     client, addr = s.accept()
 
     logger.debug("Receiving setup...")
@@ -403,24 +404,31 @@ def main():
         logger.exception("Program could not be started")
         raise
 
-    while True:
-        client, addr = s.accept()
-        data = client.recv(1000_1000)  # Max 1 Mo
-        logger.debug("CID: {} port:{} data: {}".format(addr[0], addr[1], len(data)))
+    async def handle_instruction(reader, writer):
+        data = await reader.read(1000_1000)  # Max 1 Mo
 
         logger.debug("Init received msg")
         if logger.level <= logging.DEBUG:
             data_to_print = f"{data[:500]}..." if len(data) > 500 else data
             logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
 
-        for result in process_instruction(instruction=data, interface=config.interface,
-                                          application=app):
-            client.send(result)
+        async for result in process_instruction(instruction=data, interface=config.interface,
+                                                application=app):
+            writer.write(result)
+            await writer.drain()
 
         logger.debug("...DONE")
-        client.close()
+        writer.close()
+
+    server = await asyncio.start_server(handle_instruction, sock=s)
+
+    addr = server.sockets[0].getsockname()
+    print(f'Serving on {addr}')
+
+    async with server:
+        await server.serve_forever()
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
-    main()
+    asyncio.run(main())
