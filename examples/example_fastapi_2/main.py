@@ -27,7 +27,8 @@ cache = VmCache()
 async def index():
     return {
         "Example": "example_fastapi_2",
-        "endpoints": ["/messages", "/internet", "/post_a_message", "/state/increment"],
+        "endpoints": ["/messages", "/internet", "/post_a_message",
+                      "/state/increment", "/wait-for/{delay}"],
         "files_in_volumes": {
             "/opt/venv": list(listdir("/opt/venv"))
         },
