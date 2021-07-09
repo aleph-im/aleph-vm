@@ -9,7 +9,7 @@ import asyncio
 import binascii
 import logging
 from base64 import b32decode, b16encode
-from typing import Awaitable, Dict, Any
+from typing import Awaitable, Dict, Any, Optional
 
 import aiodns
 import msgpack
@@ -18,7 +18,7 @@ from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBad
     HTTPInternalServerError
 from msgpack import UnpackValueError
 
-from aleph_message.models import ProgramMessage, ProgramContent
+from aleph_message.models import ProgramMessage
 from firecracker.microvm import MicroVMFailedInit
 from .conf import settings
 from .models import VmHash
@@ -28,6 +28,7 @@ from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, AlephFi
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
+message_cache: Dict[str, ProgramMessage] = {}
 
 
 async def index(request: web.Request):
@@ -72,6 +73,26 @@ async def update_with_latest_ref(obj):
         return obj
 
 
+async def update_message(message: ProgramMessage):
+    # Load amends
+    await asyncio.gather(
+        update_with_latest_ref(message.content.runtime),
+        update_with_latest_ref(message.content.code),
+        update_with_latest_ref(message.content.data),
+        *(
+            update_with_latest_ref(volume)
+            for volume in (message.content.volumes or [])
+        ),
+    )
+
+
+async def load_updated_message(ref: VmHash) -> ProgramMessage:
+    message = await try_get_message(ref)
+    await update_message(message)
+    message_cache[ref] = message
+    return message
+
+
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     # ASGI mandates lowercase header names
     headers = tuple((name.lower(), value)
@@ -91,27 +112,15 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     Execute the code corresponding to the 'code id' in the path.
     """
 
+    message: Optional[ProgramMessage]
     vm: AlephFirecrackerVM = await pool.get(vm_hash=vm_hash)
-    if not vm:
-        message: ProgramMessage = await try_get_message(vm_hash)
-        message_content: ProgramContent = message.content
-
-        # Load amends
-        await asyncio.gather(
-            update_with_latest_ref(message_content.runtime),
-            update_with_latest_ref(message_content.code),
-            update_with_latest_ref(message_content.data),
-            *(
-                update_with_latest_ref(volume)
-                for volume in (message_content.volumes or [])
-            ),
-        )
-
-        # TODO: Cache message content after amends
-        # TODO: Update VM in case a new version has been released
+    if vm:
+        message = None
+    else:
+        message = message_cache.get(vm_hash) or await load_updated_message(vm_hash)
 
         try:
-            vm = await pool.get_or_create(message_content, vm_hash=vm_hash)
+            vm = await pool.get_or_create(message.content, vm_hash=vm_hash)
         except ResourceDownloadError as error:
             logger.exception(error)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -159,6 +168,8 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
+        if message and settings.WATCH_FOR_UPDATES:
+            pool.watch_for_updates(message)
         if settings.REUSE_TIMEOUT > 0:
             pool.stop_after_timeout(vm_hash=vm_hash, timeout=settings.REUSE_TIMEOUT)
         else:
@@ -222,6 +233,20 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     return await run_code(message_ref, path, request)
 
 
+# async def watch_for_messages():
+#     """Watch for new Aleph messages"""
+#     pass
+#
+#
+# async def start_watch_for_messages_task(app: web.Application):
+#     app['messages_listener'] = asyncio.create_task(watch_for_messages())
+#
+#
+# async def stop_watch_for_messages_task(app: web.Application):
+#     app['messages_listener'].cancel()
+#     await app['messages_listener']
+#
+#
 app = web.Application()
 
 app.add_routes([web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)])
@@ -231,4 +256,6 @@ app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 def run():
     """Run the VM Supervisor."""
     settings.check()
+    # app.on_startup.append(start_watch_for_messages_task)
+    # app.on_cleanup.append(stop_watch_for_messages_task)
     web.run_app(app, port=settings.SUPERVISOR_PORT)
