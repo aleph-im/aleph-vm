@@ -2,10 +2,12 @@ import asyncio
 import json
 import logging
 import math
+import sys
 import time
+from asyncio import Task
 
 from dataclasses import dataclass
-from typing import Dict, Optional, AsyncIterable
+from typing import Dict, Optional, AsyncIterable, List
 
 import aiohttp
 from yarl import URL
@@ -60,7 +62,8 @@ class VmPool:
     counter: int  # Used to provide distinct ids to network interfaces
     starting_vms: Dict[VmHash, bool]  # Lock containing hash of VMs being started
     started_vms: Dict[VmHash, StartedVM]  # Shared pool of VMs already started
-    watchers: Dict
+    watchers: Dict[str, List[Task]]
+    message_cache: Dict[str, ProgramMessage] = {}
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -132,7 +135,11 @@ class VmPool:
             started_vm.timeout_task.cancel()
 
         loop = asyncio.get_event_loop()
-        started_vm.timeout_task = loop.create_task(self.expire(vm_hash, timeout))
+        if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
+            # Task can be named
+            started_vm.timeout_task = loop.create_task(self.expire(vm_hash, timeout), name=vm_hash)
+        else:
+            started_vm.timeout_task = loop.create_task(self.expire(vm_hash, timeout))
 
     async def expire(self, vm_hash: VmHash, timeout: float) -> None:
         """Coroutine that will stop the VM after 'timeout' seconds."""
@@ -141,25 +148,53 @@ class VmPool:
         del self.started_vms[vm_hash]
         await started_vm.vm.teardown()
 
-    def watch_for_updates(self, message: ProgramMessage):
+    def watch_for_updates(self, original_message: ProgramMessage):
         loop = asyncio.get_event_loop()
-        for ref in (#message.item_hash,
-                    message.content.runtime.ref,
-                    message.content.code.ref,
-                    message.content.data.ref,
-                    *(volume.ref for volume in message.content.volumes if hasattr(volume, 'ref'))
-                    ):
+        for ref in filter(None, (
+                #message.item_hash,  # Ignore updates of the VM itself
+                original_message.content.runtime.ref,  # Watch for runtime updates
+                original_message.content.code.ref,     # Watch for code updates
+                # Watch for data updates
+                original_message.content.data.ref if original_message.content.data else None,
+                # Watch for immutable volume updates
+                *(volume.ref for volume in original_message.content.volumes if hasattr(volume, 'ref'))
+        )):
             task = loop.create_task(
-                self.watch_for_updates_task(VmHash(message.item_hash), ref, message.content.address))
+                self.watch_for_updates_task(
+                    VmHash(original_message.item_hash), ref,
+                    original_message.content.address, original_message.time))
+            # Register task
+            self.watchers[original_message.item_hash] = self.watchers.get(original_message.item_hash) or []
+            self.watchers[original_message.item_hash].append(task)
 
-    async def watch_for_updates_task(self, vm_hash: VmHash, ref: str, address: str):
-        params = {"refs": ref, "addresses": address, "startDate": 0}
+    async def watch_for_updates_task(self, vm_hash: VmHash, ref: str, address: str,
+                                     start_date: float):
+        params = {
+            "refs": ref,
+            "addresses": address,  # Must be sent by the same address as the VM
+            # TODO: Watch each resource based on it's own previous address, not the VM address
+            "startDate": int(start_date),  # Only watch for updates after the VM has been published
+        }
         # url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query(params)
         url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
 
+        print(f"URL, {url}")
         async for message in subscribe_via_ws(url):
-            logger.info(f"Update received received: {message.item_hash}")
+            logger.info(f"Update received: {message.item_hash}")
+
             # Remove the VM from the cache
+            print("Cache=", self.message_cache)
+
+            try:
+                del self.message_cache[vm_hash]
+            except KeyError:
+                pass
+
+            # print("ALL_TASKS", asyncio.all_tasks())
+            # for watcher in self.watchers.get(vm_hash, []):
+            #     if not watcher.done():
+            #         watcher.cancel()
+
             started_vm = self.started_vms.get(vm_hash)
             if started_vm:
                 del self.started_vms[vm_hash]

@@ -7,9 +7,10 @@ evolve in the future.
 """
 import asyncio
 import binascii
+import copy
 import logging
 from base64 import b32decode, b16encode
-from typing import Awaitable, Dict, Any, Optional
+from typing import Awaitable, Dict, Any, Optional, Tuple
 
 import aiodns
 import msgpack
@@ -28,7 +29,6 @@ from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, AlephFi
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
-message_cache: Dict[str, ProgramMessage] = {}
 
 
 async def index(request: web.Request):
@@ -86,11 +86,12 @@ async def update_message(message: ProgramMessage):
     )
 
 
-async def load_updated_message(ref: VmHash) -> ProgramMessage:
-    message = await try_get_message(ref)
+async def load_updated_message(ref: VmHash) -> Tuple[ProgramMessage, ProgramMessage]:
+    original_message = await try_get_message(ref)
+    message = copy.deepcopy(original_message)
     await update_message(message)
-    message_cache[ref] = message
-    return message
+    pool.message_cache[ref] = message
+    return message, original_message
 
 
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
@@ -117,7 +118,7 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     if vm:
         message = None
     else:
-        message = message_cache.get(vm_hash) or await load_updated_message(vm_hash)
+        message, original_message = pool.message_cache.get(vm_hash) or await load_updated_message(vm_hash)
 
         try:
             vm = await pool.get_or_create(message.content, vm_hash=vm_hash)
@@ -169,7 +170,7 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if message and settings.WATCH_FOR_UPDATES:
-            pool.watch_for_updates(message)
+            pool.watch_for_updates(original_message=original_message)
         if settings.REUSE_TIMEOUT > 0:
             pool.stop_after_timeout(vm_hash=vm_hash, timeout=settings.REUSE_TIMEOUT)
         else:
