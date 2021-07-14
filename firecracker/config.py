@@ -1,7 +1,7 @@
 from typing import List, Optional
 
+from firecracker.models import FilePath
 from pydantic import BaseModel, PositiveInt
-from vm_supervisor.models import FilePath
 
 VSOCK_PATH = "/tmp/v.sock"
 

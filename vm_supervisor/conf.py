@@ -6,8 +6,8 @@ from os.path import isfile, join, exists
 from subprocess import check_output
 from typing import NewType, Optional, List
 
+from firecracker.models import FilePath
 from pydantic import BaseSettings
-from .models import FilePath
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
+    WATCH_FOR_UPDATES: bool = True
     NETWORK_INTERFACE: str = "eth0"
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None

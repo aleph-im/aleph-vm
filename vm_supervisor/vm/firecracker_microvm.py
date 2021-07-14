@@ -16,9 +16,9 @@ from aleph_message.models.program import MachineResources, Encoding
 from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
     NetworkInterface
 from firecracker.microvm import MicroVM, setfacl
+from firecracker.models import FilePath
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..models import FilePath
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
 
 logger = logging.getLogger(__name__)
@@ -109,13 +109,13 @@ class AlephFirecrackerResources:
     volumes: List[HostVolume]
     volume_paths: Dict[str, FilePath]
     data_path: Optional[FilePath]
-    vm_hash: str
+    namespace: str
 
-    def __init__(self, message_content: ProgramContent, vm_hash: str):
+    def __init__(self, message_content: ProgramContent, namespace: str):
         self.message_content = message_content
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint
-        self.vm_hash = vm_hash
+        self.namespace = namespace
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
@@ -156,7 +156,7 @@ class AlephFirecrackerResources:
             volumes.append(HostVolume(
                 mount=volume.mount,
                 path_on_host=(await get_volume_path(
-                    volume=volume, vm_hash=self.vm_hash)),
+                    volume=volume, namespace=self.namespace)),
 
                 read_only=volume.is_read_only(),
             ))

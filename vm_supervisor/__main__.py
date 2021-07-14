@@ -127,6 +127,9 @@ async def benchmark(runs: int):
 
     bench: List[float] = []
 
+    # Does not make sense in benchmarks
+    settings.WATCH_FOR_UPDATES = False
+
     # First test all methods
     settings.REUSE_TIMEOUT = 0.1
     for path in ("/", "/messages", "/internet", "/post_a_message",
