@@ -28,8 +28,8 @@ import pydantic
 from aleph_message.models import ProgramMessage, Message, BaseMessage
 from firecracker.microvm import MicroVMFailedInit
 from .conf import settings
-from .models import VmHash
-from .pool import VmPool, VmExecution
+from .models import VmHash, VmExecution
+from .pool import VmPool
 from .pubsub import PubSub
 from .storage import get_message, get_latest_amend
 from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
@@ -151,7 +151,6 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
 
     try:
         result = msgpack.loads(result_raw, raw=False)
-        # TODO: Handle other content-types
 
         logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
 
