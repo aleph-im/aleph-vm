@@ -113,6 +113,16 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
 
+    def to_dict(self):
+        return {
+            'jailer_path': self.jailer_path,
+            'socket_path': self.socket_path,
+            'vsock_path': self.vsock_path,
+            'guest_ip': self.guest_ip,
+            'host_ip': self.host_ip,
+            **self.__dict__,
+        }
+
     def prepare_jailer(self):
         system(f"rm -fr {self.jailer_path}")
 
