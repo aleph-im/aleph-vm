@@ -128,6 +128,11 @@ class VmExecution:
         await pubsub.msubscibe(
             self.original.code.ref,
             self.original.runtime.ref,
+            self.original.data.ref if self.original.data else None,
+            *(
+                volume.ref
+                for volume in (self.original.volumes or [])
+            ),
         )
         logger.debug("Update received, stopping VM...")
         await self.stop()
