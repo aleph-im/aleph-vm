@@ -134,6 +134,7 @@ class VmExecution:
             *(
                 volume.ref
                 for volume in (self.original.volumes or [])
+                if hasattr(volume, 'ref')
             ),
         )
         logger.debug("Update received, stopping VM...")
@@ -141,7 +142,6 @@ class VmExecution:
 
     async def all_runs_complete(self):
         """Wait for all runs to complete. Used in self.stop() to prevent interrupting a request."""
-        print('cc0', self.concurrent_runs)
         if self.concurrent_runs == 0:
             logger.debug("Stop: clear, no run at the moment")
             return
@@ -152,7 +152,6 @@ class VmExecution:
     async def run_code(self, scope: dict = None):
         self.concurrent_runs += 1
         self.runs_done_event.clear()
-        print('ccx', self.concurrent_runs)
         try:
             return await self.vm.run_code(scope=scope)
         finally:

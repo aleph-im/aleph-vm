@@ -156,7 +156,7 @@ class AlephFirecrackerResources:
             volumes.append(HostVolume(
                 mount=volume.mount,
                 path_on_host=(await get_volume_path(
-                    volume=volume, vm_hash=self.namespace)),
+                    volume=volume, namespace=self.namespace)),
 
                 read_only=volume.is_read_only(),
             ))
