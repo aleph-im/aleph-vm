@@ -1,20 +1,11 @@
 import asyncio
-from _datetime import datetime
-import json
 import logging
-import math
 import sys
-import time
+from _datetime import datetime
 from asyncio import Task
+from typing import Dict, Optional
 
-from dataclasses import dataclass
-from typing import Dict, Optional, AsyncIterable, List
-
-import aiohttp
-from yarl import URL
-
-import pydantic.error_wrappers
-from aleph_message.models import ProgramContent, Message, BaseMessage, ProgramMessage
+from aleph_message.models import ProgramContent, ProgramMessage
 from .conf import settings
 from .models import VmHash
 from .pubsub import PubSub
@@ -28,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class VmExecution:
     vm_hash: VmHash
+    original: ProgramContent
     program: ProgramContent
     resources: Optional[AlephFirecrackerResources]
     vm: AlephFirecrackerVM = None
@@ -40,16 +32,23 @@ class VmExecution:
     stopping_at: Optional[datetime] = None
     stopped_at: Optional[datetime] = None
 
+    ready_event: asyncio.Event = None
     expire_task: Optional[asyncio.Task] = None
 
     @property
     def is_running(self):
         return self.starting_at and not (self.stopping_at)
 
-    def __init__(self, vm_hash: VmHash, program: Optional[ProgramContent] = None):
+    @property
+    def becomes_ready(self):
+        return self.ready_event.wait
+
+    def __init__(self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent):
         self.vm_hash = vm_hash
         self.program = program
+        self.original = original
         self.defined_at = datetime.now()
+        self.ready_event = asyncio.Event()
 
     async def prepare(self):
         """Download VM required files"""
@@ -74,6 +73,7 @@ class VmExecution:
             await vm.configure()
             await vm.start_guest_api()
             self.started_at = datetime.now()
+            self.ready_event.set()
             return vm
         except Exception:
             await vm.teardown()
@@ -121,9 +121,10 @@ class VmExecution:
 
     async def watch_for_updates(self, pubsub: PubSub):
         await pubsub.msubscibe(
-            self.program.code.ref,
-            self.program.runtime.ref,
+            self.original.code.ref,
+            self.original.runtime.ref,
         )
+        logger.debug("Update received, stopping VM...")
         await self.stop()
 
 
@@ -144,22 +145,22 @@ class VmPool:
         self.counter = settings.START_ID_INDEX
         self.executions = {}
 
-    async def create_a_vm(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
+    async def create_a_vm(self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        execution = VmExecution(vm_hash=vm_hash, program=program)
+        execution = VmExecution(vm_hash=vm_hash, program=program, original=original)
         self.executions[vm_hash] = execution
         await execution.prepare()
         self.counter += 1
         await execution.create(address=self.counter)
         return execution
 
-    async def get_or_create(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
-        """Provision a VM in the pool, then return the first VM from the pool."""
-        # Wait for a VM already starting to be available
-        execution: VmExecution = self.executions.get(vm_hash) \
-                                 or await self.create_a_vm(program=program, vm_hash=vm_hash)
-        execution.cancel_expiration()
-        return execution
+    # async def get_or_create(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
+    #     """Provision a VM in the pool, then return the first VM from the pool."""
+    #     # Wait for a VM already starting to be available
+    #     execution: VmExecution = self.executions.get(vm_hash) \
+    #                              or await self.create_a_vm(program=program, vm_hash=vm_hash)
+    #     execution.cancel_expiration()
+    #     return execution
 
     async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
         execution = self.executions.get(vm_hash)

@@ -120,18 +120,14 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    message: Optional[ProgramMessage]
     execution: VmExecution = await pool.get_running_vm(vm_hash=vm_hash)
-    # await execution.wait_for_start()  # TODO
 
-    if execution:
-        message = None
-    else:
-        # message, original_message = pool.message_cache.get(vm_hash) or await load_updated_message(vm_hash)
-        message, _ = await load_updated_message(vm_hash)
+    if not execution:
+        message, original_message = await load_updated_message(vm_hash)
 
         try:
-            execution = await pool.create_a_vm(message.content, vm_hash=vm_hash)
+            execution = await pool.create_a_vm(vm_hash=vm_hash, program=message.content,
+                                               original=original_message.content)
         except ResourceDownloadError as error:
             logger.exception(error)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -147,6 +143,7 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     scope: Dict = await build_asgi_scope(path, request)
 
     try:
+        await execution.becomes_ready()
         result_raw: bytes = await execution.vm.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
@@ -250,7 +247,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
         async with session.ws_connect(url) as ws:
             logger.debug(f"Websocket connected on {url}")
             async for msg in ws:
-                logger.debug(f"Receive {msg}")
+                logger.debug(f"Websocket received data...")
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
                     # Patch data format to match HTTP GET format
@@ -272,8 +269,9 @@ async def watch_for_messages(dispatcher: PubSub):
               ).with_query({"startDate": math.floor(time.time())})
 
     async for message in subscribe_via_ws(url):
-        logger.info(f"Update received: {message.item_hash}")
-        await dispatcher.publish(key=message.item_hash, value=message)
+        logger.info(f"Websocket received message: {message.item_hash}")
+        ref = message.content.ref if hasattr(message.content, 'ref') else message.item_hash
+        await dispatcher.publish(key=ref, value=message)
 
 
 async def start_watch_for_messages_task(app: web.Application):
