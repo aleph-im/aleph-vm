@@ -36,7 +36,9 @@ class VmExecution:
     stopping_at: Optional[datetime] = None
     stopped_at: Optional[datetime] = None
 
-    ready_event: asyncio.Event = None
+    ready_event: asyncio.Event
+    concurrent_runs: int
+    runs_done_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
 
     @property
@@ -53,6 +55,8 @@ class VmExecution:
         self.original = original
         self.defined_at = datetime.now()
         self.ready_event = asyncio.Event()
+        self.concurrent_runs = 0
+        self.runs_done_event = asyncio.Event()
 
     async def prepare(self):
         """Download VM required files"""
@@ -103,9 +107,7 @@ class VmExecution:
         assert self.started_at
         if self.stopped_at or self.stopped_at:
             return
-        self.stopping_at = datetime.now()
-        await self.vm.teardown()
-        self.stopped_at = datetime.now()
+        await self.stop()
 
     def cancel_expiration(self) -> bool:
         if self.expire_task:
@@ -115,6 +117,7 @@ class VmExecution:
             return False
 
     async def stop(self):
+        await self.all_runs_complete()
         self.stopping_at = datetime.now()
         await self.vm.teardown()
         self.stopped_at = datetime.now()
@@ -135,3 +138,24 @@ class VmExecution:
         )
         logger.debug("Update received, stopping VM...")
         await self.stop()
+
+    async def all_runs_complete(self):
+        """Wait for all runs to complete. Used in self.stop() to prevent interrupting a request."""
+        print('cc0', self.concurrent_runs)
+        if self.concurrent_runs == 0:
+            logger.debug("Stop: clear, no run at the moment")
+            return
+        else:
+            logger.debug("Stop: waiting for runs to complete...")
+            await self.runs_done_event.wait()
+
+    async def run_code(self, scope: dict = None):
+        self.concurrent_runs += 1
+        self.runs_done_event.clear()
+        print('ccx', self.concurrent_runs)
+        try:
+            return await self.vm.run_code(scope=scope)
+        finally:
+            self.concurrent_runs -= 1
+            if self.concurrent_runs == 0:
+                self.runs_done_event.set()

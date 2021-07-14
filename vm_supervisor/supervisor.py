@@ -144,7 +144,7 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
 
     try:
         await execution.becomes_ready()
-        result_raw: bytes = await execution.vm.run_code(scope=scope)
+        result_raw: bytes = await execution.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
