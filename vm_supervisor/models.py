@@ -2,8 +2,9 @@ import asyncio
 import logging
 import sys
 from asyncio import Task
+from dataclasses import dataclass
 from datetime import datetime
-from typing import NewType, Optional
+from typing import NewType, Optional, Dict
 
 from aleph_message.models import ProgramContent
 from .pubsub import PubSub
@@ -36,9 +37,9 @@ class VmExecution:
     stopping_at: Optional[datetime] = None
     stopped_at: Optional[datetime] = None
 
-    ready_event: asyncio.Event
-    concurrent_runs: int
-    runs_done_event: asyncio.Event
+    ready_event: asyncio.Event = None
+    concurrent_runs: int = None
+    runs_done_event: asyncio.Event = None
     expire_task: Optional[asyncio.Task] = None
 
     @property
@@ -57,6 +58,12 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+
+    def to_dict(self) -> Dict:
+        return {
+            'is_running': self.is_running,
+            **self.__dict__,
+        }
 
     async def prepare(self):
         """Download VM required files"""

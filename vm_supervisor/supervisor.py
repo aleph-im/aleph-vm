@@ -13,7 +13,7 @@ import logging
 import math
 import time
 from base64 import b32decode, b16encode
-from typing import Awaitable, Dict, Any, Optional, Tuple, AsyncIterable
+from typing import Awaitable, Dict, Any, Tuple, AsyncIterable
 
 import aiodns
 import aiohttp
@@ -285,10 +285,38 @@ async def stop_watch_for_messages_task(app: web.Application):
     await app['messages_listener']
 
 
+def to_json(o: Any):
+    if hasattr(o, 'to_dict'):  # dataclasses
+        return o.to_dict()
+    elif hasattr(o, 'dict'):  # Pydantic
+        return o.dict()
+    else:
+        return str(o)
+
+
+def dumper(o: Any):
+    return json.dumps(o, default=to_json)
+
+
+async def about_executions(request: web.Request):
+    return web.json_response(
+        [
+            {
+                key: value
+                for key, value in pool.executions.items()
+            }
+        ],
+        dumps=dumper,
+    )
+
+
 app = web.Application()
 
-app.add_routes([web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)])
-app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
+app.add_routes([
+    web.get("/about/executions", about_executions),
+    web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
+    web.route("*", "/{suffix:.*}", run_code_from_hostname),
+])
 
 
 def run():
