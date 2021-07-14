@@ -1,4 +1,5 @@
 import asyncio
+from _datetime import datetime
 import json
 import logging
 import math
@@ -14,9 +15,10 @@ from yarl import URL
 
 import pydantic.error_wrappers
 from aleph_message.models import ProgramContent, Message, BaseMessage, ProgramMessage
-from vm_supervisor.conf import settings
-from vm_supervisor.models import VmHash
-from vm_supervisor.vm.firecracker_microvm import (
+from .conf import settings
+from .models import VmHash
+from .pubsub import PubSub
+from .vm.firecracker_microvm import (
     AlephFirecrackerVM,
     AlephFirecrackerResources,
 )
@@ -24,30 +26,105 @@ from vm_supervisor.vm.firecracker_microvm import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class StartedVM:
-    vm: AlephFirecrackerVM
+class VmExecution:
+    vm_hash: VmHash
     program: ProgramContent
-    timeout_task: Optional[asyncio.Task] = None
+    resources: Optional[AlephFirecrackerResources]
+    vm: AlephFirecrackerVM = None
 
+    defined_at: datetime = None
+    preparing_at: Optional[datetime] = None
+    prepared_at: Optional[datetime] = None
+    starting_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    stopping_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
 
-async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            logger.debug(f"Websocket connected on {url}")
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    # Patch data format to match HTTP GET format
-                    data["_id"] = {"$oid": data["_id"]}
-                    try:
-                        yield Message(**data)
-                    except pydantic.error_wrappers.ValidationError as error:
-                        print(error.json())
-                        print(error.raw_errors)
-                        raise
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    break
+    expire_task: Optional[asyncio.Task] = None
+
+    @property
+    def is_running(self):
+        return self.starting_at and not (self.stopping_at)
+
+    def __init__(self, vm_hash: VmHash, program: Optional[ProgramContent] = None):
+        self.vm_hash = vm_hash
+        self.program = program
+        self.defined_at = datetime.now()
+
+    async def prepare(self):
+        """Download VM required files"""
+        self.preparing_at = datetime.now()
+        vm_resources = AlephFirecrackerResources(self.program, namespace=self.vm_hash)
+        await vm_resources.download_all()
+        self.prepared_at = datetime.now()
+        self.resources = vm_resources
+
+    async def create(self, address: int) -> AlephFirecrackerVM:
+        self.starting_at = datetime.now()
+        self.vm = vm = AlephFirecrackerVM(
+            vm_id=address,
+            vm_hash=self.vm_hash,
+            resources=self.resources,
+            enable_networking=self.program.environment.internet,
+            hardware_resources=self.program.resources,
+        )
+        try:
+            await vm.setup()
+            await vm.start()
+            await vm.configure()
+            await vm.start_guest_api()
+            self.started_at = datetime.now()
+            return vm
+        except Exception:
+            await vm.teardown()
+            raise
+
+    def stop_after_timeout(self, timeout: float = 5.0) -> Task:
+        if self.expire_task:
+            logger.debug("VM already has a timeout. Extending it.")
+            self.expire_task.cancel()
+
+        loop = asyncio.get_event_loop()
+        if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
+            # Task can be named
+            self.expire_task = loop.create_task(self.expire(timeout),
+                                                name=f"expire {self.vm.vm_id}")
+        else:
+            self.expire_task = loop.create_task(self.expire(timeout))
+        return self.expire_task
+
+    async def expire(self, timeout: float) -> None:
+        """Coroutine that will stop the VM after 'timeout' seconds."""
+        await asyncio.sleep(timeout)
+        assert self.started_at
+        if self.stopped_at or self.stopped_at:
+            return
+        self.stopping_at = datetime.now()
+        await self.vm.teardown()
+        self.stopped_at = datetime.now()
+
+    def cancel_expiration(self) -> bool:
+        if self.expire_task:
+            self.expire_task.cancel()
+            return True
+        else:
+            return False
+
+    async def stop(self):
+        self.stopping_at = datetime.now()
+        await self.vm.teardown()
+        self.stopped_at = datetime.now()
+
+    def start_watching_for_updates(self, pubsub: PubSub):
+        pool = asyncio.get_running_loop()
+        pool.create_task(self.watch_for_updates(pubsub=pubsub))
+
+    async def watch_for_updates(self, pubsub: PubSub):
+        await pubsub.msubscibe(
+            self.program.code.ref,
+            self.program.runtime.ref,
+        )
+        await self.stop()
 
 
 class VmPool:
@@ -60,142 +137,34 @@ class VmPool:
     """
 
     counter: int  # Used to provide distinct ids to network interfaces
-    starting_vms: Dict[VmHash, bool]  # Lock containing hash of VMs being started
-    started_vms: Dict[VmHash, StartedVM]  # Shared pool of VMs already started
-    watchers: Dict[str, List[Task]]
+    executions: Dict[VmHash, VmExecution]
     message_cache: Dict[str, ProgramMessage] = {}
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
-        self.starting_vms = {}
-        self.started_vms = {}
-        self.watchers = {}
+        self.executions = {}
 
-    async def create_a_vm(self, program: ProgramContent, vm_hash: VmHash) -> AlephFirecrackerVM:
+    async def create_a_vm(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        vm_resources = AlephFirecrackerResources(program, vm_hash)
-        await vm_resources.download_all()
+        execution = VmExecution(vm_hash=vm_hash, program=program)
+        self.executions[vm_hash] = execution
+        await execution.prepare()
         self.counter += 1
-        vm = AlephFirecrackerVM(
-            vm_id=self.counter,
-            vm_hash=vm_hash,
-            resources=vm_resources,
-            enable_networking=program.environment.internet,
-            hardware_resources=program.resources,
-        )
-        try:
-            await vm.setup()
-            await vm.start()
-            await vm.configure()
-            await vm.start_guest_api()
-            return vm
-        except Exception:
-            await vm.teardown()
-            raise
+        await execution.create(address=self.counter)
+        return execution
 
-    async def get_or_create(self, program: ProgramContent, vm_hash: VmHash) -> AlephFirecrackerVM:
+    async def get_or_create(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
         """Provision a VM in the pool, then return the first VM from the pool."""
         # Wait for a VM already starting to be available
-        while self.starting_vms.get(vm_hash):
-            await asyncio.sleep(0.01)
+        execution: VmExecution = self.executions.get(vm_hash) \
+                                 or await self.create_a_vm(program=program, vm_hash=vm_hash)
+        execution.cancel_expiration()
+        return execution
 
-        started_vm = self.started_vms.get(vm_hash)
-        if started_vm:
-            if started_vm.timeout_task:
-                started_vm.timeout_task.cancel()
-            return started_vm.vm
-        else:
-            self.starting_vms[vm_hash] = True
-            try:
-                vm = await self.create_a_vm(program=program, vm_hash=vm_hash)
-                self.started_vms[vm_hash] = StartedVM(vm=vm, program=program)
-                return vm
-            finally:
-                del self.starting_vms[vm_hash]
-
-    async def get(self, vm_hash: VmHash) -> Optional[AlephFirecrackerVM]:
-        started_vm = self.started_vms.get(vm_hash)
-        if started_vm:
-            started_vm.timeout_task.cancel()
-            return started_vm.vm
+    async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
+        execution = self.executions.get(vm_hash)
+        if execution and execution.is_running:
+            execution.cancel_expiration()
+            return execution
         else:
             return None
-
-    def stop_after_timeout(self, vm_hash: VmHash, timeout: float = 1.0) -> None:
-        """Keep a VM running for `timeout` seconds in case another query comes by."""
-        print('SS', self.started_vms)
-
-        if settings.FAKE_DATA:
-            vm_hash = list(self.started_vms.keys())[0]
-
-        started_vm = self.started_vms[vm_hash]
-
-        if started_vm.timeout_task:
-            logger.debug("VM already has a timeout. Extending it.")
-            started_vm.timeout_task.cancel()
-
-        loop = asyncio.get_event_loop()
-        if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
-            # Task can be named
-            started_vm.timeout_task = loop.create_task(self.expire(vm_hash, timeout), name=vm_hash)
-        else:
-            started_vm.timeout_task = loop.create_task(self.expire(vm_hash, timeout))
-
-    async def expire(self, vm_hash: VmHash, timeout: float) -> None:
-        """Coroutine that will stop the VM after 'timeout' seconds."""
-        await asyncio.sleep(timeout)
-        started_vm = self.started_vms[vm_hash]
-        del self.started_vms[vm_hash]
-        await started_vm.vm.teardown()
-
-    def watch_for_updates(self, original_message: ProgramMessage):
-        loop = asyncio.get_event_loop()
-        for ref in filter(None, (
-                #message.item_hash,  # Ignore updates of the VM itself
-                original_message.content.runtime.ref,  # Watch for runtime updates
-                original_message.content.code.ref,     # Watch for code updates
-                # Watch for data updates
-                original_message.content.data.ref if original_message.content.data else None,
-                # Watch for immutable volume updates
-                *(volume.ref for volume in original_message.content.volumes if hasattr(volume, 'ref'))
-        )):
-            task = loop.create_task(
-                self.watch_for_updates_task(
-                    VmHash(original_message.item_hash), ref,
-                    original_message.content.address, original_message.time))
-            # Register task
-            self.watchers[original_message.item_hash] = self.watchers.get(original_message.item_hash) or []
-            self.watchers[original_message.item_hash].append(task)
-
-    async def watch_for_updates_task(self, vm_hash: VmHash, ref: str, address: str,
-                                     start_date: float):
-        params = {
-            "refs": ref,
-            "addresses": address,  # Must be sent by the same address as the VM
-            # TODO: Watch each resource based on it's own previous address, not the VM address
-            "startDate": int(start_date),  # Only watch for updates after the VM has been published
-        }
-        # url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query(params)
-        url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
-
-        print(f"URL, {url}")
-        async for message in subscribe_via_ws(url):
-            logger.info(f"Update received: {message.item_hash}")
-
-            # Remove the VM from the cache
-            print("Cache=", self.message_cache)
-
-            try:
-                del self.message_cache[vm_hash]
-            except KeyError:
-                pass
-
-            # print("ALL_TASKS", asyncio.all_tasks())
-            # for watcher in self.watchers.get(vm_hash, []):
-            #     if not watcher.done():
-            #         watcher.cancel()
-
-            started_vm = self.started_vms.get(vm_hash)
-            if started_vm:
-                del self.started_vms[vm_hash]
-                await started_vm.vm.teardown()
