@@ -7,24 +7,32 @@ evolve in the future.
 """
 import asyncio
 import binascii
+import copy
+import json
 import logging
+import math
+import time
 from base64 import b32decode, b16encode
-from typing import Awaitable, Dict, Any
+from typing import Awaitable, Dict, Any, Optional, Tuple, AsyncIterable
 
 import aiodns
+import aiohttp
 import msgpack
 from aiohttp import web, ClientResponseError, ClientConnectorError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable, HTTPBadRequest, \
     HTTPInternalServerError
 from msgpack import UnpackValueError
+from yarl import URL
 
-from aleph_message.models import ProgramMessage, ProgramContent
+import pydantic
+from aleph_message.models import ProgramMessage, Message, BaseMessage
 from firecracker.microvm import MicroVMFailedInit
 from .conf import settings
-from .models import VmHash
+from .models import VmHash, VmExecution
 from .pool import VmPool
+from .pubsub import PubSub
 from .storage import get_message, get_latest_amend
-from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, AlephFirecrackerVM
+from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
 
 logger = logging.getLogger(__name__)
 pool = VmPool()
@@ -72,6 +80,27 @@ async def update_with_latest_ref(obj):
         return obj
 
 
+async def update_message(message: ProgramMessage):
+    # Load amends
+    await asyncio.gather(
+        update_with_latest_ref(message.content.runtime),
+        update_with_latest_ref(message.content.code),
+        update_with_latest_ref(message.content.data),
+        *(
+            update_with_latest_ref(volume)
+            for volume in (message.content.volumes or [])
+        ),
+    )
+
+
+async def load_updated_message(ref: VmHash) -> Tuple[ProgramMessage, ProgramMessage]:
+    original_message = await try_get_message(ref)
+    message = copy.deepcopy(original_message)
+    await update_message(message)
+    pool.message_cache[ref] = message
+    return message, original_message
+
+
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     # ASGI mandates lowercase header names
     headers = tuple((name.lower(), value)
@@ -91,27 +120,14 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    vm: AlephFirecrackerVM = await pool.get(vm_hash=vm_hash)
-    if not vm:
-        message: ProgramMessage = await try_get_message(vm_hash)
-        message_content: ProgramContent = message.content
+    execution: VmExecution = await pool.get_running_vm(vm_hash=vm_hash)
 
-        # Load amends
-        await asyncio.gather(
-            update_with_latest_ref(message_content.runtime),
-            update_with_latest_ref(message_content.code),
-            update_with_latest_ref(message_content.data),
-            *(
-                update_with_latest_ref(volume)
-                for volume in (message_content.volumes or [])
-            ),
-        )
-
-        # TODO: Cache message content after amends
-        # TODO: Update VM in case a new version has been released
+    if not execution:
+        message, original_message = await load_updated_message(vm_hash)
 
         try:
-            vm = await pool.get_or_create(message_content, vm_hash=vm_hash)
+            execution = await pool.create_a_vm(vm_hash=vm_hash, program=message.content,
+                                               original=original_message.content)
         except ResourceDownloadError as error:
             logger.exception(error)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -122,19 +138,19 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
             logger.exception(error)
             raise HTTPInternalServerError(reason="Error during runtime initialisation")
 
-    logger.debug(f"Using vm={vm.vm_id}")
+    logger.debug(f"Using vm={execution.vm.vm_id}")
 
     scope: Dict = await build_asgi_scope(path, request)
 
     try:
-        result_raw: bytes = await vm.run_code(scope=scope)
+        await execution.becomes_ready()
+        result_raw: bytes = await execution.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
 
     try:
         result = msgpack.loads(result_raw, raw=False)
-        # TODO: Handle other content-types
 
         logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
 
@@ -160,9 +176,11 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
         return web.Response(status=502, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
-            pool.stop_after_timeout(vm_hash=vm_hash, timeout=settings.REUSE_TIMEOUT)
+            if settings.WATCH_FOR_UPDATES:
+                execution.start_watching_for_updates(pubsub=request.app['pubsub'])
+            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
-            await vm.teardown()
+            await execution.stop()
 
 
 def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
@@ -222,6 +240,51 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     return await run_code(message_ref, path, request)
 
 
+async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
+    logger.debug("subscribe_via_ws()")
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url) as ws:
+            logger.debug(f"Websocket connected on {url}")
+            async for msg in ws:
+                logger.debug(f"Websocket received data...")
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    # Patch data format to match HTTP GET format
+                    data["_id"] = {"$oid": data["_id"]}
+                    try:
+                        yield Message(**data)
+                    except pydantic.error_wrappers.ValidationError as error:
+                        print(error.json())
+                        print(error.raw_errors)
+                        raise
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    break
+
+
+async def watch_for_messages(dispatcher: PubSub):
+    """Watch for new Aleph messages"""
+    logger.debug("watch_for_messages()")
+    url = URL(f"{settings.API_SERVER}/api/ws0/messages"
+              ).with_query({"startDate": math.floor(time.time())})
+
+    async for message in subscribe_via_ws(url):
+        logger.info(f"Websocket received message: {message.item_hash}")
+        ref = message.content.ref if hasattr(message.content, 'ref') else message.item_hash
+        await dispatcher.publish(key=ref, value=message)
+
+
+async def start_watch_for_messages_task(app: web.Application):
+    logger.debug("start_watch_for_messages_task()")
+    pubsub = PubSub()
+    app['pubsub'] = pubsub
+    app['messages_listener'] = asyncio.create_task(watch_for_messages(pubsub))
+
+
+async def stop_watch_for_messages_task(app: web.Application):
+    app['messages_listener'].cancel()
+    await app['messages_listener']
+
+
 app = web.Application()
 
 app.add_routes([web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)])
@@ -231,4 +294,6 @@ app.add_routes([web.route("*", "/{suffix:.*}", run_code_from_hostname)])
 def run():
     """Run the VM Supervisor."""
     settings.check()
+    app.on_startup.append(start_watch_for_messages_task)
+    app.on_cleanup.append(stop_watch_for_messages_task)
     web.run_app(app, port=settings.SUPERVISOR_PORT)

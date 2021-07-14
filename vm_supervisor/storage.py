@@ -19,7 +19,7 @@ from aleph_message.models import ProgramMessage
 from aleph_message.models.program import Encoding, MachineVolume, ImmutableVolume, PersistentVolume, \
     VolumePersistence
 from .conf import settings
-from .models import FilePath
+from firecracker.models import FilePath
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def create_ext4(path: FilePath, size_mib: int) -> bool:
     return True
 
 
-async def get_volume_path(volume: MachineVolume, vm_hash: str) -> FilePath:
+async def get_volume_path(volume: MachineVolume, namespace: str) -> FilePath:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         if settings.FAKE_DATA:
@@ -157,8 +157,8 @@ async def get_volume_path(volume: MachineVolume, vm_hash: str) -> FilePath:
             raise NotImplementedError("Only 'host' persistence is supported")
         if not re.match(r'^[\w\-_/]+$', volume.name):
             raise ValueError(f"Invalid value for volume name: {volume.name}")
-        os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash), exist_ok=True)
-        volume_path = FilePath(join(settings.PERSISTENT_VOLUMES_DIR, vm_hash, f"{volume.name}.ext4"))
+        os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
+        volume_path = FilePath(join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4"))
         await asyncio.get_event_loop().run_in_executor(
             None, create_ext4, volume_path, volume.size_mib)
         return volume_path

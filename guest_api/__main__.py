@@ -45,12 +45,9 @@ async def repost(request: web.Request):
     else:
         url = f"{ALEPH_VM_CONNECTOR}{path}"
 
-    print('url', url)
-
     async with aiohttp.ClientSession() as session:
         async with session.post(url=url, json=new_data) as response:
             data = await response.read()
-            print('DT', data)
             return web.Response(body=data,
                                 status=response.status,
                                 content_type=response.content_type)
@@ -87,7 +84,6 @@ async def sign(request: web.Request):
     async with aiohttp.ClientSession() as session:
         async with session.post(url=url, json=message) as response:
             signed_message = await response.read()
-            print('SIG', signed_message)
             return web.Response(body=signed_message,
                                 status=response.status,
                                 content_type=response.content_type)
