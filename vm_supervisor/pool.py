@@ -34,15 +34,8 @@ class VmPool:
         await execution.create(address=self.counter)
         return execution
 
-    # async def get_or_create(self, program: ProgramContent, vm_hash: VmHash) -> VmExecution:
-    #     """Provision a VM in the pool, then return the first VM from the pool."""
-    #     # Wait for a VM already starting to be available
-    #     execution: VmExecution = self.executions.get(vm_hash) \
-    #                              or await self.create_a_vm(program=program, vm_hash=vm_hash)
-    #     execution.cancel_expiration()
-    #     return execution
-
     async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
+        """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running:
             execution.cancel_expiration()
