@@ -1,3 +1,8 @@
+"""
+Small async PubSub implementation.
+Used to trigger VM shutdown on updates.
+"""
+
 import asyncio
 import logging
 from typing import Dict, Hashable, Set
