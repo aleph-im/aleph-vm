@@ -16,9 +16,9 @@ from aleph_message.models.program import MachineResources, Encoding
 from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
     NetworkInterface
 from firecracker.microvm import MicroVM, setfacl
+from firecracker.models import FilePath
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..models import FilePath
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
 
 logger = logging.getLogger(__name__)

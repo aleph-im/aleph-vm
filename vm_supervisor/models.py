@@ -12,7 +12,6 @@ from .vm.firecracker_microvm import AlephFirecrackerResources
 
 logger = logging.getLogger(__name__)
 
-FilePath = NewType("FilePath", str)
 VmHash = NewType("VmHash", str)
 
 

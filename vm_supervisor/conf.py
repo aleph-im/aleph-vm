@@ -6,8 +6,8 @@ from os.path import isfile, join, exists
 from subprocess import check_output
 from typing import NewType, Optional, List
 
+from firecracker.models import FilePath
 from pydantic import BaseSettings
-from .models import FilePath
 
 logger = logging.getLogger(__name__)
 

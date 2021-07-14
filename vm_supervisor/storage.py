@@ -19,7 +19,7 @@ from aleph_message.models import ProgramMessage
 from aleph_message.models.program import Encoding, MachineVolume, ImmutableVolume, PersistentVolume, \
     VolumePersistence
 from .conf import settings
-from .models import FilePath
+from firecracker.models import FilePath
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, List
 
 from .config import FirecrackerConfig
-from vm_supervisor.models import FilePath
+from .models import FilePath
 from .config import Drive
 
 logger = logging.getLogger(__name__)
