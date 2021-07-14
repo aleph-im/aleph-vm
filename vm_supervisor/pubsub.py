@@ -23,7 +23,7 @@ class PubSub:
 
     async def msubscibe(self, *keys):
         """Subscribe to multiple keys"""
-        keys = (key for key in keys if key is not None)
+        keys = tuple(key for key in keys if key is not None)
         logger.debug(f"msubscribe({keys})")
         queue = asyncio.Queue()
         for key in keys:

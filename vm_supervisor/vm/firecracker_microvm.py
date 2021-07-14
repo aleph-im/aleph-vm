@@ -117,6 +117,9 @@ class AlephFirecrackerResources:
         self.code_entrypoint = message_content.code.entrypoint
         self.namespace = namespace
 
+    def to_dict(self):
+        return self.__dict__
+
     async def download_kernel(self):
         # Assumes kernel is already present on the host
         self.kernel_image_path = settings.LINUX_PATH
@@ -204,6 +207,9 @@ class AlephFirecrackerVM:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
+
+    def to_dict(self):
+        return self.__dict__
 
     async def setup(self):
         logger.debug("setup started")
