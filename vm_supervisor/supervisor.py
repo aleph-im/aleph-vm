@@ -13,6 +13,7 @@ import logging
 import math
 import time
 from base64 import b32decode, b16encode
+from secrets import token_urlsafe, token_hex
 from typing import Awaitable, Dict, Any, Tuple, AsyncIterable
 
 import aiodns
@@ -298,7 +299,24 @@ def dumper(o: Any):
     return json.dumps(o, default=to_json)
 
 
+def authenticate_request(request: web.Request):
+    """Check that the token in the cookies matches the app's secret token."""
+    if request.cookies.get('token') != request.app['secret_token']:
+        raise web.HTTPUnauthorized(reason="Invalid token")
+
+
+async def about_login(request: web.Request):
+    token = request.query.get('token')
+    if token == request.app['secret_token']:
+        response = web.HTTPFound('/about/config')
+        response.cookies['token'] = token
+        return response
+    else:
+        return web.json_response({"success": False}, status=401)
+
+
 async def about_executions(request: web.Request):
+    authenticate_request(request)
     return web.json_response(
         [
             {
@@ -311,6 +329,7 @@ async def about_executions(request: web.Request):
 
 
 async def about_config(request: web.Request):
+    authenticate_request(request)
     return web.json_response(
         settings,
         dumps=dumper,
@@ -320,6 +339,7 @@ async def about_config(request: web.Request):
 app = web.Application()
 
 app.add_routes([
+    web.get("/about/login", about_login),
     web.get("/about/executions", about_executions),
     web.get("/about/config", about_config),
     web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
@@ -330,6 +350,12 @@ app.add_routes([
 def run():
     """Run the VM Supervisor."""
     settings.check()
+
+    # Require a random token to access /about APIs
+    secret_token = token_urlsafe(nbytes=32)
+    app['secret_token'] = secret_token
+    print(f"Login to /about pages /about/login?token={secret_token}")
+
     app.on_startup.append(start_watch_for_messages_task)
     app.on_cleanup.append(stop_watch_for_messages_task)
     web.run_app(app, port=settings.SUPERVISOR_PORT)
