@@ -42,22 +42,27 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
 async def watch_for_messages(dispatcher: PubSub):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
-    url = URL(f"{settings.API_SERVER}/api/ws0/messages"
-              ).with_query({"startDate": math.floor(time.time())})
+    url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query(
+        {"startDate": math.floor(time.time())}
+    )
 
     async for message in subscribe_via_ws(url):
         logger.info(f"Websocket received message: {message.item_hash}")
-        ref = message.content.ref if hasattr(message.content, 'ref') else message.item_hash
+        ref = (
+            message.content.ref
+            if hasattr(message.content, "ref")
+            else message.item_hash
+        )
         await dispatcher.publish(key=ref, value=message)
 
 
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
-    app['pubsub'] = pubsub
-    app['messages_listener'] = asyncio.create_task(watch_for_messages(pubsub))
+    app["pubsub"] = pubsub
+    app["messages_listener"] = asyncio.create_task(watch_for_messages(pubsub))
 
 
 async def stop_watch_for_messages_task(app: web.Application):
-    app['messages_listener'].cancel()
-    await app['messages_listener']
+    app["messages_listener"].cancel()
+    await app["messages_listener"]

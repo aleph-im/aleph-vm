@@ -12,20 +12,27 @@ from aiohttp import web
 
 from .conf import settings
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
-from .views import (run_code_from_path, run_code_from_hostname, about_login, about_executions,
-    about_config)
+from .views import (
+    run_code_from_path,
+    run_code_from_hostname,
+    about_login,
+    about_executions,
+    about_config,
+)
 
 logger = logging.getLogger(__name__)
 
 app = web.Application()
 
-app.add_routes([
-    web.get("/about/login", about_login),
-    web.get("/about/executions", about_executions),
-    web.get("/about/config", about_config),
-    web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
-    web.route("*", "/{suffix:.*}", run_code_from_hostname),
-])
+app.add_routes(
+    [
+        web.get("/about/login", about_login),
+        web.get("/about/executions", about_executions),
+        web.get("/about/config", about_config),
+        web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
+        web.route("*", "/{suffix:.*}", run_code_from_hostname),
+    ]
+)
 
 
 def run():
@@ -34,7 +41,7 @@ def run():
 
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
-    app['secret_token'] = secret_token
+    app["secret_token"] = secret_token
     print(f"Login to /about pages /about/login?token={secret_token}")
 
     app.on_startup.append(start_watch_for_messages_task)

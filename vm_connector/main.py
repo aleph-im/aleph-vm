@@ -27,11 +27,12 @@ def read_root():
     return {"Server": "Aleph.im VM Connector"}
 
 
-
 async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
-        url = f"{settings.ALEPH_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1" \
-              f"&refs={ref}&addresses={sender}"
+        url = (
+            f"{settings.ALEPH_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1"
+            f"&refs={ref}&addresses={sender}"
+        )
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
@@ -70,12 +71,12 @@ async def download_message(
     ref: str, use_latest: Optional[bool] = True
 ) -> Union[Dict, Response]:
     """
-    Fetch on Aleph and return a VM function message, after checking its validity.
-    Used by the VM Supervisor run the code.
-K
-    :param ref: item_hash of the code file
-    :param use_latest: should the last amend to the code be used
-    :return: a file containing the code file
+        Fetch on Aleph and return a VM function message, after checking its validity.
+        Used by the VM Supervisor run the code.
+
+        :param ref: item_hash of the code file
+        :param use_latest: should the last amend to the code be used
+        :return: a file containing the code file
     """
 
     if settings.OFFLINE_TEST_MODE:
@@ -176,14 +177,14 @@ async def download_runtime(
 @app.get("/compute/latest_amend/{item_hash}")
 async def compute_latest_amend(item_hash: str) -> str:
     msg = await get_message(hash_=item_hash)
-    sender = msg['sender']
+    sender = msg["sender"]
     latest_amend = await get_latest_message_amend(ref=item_hash, sender=sender)
     if latest_amend:
         # Validation
-        assert latest_amend['sender'] == sender
-        assert latest_amend['content']['ref'] == item_hash
+        assert latest_amend["sender"] == sender
+        assert latest_amend["content"]["ref"] == item_hash
 
-        return latest_amend['item_hash']
+        return latest_amend["item_hash"]
     else:
         # Original message is the latest
         return item_hash

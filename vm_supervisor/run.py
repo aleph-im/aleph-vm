@@ -20,15 +20,14 @@ pool = VmPool()
 
 async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     # ASGI mandates lowercase header names
-    headers = tuple((name.lower(), value)
-                    for name, value in request.raw_headers)
+    headers = tuple((name.lower(), value) for name, value in request.raw_headers)
     return {
         "type": "http",
         "path": path,
         "method": request.method,
         "query_string": request.query_string,
         "headers": headers,
-        "body": await request.read()
+        "body": await request.read(),
     }
 
 
@@ -44,8 +43,11 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
         pool.message_cache[vm_hash] = message
 
         try:
-            execution = await pool.create_a_vm(vm_hash=vm_hash, program=message.content,
-                                               original=original_message.content)
+            execution = await pool.create_a_vm(
+                vm_hash=vm_hash,
+                program=message.content,
+                original=original_message.content,
+            )
         except ResourceDownloadError as error:
             logger.exception(error)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
@@ -81,11 +83,12 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
                 content_type="text/plain",
             )
 
-        headers = {key.decode(): value.decode()
-                   for key, value in result['headers']['headers']}
+        headers = {
+            key.decode(): value.decode() for key, value in result["headers"]["headers"]
+        }
 
         return web.Response(
-            status=result['headers']['status'],
+            status=result["headers"]["status"],
             body=result["body"]["body"],
             headers=headers,
         )
@@ -95,7 +98,7 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
     finally:
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
-                execution.start_watching_for_updates(pubsub=request.app['pubsub'])
+                execution.start_watching_for_updates(pubsub=request.app["pubsub"])
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
