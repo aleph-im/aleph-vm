@@ -16,6 +16,20 @@ logger = logging.getLogger(__name__)
 VmHash = NewType("VmHash", str)
 
 
+@dataclass
+class VmExecutionTimes:
+    defined_at: datetime = None
+    preparing_at: Optional[datetime] = None
+    prepared_at: Optional[datetime] = None
+    starting_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    stopping_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+
+    def to_dict(self):
+        return self.__dict__
+
+
 class VmExecution:
     """
     Control the execution of a VM on a high level.
@@ -29,13 +43,7 @@ class VmExecution:
     resources: Optional[AlephFirecrackerResources]
     vm: AlephFirecrackerVM = None
 
-    defined_at: datetime = None
-    preparing_at: Optional[datetime] = None
-    prepared_at: Optional[datetime] = None
-    starting_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    stopping_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
+    times: VmExecutionTimes
 
     ready_event: asyncio.Event = None
     concurrent_runs: int = None
@@ -44,7 +52,7 @@ class VmExecution:
 
     @property
     def is_running(self):
-        return self.starting_at and not (self.stopping_at)
+        return self.times.starting_at and not (self.times.stopping_at)
 
     @property
     def becomes_ready(self):
@@ -54,7 +62,7 @@ class VmExecution:
         self.vm_hash = vm_hash
         self.program = program
         self.original = original
-        self.defined_at = datetime.now()
+        self.times = VmExecutionTimes(defined_at=datetime.now())
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
@@ -67,14 +75,14 @@ class VmExecution:
 
     async def prepare(self):
         """Download VM required files"""
-        self.preparing_at = datetime.now()
+        self.times.preparing_at = datetime.now()
         resources = AlephFirecrackerResources(self.program, namespace=self.vm_hash)
         await resources.download_all()
-        self.prepared_at = datetime.now()
+        self.times.prepared_at = datetime.now()
         self.resources = resources
 
     async def create(self, address: int) -> AlephFirecrackerVM:
-        self.starting_at = datetime.now()
+        self.times.starting_at = datetime.now()
         self.vm = vm = AlephFirecrackerVM(
             vm_id=address,
             vm_hash=self.vm_hash,
@@ -87,7 +95,7 @@ class VmExecution:
             await vm.start()
             await vm.configure()
             await vm.start_guest_api()
-            self.started_at = datetime.now()
+            self.times.started_at = datetime.now()
             self.ready_event.set()
             return vm
         except Exception:
@@ -111,8 +119,8 @@ class VmExecution:
     async def expire(self, timeout: float) -> None:
         """Coroutine that will stop the VM after 'timeout' seconds."""
         await asyncio.sleep(timeout)
-        assert self.started_at
-        if self.stopped_at or self.stopped_at:
+        assert self.times.started_at
+        if self.times.stopping_at or self.times.stopped_at:
             return
         await self.stop()
 
@@ -125,9 +133,9 @@ class VmExecution:
 
     async def stop(self):
         await self.all_runs_complete()
-        self.stopping_at = datetime.now()
+        self.times.stopping_at = datetime.now()
         await self.vm.teardown()
-        self.stopped_at = datetime.now()
+        self.times.stopped_at = datetime.now()
 
     def start_watching_for_updates(self, pubsub: PubSub):
         pool = asyncio.get_running_loop()
