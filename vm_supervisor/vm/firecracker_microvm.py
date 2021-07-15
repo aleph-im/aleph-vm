@@ -9,6 +9,7 @@ from os.path import isfile, exists
 from typing import Optional, Dict, List
 
 import msgpack
+import psutil as psutil
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
@@ -209,7 +210,27 @@ class AlephFirecrackerVM:
         self.hardware_resources = hardware_resources
 
     def to_dict(self):
-        return self.__dict__
+        if self.fvm.proc:
+            p = psutil.Process(self.fvm.proc.pid)
+            pid_info = {
+                'status': p.status(),
+                'create_time': p.create_time(),
+                'cpu_times': p.cpu_times(),
+                'cpu_percent': p.cpu_percent(),
+                'memory_info': p.memory_info(),
+                'io_counters': p.io_counters(),
+                'open_files': p.open_files(),
+                'connections': p.connections(),
+                'num_threads': p.num_threads(),
+                'num_ctx_switches': p.num_ctx_switches(),
+            }
+        else:
+            pid_info = None
+
+        return {
+            'process': pid_info,
+            **self.__dict__,
+        }
 
     async def setup(self):
         logger.debug("setup started")
