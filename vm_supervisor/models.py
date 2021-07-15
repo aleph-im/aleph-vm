@@ -52,7 +52,7 @@ class VmExecution:
 
     @property
     def is_running(self):
-        return self.times.starting_at and not (self.times.stopping_at)
+        return self.times.starting_at and not self.times.stopping_at
 
     @property
     def becomes_ready(self):
