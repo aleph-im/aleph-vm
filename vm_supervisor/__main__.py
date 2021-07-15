@@ -9,7 +9,8 @@ from typing import List, Tuple, Dict
 
 from aiohttp.web import Response
 
-from vm_supervisor.models import VmHash
+from .run import run_code
+from .models import VmHash
 from . import supervisor
 from .conf import settings
 
@@ -135,9 +136,9 @@ async def benchmark(runs: int):
     for path in ("/", "/messages", "/internet", "/post_a_message",
                  "/cache/set/foo/bar", "/cache/get/foo", "/cache/keys"):
         fake_request.match_info["suffix"] = path
-        response: Response = await supervisor.run_code(vm_hash=ref,
-                                                       path=path,
-                                                       request=fake_request)
+        response: Response = await run_code(vm_hash=ref,
+                                            path=path,
+                                            request=fake_request)
         assert response.status == 200
 
     # Disable VM timeout to exit benchmark properly
@@ -146,9 +147,9 @@ async def benchmark(runs: int):
     for run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response: Response = await supervisor.run_code(vm_hash=ref,
-                                                       path=path,
-                                                       request=fake_request)
+        response: Response = await run_code(vm_hash=ref,
+                                            path=path,
+                                            request=fake_request)
         assert response.status == 200
         bench.append(time.time() - t0)
 
