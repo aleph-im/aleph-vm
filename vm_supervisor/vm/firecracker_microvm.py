@@ -9,7 +9,10 @@ from os.path import isfile, exists
 from typing import Optional, Dict, List
 
 import msgpack
-import psutil as psutil
+try:
+    import psutil as psutil
+except ImportError:
+    psutil = None
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
@@ -140,7 +143,7 @@ class AlephFirecrackerResources:
             self.rootfs_path = await get_runtime_path(runtime_ref)
         except ClientResponseError as error:
             raise ResourceDownloadError(error)
-        assert isfile(self.rootfs_path)
+        assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
 
     async def download_data(self):
         if self.message_content.data:
@@ -210,7 +213,7 @@ class AlephFirecrackerVM:
         self.hardware_resources = hardware_resources
 
     def to_dict(self):
-        if self.fvm.proc:
+        if self.fvm.proc and psutil:
             p = psutil.Process(self.fvm.proc.pid)
             pid_info = {
                 'status': p.status(),
