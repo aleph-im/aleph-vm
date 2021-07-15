@@ -57,7 +57,7 @@ when running the VM Supervisor.
 ```shell
 apt update
 apt install -y git python3 python3-aiohttp python3-msgpack python3-aiodns redis python3-aioredis \
- sudo acl curl systemd-container squashfs-tools debootstrap
+ python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap
 useradd jailman
 ```
 
