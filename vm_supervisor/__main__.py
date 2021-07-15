@@ -112,17 +112,13 @@ async def benchmark(runs: int):
     fake_request.method = "GET"
     fake_request.query_string = ""
 
-    fake_request.headers = {
-        'host': '127.0.0.1',
-        'content-type': 'application/json'
-    }
+    fake_request.headers = {"host": "127.0.0.1", "content-type": "application/json"}
     fake_request.raw_headers = [
-        (name.encode(), value.encode())
-        for name, value in fake_request.headers.items()
+        (name.encode(), value.encode()) for name, value in fake_request.headers.items()
     ]
 
     # noinspection PyDeprecation
-    fake_request.read = coroutine(lambda: b'')
+    fake_request.read = coroutine(lambda: b"")
 
     logger.info("--- Start benchmark ---")
 
@@ -133,12 +129,19 @@ async def benchmark(runs: int):
 
     # First test all methods
     settings.REUSE_TIMEOUT = 0.1
-    for path in ("/", "/messages", "/internet", "/post_a_message",
-                 "/cache/set/foo/bar", "/cache/get/foo", "/cache/keys"):
+    for path in (
+        "/",
+        "/messages",
+        "/internet",
+        "/post_a_message",
+        "/cache/set/foo/bar",
+        "/cache/get/foo",
+        "/cache/keys",
+    ):
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code(vm_hash=ref,
-                                            path=path,
-                                            request=fake_request)
+        response: Response = await run_code(
+            vm_hash=ref, path=path, request=fake_request
+        )
         assert response.status == 200
 
     # Disable VM timeout to exit benchmark properly
@@ -147,22 +150,27 @@ async def benchmark(runs: int):
     for run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code(vm_hash=ref,
-                                            path=path,
-                                            request=fake_request)
+        response: Response = await run_code(
+            vm_hash=ref, path=path, request=fake_request
+        )
         assert response.status == 200
         bench.append(time.time() - t0)
 
-    logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
-                f"min={min(bench):03f} max={max(bench):03f}")
+    logger.info(
+        f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} "
+        f"min={min(bench):03f} max={max(bench):03f}"
+    )
     logger.info(bench)
 
 
 def main():
     args = parse_args(sys.argv[1:])
 
-    log_format = "%(relativeCreated)4f | %(levelname)s | %(message)s" if args.profile \
+    log_format = (
+        "%(relativeCreated)4f | %(levelname)s | %(message)s"
+        if args.profile
         else "%(asctime)s | %(levelname)s | %(message)s"
+    )
     logging.basicConfig(
         level=args.loglevel,
         format=log_format,

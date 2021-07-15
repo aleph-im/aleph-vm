@@ -58,7 +58,9 @@ class VmExecution:
     def becomes_ready(self):
         return self.ready_event.wait
 
-    def __init__(self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent):
+    def __init__(
+        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+    ):
         self.vm_hash = vm_hash
         self.program = program
         self.original = original
@@ -69,7 +71,7 @@ class VmExecution:
 
     def to_dict(self) -> Dict:
         return {
-            'is_running': self.is_running,
+            "is_running": self.is_running,
             **self.__dict__,
         }
 
@@ -110,8 +112,9 @@ class VmExecution:
         loop = asyncio.get_event_loop()
         if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
             # Task can be named
-            self.expire_task = loop.create_task(self.expire(timeout),
-                                                name=f"expire {self.vm.vm_id}")
+            self.expire_task = loop.create_task(
+                self.expire(timeout), name=f"expire {self.vm.vm_id}"
+            )
         else:
             self.expire_task = loop.create_task(self.expire(timeout))
         return self.expire_task
@@ -149,7 +152,7 @@ class VmExecution:
             *(
                 volume.ref
                 for volume in (self.original.volumes or [])
-                if hasattr(volume, 'ref')
+                if hasattr(volume, "ref")
             ),
         )
         logger.debug("Update received, stopping VM...")

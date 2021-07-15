@@ -104,7 +104,7 @@ class MicroVM:
         firecracker_bin_path: str,
         use_jailer: bool = True,
         jailer_bin_path: Optional[str] = None,
-        init_timeout: float = 5.,
+        init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
@@ -115,11 +115,11 @@ class MicroVM:
 
     def to_dict(self):
         return {
-            'jailer_path': self.jailer_path,
-            'socket_path': self.socket_path,
-            'vsock_path': self.vsock_path,
-            'guest_ip': self.guest_ip,
-            'host_ip': self.host_ip,
+            "jailer_path": self.jailer_path,
+            "socket_path": self.socket_path,
+            "vsock_path": self.vsock_path,
+            "guest_ip": self.guest_ip,
+            "host_ip": self.host_ip,
             **self.__dict__,
         }
 
@@ -147,7 +147,9 @@ class MicroVM:
         else:
             return await self.start_firecracker(config)
 
-    async def start_firecracker(self, config: FirecrackerConfig) -> asyncio.subprocess.Process:
+    async def start_firecracker(
+        self, config: FirecrackerConfig
+    ) -> asyncio.subprocess.Process:
 
         if os.path.exists(VSOCK_PATH):
             os.remove(VSOCK_PATH)
@@ -155,14 +157,23 @@ class MicroVM:
             os.remove(self.socket_path)
 
         config_file = NamedTemporaryFile()
-        config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
+        config_file.write(
+            config.json(by_alias=True, exclude_none=True, indent=4).encode()
+        )
         config_file.flush()
         self.config_file = config_file
         print(self.config_file)
 
         logger.debug(
-            " ".join((self.firecracker_bin_path, "--api-sock", self.socket_path,
-                      "--config-file", config_file.name))
+            " ".join(
+                (
+                    self.firecracker_bin_path,
+                    "--api-sock",
+                    self.socket_path,
+                    "--config-file",
+                    config_file.name,
+                )
+            )
         )
 
         self.proc = await asyncio.create_subprocess_exec(
@@ -177,15 +188,19 @@ class MicroVM:
         )
         return self.proc
 
-    async def start_jailed_firecracker(self, config: FirecrackerConfig) -> asyncio.subprocess.Process:
+    async def start_jailed_firecracker(
+        self, config: FirecrackerConfig
+    ) -> asyncio.subprocess.Process:
         if not self.jailer_bin_path:
             raise ValueError("Jailer binary path is missing")
         uid = str(getpwnam("jailman").pw_uid)
         gid = str(getpwnam("jailman").pw_gid)
 
         # config_file = NamedTemporaryFile(dir=f"{self.jailer_path}/tmp/", suffix='.json')
-        config_file = open(f"{self.jailer_path}/tmp/config.json", 'wb')
-        config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
+        config_file = open(f"{self.jailer_path}/tmp/config.json", "wb")
+        config_file.write(
+            config.json(by_alias=True, exclude_none=True, indent=4).encode()
+        )
         config_file.flush()
         os.chmod(config_file.name, 0o644)
         self.config_file = config_file
@@ -291,9 +306,7 @@ class MicroVM:
         self.network_tap = host_dev_name
 
         system(f"ip tuntap add {host_dev_name} mode tap")
-        system(
-            f"ip addr add {self.host_ip}/24 dev {host_dev_name}"
-        )
+        system(f"ip addr add {self.host_ip}/24 dev {host_dev_name}")
         system(f"ip link set {host_dev_name} up")
         system('sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"')
         # TODO: Don't fill iptables with duplicate rules; purge rules on delete
@@ -369,11 +382,15 @@ class MicroVM:
             self.stderr_task.cancel()
 
         if self.network_tap:
-            await asyncio.sleep(0.01)  # Used to prevent `ioctl(TUNSETIFF): Device or resource busy`
+            await asyncio.sleep(
+                0.01
+            )  # Used to prevent `ioctl(TUNSETIFF): Device or resource busy`
             logger.debug(f"Removing interface {self.network_tap}")
             system(f"ip tuntap del {self.network_tap} mode tap")
             logger.debug("Removing iptables rules")
-            system(f"iptables -t nat -D POSTROUTING -o {self.network_interface} -j MASQUERADE")
+            system(
+                f"iptables -t nat -D POSTROUTING -o {self.network_interface} -j MASQUERADE"
+            )
             system(
                 "iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
             )
@@ -384,13 +401,12 @@ class MicroVM:
         logger.debug("Removing files")
         system(f"rm -fr {self.jailer_path}")
 
-
     def __del__(self):
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.teardown())
         except RuntimeError as error:
-            if error.args == ('no running event loop',):
+            if error.args == ("no running event loop",):
                 return
             else:
                 raise

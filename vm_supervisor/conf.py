@@ -87,7 +87,9 @@ class Settings(BaseSettings):
     RUNTIME_CACHE: FilePath = FilePath(join(CACHE_ROOT, "runtime"))
     DATA_CACHE: FilePath = FilePath(join(CACHE_ROOT, "data"))
 
-    PERSISTENT_VOLUMES_DIR: FilePath = FilePath(join("/var/tmp/aleph", "volumes", "persistent"))
+    PERSISTENT_VOLUMES_DIR: FilePath = FilePath(
+        join("/var/tmp/aleph", "volumes", "persistent")
+    )
 
     FAKE_DATA: bool = False
     FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
@@ -122,13 +124,12 @@ class Settings(BaseSettings):
             if self.DNS_RESOLUTION == DnsResolver.resolv_conf:
                 self.DNS_NAMESERVERS = list(etc_resolv_conf_dns_servers())
 
-
             elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
-                self.DNS_NAMESERVERS = list(systemd_resolved_dns_servers(
-                    interface=self.NETWORK_INTERFACE))
+                self.DNS_NAMESERVERS = list(
+                    systemd_resolved_dns_servers(interface=self.NETWORK_INTERFACE)
+                )
             else:
                 assert "This should never happen"
-
 
     def display(self) -> str:
         return "\n".join(
@@ -139,7 +140,7 @@ class Settings(BaseSettings):
     class Config:
         env_prefix = "ALEPH_VM_"
         case_sensitive = False
-        env_file = '.env'
+        env_file = ".env"
 
 
 # Settings singleton

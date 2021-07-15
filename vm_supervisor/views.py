@@ -46,7 +46,9 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     else:
         try:
             message_ref = b32_to_b16(message_ref_base32).decode()
-            logger.debug(f"Using base32 message id from hostname to obtain '{message_ref}")
+            logger.debug(
+                f"Using base32 message id from hostname to obtain '{message_ref}"
+            )
         except binascii.Error:
             try:
                 message_ref = await get_ref_from_dns(domain=f"_aleph-id.{request.host}")
@@ -59,15 +61,15 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
 def authenticate_request(request: web.Request):
     """Check that the token in the cookies matches the app's secret token."""
-    if request.cookies.get('token') != request.app['secret_token']:
+    if request.cookies.get("token") != request.app["secret_token"]:
         raise web.HTTPUnauthorized(reason="Invalid token")
 
 
 async def about_login(request: web.Request):
-    token = request.query.get('token')
-    if token == request.app['secret_token']:
-        response = web.HTTPFound('/about/config')
-        response.cookies['token'] = token
+    token = request.query.get("token")
+    if token == request.app["secret_token"]:
+        response = web.HTTPFound("/about/config")
+        response.cookies["token"] = token
         return response
     else:
         return web.json_response({"success": False}, status=401)
@@ -76,12 +78,7 @@ async def about_login(request: web.Request):
 async def about_executions(request: web.Request):
     authenticate_request(request)
     return web.json_response(
-        [
-            {
-                key: value
-                for key, value in pool.executions.items()
-            }
-        ],
+        [{key: value for key, value in pool.executions.items()}],
         dumps=dumps_for_json,
     )
 
