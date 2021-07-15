@@ -16,8 +16,13 @@ from shutil import make_archive
 import aiohttp
 
 from aleph_message.models import ProgramMessage
-from aleph_message.models.program import Encoding, MachineVolume, ImmutableVolume, PersistentVolume, \
-    VolumePersistence
+from aleph_message.models.program import (
+    Encoding,
+    MachineVolume,
+    ImmutableVolume,
+    PersistentVolume,
+    VolumePersistence,
+)
 from .conf import settings
 from firecracker.models import FilePath
 
@@ -73,8 +78,10 @@ async def get_message(ref: str) -> ProgramMessage:
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
         if settings.FAKE_DATA:
-            msg['item_content'] = json.dumps(msg['content'])
-            msg['item_hash'] = hashlib.sha256(msg['item_content'].encode('utf-8')).hexdigest()
+            msg["item_content"] = json.dumps(msg["content"])
+            msg["item_hash"] = hashlib.sha256(
+                msg["item_content"].encode("utf-8")
+            ).hexdigest()
         return ProgramMessage(**msg)
 
 
@@ -83,19 +90,19 @@ async def get_code_path(ref: str) -> FilePath:
         root_dir = abspath(join(__file__, "../../examples/"))
         archive_path = join(root_dir, settings.FAKE_DATA_EXAMPLE)
 
-        encoding: Encoding = (await get_message(ref="fake-message")).content.code.encoding
+        encoding: Encoding = (
+            await get_message(ref="fake-message")
+        ).content.code.encoding
         if encoding == Encoding.squashfs:
             if os.path.exists(f"{archive_path}.squashfs"):
                 os.remove(f"{archive_path}.squashfs")
             os.system(f"mksquashfs {archive_path} {archive_path}.squashfs")
             return FilePath(f"{archive_path}.squashfs")
         elif encoding == Encoding.zip:
-            make_archive(
-                archive_path, "zip", root_dir=archive_path)
+            make_archive(archive_path, "zip", root_dir=archive_path)
             return FilePath(f"{archive_path}.zip")
         else:
             raise ValueError(f"Unsupported encoding: {encoding}")
-
 
     cache_path = FilePath(join(settings.CODE_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
@@ -145,7 +152,9 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> FilePath:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         if settings.FAKE_DATA:
-            data_dir = abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+            data_dir = abspath(
+                join(__file__, "../../examples/volumes/volume-venv.squashfs")
+            )
             return FilePath(data_dir)
 
         cache_path = FilePath(join(settings.DATA_CACHE, ref))
@@ -155,12 +164,15 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> FilePath:
     elif isinstance(volume, PersistentVolume):
         if volume.persistence != VolumePersistence.host:
             raise NotImplementedError("Only 'host' persistence is supported")
-        if not re.match(r'^[\w\-_/]+$', volume.name):
+        if not re.match(r"^[\w\-_/]+$", volume.name):
             raise ValueError(f"Invalid value for volume name: {volume.name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
-        volume_path = FilePath(join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4"))
+        volume_path = FilePath(
+            join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+        )
         await asyncio.get_event_loop().run_in_executor(
-            None, create_ext4, volume_path, volume.size_mib)
+            None, create_ext4, volume_path, volume.size_mib
+        )
         return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")

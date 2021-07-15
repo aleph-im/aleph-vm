@@ -41,7 +41,7 @@ async def update_with_latest_ref(obj):
 
     Useful to update references in parallel with asyncio.gather.
     """
-    if hasattr(obj, 'use_latest') and obj.use_latest:
+    if hasattr(obj, "use_latest") and obj.use_latest:
         obj.ref = await get_latest_ref(obj.ref)
     else:
         return obj
@@ -53,10 +53,7 @@ async def update_message(message: ProgramMessage):
         update_with_latest_ref(message.content.runtime),
         update_with_latest_ref(message.content.code),
         update_with_latest_ref(message.content.data),
-        *(
-            update_with_latest_ref(volume)
-            for volume in (message.content.volumes or [])
-        ),
+        *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
     )
 
 

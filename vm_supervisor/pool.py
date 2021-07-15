@@ -25,7 +25,9 @@ class VmPool:
         self.counter = settings.START_ID_INDEX
         self.executions = {}
 
-    async def create_a_vm(self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent) -> VmExecution:
+    async def create_a_vm(
+        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+    ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
         execution = VmExecution(vm_hash=vm_hash, program=program, original=original)
         self.executions[vm_hash] = execution

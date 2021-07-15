@@ -8,8 +8,10 @@ VSOCK_PATH = "/tmp/v.sock"
 
 class BootSource(BaseModel):
     kernel_image_path: FilePath = "vmlinux.bin"
-    boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off " \
-                     "ro noapic nomodules random.trust_cpu=on"
+    boot_args: str = (
+        "console=ttyS0 reboot=k panic=1 pci=off "
+        "ro noapic nomodules random.trust_cpu=on"
+    )
 
     @staticmethod
     def args(enable_console: bool = True):
@@ -54,4 +56,4 @@ class FirecrackerConfig(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
-        alias_generator = lambda x: x.replace('_', '-')
+        alias_generator = lambda x: x.replace("_", "-")

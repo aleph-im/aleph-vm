@@ -15,14 +15,14 @@ def b32_to_b16(hash: str) -> bytes:
 
 async def get_ref_from_dns(domain):
     resolver = aiodns.DNSResolver()
-    record = await resolver.query(domain, 'TXT')
+    record = await resolver.query(domain, "TXT")
     return record[0].text
 
 
 def to_json(o: Any):
-    if hasattr(o, 'to_dict'):  # dataclasses
+    if hasattr(o, "to_dict"):  # dataclasses
         return o.to_dict()
-    elif hasattr(o, 'dict'):  # Pydantic
+    elif hasattr(o, "dict"):  # Pydantic
         return o.dict()
     else:
         return str(o)

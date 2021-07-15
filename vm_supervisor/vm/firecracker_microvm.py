@@ -9,6 +9,7 @@ from os.path import isfile, exists
 from typing import Optional, Dict, List
 
 import msgpack
+
 try:
     import psutil as psutil
 except ImportError:
@@ -17,8 +18,14 @@ from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
 from aleph_message.models.program import MachineResources, Encoding
-from firecracker.config import BootSource, Drive, MachineConfig, FirecrackerConfig, Vsock, \
-    NetworkInterface
+from firecracker.config import (
+    BootSource,
+    Drive,
+    MachineConfig,
+    FirecrackerConfig,
+    Vsock,
+    NetworkInterface,
+)
 from firecracker.microvm import MicroVM, setfacl
 from firecracker.models import FilePath
 from guest_api.__main__ import run_guest_api
@@ -160,15 +167,16 @@ class AlephFirecrackerResources:
         volumes = []
         # TODO: Download in parallel
         for volume in self.message_content.volumes:
-            volumes.append(HostVolume(
-                mount=volume.mount,
-                path_on_host=(await get_volume_path(
-                    volume=volume, namespace=self.namespace)),
-
-                read_only=volume.is_read_only(),
-            ))
+            volumes.append(
+                HostVolume(
+                    mount=volume.mount,
+                    path_on_host=(
+                        await get_volume_path(volume=volume, namespace=self.namespace)
+                    ),
+                    read_only=volume.is_read_only(),
+                )
+            )
         self.volumes = volumes
-
 
     async def download_all(self):
         await asyncio.gather(
@@ -201,7 +209,7 @@ class AlephFirecrackerVM:
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
-        hardware_resources: MachineResources = MachineResources()
+        hardware_resources: MachineResources = MachineResources(),
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -216,22 +224,22 @@ class AlephFirecrackerVM:
         if self.fvm.proc and psutil:
             p = psutil.Process(self.fvm.proc.pid)
             pid_info = {
-                'status': p.status(),
-                'create_time': p.create_time(),
-                'cpu_times': p.cpu_times(),
-                'cpu_percent': p.cpu_percent(),
-                'memory_info': p.memory_info(),
-                'io_counters': p.io_counters(),
-                'open_files': p.open_files(),
-                'connections': p.connections(),
-                'num_threads': p.num_threads(),
-                'num_ctx_switches': p.num_ctx_switches(),
+                "status": p.status(),
+                "create_time": p.create_time(),
+                "cpu_times": p.cpu_times(),
+                "cpu_percent": p.cpu_percent(),
+                "memory_info": p.memory_info(),
+                "io_counters": p.io_counters(),
+                "open_files": p.open_files(),
+                "connections": p.connections(),
+                "num_threads": p.num_threads(),
+                "num_ctx_switches": p.num_ctx_switches(),
             }
         else:
             pid_info = None
 
         return {
-            'process': pid_info,
+            "process": pid_info,
             **self.__dict__,
         }
 
@@ -249,20 +257,27 @@ class AlephFirecrackerVM:
 
         config = FirecrackerConfig(
             boot_source=BootSource(
-                kernel_image_path=FilePath(fvm.enable_kernel(self.resources.kernel_image_path)),
+                kernel_image_path=FilePath(
+                    fvm.enable_kernel(self.resources.kernel_image_path)
+                ),
                 boot_args=BootSource.args(enable_console=self.enable_console),
             ),
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=FilePath(fvm.enable_rootfs(self.resources.rootfs_path)),
+                    path_on_host=FilePath(
+                        fvm.enable_rootfs(self.resources.rootfs_path)
+                    ),
                     is_root_device=True,
                     is_read_only=True,
                 ),
-            ] + (
+            ]
+            + (
                 [fvm.enable_drive(self.resources.code_path)]
-                if self.resources.code_encoding == Encoding.squashfs else []
-            ) + [
+                if self.resources.code_encoding == Encoding.squashfs
+                else []
+            )
+            + [
                 fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
                 for volume in self.resources.volumes
             ],
@@ -271,12 +286,14 @@ class AlephFirecrackerVM:
                 mem_size_mib=self.hardware_resources.memory,
             ),
             vsock=Vsock(),
-            network_interfaces = [
+            network_interfaces=[
                 NetworkInterface(
                     iface_id="eth0",
                     host_dev_name=await fvm.create_network_interface(interface="eth0"),
                 )
-            ] if self.enable_networking else [],
+            ]
+            if self.enable_networking
+            else [],
         )
 
         logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
@@ -307,22 +324,31 @@ class AlephFirecrackerVM:
 
         input_data: bytes = load_file_content(self.resources.data_path)
 
-        interface = Interface.asgi if ":" in self.resources.code_entrypoint \
+        interface = (
+            Interface.asgi
+            if ":" in self.resources.code_entrypoint
             else Interface.executable
+        )
 
         volumes: List[Volume]
         if self.resources.code_encoding == Encoding.squashfs:
-            code = b''
+            code = b""
             volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
-                Volume(mount=volume.mount, device=self.fvm.drives[index+1].drive_id,
-                       read_only=volume.read_only)
+                Volume(
+                    mount=volume.mount,
+                    device=self.fvm.drives[index + 1].drive_id,
+                    read_only=volume.read_only,
+                )
                 for index, volume in enumerate(self.resources.volumes)
             ]
         else:
             code: bytes = load_file_content(self.resources.code_path)
             volumes = [
-                Volume(mount=volume.mount, device=self.fvm.drives[index].drive_id,
-                       read_only=volume.read_only)
+                Volume(
+                    mount=volume.mount,
+                    device=self.fvm.drives[index].drive_id,
+                    read_only=volume.read_only,
+                )
                 for index, volume in enumerate(self.resources.volumes)
             ]
 
@@ -346,8 +372,7 @@ class AlephFirecrackerVM:
 
         await reader.readline()  # Ignore the acknowledgement from the socket
         response_raw = await reader.read(1000_000)
-        response = ConfigurationResponse(
-            **msgpack.loads(response_raw, raw=False))
+        response = ConfigurationResponse(**msgpack.loads(response_raw, raw=False))
         if response.success is False:
             logger.exception(response.traceback)
             raise VmSetupError(response.error)
@@ -356,7 +381,9 @@ class AlephFirecrackerVM:
         logger.debug(f"starting guest API for {self.vm_id}")
         vsock_path = f"{self.fvm.vsock_path}_53"
         vm_hash = self.vm_hash
-        self.guest_api_process = Process(target=run_guest_api, args=(vsock_path, vm_hash))
+        self.guest_api_process = Process(
+            target=run_guest_api, args=(vsock_path, vm_hash)
+        )
         self.guest_api_process.start()
         while not exists(vsock_path):
             await asyncio.sleep(0.01)
