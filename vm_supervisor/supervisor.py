@@ -310,10 +310,18 @@ async def about_executions(request: web.Request):
     )
 
 
+async def about_config(request: web.Request):
+    return web.json_response(
+        settings,
+        dumps=dumper,
+    )
+
+
 app = web.Application()
 
 app.add_routes([
     web.get("/about/executions", about_executions),
+    web.get("/about/config", about_config),
     web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
     web.route("*", "/{suffix:.*}", run_code_from_hostname),
 ])
