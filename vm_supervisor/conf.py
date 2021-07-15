@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     ALLOW_VM_NETWORKING: bool = True
     FIRECRACKER_PATH: str = "/opt/firecracker/firecracker"
     JAILER_PATH: str = "/opt/firecracker/jailer"
-    LINUX_PATH: str = os.path.abspath("./kernels/vmlinux.bin")
+    LINUX_PATH: str = "/opt/firecracker/vmlinux.bin"
     INIT_TIMEOUT: float = 20
 
     CONNECTOR_URL: Url = Url("http://localhost:8000")
@@ -105,9 +105,9 @@ class Settings(BaseSettings):
                 raise ValueError(f"Unknown setting '{key}'")
 
     def check(self):
-        assert isfile(self.FIRECRACKER_PATH)
-        assert isfile(self.JAILER_PATH)
-        assert isfile(self.LINUX_PATH)
+        assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
+        assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
+        assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
