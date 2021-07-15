@@ -1,0 +1,16 @@
+[Unit]
+Description=Aleph.im VM execution engine
+After=network.target
+
+[Service]
+User=0
+Group=0
+WorkingDirectory=/opt/aleph-vm
+Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
+EnvironmentFile=/etc/aleph-vm/supervisor.env
+ExecStart=python3 -m vm_supervisor --print-settings --very-verbose
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
