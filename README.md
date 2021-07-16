@@ -13,7 +13,10 @@ Alternatively, programs written in any language can listen to HTTP requests on p
 
 ### 1. Writing Aleph-VM programs
 
-Have a look at [examples/example_fastapi_2](examples/example_fastapi_2) for an example of VM.
+Have a look at [tutorials/README.md](tutorials/README.md) for a tutorial on how to program VMs
+as a user.
+
+The rest of this document focuses on how to run an Aleph-VM node that hosts and executes the programs. 
 
 ## 1. Quick install
 
