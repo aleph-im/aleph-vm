@@ -1,27 +1,38 @@
-from os import getenv
+import logging
 from typing import NewType
+
+from pydantic import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 Url = NewType("Url", str)
 
 
-class Settings:
-    ALEPH_SERVER: Url = Url(getenv("ALEPH_API_SERVER", "https://api2.aleph.im"))
-    IPFS_SERVER: Url = Url(getenv("ALEPH_IPFS_SERVER", "https://ipfs.aleph.im/ipfs"))
-    OFFLINE_TEST_MODE: bool = getenv("ALEPH_OFFLINE_TEST_MODE", "false") == "true"
+class ConnectorSettings(BaseSettings):
+    API_SERVER: Url = "https://api2.aleph.im"
+    IPFS_SERVER: Url = "https://ipfs.aleph.im/ipfs"
+    OFFLINE_TEST_MODE: bool = False
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
+            if key != key.upper():
+                logger.warning(f"Setting {key} is not uppercase")
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
                 raise ValueError(f"Unknown setting '{key}'")
 
     def display(self) -> str:
-        result = ""
-        for annotation, value in self.__annotations__.items():
-            result += f"{annotation} ({value.__name__}) = {getattr(self, annotation)}"
-        return result
+        return "\n".join(
+            f"{annotation:<17} = {getattr(self, annotation)}"
+            for annotation, value in self.__annotations__.items()
+        )
+
+    class Config:
+        env_prefix = "ALEPH_"
+        case_sensitive = False
+        env_file = ".env"
 
 
 # Settings singleton
-settings = Settings()
+settings = ConnectorSettings()
