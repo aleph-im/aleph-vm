@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     LINUX_PATH: str = "/opt/firecracker/vmlinux.bin"
     INIT_TIMEOUT: float = 20
 
-    CONNECTOR_URL: Url = Url("http://localhost:8000")
+    CONNECTOR_URL: Url = Url("http://localhost:4021")
 
     CACHE_ROOT: FilePath = FilePath("/tmp/aleph/vm_supervisor")
     MESSAGE_CACHE: FilePath = FilePath(join(CACHE_ROOT, "message"))
