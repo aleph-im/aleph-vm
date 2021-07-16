@@ -20,33 +20,24 @@ apt update
 apt install -y docker.io
 ```
 
-### 2.b. Build the Docker image 
+### 2.b. Pull the Docker image 
 
-Clone this reposotiry on the host machine and enter it:
 ```shell
-git clone https://github.com/aleph-im/aleph-vm.git
-cd aleph-vm/
-````
-
-Build the image:
-```shell
-docker build -t aleph-connector -f docker/vm_connector.dockerfile .
+docker pull alephim/vm-connector:alpha
 ```
 
 ## 3. Running
 
-### Run the Docker image
+Run the Docker image
 ```shell
-docker run -ti --rm -p 8000:8000/tcp aleph-connector
+docker run -d -p 4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
 ```
-
-http://localhost:8000/
 
 ## 4. Configuration
 
-The VM Supervisor can be configured using  environment variables:
+The VM Supervisor can be configured using environment variables:
 
-`ALEPH_SERVER` should point to your Aleph Node. 
+`API_SERVER` should point to your Aleph Node. 
 Defaults to https://api2.aleph.im
 
 `IPFS_SERVER` should point to your IPFS Gateway, defaults to https://ipfs.aleph.im/ipfs

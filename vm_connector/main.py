@@ -1,17 +1,14 @@
 import json
 import logging
-import os.path
 from typing import Optional, Dict, Union
 
-from aleph_client.asynchronous import get_posts, create_post
+import aiohttp
+from aleph_client.asynchronous import create_post
 from aleph_client.chains.common import get_fallback_private_key
 from aleph_client.chains.ethereum import ETHAccount
-
-import aiohttp
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, Response, FileResponse
-
 from fastapi import Request
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 from .conf import settings
@@ -30,7 +27,7 @@ def read_root():
 async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
         url = (
-            f"{settings.ALEPH_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1"
+            f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1"
             f"&refs={ref}&addresses={sender}"
         )
         resp = await session.get(url)
@@ -44,7 +41,7 @@ async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
 
 async def get_message(hash_: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
-        url = f"{settings.ALEPH_SERVER}/api/v0/messages.json?hashes={hash_}"
+        url = f"{settings.API_SERVER}/api/v0/messages.json?hashes={hash_}"
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
@@ -79,11 +76,6 @@ async def download_message(
         :return: a file containing the code file
     """
 
-    if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath("./tests/test_message.json")
-        with open(filepath) as fd:
-            return json.load(fd)
-
     msg = await get_message(hash_=ref)
 
     # TODO: Validate the validity of the message (signature, hashes)
@@ -104,10 +96,6 @@ async def download_code(
     :return: a file containing the code file
     """
 
-    if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath("./examples/example_fastapi_2.zip")
-        return FileResponse(filepath, filename=f"{ref}")
-
     msg = await get_message(hash_=ref)
     if not msg:
         return Response(status_code=404, content="Hash not found")
@@ -116,7 +104,7 @@ async def download_code(
     if msg["content"]["item_type"] == "ipfs":
         url = f"{settings.IPFS_SERVER}/{data_hash}"
     else:
-        url = f"{settings.ALEPH_SERVER}/api/v0/storage/raw/{data_hash}"
+        url = f"{settings.API_SERVER}/api/v0/storage/raw/{data_hash}"
     return StreamingResponse(stream_url_chunks(url), media_type="application/zip")
 
 
@@ -132,10 +120,6 @@ async def download_data(
     :param use_latest: should the last amend to the data be used
     :return: a file containing the data
     """
-
-    if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath("./examples/data.tgz")
-        return FileResponse(filepath, filename=f"{ref}.tgz")
 
     # Download message
     msg = await get_message(hash_=ref)
@@ -159,10 +143,6 @@ async def download_runtime(
     :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
-
-    if settings.OFFLINE_TEST_MODE:
-        filepath = os.path.abspath("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
-        return FileResponse(filepath, filename=f"{ref}.ext4")
 
     # Download message
     msg = await get_message(hash_=ref)
