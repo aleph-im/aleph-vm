@@ -140,3 +140,5 @@ Note that _amend_ messages must be sent from the same Aleph address as the origi
 program to work, else they will be ignored.
 
 | ℹ️ Backup your private key, else you may lose the ability to update a program
+
+Check out the [Advanced usage](./ADVANCED.md) page for more options and capabilities.
