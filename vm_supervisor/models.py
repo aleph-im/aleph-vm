@@ -145,7 +145,7 @@ class VmExecution:
         pool.create_task(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
-        await pubsub.msubscibe(
+        await pubsub.msubscribe(
             self.original.code.ref,
             self.original.runtime.ref,
             self.original.data.ref if self.original.data else None,
