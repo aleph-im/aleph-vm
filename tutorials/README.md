@@ -40,7 +40,7 @@ network.
 ## 1. Writing
 
 To create the first program, open your favourite code editor and create a directory named
-`my-program`, containing a file named `app.py`.
+`my-program`, containing a file named `main.py`.
 
 Then write the following code in file:
 ```python
