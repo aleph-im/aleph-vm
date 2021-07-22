@@ -21,7 +21,7 @@ class PubSub:
         self.subscribers.setdefault(key, set()).add(queue)
         return await queue.get()
 
-    async def msubscibe(self, *keys):
+    async def msubscribe(self, *keys):
         """Subscribe to multiple keys"""
         keys = tuple(key for key in keys if key is not None)
         logger.debug(f"msubscribe({keys})")
