@@ -73,7 +73,7 @@ https://vm.yourdomain.org/vm/17412050fa1c103c41f983fe305c1ce8c6a809040762cdc1614
 
 ## 2. Architecture
 
-![image](https://user-images.githubusercontent.com/404665/115885445-452f5180-a450-11eb-856e-f4071023a105.png)
+![Aleph im VM - Details](https://user-images.githubusercontent.com/404665/127126908-3225a633-2c36-4129-8766-9810f2fcd7d6.png)
 
 ### VM Supervisor
 
@@ -83,8 +83,7 @@ See [vm_supervisor/README.md](./vm_supervisor/README.md).
 
 ### VM Connector
 
-Schedules the execution of programs on VM Supervisors and assists
-them with operations related to the Aleph network.
+Assist with operations related to the Aleph network.
 
 See [vm_connector/README.md](./vm_connector/README.md).
 
