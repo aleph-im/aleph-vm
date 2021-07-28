@@ -99,13 +99,13 @@ mkdir /srv/jailer
 
 ### 2.g. Download a Linux kernel
 
-This downloads the example kernel built by the Firecracker team.
+This downloads an optimized kernel built by the Aleph team.
 
-A more optimized kernel will be made available in the future.
+A more optimized kernel may be made available in the future.
 See section _Compile your kernel_ below to build your own.
 
 ```shell
-curl -fsSL -o ./kernels/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
+curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
 ```
 
 ## 3. Running
