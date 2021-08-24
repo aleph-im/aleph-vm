@@ -1,8 +1,8 @@
 import json
 import logging
+import os
 from datetime import datetime
 from os import listdir
-from fastapi import Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -25,12 +25,16 @@ cache = VmCache()
 
 @app.get("/")
 async def index():
+    if os.path.exists("/opt/venv"):
+        opt_venv = list(listdir("/opt/venv"))
+    else:
+        opt_venv = []
     return {
         "Example": "example_fastapi_2",
         "endpoints": ["/messages", "/internet", "/post_a_message",
                       "/state/increment", "/wait-for/{delay}"],
         "files_in_volumes": {
-            "/opt/venv": list(listdir("/opt/venv"))
+            "/opt/venv": opt_venv,
         },
     }
 
