@@ -58,6 +58,7 @@ def systemd_resolved_dns_servers(interface):
 
 
 class Settings(BaseSettings):
+    SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
     START_ID_INDEX: int = 4
