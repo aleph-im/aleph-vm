@@ -10,7 +10,7 @@ import aioredis
 logger = logging.getLogger(__name__)
 
 ALEPH_API_SERVER = "https://api2.aleph.im"
-ALEPH_VM_CONNECTOR = "http://localhost:8000"
+ALEPH_VM_CONNECTOR = "http://localhost:4021"
 CACHE_EXPIRES_AFTER = 7 * 24 * 3600  # Seconds
 
 
