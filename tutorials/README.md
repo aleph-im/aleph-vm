@@ -204,7 +204,7 @@ program to work, else they will be ignored.
 
 | ℹ️ Backup your private key, else you may lose the ability to update a program
 
-## 7. Next steps
+## Next steps
 
 Check out the [Writing a non-Python program](./SERVER.md) page to run a program written in another language than Python.
 
