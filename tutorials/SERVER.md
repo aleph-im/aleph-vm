@@ -13,7 +13,7 @@ This can be used to run existing programs on Aleph VMs, or to use other programm
 
 ### What we will cover
 
-Since Python is the only language currently supported, this tutorial we will cover two other languages: Javascript ([NodeJS](https://nodejs.org/)) and [Rust](https://www.rust-lang.org/).
+Since Python is the only language currently supported, this tutorial we will cover two other languages: [Rust](https://www.rust-lang.org/) and Javascript ([NodeJS](https://nodejs.org/)).
 
 ## 1. Rust
 
