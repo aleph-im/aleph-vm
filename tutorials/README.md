@@ -27,11 +27,14 @@ You will need a recent version of Python and [pip](https://pip.pypa.io/en/stable
 preferably running on Debian or Ubuntu Linux since we have not tested other platforms yet, 
 but feel free to use the platform of your choice if you have the skills to adapt our instructions to it.
 
-Some cryptographic functionalities of Aleph use curve secp256k1 and require installing libsecp256k1.
+Some cryptographic functionalities of Aleph use curve secp256k1 and require installing [libsecp256k1](https://github.com/bitcoin-core/secp256k1).
+Archiving programs and volumes requires
+[Squashfs user space tools](https://github.com/plougher/squashfs-tools).
 
     sudo apt-get install -y python3-pip libsecp256k1-dev squashfs-tools
 
-You will also need [Uvicorn](https://www.uvicorn.org/) and the [Python Aleph client](https://github.com/aleph-im/aleph-client):
+You will also need [Uvicorn](https://www.uvicorn.org/) for local testing 
+and the [Python Aleph client](https://github.com/aleph-im/aleph-client) for it's command-line tools:
 
     pip3 install uvicorn[standard] aleph-client
 
