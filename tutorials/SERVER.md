@@ -92,3 +92,5 @@ aleph program ./target/release/example_http_rust example_http_rust
 ```
 
 If your program takes some arguments, pass them in the entrypoint by using quotes: `"example_http_rust --help`.
+
+ℹ️ If you get the error `Invalid zip archive`, you are probably missing the Squashfs user tool `mksquashfs`. In that case, first create the squashfs archive and then upload it using `aleph program ./target/release/example_http_rust.squashfs example_http_rust`
