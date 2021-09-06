@@ -8,7 +8,7 @@ from aiohttp.web_exceptions import HTTPNotFound
 
 from .conf import settings
 from .models import VmHash
-from .run import run_code, pool
+from .run import run_code_on_request, pool
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = path if path.startswith("/") else f"/{path}"
 
     message_ref: VmHash = request.match_info["ref"]
-    return run_code(message_ref, path, request)
+    return run_code_on_request(message_ref, path, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -56,7 +56,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             except aiodns.error.DNSError:
                 raise HTTPNotFound(reason="Invalid message reference")
 
-    return await run_code(message_ref, path, request)
+    return await run_code_on_request(message_ref, path, request)
 
 
 def authenticate_request(request: web.Request):
