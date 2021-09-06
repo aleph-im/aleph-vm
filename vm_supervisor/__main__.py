@@ -9,7 +9,7 @@ from typing import List, Tuple, Dict
 
 from aiohttp.web import Response
 
-from .run import run_code
+from .run import run_code_on_request
 from .models import VmHash
 from . import supervisor
 from .conf import settings
@@ -139,7 +139,7 @@ async def benchmark(runs: int):
         "/cache/keys",
     ):
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code(
+        response: Response = await run_code_on_request(
             vm_hash=ref, path=path, request=fake_request
         )
         assert response.status == 200
@@ -150,7 +150,7 @@ async def benchmark(runs: int):
     for run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code(
+        response: Response = await run_code_on_request(
             vm_hash=ref, path=path, request=fake_request
         )
         assert response.status == 200

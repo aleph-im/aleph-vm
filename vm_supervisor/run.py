@@ -31,7 +31,7 @@ async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
     }
 
 
-async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Response:
+async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
