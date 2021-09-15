@@ -44,3 +44,6 @@ class VmPool:
             return execution
         else:
             return None
+
+    def forget_vm(self, vm_hash: VmHash) -> None:
+        self.executions.pop(vm_hash)
