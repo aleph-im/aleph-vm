@@ -50,12 +50,15 @@ async def run_code(vm_hash: VmHash, path: str, request: web.Request) -> web.Resp
             )
         except ResourceDownloadError as error:
             logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
         except VmSetupError as error:
             logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
             raise HTTPInternalServerError(reason="Error during program initialisation")
         except MicroVMFailedInit as error:
             logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
             raise HTTPInternalServerError(reason="Error during runtime initialisation")
 
     logger.debug(f"Using vm={execution.vm.vm_id}")
