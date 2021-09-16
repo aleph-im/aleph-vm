@@ -36,7 +36,7 @@ Archiving programs and volumes requires
 You will also need [Uvicorn](https://www.uvicorn.org/) for local testing 
 and the [Python Aleph client](https://github.com/aleph-im/aleph-client) for it's command-line tools:
 
-    pip3 install uvicorn[standard] aleph-client fastapi
+    pip3 install uvicorn[standard] aleph-client fastapi eth_account
 
 ## 1. Understanding the VMs
 
