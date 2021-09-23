@@ -24,7 +24,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
 pip3 install fastapi django
 
 echo "Pip installing aleph-client"
-pip3 install 'aleph-client>=0.2.7' 'coincurve==15.0.0'
+pip3 install 'aleph-client>=0.2.7' 'coincurve==15.0.0' 'eth_account>=0.4.0'
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
