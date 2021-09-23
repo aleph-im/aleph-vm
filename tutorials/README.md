@@ -23,8 +23,13 @@ Then we will extend the program to add some Aleph specific functionalities.
 
 ## Requirements
 
-You will need a recent version of Python and [pip](https://pip.pypa.io/en/stable/), 
-preferably running on Debian 11 or Ubuntu Linux since we have not tested other platforms yet, 
+To complete this tutorial, you will use the `aleph` command from 
+[aleph-client](https://github.com/aleph-im/aleph-client), the `fastapi` framework to create a
+simple API and the `uvicorn` server to test your program on your desktop before uploading it on 
+Aleph.
+
+First, you need a recent version of Python and [pip](https://pip.pypa.io/en/stable/), 
+preferably running on Debian 11 or Ubuntu Linux 20.04 since we have not tested other platforms yet, 
 but feel free to use the platform of your choice if you have the skills to adapt our instructions to it.
 
 Some cryptographic functionalities of Aleph use curve secp256k1 and require installing [libsecp256k1](https://github.com/bitcoin-core/secp256k1).
@@ -136,7 +141,16 @@ Test your progam locally using uvicorn, an ASGI server:
 uvicorn main:app --reload
 ```
 
-Then open http://127.0.0.1:8000 .
+Then open http://127.0.0.1:8000 . The `--reload` option will automatically reload your app
+when the code changes.
+
+> ℹ️ If you are running this on a different system than your desktop, specify the IP address of 
+> that system using `uvicorn main:app --reload --host 1.2.3.4`, where `1.2.3.4` is the IP address
+> of the system.
+> Then open your browser on http://1.2.3.4:8000 instead.
+
+> ℹ Installing uvicorn should add the `uvicorn` command to your shell. If it does not, use
+> `python3 -m uvicorn` to run it.
 
 ## 4. Uploading
 
@@ -175,6 +189,11 @@ Visualise on:
 
 You may get the warning `Message failed to publish on IPFS and/or P2P`. 
 This is common and usually not an issue.
+
+> ℹ The second URL uses a hostname dedicated to your VM. Aleph identifiers are too long to work
+> for URL subdomains, so a base32 encoded version of the identifier is used instead.
+
+> ℹ You can make your own domain point to the VM. See the [ADVANCED](./ADVANCED.md) section.
 
 ## 5. Running
 
