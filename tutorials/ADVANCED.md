@@ -144,3 +144,14 @@ to allow changing the mount point of a volume.
 
 Full example 
 https://github.com/aleph-im/aleph-message/blob/main/aleph_message/tests/messages/machine.json
+
+## Custom domains
+
+You can make your own domain point to a VM. Do achieve this, you need to create the following DNS 
+records:
+
+1. A `CNAME` record to the server, for example:
+`hosted-on-aleph.net IN CNAME aleph.sh`
+2. A `TXT` record to the VM hash with the prefix _aleph-id, for example:
+`_aleph-id.hosted-on-aleph.org 60 IN TXT "b34f193470c349b1d9b60903a6d172e8c335710736d4999ff05971692febe8bc"`
+
