@@ -147,7 +147,7 @@ https://github.com/aleph-im/aleph-message/blob/main/aleph_message/tests/messages
 
 ## Custom domains
 
-You can make your own domain point to a VM. Do achieve this, you need to create the following DNS 
+You can make your own domain point to a VM. To achieve this, you need to create the following DNS 
 records:
 
 1. A `CNAME` record to the server, for example:
