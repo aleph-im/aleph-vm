@@ -6,8 +6,7 @@ import aiohttp
 from aleph_client.asynchronous import create_post
 from aleph_client.chains.common import get_fallback_private_key
 from aleph_client.chains.ethereum import ETHAccount
-from fastapi import FastAPI
-from fastapi import Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
@@ -157,6 +156,8 @@ async def download_runtime(
 @app.get("/compute/latest_amend/{item_hash}")
 async def compute_latest_amend(item_hash: str) -> str:
     msg = await get_message(hash_=item_hash)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Hash not found")
     sender = msg["sender"]
     latest_amend = await get_latest_message_amend(ref=item_hash, sender=sender)
     if latest_amend:
