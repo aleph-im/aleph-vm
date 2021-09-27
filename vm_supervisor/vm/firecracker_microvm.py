@@ -289,7 +289,8 @@ class AlephFirecrackerVM:
             network_interfaces=[
                 NetworkInterface(
                     iface_id="eth0",
-                    host_dev_name=await fvm.create_network_interface(interface="eth0"),
+                    host_dev_name=await fvm.create_network_interface(
+                        interface=settings.NETWORK_INTERFACE),
                 )
             ]
             if self.enable_networking
