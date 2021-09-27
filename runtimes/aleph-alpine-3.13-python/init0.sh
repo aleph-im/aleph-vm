@@ -35,7 +35,8 @@ lsblk
 #cat /proc/sys/kernel/random/entropy_avail
 
 # TODO: Move in init1
-/usr/sbin/sshd -E /var/log/sshd &
+mkdir -p /run/sshd
+/usr/sbin/sshd &
 log "SSH UP"
 
 log "Setup socat"
