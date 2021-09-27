@@ -219,6 +219,7 @@ async def properties(request: Request):
 @app.post("/sign")
 async def sign_message(request: Request):
     """Sign a message"""
+    # TODO: Check
     private_key = get_fallback_private_key()
     account: ETHAccount = ETHAccount(private_key=private_key)
 

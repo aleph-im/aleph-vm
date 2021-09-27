@@ -14,12 +14,14 @@ logger.debug("import aleph_client")
 from aleph_client.asynchronous import get_messages, create_post
 from aleph_client.chains.remote import RemoteAccount
 from aleph_client.vm.cache import VmCache
+from aleph_client.vm.app import AlephApp
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
 logger.debug("imports done")
 
-app = FastAPI()
+http_app = FastAPI()
+app = AlephApp(http_app=http_app)
 cache = VmCache()
 
 
@@ -129,3 +131,20 @@ class Data(BaseModel):
 @app.post("/post")
 async def receive_post(data: Data):
     return str(data)
+
+
+filters = [{
+    # "sender": "0xB31B787AdA86c6067701d4C0A250c89C7f1f29A5",
+    "channel": "TEST"
+}],
+
+@app.event(filters=filters)
+async def aleph_event(event):
+    print("aleph_event", event)
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
+        async with session.get("https://api2.aleph.im/api/v0/info/public.json") as resp:
+            print('RESP', resp)
+            resp.raise_for_status()
+    return {
+        "result": "Good"
+    }

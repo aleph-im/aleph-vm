@@ -19,12 +19,12 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   python3-setuptools \
   python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip \
-  nodejs
+  nodejs npm
 
 pip3 install fastapi django
 
 echo "Pip installing aleph-client"
-pip3 install 'aleph-client>=0.2.7' 'coincurve==15.0.0' 'eth_account>=0.4.0'
+pip3 install 'aleph-client>=0.3.2' 'coincurve==15.0.0'
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
