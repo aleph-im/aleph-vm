@@ -4,12 +4,36 @@ rm ./rootfs.squashfs
 
 set -euf
 
+echo "Build wheels"
+rm -fr ./rootfs ./builder
+mkdir ./rootfs
+
+debootstrap --variant=minbase bullseye ./rootfs http://deb.debian.org/debian/
+cp -pr ./rootfs ./builder
+
+
+chroot ./builder /bin/sh <<EOT
+apt-get install -y --no-install-recommends --no-install-suggests \
+  build-essential \
+  python3-dev \
+  python3-pip
+
+pip3 install --upgrade pip wheel
+
+mkdir /opt/wheel
+cd /opt/wheel
+python3 -m pip wheel 'aleph-client>=0.3.2' 'coincurve==15.0.0' fastapi django
+EOT
+
+echo "Build final rootfs"
 rm -fr ./rootfs
 mkdir ./rootfs
 
 debootstrap --variant=minbase bullseye ./rootfs http://deb.debian.org/debian/
+cp -pr ./builder/opt/wheel ./rootfs/opt/wheel
 
 chroot ./rootfs /bin/sh <<EOT
+apt-get update
 apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
@@ -21,10 +45,8 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   iproute2 unzip \
   nodejs npm
 
-pip3 install fastapi django
-
-echo "Pip installing aleph-client"
-pip3 install 'aleph-client>=0.3.2' 'coincurve==15.0.0'
+pip3 install /opt/wheel/*
+rm -fr /opt/wheel
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
