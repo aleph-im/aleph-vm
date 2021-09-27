@@ -227,7 +227,8 @@ async def run_python_code_http(application: ASGIApplication, scope: dict
         body: bytes = scope.pop('body')
 
         async def receive():
-            return {'type': 'http.request',
+            type_ = 'http.request' if scope['type'] in ('http', 'websocket') else 'aleph.message'
+            return {'type': type_,
                     'body': body,
                     'more_body': False}
 
@@ -237,10 +238,25 @@ async def run_python_code_http(application: ASGIApplication, scope: dict
             await send_queue.put(dico)
 
         # TODO: Better error handling
+        logger.debug("Awaiting application...")
         await application(scope, receive, send)
-        headers: Dict = await send_queue.get()
+
+        logger.debug("Waiting for headers")
+        headers: Dict
+        if scope['type'] == 'http':
+            headers = await send_queue.get()
+        else:
+            headers = {}
+
+        logger.debug("Waiting for body")
         body: Dict = await send_queue.get()
+
+        logger.debug("Waiting for buffer")
         output = buf.getvalue()
+
+        logger.debug(f"Headers {headers}")
+        logger.debug(f"Body {body}")
+        logger.debug(f"Output {output}")
 
     logger.debug("Getting output data")
     output_data: bytes

@@ -11,6 +11,7 @@ from .conf import settings
 from .messages import load_updated_message
 from .models import VmHash, VmExecution
 from .pool import VmPool
+from .pubsub import PubSub
 from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,13 @@ async def build_asgi_scope(path: str, request: web.Request) -> Dict[str, Any]:
         "query_string": request.query_string,
         "headers": headers,
         "body": await request.read(),
+    }
+
+
+async def build_event_scope(event) -> Dict[str, Any]:
+    return {
+        "type": "aleph.message",
+        "body": event,
     }
 
 
@@ -102,6 +110,80 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
+            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+        else:
+            await execution.stop()
+
+
+async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
+    """
+    Execute code in response to an event.
+    """
+
+    try:
+        execution: VmExecution = await pool.get_running_vm(vm_hash=vm_hash)
+    except Exception as error:
+        logger.exception(error)
+        raise
+
+    if not execution:
+        message, original_message = await load_updated_message(vm_hash)
+        pool.message_cache[vm_hash] = message
+
+        try:
+            execution = await pool.create_a_vm(
+                vm_hash=vm_hash,
+                program=message.content,
+                original=original_message.content,
+            )
+        except ResourceDownloadError as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPBadRequest(reason="Code, runtime or data not available")
+        except VmSetupError as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPInternalServerError(reason="Error during program initialisation")
+        except MicroVMFailedInit as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPInternalServerError(reason="Error during runtime initialisation")
+
+    logger.debug(f"Using vm={execution.vm.vm_id}")
+
+    scope: Dict = await build_event_scope(event)
+
+    try:
+        await execution.becomes_ready()
+        result_raw: bytes = await execution.run_code(scope=scope)
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
+
+    try:
+        result = msgpack.loads(result_raw, raw=False)
+
+        logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
+
+        if "traceback" in result:
+            logger.warning(result["traceback"])
+            return web.Response(
+                status=500,
+                reason="Error in VM execution",
+                body=result["traceback"],
+                content_type="text/plain",
+            )
+
+        logger.info(f"Result: {result['body']}")
+        return result['body']
+
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
+    finally:
+        if settings.REUSE_TIMEOUT > 0:
+            if settings.WATCH_FOR_UPDATES:
+                execution.start_watching_for_updates(pubsub=pubsub)
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()

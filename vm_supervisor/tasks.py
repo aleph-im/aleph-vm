@@ -11,9 +11,11 @@ from aiohttp import web
 from yarl import URL
 
 from aleph_message import Message
-from aleph_message.models import BaseMessage
+from aleph_message.models import BaseMessage, ProgramMessage
 from .conf import settings
+from .messages import load_updated_message
 from .pubsub import PubSub
+from .reactor import Reactor
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                     break
 
 
-async def watch_for_messages(dispatcher: PubSub):
+async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query(
@@ -48,6 +50,8 @@ async def watch_for_messages(dispatcher: PubSub):
 
     async for message in subscribe_via_ws(url):
         logger.info(f"Websocket received message: {message.item_hash}")
+
+        # Dispatch update to running VMs
         ref = (
             message.content.ref
             if hasattr(message.content, "ref")
@@ -55,12 +59,28 @@ async def watch_for_messages(dispatcher: PubSub):
         )
         await dispatcher.publish(key=ref, value=message)
 
+        # Register new VM to run on future messages:
+        if isinstance(message, ProgramMessage):
+            if message.content.on.message:
+                reactor.register(message)
+        await reactor.trigger(message=message)
+
 
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
+    reactor = Reactor(pubsub)
+
+    # Register an hardcoded initial program
+    # TODO: Register all programs with subscriptions
+    sample_message, _ = await load_updated_message(
+        ref="cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+    assert sample_message.content.on.message, sample_message
+    reactor.register(sample_message)
+
     app["pubsub"] = pubsub
-    app["messages_listener"] = asyncio.create_task(watch_for_messages(pubsub))
+    app["reactor"] = reactor
+    app["messages_listener"] = asyncio.create_task(watch_for_messages(pubsub, reactor))
 
 
 async def stop_watch_for_messages_task(app: web.Application):
