@@ -9,7 +9,8 @@ from typing import List, Tuple, Dict
 
 from aiohttp.web import Response
 
-from .run import run_code_on_request
+from vm_supervisor.pubsub import PubSub
+from .run import run_code_on_request, run_code_on_event
 from .models import VmHash
 from . import supervisor
 from .conf import settings
@@ -78,6 +79,7 @@ def parse_args(args):
         "-n",
         "--do-not-run",
         dest="do_not_run",
+        action="store_true",
         default=False,
     )
     parser.add_argument(
@@ -101,7 +103,7 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = VmHash("TEST_HASH")
+    ref = VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
 
     class FakeRequest:
         headers: Dict[str, str]
@@ -161,6 +163,10 @@ async def benchmark(runs: int):
         f"min={min(bench):03f} max={max(bench):03f}"
     )
     logger.info(bench)
+
+    event = None
+    result = await run_code_on_event(vm_hash=ref, event=event, pubsub=PubSub())
+    print("Event result", result)
 
 
 def main():
