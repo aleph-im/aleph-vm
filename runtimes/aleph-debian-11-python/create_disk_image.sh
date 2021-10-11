@@ -22,7 +22,7 @@ pip3 install --upgrade pip wheel
 
 mkdir /opt/wheel
 cd /opt/wheel
-python3 -m pip wheel 'aleph-client>=0.3.2' 'coincurve==15.0.0' fastapi django
+python3 -m pip wheel 'aleph-client>=0.3.2' 'coincurve==15.0.0' fastapi django python-multipart
 EOT
 
 echo "Build final rootfs"
