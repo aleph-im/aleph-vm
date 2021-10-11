@@ -145,6 +145,9 @@ def setup_volumes(volumes: List[Volume]):
 
 
 def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
+    # Allow importing packages from /opt/packages
+    sys.path.append("/opt/packages")
+
     logger.debug("Extracting code")
     if encoding == Encoding.squashfs:
         sys.path.append("/opt/code")

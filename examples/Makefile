@@ -9,3 +9,8 @@ example_fastapi_2.zip:
 
 data.tgz:
 	tar -cvzf data.tgz data
+
+example_pip.squashfs:
+	rm -fr /opt/python
+	pip3 install -t /opt/requirements -r example_pip/requirements.txt
+	mksquashfs /opt/requirements requirements.squashfs
