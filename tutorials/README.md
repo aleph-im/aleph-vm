@@ -225,6 +225,9 @@ program to work, else they will be ignored.
 
 ## Next steps
 
+Check out the [Requirements](./REQUIREMENTS.md) page to add additional Python packages to your 
+program from the Python Package Index ([PyPI](https://www.pypi.org)). 
+
 Check out the [Writing a non-Python program](./SERVER.md) page to run a program written in another language than Python.
 
 Check out the [Advanced usage](./ADVANCED.md) page for more options and capabilities.

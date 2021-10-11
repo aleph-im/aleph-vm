@@ -1,0 +1,44 @@
+
+
+name: "Build Examples"
+on:
+  push
+
+jobs:
+  build_pip:
+    name: "Build with Pip requirements"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - run: |
+          sudo apt-get -y update
+          sudo apt-get -y upgrade
+          sudo apt-get -y install python3-pip python3-venv squashfs-tools build-essential
+
+          sudo mkdir /opt/packages
+          sudo chown $(whoami) /opt/packages
+
+      - run: |
+          pip3 install aleph-client
+
+      - run: |
+          ls -la
+
+      - run: |
+          ls
+          pwd
+          pip3 install -t /opt/packages -r ./examples/example_pip/requirements.txt
+          mksquashfs /opt/packages packages.squashfs
+
+#      - run: |
+#          ipfs add packages.squashfs
+
+# TODO: There is currently no easy way pass the item_hash from a pin to a new program.
+#      - run: |
+#          aleph pin QmQr3dEd6LiFq6JmUJYPLrffy45RGFhPWsxWmzo9zZb7Sy
+#
+#      - run: |
+#          aleph program ./examples/example_pip main:app
