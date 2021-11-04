@@ -13,6 +13,7 @@ logger.debug("import aiohttp")
 import aiohttp
 
 logger.debug("import aleph_client")
+from aleph_client.types import StorageEnum
 from aleph_client.asynchronous import get_messages, create_post
 from aleph_client.chains.remote import RemoteAccount
 from aleph_client.vm.cache import VmCache
@@ -87,7 +88,7 @@ async def post_a_message():
         ref=None,
         channel="TEST",
         inline=True,
-        storage_engine="storage",
+        storage_engine=StorageEnum.storage,
     )
     return {
         "response": response,
