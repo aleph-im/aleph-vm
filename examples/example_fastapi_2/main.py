@@ -145,7 +145,7 @@ async def receive_post(data: Data):
 filters = [{
     # "sender": "0xB31B787AdA86c6067701d4C0A250c89C7f1f29A5",
     "channel": "TEST"
-}],
+}]
 
 @app.event(filters=filters)
 async def aleph_event(event):
