@@ -17,7 +17,7 @@ import subprocess
 import sys
 import traceback
 from contextlib import redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import StringIO
 from os import system
 from shutil import make_archive
@@ -51,16 +51,16 @@ class Volume:
 
 @dataclass
 class ConfigurationPayload:
-    ip: Optional[str]
-    route: Optional[str]
-    dns_servers: List[str]
     code: bytes
     encoding: Encoding
     entrypoint: str
     input_data: bytes
     interface: Interface
     vm_hash: str
-    volumes: List[Volume]
+    ip: Optional[str] = None
+    route: Optional[str] = None
+    dns_servers: List[str] = field(default_factory=list)
+    volumes: List[Volume] = field(default_factory=list)
 
 
 @dataclass
