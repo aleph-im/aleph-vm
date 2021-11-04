@@ -61,6 +61,7 @@ class ConfigurationPayload:
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
+    variables: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -90,6 +91,13 @@ logger.debug("init1.py is launching")
 def setup_hostname(hostname: str):
     os.environ["ALEPH_ADDRESS_TO_USE"] = hostname
     system(f"hostname {hostname}")
+
+
+def setup_variables(variables: Optional[Dict[str, str]]):
+    if variables is None:
+        return
+    for key, value in variables.items():
+        os.environ[key] = value
 
 
 def setup_network(ip: Optional[str], route: Optional[str],
@@ -399,6 +407,7 @@ def receive_config(client) -> ConfigurationPayload:
 
 def setup_system(config: ConfigurationPayload):
     setup_hostname(config.vm_hash)
+    setup_variables(config.variables)
     setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)

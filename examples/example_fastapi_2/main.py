@@ -3,6 +3,8 @@ import logging
 import os
 from datetime import datetime
 from os import listdir
+from typing import Dict
+
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,12 @@ async def index():
             "/opt/venv": opt_venv,
         },
     }
+
+
+@app.get("/environ")
+async def environ() -> Dict[str, str]:
+    """List environment variables"""
+    return dict(os.environ)
 
 
 @app.get("/messages")
