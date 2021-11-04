@@ -2,6 +2,8 @@ import asyncio
 import logging
 from typing import List, Dict, Coroutine
 
+from aleph_message.models.program import Subscription
+
 from aleph_message.models import Message, ProgramMessage
 from vm_supervisor.pubsub import PubSub
 from vm_supervisor.run import run_code_on_event
@@ -23,11 +25,11 @@ def is_equal_or_includes(value, compare_to) -> bool:
         raise ValueError("Unsupported value")
 
 
-def subscription_matches(subscription: Dict, message: ProgramMessage) -> bool:
+def subscription_matches(subscription: Subscription, message: ProgramMessage) -> bool:
     if not subscription:
         # Require at least one value to match
         return False
-    for key, value in subscription.items():
+    for key, value in subscription.dict().items():
         if not is_equal_or_includes(value, getattr(message, key)):
             return False
     return True
