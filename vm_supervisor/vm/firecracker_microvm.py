@@ -1,7 +1,7 @@
 import asyncio
 import dataclasses
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from multiprocessing import Process, set_start_method
 from os import system
@@ -88,6 +88,7 @@ class ConfigurationPayload:
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
+    variables: Optional[Dict[str, str]] = None
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -365,6 +366,7 @@ class AlephFirecrackerVM:
             interface=interface,
             vm_hash=self.vm_hash,
             volumes=volumes,
+            variables=self.resources.message_content.variables,
         )
         payload = config.as_msgpack()
         length = f"{len(payload)}\n".encode()
