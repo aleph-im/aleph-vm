@@ -10,6 +10,9 @@ mkdir ./rootfs
 debootstrap --variant=minbase bullseye ./rootfs http://deb.debian.org/debian/
 
 chroot ./rootfs /bin/sh <<EOT
+
+set -euf
+
 apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
