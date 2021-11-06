@@ -1,12 +1,56 @@
 # Tutorial: Adding Python libraries to an Aleph VM
 
-## 0. Setup your environment
+## 0.a Setup your environment
 ```shell
 sudo apt install python3-pip python3-venv squashfs-tools
 ```
 
 ```shell
 pip3 install aleph-client
+```
+
+## 0.b Quick install (Mac OS version)
+
+For starting to run aleph-vm on mac you have to initialize a VM.
+
+### Install Virtual Box
+You will need a hosted hypervisor (or virtual machine) for next step, virtual box is an Oracle VM, free and open-source.
+
+You can downloand and install it <a href="https://www.virtualbox.org/wiki/Downloads">here </a>.
+
+### Install Vagrant
+Vagrant is an open-source software product for building and maintaining portable virtual software development environments.
+
+Run following command for installing it (before make sur brew is install on your mac).
+
+```shell
+brew install vagrant
+```
+
+Once vagrant is install go to your working repository and init vagrant
+
+```shell
+vagrant init boxomatic/debian-11
+```
+
+A `Vagrantfile` (in Ruby) will be created, you can consult it if you wish.
+
+Now in order to instantiate a new virtual machine, we need to run the following command
+
+```shell
+vagrant up
+```
+
+If this does not work, I redirect you to System Preferences > Security and Privacy and allow the System software from developper.
+
+Once the command is down, your Machine will be booted and ready!
+
+### Set Vagrantfile configuration
+
+Open vagranfile and add following `config.vm.box``
+
+```shell
+config.vm.network "forwarded_port", guest:8000, host:8000
 ```
 
 ### 1. Install the packages in a directory
@@ -18,6 +62,7 @@ pip install -t /opt/packages -r requirements.txt
 ```shell
 mksquashfs /opt/packages packages.squashfs
 ```
+
 
 ## 2. Upload the packages
 
