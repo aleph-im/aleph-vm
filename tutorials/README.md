@@ -141,6 +141,17 @@ Test your progam locally using uvicorn, an ASGI server:
 uvicorn main:app --reload
 ```
 
+If you are on Mac OS test your program locally by starting to run 
+```shell
+vagrant ssh
+```
+
+Then go to your woking repository and launch:
+
+```shell
+python3 -m uvicorn main:app --reload --host=0.0.0.0
+```
+
 Then open http://127.0.0.1:8000 . The `--reload` option will automatically reload your app
 when the code changes.
 
