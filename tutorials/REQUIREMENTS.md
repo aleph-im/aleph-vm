@@ -35,7 +35,7 @@ vagrant init boxomatic/debian-11
 
 A `Vagrantfile` (in Ruby) will be created, you can consult it if you wish.
 
-Now in order to instantiate a new virtual machine, we need to run the following command
+Now in order to instantiate a new virtual machine, run the following command:
 
 ```shell
 vagrant up
