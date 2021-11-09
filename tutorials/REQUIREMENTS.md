@@ -21,7 +21,7 @@ You can download and install it <a href="https://www.virtualbox.org/wiki/Downloa
 ### Install Vagrant
 Vagrant is an open-source software product for building and maintaining portable virtual software development environments based on VirtualBox.
 
-Run following command for installing it (before make sur brew is install on your mac).
+Run following command for installing it (before make sure [homebrew](brew.sh) is installed on your mac).
 
 ```shell
 brew install vagrant
