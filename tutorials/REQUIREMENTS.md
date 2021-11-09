@@ -43,7 +43,7 @@ vagrant up
 
 If this does not work, check out you System Preferences > Security and Privacy and allow the "System software from developer" in the bottom of the window.
 
-Once the command is down, your Machine will be booted and ready!
+Once the command is down, your virtual machine will be booted and ready!
 
 ### Set Vagrantfile configuration
 
