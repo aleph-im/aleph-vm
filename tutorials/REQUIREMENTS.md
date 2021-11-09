@@ -14,7 +14,7 @@ pip3 install aleph-client
 For starting to run aleph-vm on mac you have to initialize a VM.
 
 ### Install VirtualBox
-You will need a hosted hypervisor (or virtual machine) for next step, virtual box is an Oracle VM, free and open-source.
+You will need VirtualBox, a free and open-source hosted hypervisor (or virtual machine manager) for the next step.
 
 You can downloand and install it <a href="https://www.virtualbox.org/wiki/Downloads">here </a>.
 
