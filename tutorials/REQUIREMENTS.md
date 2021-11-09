@@ -1,6 +1,6 @@
 # Tutorial: Adding Python libraries to an Aleph VM
 
-## 0.a Setup your environment
+## 0.a Setup your environment (Debian/Ubuntu Linux)
 ```shell
 sudo apt install python3-pip python3-venv squashfs-tools
 ```
