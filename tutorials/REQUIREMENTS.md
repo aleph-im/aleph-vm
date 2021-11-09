@@ -41,7 +41,7 @@ Now in order to instantiate a new virtual machine, we need to run the following 
 vagrant up
 ```
 
-If this does not work, I redirect you to System Preferences > Security and Privacy and allow the System software from developper.
+If this does not work, check out you System Preferences > Security and Privacy and allow the "System software from developer" in the bottom of the window.
 
 Once the command is down, your Machine will be booted and ready!
 
