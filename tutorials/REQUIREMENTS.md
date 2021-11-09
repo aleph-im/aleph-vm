@@ -19,7 +19,7 @@ You will need VirtualBox, a free and open-source hosted hypervisor (or virtual m
 You can download and install it <a href="https://www.virtualbox.org/wiki/Downloads">here </a>.
 
 ### Install Vagrant
-Vagrant is an open-source software product for building and maintaining portable virtual software development environments.
+Vagrant is an open-source software product for building and maintaining portable virtual software development environments based on VirtualBox.
 
 Run following command for installing it (before make sur brew is install on your mac).
 
