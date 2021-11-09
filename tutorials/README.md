@@ -146,7 +146,7 @@ If you are on Mac OS test your program locally by starting to run
 vagrant ssh
 ```
 
-Then go to your woking repository and launch:
+Then go to your working repository and launch:
 
 ```shell
 python3 -m uvicorn main:app --reload --host=0.0.0.0
