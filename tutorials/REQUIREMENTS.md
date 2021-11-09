@@ -9,7 +9,7 @@ sudo apt install python3-pip python3-venv squashfs-tools
 pip3 install aleph-client
 ```
 
-## 0.b Quick install (Mac OS version)
+## 0.b Quick install (macOS using Vagrant)
 
 For starting to run aleph-vm on mac you have to initialize a VM.
 
