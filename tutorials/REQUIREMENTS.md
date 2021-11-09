@@ -27,7 +27,7 @@ Run following command for installing it (before make sur brew is install on your
 brew install vagrant
 ```
 
-Once vagrant is install go to your working repository and init vagrant
+Once Vagrant is installed, go to your working repository and initialize vagrant
 
 ```shell
 vagrant init boxomatic/debian-11
