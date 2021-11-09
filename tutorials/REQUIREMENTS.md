@@ -16,7 +16,7 @@ For starting to run aleph-vm on mac you have to initialize a VM.
 ### Install VirtualBox
 You will need VirtualBox, a free and open-source hosted hypervisor (or virtual machine manager) for the next step.
 
-You can downloand and install it <a href="https://www.virtualbox.org/wiki/Downloads">here </a>.
+You can download and install it <a href="https://www.virtualbox.org/wiki/Downloads">here </a>.
 
 ### Install Vagrant
 Vagrant is an open-source software product for building and maintaining portable virtual software development environments.
