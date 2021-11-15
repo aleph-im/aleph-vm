@@ -33,7 +33,7 @@ pip3 install 'aleph-client>=0.4.4' 'coincurve==15.0.0'
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
 
-#echo -e "toor\ntoor" | passwd root
+echo "root:toor" | chpasswd
 
 mkdir -p /overlay
 
