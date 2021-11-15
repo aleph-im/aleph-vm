@@ -36,7 +36,7 @@ async def index():
         opt_venv = []
     return {
         "Example": "example_fastapi_2",
-        "endpoints": ["/messages", "/internet", "/post_a_message",
+        "endpoints": ["/environ", "/messages", "/internet", "/post_a_message",
                       "/state/increment", "/wait-for/{delay}"],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
