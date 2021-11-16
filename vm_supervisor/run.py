@@ -97,7 +97,8 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
         headers = {
             key.decode(): value.decode() for key, value in result["headers"]["headers"]
         }
-        headers["Content-Length"] = str(len(result["body"]["body"]))
+        if "content-length" not in headers:
+            headers["Content-Length".lower()] = str(len(result["body"]["body"]))
         for header in ["Content-Encoding", "Transfer-Encoding", "Vary"]:
             if header in headers:
                 del headers[header]
