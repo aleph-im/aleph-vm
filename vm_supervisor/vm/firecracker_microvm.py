@@ -1,10 +1,10 @@
 import asyncio
 import dataclasses
 import logging
+import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from multiprocessing import Process, set_start_method
-from os import system
 from os.path import isfile, exists
 from typing import Optional, Dict, List
 
@@ -390,7 +390,7 @@ class AlephFirecrackerVM:
         self.guest_api_process.start()
         while not exists(vsock_path):
             await asyncio.sleep(0.01)
-        system(f"chown jailman:jailman {vsock_path}")
+        subprocess.run(f"chown jailman:jailman {vsock_path}", shell=True, check=True)
         logger.debug(f"started guest API for {self.vm_id}")
 
     async def stop_guest_api(self):
