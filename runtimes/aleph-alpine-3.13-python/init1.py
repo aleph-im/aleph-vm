@@ -319,7 +319,7 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
                     raise
                 await asyncio.sleep(.05)
 
-    output = ""
+    output = ""  # Process stdout is not captured per request
     output_data = None
     logger.debug("Returning result")
     return headers, body, output, output_data
