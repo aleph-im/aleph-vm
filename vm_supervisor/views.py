@@ -3,9 +3,11 @@ import logging
 from typing import Awaitable
 
 import aiodns
+import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 
+from . import status
 from .conf import settings
 from .models import VmHash
 from .run import run_code_on_request, pool
@@ -94,3 +96,16 @@ async def about_config(request: web.Request):
 async def index(request: web.Request):
     assert request.method == "GET"
     return web.Response(text="Server: Aleph VM Supervisor")
+
+
+async def status_check_fastapi(request: web.Request):
+    async with aiohttp.ClientSession() as session:
+        result = {
+            "index": await status.check_index(session),
+            "environ": await status.check_environ(session),
+            "messages": await status.check_messages(session),
+            "internet": await status.check_internet(session),
+            "cache": await status.check_cache(session),
+            "persistent_storage": await status.check_persistent_storage(session),
+        }
+        return web.json_response(result, status=200 if all(result.values()) else 503)
