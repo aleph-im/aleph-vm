@@ -120,12 +120,12 @@ async def keys_from_cache(pattern: str = '*'):
 
 @app.get("/state/increment")
 async def increment():
-    path = "/var/lib/sqlite/mydb"
+    path = "/var/lib/example/storage.json"
     try:
         with open(path) as fd:
             data = json.load(fd)
         data["counter"] += 1
-    except:
+    except FileNotFoundError:
         data = {"counter": 0}
     with open(path, 'w') as fd:
         json.dump(data, fd)
