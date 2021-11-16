@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from aleph_message.models import ProgramContent, ProgramMessage
 from .conf import settings
@@ -47,3 +47,13 @@ class VmPool:
 
     def forget_vm(self, vm_hash: VmHash) -> None:
         self.executions.pop(vm_hash)
+
+    async def stop(self):
+        """Stop all VMs in the pool."""
+        hashes_to_forget: List[VmHash] = []
+        for vm_hash, execution in self.executions.items():
+            await execution.stop()
+            hashes_to_forget.append(vm_hash)
+
+        for vm_hash in hashes_to_forget:
+            self.forget_vm(vm_hash)
