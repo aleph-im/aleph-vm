@@ -119,8 +119,9 @@ async def benchmark(runs: int):
         (name.encode(), value.encode()) for name, value in fake_request.headers.items()
     ]
 
-    # noinspection PyDeprecation
-    fake_request.read = coroutine(lambda: b"")
+    async def fake_read() -> bytes:
+        return b""
+    fake_request.read = fake_read
 
     logger.info("--- Start benchmark ---")
 
