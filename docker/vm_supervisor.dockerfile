@@ -25,8 +25,7 @@ RUN mkdir /srv/jailer
 
 ENV PYTHONPATH /mnt
 
-# Networking does not work in Docker containers
-ENV ALEPH_VM_ALLOW_VM_NETWORKING False
+ENV ALEPH_VM_NETWORK_INTERFACE "tap0"
 # Jailer does not work in Docker containers
 ENV ALEPH_VM_USE_JAILER False
 # Use fake test data
