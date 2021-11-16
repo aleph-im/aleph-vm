@@ -39,7 +39,7 @@
             "reproducible": true,
             "internet": true,
             "aleph_api": true,
-            "shared_cache": false
+            "shared_cache": true
         },
         "resources": {
             "vcpus": 1,
