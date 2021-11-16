@@ -139,6 +139,7 @@ class VmExecution:
         self.times.stopping_at = datetime.now()
         await self.vm.teardown()
         self.times.stopped_at = datetime.now()
+        self.cancel_expiration()
 
     def start_watching_for_updates(self, pubsub: PubSub):
         pool = asyncio.get_running_loop()
