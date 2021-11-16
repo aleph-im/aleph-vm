@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
     # FAKE_DATA_EXAMPLE: str = "example_django"
 
+    CHECK_FASTAPI_VM_ID: str = "bbd7f6e2ce72104a334f22e4b29f0ebeb96af3179167521788bce80754f3c58a"
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if key != key.upper():
