@@ -50,11 +50,11 @@ async def setfacl():
 
     if proc.returncode == 0:
         return
-    logger.error(f"[{cmd!r} exited with {[proc.returncode]}]")
+    logger.warning(f"[{cmd!r} exited with {[proc.returncode]}]")
     if stdout:
-        logger.error(f"[stdout]\n{stdout.decode()}")
+        logger.warning(f"[stdout]\n{stdout.decode()}")
     if stderr:
-        logger.error(f"[stderr]\n{stderr.decode()}")
+        logger.warning(f"[stderr]\n{stderr.decode()}")
 
 
 class MicroVM:
