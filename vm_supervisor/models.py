@@ -168,7 +168,7 @@ class VmExecution:
             logger.debug("Stop: waiting for runs to complete...")
             await self.runs_done_event.wait()
 
-    async def run_code(self, scope: dict = None):
+    async def run_code(self, scope: dict = None) -> bytes:
         self.concurrent_runs += 1
         self.runs_done_event.clear()
         try:
