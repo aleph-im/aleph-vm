@@ -15,4 +15,4 @@ $DOCKER_COMMAND build -t alephim/vm-connector -f docker/vm_connector.dockerfile 
 
 $DOCKER_COMMAND tag alephim/vm-connector alephim/vm-connector:$VERSION
 $DOCKER_COMMAND push alephim/vm-connector:$VERSION docker.io/alephim/vm-connector:$VERSION
-echo docker.io/alephim/pyaleph-node:$VERSION
+echo docker.io/alephim/vm-connector:$VERSION

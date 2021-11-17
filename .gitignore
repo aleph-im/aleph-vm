@@ -8,6 +8,8 @@ __pycache__
 *.zip
 *.pyz
 *.tgz
+*.rdb
+*.key
 /pydantic/
 node_modules
 *.squashfs
