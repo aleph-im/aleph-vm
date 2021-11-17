@@ -1,6 +1,6 @@
 # This is mainly a copy of the installation instructions from [vm_supervisor/README.md]
 
-FROM debian:buster
+FROM debian:bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl systemd-container  \
@@ -38,4 +38,13 @@ ENV ALEPH_VM_SUPERVISOR_HOST "0.0.0.0"
 # Make it easy to enter this command from a shell script
 RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_fastapi_2" >> /root/.bash_history
 
-WORKDIR /root/aleph-vm
+RUN mkdir /opt/aleph-vm/
+COPY ./vm_supervisor /opt/aleph-vm/vm_supervisor
+COPY ./firecracker /opt/aleph-vm/firecracker
+COPY ./guest_api /opt/aleph-vm/guest_api
+COPY ./examples /opt/aleph-vm/examples
+COPY ./runtimes /opt/aleph-vm/runtimes
+
+WORKDIR /opt/aleph-vm
+
+CMD "bash"
