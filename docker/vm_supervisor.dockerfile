@@ -25,13 +25,17 @@ RUN mkdir /srv/jailer
 
 ENV PYTHONPATH /mnt
 
+# Networking only works in privileged containers
+ENV ALEPH_VM_ALLOW_VM_NETWORKING False
 ENV ALEPH_VM_NETWORK_INTERFACE "tap0"
 # Jailer does not work in Docker containers
 ENV ALEPH_VM_USE_JAILER False
 # Use fake test data
 ENV ALEPH_VM_FAKE_DATA True
+# Allow connections from host
+ENV ALEPH_VM_SUPERVISOR_HOST "0.0.0.0"
 
 # Make it easy to enter this command from a shell script
-RUN echo "python3 -m vm_supervisor -p -vv --system-logs --benchmark 1 --profile" >> /root/.bash_history
+RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_fastapi_2" >> /root/.bash_history
 
 WORKDIR /root/aleph-vm
