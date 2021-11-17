@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from enum import Enum
-from os.path import isfile, join, exists
+from os.path import isfile, join, exists, abspath, isdir
 from subprocess import check_output
 from typing import NewType, Optional, List
 
@@ -92,9 +92,13 @@ class Settings(BaseSettings):
         join("/var/tmp/aleph", "volumes", "persistent")
     )
 
-    FAKE_DATA: bool = False
-    FAKE_DATA_EXAMPLE: str = "example_fastapi_2"
-    # FAKE_DATA_EXAMPLE: str = "example_django"
+    FAKE_DATA_PROGRAM: Optional[FilePath] = None
+    BENCHMARK_FAKE_DATA_PROGRAM: str = abspath(join(__file__, "../../examples/example_fastapi_2"))
+
+    FAKE_DATA_MESSAGE: FilePath = abspath(join(__file__, "../../examples/message_from_aleph.json"))
+    FAKE_DATA_DATA: Optional[FilePath] = abspath(join(__file__, "../../examples/data/"))
+    FAKE_DATA_RUNTIME: FilePath = abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
+    FAKE_DATA_VOLUME: Optional[FilePath] = abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
 
     CHECK_FASTAPI_VM_ID: str = "bbd7f6e2ce72104a334f22e4b29f0ebeb96af3179167521788bce80754f3c58a"
 
@@ -116,6 +120,13 @@ class Settings(BaseSettings):
         ) or self.CONNECTOR_URL.startswith("https://")
         if self.ALLOW_VM_NETWORKING:
             assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
+
+        if self.FAKE_DATA_PROGRAM:
+            assert isdir(self.FAKE_DATA_PROGRAM), "Local fake program directory is missing"
+        assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
+        assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
+        assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
+        assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
