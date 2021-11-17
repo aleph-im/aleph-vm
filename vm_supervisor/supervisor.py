@@ -46,7 +46,9 @@ def run():
     app["secret_token"] = secret_token
     print(f"Login to /about pages /about/login?token={secret_token}")
 
-    app.on_startup.append(start_watch_for_messages_task)
-    app.on_cleanup.append(stop_watch_for_messages_task)
+    if settings.WATCH_FOR_MESSAGES:
+        app.on_startup.append(start_watch_for_messages_task)
+        app.on_cleanup.append(stop_watch_for_messages_task)
+
     web.run_app(app, host=settings.SUPERVISOR_HOST,
                 port=settings.SUPERVISOR_PORT)
