@@ -136,6 +136,7 @@ async def benchmark(runs: int):
     bench: List[float] = []
 
     # Does not make sense in benchmarks
+    settings.WATCH_FOR_MESSAGES = False
     settings.WATCH_FOR_UPDATES = False
 
     # First test all methods
