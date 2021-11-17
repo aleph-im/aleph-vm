@@ -12,7 +12,7 @@ from .messages import load_updated_message
 from .models import VmHash, VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
-from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError
+from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, FileTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,8 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
+        except FileTooLargeError as error:
+            raise HTTPInternalServerError(reason=error.args[0])
         except VmSetupError as error:
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
@@ -145,6 +147,8 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
             raise HTTPBadRequest(reason="Code, runtime or data not available")
+        except FileTooLargeError as error:
+            raise HTTPInternalServerError(reason=error.args[0])
         except VmSetupError as error:
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
