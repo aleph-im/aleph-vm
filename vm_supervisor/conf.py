@@ -93,6 +93,9 @@ class Settings(BaseSettings):
         join("/var/tmp/aleph", "volumes", "persistent")
     )
 
+    MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
+    MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
+
     FAKE_DATA_PROGRAM: Optional[FilePath] = None
     BENCHMARK_FAKE_DATA_PROGRAM: str = abspath(join(__file__, "../../examples/example_fastapi_2"))
 
