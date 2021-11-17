@@ -3,7 +3,6 @@ import asyncio
 import logging
 import sys
 import time
-from asyncio import coroutine
 from statistics import mean
 from typing import List, Tuple, Dict
 
@@ -96,6 +95,14 @@ def parse_args(args):
         default=0,
         help="Number of benchmarks to run",
     )
+    parser.add_argument(
+        "-f",
+        "--fake-data-program",
+        dest="fake_data_program",
+        type=str,
+        default=None,
+        help="Path to project containing fake data",
+    )
     return parser.parse_args(args)
 
 
@@ -103,7 +110,8 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
-    ref = VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+    ref = VmHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
+    settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
     class FakeRequest:
         headers: Dict[str, str]
@@ -189,6 +197,7 @@ def main():
         PRINT_SYSTEM_LOGS=args.system_logs,
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
+        FAKE_DATA_PROGRAM=args.fake_data_program,
     )
     settings.setup()
     if args.print_settings:

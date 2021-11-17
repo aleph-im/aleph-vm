@@ -10,7 +10,7 @@ import hashlib
 import logging
 import os
 import re
-from os.path import isfile, join, abspath
+from os.path import isfile, join, dirname
 from shutil import make_archive
 
 import aiohttp
@@ -53,7 +53,7 @@ async def download_file(url: str, local_path: FilePath) -> None:
 
 
 async def get_latest_amend(item_hash: str) -> str:
-    if settings.FAKE_DATA:
+    if settings.FAKE_DATA_PROGRAM:
         return item_hash
     else:
         url = f"{settings.CONNECTOR_URL}/compute/latest_amend/{item_hash}"
@@ -66,10 +66,8 @@ async def get_latest_amend(item_hash: str) -> str:
 
 
 async def get_message(ref: str) -> ProgramMessage:
-    if settings.FAKE_DATA:
-        cache_path = os.path.abspath(
-            join(__file__, "../../examples/message_from_aleph.json")
-        )
+    if settings.FAKE_DATA_PROGRAM:
+        cache_path = settings.FAKE_DATA_MESSAGE
     else:
         cache_path = FilePath(join(settings.MESSAGE_CACHE, ref) + ".json")
         url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
@@ -77,7 +75,7 @@ async def get_message(ref: str) -> ProgramMessage:
 
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
-        if settings.FAKE_DATA:
+        if settings.FAKE_DATA_PROGRAM:
             msg["item_content"] = json.dumps(msg["content"])
             msg["item_hash"] = hashlib.sha256(
                 msg["item_content"].encode("utf-8")
@@ -86,9 +84,8 @@ async def get_message(ref: str) -> ProgramMessage:
 
 
 async def get_code_path(ref: str) -> FilePath:
-    if settings.FAKE_DATA:
-        root_dir = abspath(join(__file__, "../../examples/"))
-        archive_path = join(root_dir, settings.FAKE_DATA_EXAMPLE)
+    if settings.FAKE_DATA_PROGRAM:
+        archive_path = settings.FAKE_DATA_PROGRAM
 
         encoding: Encoding = (
             await get_message(ref="fake-message")
@@ -111,8 +108,8 @@ async def get_code_path(ref: str) -> FilePath:
 
 
 async def get_data_path(ref: str) -> FilePath:
-    if settings.FAKE_DATA:
-        data_dir = abspath(join(__file__, "../../examples/data"))
+    if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_DATA:
+        data_dir = settings.FAKE_DATA_DATA
         make_archive(data_dir, "zip", data_dir)
         return FilePath(f"{data_dir}.zip")
 
@@ -123,12 +120,8 @@ async def get_data_path(ref: str) -> FilePath:
 
 
 async def get_runtime_path(ref: str) -> FilePath:
-    if settings.FAKE_DATA:
-        return FilePath(
-            os.path.abspath(
-                join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs")
-            )
-        )
+    if settings.FAKE_DATA_PROGRAM:
+        return FilePath(settings.FAKE_DATA_RUNTIME)
 
     cache_path = FilePath(join(settings.RUNTIME_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
@@ -151,11 +144,8 @@ def create_ext4(path: FilePath, size_mib: int) -> bool:
 async def get_volume_path(volume: MachineVolume, namespace: str) -> FilePath:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
-        if settings.FAKE_DATA:
-            data_dir = abspath(
-                join(__file__, "../../examples/volumes/volume-venv.squashfs")
-            )
-            return FilePath(data_dir)
+        if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
+            return FilePath(settings.FAKE_DATA_VOLUME)
 
         cache_path = FilePath(join(settings.DATA_CACHE, ref))
         url = f"{settings.CONNECTOR_URL}/download/data/{ref}"

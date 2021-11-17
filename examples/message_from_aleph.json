@@ -3,7 +3,7 @@
         "$oid": "6080402d7f44efefd611dc1e"
     },
     "chain": "ETH",
-    "item_hash": "TEST_HASH",
+    "item_hash": "fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash",
     "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
     "type": "PROGRAM",
     "channel": "Fun-dApps",
