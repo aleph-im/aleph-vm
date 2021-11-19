@@ -30,7 +30,7 @@ This will create a local example read-only volume named `./example/volumes/volum
 
 Run the developer image, mounting the two generated volumes:
 ```shell
-run -ti --rm \
+docker run -ti --rm \
   -v "$(pwd)/runtimes/aleph-debian-11-python/rootfs.squashfs:/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs:ro" \
   -v "$(pwd)/examples/volumes/volume-venv.squashfs:/opt/aleph-vm/examples/volumes/volume-venv.squashfs:ro" \
   --device /dev/kvm \
