@@ -85,4 +85,7 @@ async def start_watch_for_messages_task(app: web.Application):
 
 async def stop_watch_for_messages_task(app: web.Application):
     app["messages_listener"].cancel()
-    await app["messages_listener"]
+    try:
+        await app["messages_listener"]
+    except asyncio.CancelledError:
+        logger.debug("Task messages_listener is cancelled now")
