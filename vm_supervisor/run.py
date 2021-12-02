@@ -105,6 +105,12 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
             if header in headers:
                 del headers[header]
 
+        headers.update({
+            "Aleph-Program-ItemHash": execution.vm_hash,
+            "Aleph-Program-Code-Ref": execution.program.code.ref,
+            # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
+        })
+
         return web.Response(
             status=result["headers"]["status"],
             body=result["body"]["body"],
