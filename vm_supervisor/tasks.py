@@ -28,9 +28,12 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
             async for msg in ws:
                 logger.debug(f"Websocket received data...")
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    # Patch data format to match HTTP GET format
-                    data["_id"] = {"$oid": data["_id"]}
+                    try:
+                        data = json.loads(msg.data)
+                        # Patch data format to match HTTP GET format
+                        data["_id"] = {"$oid": data["_id"]}
+                    except json.JSONDecodeError:
+                        logger.error(f"Invalid JSON from websocket subscription {msg.data}", exc_info=True)
                     try:
                         yield Message(**data)
                     except pydantic.error_wrappers.ValidationError as error:
