@@ -68,7 +68,7 @@ class MicroVM:
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
     config_file = None
-    drives: List[Drive] = None
+    drives: List[Drive]
     init_timeout: float
 
     @property
