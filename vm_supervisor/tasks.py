@@ -41,10 +41,10 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                                      exc_info=True)
                         continue
                     except KeyError:
-                        logger.exception(f"Invalid Aleph message could not be parsed", exc_info=True)
+                        logger.exception(f"Invalid Aleph message could not be parsed '{data}'", exc_info=True)
                         continue
                     except Exception:
-                        logger.exception(f"Unknown error when parsing Aleph message", exc_info=True)
+                        logger.exception(f"Unknown error when parsing Aleph message {data}", exc_info=True)
                         continue
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     break
