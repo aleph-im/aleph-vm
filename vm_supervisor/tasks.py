@@ -14,6 +14,7 @@ from aleph_message import Message
 from aleph_message.models import BaseMessage, ProgramMessage
 from .conf import settings
 from .messages import load_updated_message
+from .models import VmHash
 from .pubsub import PubSub
 from .reactor import Reactor
 
@@ -93,7 +94,7 @@ async def start_watch_for_messages_task(app: web.Application):
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
     sample_message, _ = await load_updated_message(
-        ref="cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+        ref=VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e"))
     assert sample_message.content.on.message, sample_message
     reactor.register(sample_message)
 

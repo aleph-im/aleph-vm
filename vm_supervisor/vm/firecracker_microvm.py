@@ -206,7 +206,7 @@ class AlephFirecrackerVM:
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    fvm: MicroVM = None
+    fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
 
     def __init__(
@@ -418,6 +418,8 @@ class AlephFirecrackerVM:
         self,
         scope: dict = None,
     ):
+        if not self.fvm:
+            raise ValueError("MicroVM must be created first")
         logger.debug("running code")
         scope = scope or {}
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)

@@ -18,7 +18,7 @@ VmHash = NewType("VmHash", str)
 
 @dataclass
 class VmExecutionTimes:
-    defined_at: datetime = None
+    defined_at: datetime
     preparing_at: Optional[datetime] = None
     prepared_at: Optional[datetime] = None
     starting_at: Optional[datetime] = None
@@ -40,14 +40,14 @@ class VmExecution:
     vm_hash: VmHash
     original: ProgramContent
     program: ProgramContent
-    resources: Optional[AlephFirecrackerResources]
-    vm: AlephFirecrackerVM = None
+    resources: Optional[AlephFirecrackerResources] = None
+    vm: Optional[AlephFirecrackerVM] = None
 
     times: VmExecutionTimes
 
-    ready_event: asyncio.Event = None
-    concurrent_runs: int = None
-    runs_done_event: asyncio.Event = None
+    ready_event: asyncio.Event
+    concurrent_runs: int
+    runs_done_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
 
     @property
@@ -84,6 +84,8 @@ class VmExecution:
         self.resources = resources
 
     async def create(self, address: int) -> AlephFirecrackerVM:
+        if not self.resources:
+            raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
         self.vm = vm = AlephFirecrackerVM(
             vm_id=address,
@@ -112,8 +114,9 @@ class VmExecution:
         loop = asyncio.get_event_loop()
         if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
             # Task can be named
+            vm_id: str = str(self.vm.vm_id if self.vm else None)
             self.expire_task = loop.create_task(
-                self.expire(timeout), name=f"expire {self.vm.vm_id}"
+                self.expire(timeout), name=f"expire {vm_id}"
             )
         else:
             self.expire_task = loop.create_task(self.expire(timeout))
@@ -169,6 +172,8 @@ class VmExecution:
             await self.runs_done_event.wait()
 
     async def run_code(self, scope: dict = None) -> bytes:
+        if not self.vm:
+            raise ValueError("The VM has not been created yet")
         self.concurrent_runs += 1
         self.runs_done_event.clear()
         try:

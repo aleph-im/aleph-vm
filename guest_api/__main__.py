@@ -15,7 +15,8 @@ CACHE_EXPIRES_AFTER = 7 * 24 * 3600  # Seconds
 
 
 async def proxy(request: web.Request):
-    path = request.match_info.get('tail').lstrip('/')
+    tail: str = request.match_info.get('tail') or ""
+    path: str = tail.lstrip('/')
     query_string = request.rel_url.query_string
     url = f"{ALEPH_API_SERVER}/{path}?{query_string}"
 
@@ -70,7 +71,7 @@ async def properties(request: web.Request):
 
 
 async def sign(request: web.Request):
-    vm_hash = request.app.meta_vm_hash
+    vm_hash = request.app['meta_vm_hash']
     message = await request.json()
 
     # Ensure that the hash of the VM is used as sending address
@@ -90,9 +91,9 @@ async def sign(request: web.Request):
 
 
 async def get_from_cache(request: web.Request):
-    prefix: str = request.app.meta_vm_hash
-    key: str = request.match_info.get('key')
-    if not re.match(r'^\w+$', key):
+    prefix: str = request.app['meta_vm_hash']
+    key: Optional[str] = request.match_info.get('key')
+    if not (key and re.match(r'^\w+$', key)):
         return web.HTTPBadRequest(text="Invalid key")
 
     redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
@@ -104,9 +105,9 @@ async def get_from_cache(request: web.Request):
 
 
 async def put_in_cache(request: web.Request):
-    prefix: str = request.app.meta_vm_hash
-    key: str = request.match_info.get('key')
-    if not re.match(r'^\w+$', key):
+    prefix: str = request.app['meta_vm_hash']
+    key: Optional[str] = request.match_info.get('key')
+    if not (key and re.match(r'^\w+$', key)):
         return web.HTTPBadRequest(text="Invalid key")
 
     value: bytes = await request.read()
@@ -117,9 +118,9 @@ async def put_in_cache(request: web.Request):
 
 
 async def delete_from_cache(request: web.Request):
-    prefix: str = request.app.meta_vm_hash
-    key: str = request.match_info.get('key')
-    if not re.match(r'^\w+$', key):
+    prefix: str = request.app['meta_vm_hash']
+    key: Optional[str] = request.match_info.get('key')
+    if not (key and re.match(r'^\w+$', key)):
         return web.HTTPBadRequest(text="Invalid key")
 
     redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
@@ -128,7 +129,7 @@ async def delete_from_cache(request: web.Request):
 
 
 async def list_keys_from_cache(request: web.Request):
-    prefix: str = request.app.meta_vm_hash
+    prefix: str = request.app['meta_vm_hash']
     pattern: str = request.rel_url.query.get('pattern', '*')
     if not re.match(r'^[\w?*^\-]+$', pattern):
         return web.HTTPBadRequest(text="Invalid key")
@@ -144,7 +145,7 @@ async def list_keys_from_cache(request: web.Request):
 
 def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
     app = web.Application()
-    app.meta_vm_hash = vm_hash or '_'
+    app['meta_vm_hash'] = vm_hash or '_'
 
     app.router.add_route(method='GET', path='/properties', handler=properties)
     app.router.add_route(method='POST', path='/sign', handler=sign)
