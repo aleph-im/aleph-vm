@@ -58,11 +58,10 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
         logger.info(f"Websocket received message: {message.item_hash}")
 
         # Dispatch update to running VMs
-        ref = (
-            message.content.ref
-            if hasattr(message.content, "ref")
-            else message.item_hash
-        )
+        if hasattr(message.content, "ref") and message.content.ref:
+            ref = message.content.ref
+        else:
+            ref = message.item_hash
         await dispatcher.publish(key=ref, value=message)
 
         # Register new VM to run on future messages:
