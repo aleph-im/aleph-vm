@@ -12,7 +12,11 @@ from .messages import load_updated_message
 from .models import VmHash, VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
-from .vm.firecracker_microvm import ResourceDownloadError, VmSetupError, FileTooLargeError
+from .vm.firecracker_microvm import (
+    ResourceDownloadError,
+    VmSetupError,
+    FileTooLargeError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,9 @@ async def build_event_scope(event) -> Dict[str, Any]:
     }
 
 
-async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) -> web.Response:
+async def run_code_on_request(
+    vm_hash: VmHash, path: str, request: web.Request
+) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
@@ -108,11 +114,13 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
             if header in headers:
                 del headers[header]
 
-        headers.update({
-            "Aleph-Program-ItemHash": execution.vm_hash,
-            "Aleph-Program-Code-Ref": execution.program.code.ref,
-            # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
-        })
+        headers.update(
+            {
+                "Aleph-Program-ItemHash": execution.vm_hash,
+                "Aleph-Program-Code-Ref": execution.program.code.ref,
+                # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
+            }
+        )
 
         return web.Response(
             status=result["headers"]["status"],
@@ -196,7 +204,7 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             )
 
         logger.info(f"Result: {result['body']}")
-        return result['body']
+        return result["body"]
 
     except UnpackValueError as error:
         logger.exception(error)

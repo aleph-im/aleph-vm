@@ -49,7 +49,6 @@ class FileTooLargeError(Exception):
     pass
 
 
-
 class ResourceDownloadError(ClientResponseError):
     """An error occurred while downloading a VM resource file"""
 
@@ -297,7 +296,8 @@ class AlephFirecrackerVM:
                 NetworkInterface(
                     iface_id="eth0",
                     host_dev_name=await fvm.create_network_interface(
-                        interface=settings.NETWORK_INTERFACE),
+                        interface=settings.NETWORK_INTERFACE
+                    ),
                 )
             ]
             if self.enable_networking
@@ -330,7 +330,11 @@ class AlephFirecrackerVM:
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
 
-        if self.resources.data_path and os.path.getsize(self.resources.data_path) > settings.MAX_DATA_ARCHIVE_SIZE:
+        if (
+            self.resources.data_path
+            and os.path.getsize(self.resources.data_path)
+            > settings.MAX_DATA_ARCHIVE_SIZE
+        ):
             raise FileTooLargeError(f"Data file too large to pass as an inline zip")
 
         input_data: bytes = load_file_content(self.resources.data_path)
@@ -353,8 +357,14 @@ class AlephFirecrackerVM:
                 for index, volume in enumerate(self.resources.volumes)
             ]
         else:
-            if self.resources.data_path and os.path.getsize(self.resources.code_path) > settings.MAX_PROGRAM_ARCHIVE_SIZE:
-                raise FileTooLargeError(f"Program file too large to pass as an inline zip")
+            if (
+                self.resources.data_path
+                and os.path.getsize(self.resources.code_path)
+                > settings.MAX_PROGRAM_ARCHIVE_SIZE
+            ):
+                raise FileTooLargeError(
+                    f"Program file too large to pass as an inline zip"
+                )
 
             code: bytes = load_file_content(self.resources.code_path)
             volumes = [

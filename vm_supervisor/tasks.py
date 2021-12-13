@@ -20,9 +20,12 @@ from .reactor import Reactor
 
 logger = logging.getLogger(__name__)
 
-Value = TypeVar('Value')
+Value = TypeVar("Value")
 
-async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
+
+async def retry_generator(
+    generator: AsyncIterable[Value], max_seconds: int = 8
+) -> AsyncIterable[Value]:
     retry_delay = 0.1
     while True:
         async for value in generator:
@@ -45,18 +48,29 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                         # Patch data format to match HTTP GET format
                         data["_id"] = {"$oid": data["_id"]}
                     except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON from websocket subscription {msg.data}", exc_info=True)
+                        logger.error(
+                            f"Invalid JSON from websocket subscription {msg.data}",
+                            exc_info=True,
+                        )
                     try:
                         yield Message(**data)
                     except pydantic.error_wrappers.ValidationError as error:
-                        logger.error(f"Invalid Aleph message: \n  {error.json()}\n  {error.raw_errors}",
-                                     exc_info=True)
+                        logger.error(
+                            f"Invalid Aleph message: \n  {error.json()}\n  {error.raw_errors}",
+                            exc_info=True,
+                        )
                         continue
                     except KeyError:
-                        logger.exception(f"Invalid Aleph message could not be parsed '{data}'", exc_info=True)
+                        logger.exception(
+                            f"Invalid Aleph message could not be parsed '{data}'",
+                            exc_info=True,
+                        )
                         continue
                     except Exception:
-                        logger.exception(f"Unknown error when parsing Aleph message {data}", exc_info=True)
+                        logger.exception(
+                            f"Unknown error when parsing Aleph message {data}",
+                            exc_info=True,
+                        )
                         continue
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     break
@@ -94,7 +108,8 @@ async def start_watch_for_messages_task(app: web.Application):
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
     sample_message, _ = await load_updated_message(
-        ref=VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e"))
+        ref=VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+    )
     assert sample_message.content.on.message, sample_message
     reactor.register(sample_message)
 
