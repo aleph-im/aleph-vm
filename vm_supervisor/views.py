@@ -53,7 +53,9 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             )
         except binascii.Error:
             try:
-                message_ref = VmHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
+                message_ref = VmHash(
+                    await get_ref_from_dns(domain=f"_aleph-id.{request.host}")
+                )
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
             except aiodns.error.DNSError:
                 raise HTTPNotFound(reason="Invalid message reference")
