@@ -50,5 +50,4 @@ def run():
         app.on_startup.append(start_watch_for_messages_task)
         app.on_cleanup.append(stop_watch_for_messages_task)
 
-    web.run_app(app, host=settings.SUPERVISOR_HOST,
-                port=settings.SUPERVISOR_PORT)
+    web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)

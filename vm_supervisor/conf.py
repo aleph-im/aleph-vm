@@ -97,14 +97,26 @@ class Settings(BaseSettings):
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
     FAKE_DATA_PROGRAM: Optional[FilePath] = None
-    BENCHMARK_FAKE_DATA_PROGRAM: FilePath = FilePath(abspath(join(__file__, "../../examples/example_fastapi_2")))
+    BENCHMARK_FAKE_DATA_PROGRAM: FilePath = FilePath(
+        abspath(join(__file__, "../../examples/example_fastapi_2"))
+    )
 
-    FAKE_DATA_MESSAGE: FilePath = FilePath(abspath(join(__file__, "../../examples/message_from_aleph.json")))
-    FAKE_DATA_DATA: Optional[FilePath] = FilePath(abspath(join(__file__, "../../examples/data/")))
-    FAKE_DATA_RUNTIME: FilePath = FilePath(abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs")))
-    FAKE_DATA_VOLUME: Optional[FilePath] = FilePath(abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs")))
+    FAKE_DATA_MESSAGE: FilePath = FilePath(
+        abspath(join(__file__, "../../examples/message_from_aleph.json"))
+    )
+    FAKE_DATA_DATA: Optional[FilePath] = FilePath(
+        abspath(join(__file__, "../../examples/data/"))
+    )
+    FAKE_DATA_RUNTIME: FilePath = FilePath(
+        abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
+    )
+    FAKE_DATA_VOLUME: Optional[FilePath] = FilePath(
+        abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+    )
 
-    CHECK_FASTAPI_VM_ID: str = "bbd7f6e2ce72104a334f22e4b29f0ebeb96af3179167521788bce80754f3c58a"
+    CHECK_FASTAPI_VM_ID: str = (
+        "bbd7f6e2ce72104a334f22e4b29f0ebeb96af3179167521788bce80754f3c58a"
+    )
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -126,7 +138,9 @@ class Settings(BaseSettings):
             assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
 
         if self.FAKE_DATA_PROGRAM:
-            assert isdir(self.FAKE_DATA_PROGRAM), "Local fake program directory is missing"
+            assert isdir(
+                self.FAKE_DATA_PROGRAM
+            ), "Local fake program directory is missing"
         assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
         assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
         assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"

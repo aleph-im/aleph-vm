@@ -49,8 +49,10 @@ class Reactor:
 
         for listener in self.listeners:
             if not listener.content.on.message:
-                logger.warning("Program with no subscription was registered in reactor listeners: "
-                               f"{listener.item_hash}")
+                logger.warning(
+                    "Program with no subscription was registered in reactor listeners: "
+                    f"{listener.item_hash}"
+                )
                 continue
 
             for subscription in listener.content.on.message:
@@ -72,4 +74,5 @@ class Reactor:
         else:
             logger.debug(
                 "Program with no subscription cannot be registered in reactor listeners: "
-                f"{message.item_hash}")
+                f"{message.item_hash}"
+            )

@@ -114,6 +114,7 @@ async def benchmark(runs: int):
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
     FakeRequest: Request
+
     class FakeRequest:  # type: ignore[no-redef]
         headers: Dict[str, str]
         raw_headers: List[Tuple[bytes, bytes]]
@@ -134,6 +135,7 @@ async def benchmark(runs: int):
 
     async def fake_read() -> bytes:
         return b""
+
     fake_request.read = fake_read
 
     logger.info("--- Start benchmark ---")
