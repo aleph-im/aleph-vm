@@ -25,7 +25,7 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref: VmHash = request.match_info["ref"]
+    message_ref = VmHash(request.match_info["ref"])
     return run_code_on_request(message_ref, path, request)
 
 
@@ -44,16 +44,16 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
     message_ref_base32 = request.host.split(".")[0]
     if settings.FAKE_DATA_PROGRAM:
-        message_ref = "fake-hash"
+        message_ref = VmHash("fake-hash")
     else:
         try:
-            message_ref = b32_to_b16(message_ref_base32).decode()
+            message_ref = VmHash(b32_to_b16(message_ref_base32).decode())
             logger.debug(
                 f"Using base32 message id from hostname to obtain '{message_ref}"
             )
         except binascii.Error:
             try:
-                message_ref = await get_ref_from_dns(domain=f"_aleph-id.{request.host}")
+                message_ref = VmHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
             except aiodns.error.DNSError:
                 raise HTTPNotFound(reason="Invalid message reference")

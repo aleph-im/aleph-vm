@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import msgpack
 from aiohttp import web
@@ -44,7 +44,7 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    execution: VmExecution = await pool.get_running_vm(vm_hash=vm_hash)
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         message, original_message = await load_updated_message(vm_hash)
@@ -70,6 +70,9 @@ async def run_code_on_request(vm_hash: VmHash, path: str, request: web.Request) 
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
             raise HTTPInternalServerError(reason="Error during runtime initialisation")
+
+    if not execution.vm:
+        raise ValueError("The VM has not been created")
 
     logger.debug(f"Using vm={execution.vm.vm_id}")
 
@@ -134,7 +137,7 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
     """
 
     try:
-        execution: VmExecution = await pool.get_running_vm(vm_hash=vm_hash)
+        execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
     except Exception as error:
         logger.exception(error)
         raise
@@ -163,6 +166,9 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             logger.exception(error)
             pool.forget_vm(vm_hash=vm_hash)
             raise HTTPInternalServerError(reason="Error during runtime initialisation")
+
+    if not execution.vm:
+        raise ValueError("The VM has not been created")
 
     logger.debug(f"Using vm={execution.vm.vm_id}")
 

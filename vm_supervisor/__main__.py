@@ -4,9 +4,9 @@ import logging
 import sys
 import time
 from statistics import mean
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Callable
 
-from aiohttp.web import Response
+from aiohttp.web import Response, Request
 
 from vm_supervisor.pubsub import PubSub
 from .run import run_code_on_request, run_code_on_event
@@ -113,11 +113,16 @@ async def benchmark(runs: int):
     ref = VmHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
-    class FakeRequest:
+    FakeRequest: Request
+    class FakeRequest:  # type: ignore[no-redef]
         headers: Dict[str, str]
         raw_headers: List[Tuple[bytes, bytes]]
+        match_info: Dict
+        method: str
+        query_string: str
+        read: Callable
 
-    fake_request = FakeRequest()
+    fake_request = FakeRequest()  # type: ignore[operator]
     fake_request.match_info = {"ref": ref, "suffix": "/"}
     fake_request.method = "GET"
     fake_request.query_string = ""
@@ -163,10 +168,10 @@ async def benchmark(runs: int):
     for run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code_on_request(
+        response2: Response = await run_code_on_request(
             vm_hash=ref, path=path, request=fake_request
         )
-        assert response.status == 200
+        assert response2.status == 200
         bench.append(time.time() - t0)
 
     logger.info(
