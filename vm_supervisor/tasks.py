@@ -3,7 +3,7 @@ import json
 import logging
 import math
 import time
-from typing import AsyncIterable
+from typing import AsyncIterable, TypeVar
 
 import aiohttp
 import pydantic
@@ -18,6 +18,17 @@ from .pubsub import PubSub
 from .reactor import Reactor
 
 logger = logging.getLogger(__name__)
+
+Value = TypeVar('Value')
+
+async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
+    retry_delay = 0.1
+    while True:
+        async for value in generator:
+            yield value
+
+        await asyncio.sleep(retry_delay)
+        retry_delay = max(retry_delay * 2, max_seconds)
 
 
 async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
@@ -57,7 +68,7 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
         {"startDate": math.floor(time.time())}
     )
 
-    async for message in subscribe_via_ws(url):
+    async for message in retry_generator(subscribe_via_ws(url)):
         logger.info(f"Websocket received message: {message.item_hash}")
 
         # Dispatch update to running VMs
