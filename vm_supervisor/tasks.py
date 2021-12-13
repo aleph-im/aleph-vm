@@ -34,9 +34,15 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                     try:
                         yield Message(**data)
                     except pydantic.error_wrappers.ValidationError as error:
-                        print(error.json())
-                        print(error.raw_errors)
-                        raise
+                        logger.error(f"Invalid Aleph message: \n  {error.json()}\n  {error.raw_errors}",
+                                     exc_info=True)
+                        continue
+                    except KeyError:
+                        logger.exception(f"Invalid Aleph message could not be parsed", exc_info=True)
+                        continue
+                    except Exception:
+                        logger.exception(f"Unknown error when parsing Aleph message", exc_info=True)
+                        continue
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     break
 
