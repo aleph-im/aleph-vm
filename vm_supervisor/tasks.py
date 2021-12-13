@@ -52,6 +52,18 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                             f"Invalid JSON from websocket subscription {msg.data}",
                             exc_info=True,
                         )
+
+                    # Chain confirmation messages are published in the WS subscription
+                    # but do not contain the fields "item_type" or "content, hence they
+                    # are not valid Messages.
+                    if "item_type" not in data:
+                        assert "content" not in data
+                        assert "confirmation" in data
+                        logger.info(
+                            f"Ignoring confirmation message '{data['item_hash']}'"
+                        )
+                        continue
+
                     try:
                         yield Message(**data)
                     except pydantic.error_wrappers.ValidationError as error:
