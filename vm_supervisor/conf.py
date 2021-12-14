@@ -98,7 +98,7 @@ class Settings(BaseSettings):
 
     FAKE_DATA_PROGRAM: Optional[FilePath] = None
     BENCHMARK_FAKE_DATA_PROGRAM: FilePath = FilePath(
-        abspath(join(__file__, "../../examples/example_fastapi_2"))
+        abspath(join(__file__, "../../examples/example_fastapi"))
     )
 
     FAKE_DATA_MESSAGE: FilePath = FilePath(

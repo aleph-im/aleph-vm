@@ -6,11 +6,11 @@ on [FastAPI](https://fastapi.tiangolo.com/).
 ## Initial setup
 
 Let's start by creating a package for our app: 
-Create a directory named `example_fastapi_2` 
+Create a directory named `example_fastapi` 
 and an empty file named `__init__.py` file within the directory.
 ```
-example_fastapi_2/
-example_fastapi_2/__init__.py
+example_fastapi/
+example_fastapi/__init__.py
 ```
 
 The copy the example from the FastAPI tutorial in `__init__.py`:
@@ -41,7 +41,7 @@ Uvicorn is used to run ASGI compatible web applications, such as the `app`
 web application from the example above. You need to specify it the name of the
 Python module to use and the name of the app:
 ```shell
-uvicorn example_fastapi_2:app --reload
+uvicorn example_fastapi:app --reload
 ```
 
 Then open the app in a web browser on http://localhost:8000
@@ -59,7 +59,7 @@ To achieve this, we need to follow the following steps:
 ### 1. Create a zip archive containing the app
 
 ```shell
-zip -r example_fastapi_2.zip example_fastapi_2
+zip -r example_fastapi.zip example_fastapi
 ```
 
 ### 2. Store the zip archive on Aleph
