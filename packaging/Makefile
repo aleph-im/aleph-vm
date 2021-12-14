@@ -20,7 +20,7 @@ debian-package-resources: firecracker-bins vmlinux
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
 	# Download latest release
-	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.24.2/firecracker-v0.24.2-x86_64.tgz | tar -xz --directory ./build/firecracker-release
+	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.25.2/firecracker-v0.25.2-x86_64.tgz | tar -xz --directory ./build/firecracker-release
 	# Copy binaries:
 	cp ./build/firecracker-release/firecracker-v* ./target/firecracker
 	cp ./build/firecracker-release/jailer-v* ./target/jailer
@@ -29,7 +29,8 @@ firecracker-bins: target-dir build-dir
 
 vmlinux:
 	#curl -fsSL -o ./target/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
-	cp ../kernels/vmlinux.bin ./target/vmlinux.bin
+	curl -fsSL -o ./target/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
+	#cp ../kernels/vmlinux.bin ./target/vmlinux.bin
 
 build-dir:
 	mkdir -p target
@@ -40,3 +41,13 @@ target-dir:
 clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
+
+all-podman:
+	cd .. && podman build -t aleph-vm-packaging -f ./packaging/Dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging:latest \
+		make
+	file target/aleph-vm.deb
