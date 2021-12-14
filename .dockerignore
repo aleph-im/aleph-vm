@@ -13,3 +13,4 @@
 **/*.key
 **/data.tgz
 /pydantic/
+**/target
