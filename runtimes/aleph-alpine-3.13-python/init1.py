@@ -309,7 +309,8 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
     headers = None
     body = None
 
-    async with aiohttp.ClientSession(conn_timeout=.05) as session:
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         while not body:
             try:
                 tries += 1
