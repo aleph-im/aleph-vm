@@ -22,8 +22,8 @@ firecracker-bins: target-dir build-dir
 	# Download latest release
 	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.25.2/firecracker-v0.25.2-x86_64.tgz | tar -xz --directory ./build/firecracker-release
 	# Copy binaries:
-	cp ./build/firecracker-release/firecracker-v* ./target/firecracker
-	cp ./build/firecracker-release/jailer-v* ./target/jailer
+	cp ./build/firecracker-release/release-v*/firecracker-v* ./target/firecracker
+	cp ./build/firecracker-release/release-v*/jailer-v* ./target/jailer
 	chmod +x ./target/firecracker
 	chmod +x ./target/jailer
 
@@ -43,7 +43,7 @@ clean:
 	rm -fr ./build/*
 
 all-podman:
-	cd .. && podman build -t aleph-vm-packaging -f ./packaging/Dockerfile .
+	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/Dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
 		-w /opt/packaging \
