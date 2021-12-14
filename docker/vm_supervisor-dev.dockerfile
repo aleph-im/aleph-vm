@@ -36,7 +36,7 @@ ENV ALEPH_VM_FAKE_DATA True
 ENV ALEPH_VM_SUPERVISOR_HOST "0.0.0.0"
 
 # Make it easy to enter this command from a shell script
-RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_fastapi_2" >> /root/.bash_history
+RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_fastapi" >> /root/.bash_history
 
 RUN mkdir /opt/aleph-vm/
 COPY ./vm_supervisor /opt/aleph-vm/vm_supervisor

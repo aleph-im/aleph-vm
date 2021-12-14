@@ -1,5 +1,5 @@
 """
-Used to check that the example_fastapi_2 program works as expected
+Used to check that the example_fastapi program works as expected
 in a deployed supervisor.
 """
 
@@ -21,7 +21,7 @@ async def get_json_from_vm(session: ClientSession, suffix: str) -> Any:
 
 async def check_index(session: ClientSession) -> bool:
     result: Dict = await get_json_from_vm(session, "/")
-    assert result["Example"] == "example_fastapi_2"
+    assert result["Example"] == "example_fastapi"
     return True
 
 

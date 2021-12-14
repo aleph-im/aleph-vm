@@ -4,7 +4,7 @@
   "content": {
     "code": {
       "encoding": "zip",
-      "entrypoint": "example_fastapi_2:app",
+      "entrypoint": "example_fastapi:app",
       "ref": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
       "latest_amend": true
     },

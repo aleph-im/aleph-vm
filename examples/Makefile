@@ -1,11 +1,11 @@
-all: example_fastapi_2.zip data.tgz
+all: example_fastapi.zip data.tgz
 
 clean:
-	rm example_fastapi_2.zip
+	rm example_fastapi.zip
 	rm data.tgz
 
-example_fastapi_2.zip:
-	zip -r example_fastapi_2.zip example_fastapi_2
+example_fastapi.zip:
+	zip -r example_fastapi.zip example_fastapi
 
 data.tgz:
 	tar -cvzf data.tgz data
