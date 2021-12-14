@@ -1,0 +1,15 @@
+name: "Build Packages"
+on:
+  push
+
+jobs:
+  build_deb:
+    name: "Build Debian Package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - run: |
+          cd packaging && make all-podman
