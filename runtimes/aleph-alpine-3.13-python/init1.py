@@ -199,14 +199,16 @@ def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> s
     elif encoding == Encoding.zip:
         open("/opt/archive.zip", "wb").write(code)
         logger.debug("Run unzip")
-        os.system("unzip /opt/archive.zip -d /opt")
-        path = f"/opt/{entrypoint}"
+        os.makedirs("/opt/code", exist_ok=True)
+        os.system("unzip /opt/archive.zip -d /opt/code")
+        path = f"/opt/code/{entrypoint}"
         if not os.path.isfile(path):
-            os.system("find /opt")
+            os.system("find /opt/code")
             raise FileNotFoundError(f"No such file: {path}")
         os.system(f"chmod +x {path}")
     elif encoding == Encoding.plain:
-        path = f"/opt/executable {entrypoint}"
+        os.makedirs("/opt/code", exist_ok=True)
+        path = f"/opt/code/executable {entrypoint}"
         open(path, "wb").write(code)
         os.system(f"chmod +x {path}")
     else:
