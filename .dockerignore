@@ -4,7 +4,7 @@
 
 **/rootfs/
 **/*.sqlite3
-**/*.squashfs
+# **/*.squashfs
 **/*.bin
 **/*.ext4
 **/*.zip
