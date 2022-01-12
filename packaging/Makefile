@@ -10,6 +10,18 @@ debian-package-code:
 	cp -r ../guest_api ./aleph-vm/opt/aleph-vm/
 	cp -r ../firecracker ./aleph-vm/opt/aleph-vm/
 
+	# Fake data for diagnostic and benchmarks
+	mkdir -p ./aleph-vm/opt/aleph-vm/examples/
+	cp -r ../examples/example_fastapi ./aleph-vm/opt/aleph-vm/examples/example_fastapi
+	cp ../examples/message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/message_from_aleph.json
+	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
+	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
+	cp ../examples/volumes/volume-venv.squashfs ./aleph-vm/opt/aleph-vm/examples/volumes/volume-venv.squashfs
+	mkdir -p ./aleph-vm/opt/aleph-vm/runtimes/aleph-debian-11-python/
+	cp ../runtimes/aleph-debian-11-python/rootfs.squashfs ./aleph-vm/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs
+
+	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message>=0.1.18'
+
 debian-package-resources: firecracker-bins vmlinux
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
