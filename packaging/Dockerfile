@@ -5,6 +5,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     git \
     curl \
     sudo \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
@@ -13,3 +14,8 @@ COPY ../guest_api ./guest_api
 COPY ../firecracker ./firecracker
 COPY ../packaging ./packaging
 COPY ../kernels ./kernels
+
+COPY ../examples/ ./examples
+
+RUN mkdir -p ./runtimes/aleph-debian-11-python
+COPY ../runtimes/aleph-debian-11-python/rootfs.squashfs ./runtimes/aleph-debian-11-python/rootfs.squashfs

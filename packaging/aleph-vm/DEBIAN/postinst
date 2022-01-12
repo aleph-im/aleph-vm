@@ -5,9 +5,6 @@ if ! id -u jailman > /dev/null 2>&1; then
   useradd jailman
 fi
 
-# No suggestions since only pure Python dependencies will be required:
-pip3 install 'aleph-message==0.1.12'
-
 mkdir -p /srv/jailer
 
 systemctl daemon-reload
