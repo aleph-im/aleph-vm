@@ -45,7 +45,7 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo 
 sudo apt update
 sudo apt install caddy
 
-cat >/etc/caddy/Caddyfile <<EOL
+sudo cat >/etc/caddy/Caddyfile <<EOL
 {
     https_port 443
     on_demand_tls {
