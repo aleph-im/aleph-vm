@@ -16,4 +16,5 @@ jobs:
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
           cd examples/volumes && sudo ./build_squashfs.sh && cd ../..
-          cd packaging && make all-podman
+          cd packaging && make all-podman-debian-11 && cd ..
+          cd packaging && make all-podman-ubuntu-2004 && cd ..

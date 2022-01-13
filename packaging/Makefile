@@ -54,8 +54,8 @@ clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
 
-all-podman:
-	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/Dockerfile .
+all-podman-debian-11:
+	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/debian-11.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
 		-w /opt/packaging \
@@ -63,3 +63,15 @@ all-podman:
 		localhost/aleph-vm-packaging:latest \
 		make
 	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
+
+all-podman-ubuntu-2004:
+	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/ubuntu-20.04.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.ubuntu-20.04.deb
