@@ -31,6 +31,17 @@ wget https://github.com/aleph-im/aleph-vm/releases/download/0.1.6-1/aleph-vm-0.1
 sudo apt install ./aleph-vm-0.1.6-1.deb
 ```
 
+### Configuration
+
+You can update the configuration in `/etc/aleph-vm/supervisor.env`. 
+
+On Ubuntu, the default network interface is not `eth0` and you will want to configure the default interface in the form of:
+```
+ALEPH_VM_NETWORK_INTERFACE=enp0s1
+```
+
+You can find all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py).
+
 ### Reverse Proxy
 
 We document how to use Caddy as a reverse proxy since it does automatic HTTPS certificates.
