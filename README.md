@@ -28,7 +28,7 @@ sudo apt update
 sudo apt install -y docker.io
 sudo docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
 wget https://github.com/aleph-im/aleph-vm/releases/download/0.1.6-1/aleph-vm-0.1.6-1.deb
-sudo apt install ./aleph-vm-0.1.6.deb
+sudo apt install ./aleph-vm-0.1.6-1.deb
 ```
 
 ### Reverse Proxy
