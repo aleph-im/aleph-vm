@@ -75,3 +75,15 @@ all-podman-ubuntu-2004:
 		make
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-20.04.deb
+
+# run on host in order to sign with GPG
+repository-bullseye:
+	cd ./repositories/bullseye && reprepro -Vb . includedeb bullseye ../../target/aleph-vm.debian-11.deb && cd ..
+
+# run on host in order to sign with GPG
+repository-focal:
+	cd ./repositories/focal && reprepro -Vb . includedeb focal ../../target/aleph-vm.ubuntu-20.04.deb && cd ..
+
+repositories: repository-bullseye repository-focal
+
+all-podman: all-podman-debian-11 all-podman-ubuntu-2004 repositories
