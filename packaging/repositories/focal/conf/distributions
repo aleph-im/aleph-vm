@@ -1,0 +1,13 @@
+Origin: Aleph-IM
+Label: aleph-im
+Suite: stable
+Codename: focal
+Version: 3.0
+Architectures: amd64 source
+Components: contrib
+#UDebComponents: main
+Description: Aleph-im packages
+SignWith: yes
+#DebOverride: override
+#UDebOverride: override
+#DscOverride: srcoverride
