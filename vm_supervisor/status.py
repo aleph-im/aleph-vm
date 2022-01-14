@@ -5,7 +5,7 @@ in a deployed supervisor.
 
 from typing import Dict, Any, List
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientResponseError
 
 from vm_supervisor.conf import settings
 
@@ -20,51 +20,69 @@ async def get_json_from_vm(session: ClientSession, suffix: str) -> Any:
 
 
 async def check_index(session: ClientSession) -> bool:
-    result: Dict = await get_json_from_vm(session, "/")
-    assert result["Example"] == "example_fastapi"
-    return True
+    try:
+        result: Dict = await get_json_from_vm(session, "/")
+        assert result["Example"] == "example_fastapi"
+        return True
+    except ClientResponseError:
+        return False
 
 
 async def check_environ(session: ClientSession) -> bool:
-    result: Dict = await get_json_from_vm(session, "/environ")
-    assert "ALEPH_API_HOST" in result
-    assert "ALEPH_API_UNIX_SOCKET" in result
-    assert "ALEPH_REMOTE_CRYPTO_HOST" in result
-    assert "ALEPH_REMOTE_CRYPTO_UNIX_SOCKET" in result
-    assert "ALEPH_ADDRESS_TO_USE" in result
-    return True
+    try:
+        result: Dict = await get_json_from_vm(session, "/environ")
+        assert "ALEPH_API_HOST" in result
+        assert "ALEPH_API_UNIX_SOCKET" in result
+        assert "ALEPH_REMOTE_CRYPTO_HOST" in result
+        assert "ALEPH_REMOTE_CRYPTO_UNIX_SOCKET" in result
+        assert "ALEPH_ADDRESS_TO_USE" in result
+        return True
+    except ClientResponseError:
+        return False
 
 
 async def check_messages(session: ClientSession) -> bool:
-    result: Dict = await get_json_from_vm(session, "/messages")
-    assert "Messages" in result
-    assert "messages" in result["Messages"]
-    assert "item_hash" in result["Messages"]["messages"][0]
-    return True
+    try:
+        result: Dict = await get_json_from_vm(session, "/messages")
+        assert "Messages" in result
+        assert "messages" in result["Messages"]
+        assert "item_hash" in result["Messages"]["messages"][0]
+        return True
+    except ClientResponseError:
+        return False
 
 
 async def check_internet(session: ClientSession) -> bool:
-    result: Dict = await get_json_from_vm(session, "/internet")
-    assert result["result"] == 200
-    assert "Server" in result["headers"]
-    return True
+    try:
+        result: Dict = await get_json_from_vm(session, "/internet")
+        assert result["result"] == 200
+        assert "Server" in result["headers"]
+        return True
+    except ClientResponseError:
+        return False
 
 
 async def check_cache(session: ClientSession) -> bool:
-    result1: bool = await get_json_from_vm(session, "/cache/set/a/42")
-    assert result1 == True
-    result2: int = await get_json_from_vm(session, "/cache/get/a")
-    assert result2 == "42"
-    keys: List[str] = await get_json_from_vm(session, "/cache/keys")
-    print("KEYS", keys)
-    assert "a" in keys
-    return True
+    try:
+        result1: bool = await get_json_from_vm(session, "/cache/set/a/42")
+        assert result1 == True
+        result2: int = await get_json_from_vm(session, "/cache/get/a")
+        assert result2 == "42"
+        keys: List[str] = await get_json_from_vm(session, "/cache/keys")
+        print("KEYS", keys)
+        assert "a" in keys
+        return True
+    except ClientResponseError:
+        return False
 
 
 async def check_persistent_storage(session: ClientSession) -> bool:
-    result: Dict = await get_json_from_vm(session, "/state/increment")
-    counter = result["counter"]
-    result_2: Dict = await get_json_from_vm(session, "/state/increment")
-    counter_2 = result_2["counter"]
-    assert counter_2 == counter + 1
-    return True
+    try:
+        result: Dict = await get_json_from_vm(session, "/state/increment")
+        counter = result["counter"]
+        result_2: Dict = await get_json_from_vm(session, "/state/increment")
+        counter_2 = result_2["counter"]
+        assert counter_2 == counter + 1
+        return True
+    except ClientResponseError:
+        return False

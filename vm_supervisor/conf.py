@@ -7,7 +7,7 @@ from subprocess import check_output
 from typing import NewType, Optional, List
 
 from firecracker.models import FilePath
-from pydantic import BaseSettings
+from pydantic import BaseSettings, Field
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,12 @@ def systemd_resolved_dns_servers(interface):
 class Settings(BaseSettings):
     SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
+
+    # Public domain name
+    DOMAIN_NAME: Optional[str] = Field(
+        default="localhost",
+        description="Default public domain name",
+    )
 
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
@@ -135,7 +141,9 @@ class Settings(BaseSettings):
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
         if self.ALLOW_VM_NETWORKING:
-            assert exists(f"/sys/class/net/{self.NETWORK_INTERFACE}")
+            assert exists(
+                f"/sys/class/net/{self.NETWORK_INTERFACE}"
+            ), f"Network interface {self.NETWORK_INTERFACE} does not exist"
 
         if self.FAKE_DATA_PROGRAM:
             assert isdir(
