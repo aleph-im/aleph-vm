@@ -1,5 +1,7 @@
 import binascii
 import logging
+import os.path
+from string import Template
 from typing import Awaitable
 
 import aiodns
@@ -39,6 +41,10 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     we expect the hash to be encoded in base32 instead of hexadecimal. Padding is added
     automatically.
     """
+    if request.host.split(':')[0] == settings.DOMAIN_NAME:
+        # Serve the index page
+        return await index(request=request)
+
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
@@ -97,7 +103,18 @@ async def about_config(request: web.Request):
 
 async def index(request: web.Request):
     assert request.method == "GET"
-    return web.Response(text="Server: Aleph VM Supervisor")
+    path = os.path.join(os.path.dirname(__file__), 'templates/index.html')
+    with open(path, 'r') as template:
+        body = template.read()
+        s = Template(body)
+        body = s.substitute(
+            public_url=f'https://{settings.DOMAIN_NAME}/',
+            multiaddr_dns4=f'/dns4/{settings.DOMAIN_NAME}/tcp/443/https',
+            multiaddr_dns6=f'/dns6/{settings.DOMAIN_NAME}/tcp/443/https',
+            check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
+        )
+    return web.Response(content_type="text/html",
+                        body=body)
 
 
 async def status_check_fastapi(request: web.Request):
