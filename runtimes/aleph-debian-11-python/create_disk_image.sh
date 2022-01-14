@@ -25,10 +25,10 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   nodejs npm \
   build-essential python3-dev
 
-pip3 install fastapi django
+pip3 install 'fastapi~=0.71.0'
 
 echo "Pip installing aleph-client"
-pip3 install 'aleph-client>=0.4.4' 'coincurve==15.0.0'
+pip3 install 'aleph-client>=0.4.6' 'coincurve==15.0.0'
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
