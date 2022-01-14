@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Aleph.im Compute Node</title>
+    <style>
+        body {
+            font-family: IBM Plex Regular,monospace;
+            margin: 10vw;
+        }
+
+        progress {
+            width: 100%;
+            height: 0.5em;
+        }
+
+        #loader-container{
+            text-align:center;
+            padding:20px;
+            height:80px;
+            vertical-align: center;
+        }
+
+        .loader{
+            display:inline-block;
+            width:5px;
+            height:20px;
+            margin:0.3px;
+            background:#207AC9;
+        }
+        @keyframes move {
+            0%   {height:20px;}
+            50%  {height:10px;}
+            100% {height:20px;}
+        }
+
+        @keyframes move2 {
+            0%   {height:10px;}
+            50%  {height:20px;}
+            100% {height:10px;}
+        }
+        #loader-one{
+            animation-name: move;
+            animation-duration: 1s;
+            animation-iteration-count: infinite;
+        }
+        #loader-two{
+            animation-name: move2;
+            animation-duration: 1s;
+            animation-iteration-count: infinite;
+        }
+        #loader-three{
+            animation-name: move;
+            animation-duration: 1s;
+            animation-iteration-count: infinite;
+        }
+    </style>
+</head>
+<body>
+<h1>Aleph.im Compute Node</h1>
+
+<section>
+    <p>
+        This is an <a href="https://aleph.im/">Aleph.im</a> compute resource node.
+    </p>
+    <p>
+        It executes user programs stored on the Aleph network in Virtual Machines.
+    </p>
+    <p>
+        See the <a href="https://github.com/aleph-im/aleph-vm">repository</a> for more info.
+    </p>
+
+</section>
+
+<hr/>
+
+<section>
+    <h2>Multiaddr</h2>
+    <p>
+        This node is exposed on the following addresses:
+    </p>
+    <ul>
+        <li><a href="$public_url">$public_url</a></li>
+        <li>$multiaddr_dns4</li>
+        <li>$multiaddr_dns6</li>
+    </ul>
+
+</section>
+
+<hr/>
+
+<section>
+    <h2>Diagnostic</h2>
+    <p>
+        Virtualization is
+        <span id="check">
+            ...
+            <span id="loader-container">
+                <span id="loader-one" class="loader"></span>
+                <span id="loader-two" class="loader"></span>
+                <span id="loader-three" class="loader"></span>
+            </span>
+        </span>
+    </p>
+    <pre id="checks"></pre>
+    <p>
+        <a href="/status/check/fastapi">Diagnostics checks</a> |
+        <a href="/vm/$check_fastapi_vm_id">Open diagnostic VM</a>
+    </p>
+
+</section>
+
+<!--
+<section>
+    <h2>Tools</h2>
+    <ul>
+        <li><a href="/about/login">Login</a></li>
+        <li><a href="/about/executions">executions</a></li>
+        <li><a href="/about/config">config</a></li>
+    </ul>
+</section>
+-->
+
+<script>
+    async function fetchMoviesJSON() {
+        const response = await fetch('/status/check/fastapi');
+        if (response.ok) {
+            document.getElementById("check").innerHTML = "working properly &#10004;&#65039;";
+        }
+        else if (response.status === 503) {
+            document.getElementById("check").innerHTML = "not working properly &#10060; ";
+            const checks = await response.json();
+            let result = "";
+            for (const key in checks) {
+                result += key + ": " + checks[key] + "<br/>";
+            }
+            document.getElementById("checks").innerHTML = result;
+        }
+        else if (response.status === 500) {
+            document.getElementById("check").innerHTML = "&#10060; Failed";
+        }
+        else {
+            document.getElementById("check").innerText = response.status;
+        }
+        return response.status;
+    }
+    fetchMoviesJSON();
+
+</script>
+
+</body>
+</html>
