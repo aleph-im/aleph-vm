@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euf -o pipefail
+
+systemctl disable aleph-vm-supervisor.service
+systemctl stop aleph-vm-supervisor.service

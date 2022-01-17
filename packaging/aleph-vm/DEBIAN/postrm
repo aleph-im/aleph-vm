@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euf -o pipefail
+
+rm -r /srv/jailer
+
+systemctl daemon-reload

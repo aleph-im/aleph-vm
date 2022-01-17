@@ -7,6 +7,7 @@ User=0
 Group=0
 WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
+Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
 ExecStart=python3 -m vm_supervisor --print-settings --very-verbose
 Restart=always

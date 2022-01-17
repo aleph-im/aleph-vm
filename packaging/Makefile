@@ -21,6 +21,7 @@ debian-package-code:
 	cp ../runtimes/aleph-debian-11-python/rootfs.squashfs ./aleph-vm/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs
 
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message>=0.1.18'
+	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux
 	rm -fr ./aleph-vm/opt/firecracker
