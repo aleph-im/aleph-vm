@@ -1,46 +1,75 @@
 # Aleph-VM
 
-> Note: This project is still early prototyping.
-
 The Aleph-VM project allows you to run programs on [Aleph.im](https://aleph.im/).
 
-Programs can currently be written in Python using ASGI compatible frameworks (
+Aleph-VM is optimized to run programs on demand in a "function-as-as-service",
+as a response to HTTP requests.
+
+Programs can be written in any language as long as they can run a web server.
+They benefit from running in their own, customizable Linux virtual environment.
+
+Writing programs in Python using ASGI compatible frameworks (
 [FastAPI](https://github.com/tiangolo/fastapi), 
 [Django](https://docs.djangoproject.com/en/3.0/topics/async/),
-...) and respond to HTTP requests. 
+...) allows developers to use advanced functionnalities not yet available for other languages.
 
-Alternatively, programs written in any language can listen to HTTP requests on port 8080.
-
-### 1. Writing Aleph-VM programs
+## 1. Creating and running an Aleph Program 
 
 Have a look at [tutorials/README.md](tutorials/README.md) for a tutorial on how to program VMs
 as a user.
 
 The rest of this document focuses on how to run an Aleph-VM node that hosts and executes the programs. 
 
-## 1. Quick install
+## 2. Installing Aleph-VM on a server
+
+### 0. Requirements
+
+- A [supported Linux server](./vm_supervisor/README.md#1-supported-platforms)
+- A public domain name from a trusted registar and domain. 
+
+In order to run an Aleph.im Compute Resource Node, you will also need the following resources:
+
+- CPU (2 options):
+  - Min. 8 cores / 16 threads, 3.0 ghz+ CPU (gaming CPU for fast boot-up of microVMs)
+  - Min. 12 core / 24 threads, 2.4ghz+ CPU (datacenter CPU for multiple concurrent loads)
+- RAM: 64GB
+- STORAGE: 1TB (Nvme SSD prefered, datacenter fast HDD possible under conditions, you’ll want a big and fast cache)
+- BANDWIDTH: Minimum of 500 MB/s
+
+You will need a public domain name with access to add TXT and wildcard records.
+
+This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
+
+### 1. Quick install
 
 To quickly install Aleph-VM on a [supported Linux system](./vm_supervisor/README.md#1-supported-platforms)
 for production purposes:
 
 ```shell
 sudo apt update
+sudo apt upgrade
 sudo apt install -y docker.io
 sudo docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
-wget https://github.com/aleph-im/aleph-vm/releases/download/0.1.6-1/aleph-vm-0.1.6-1.deb
-sudo apt install ./aleph-vm-0.1.6-1.deb
+wget https://github.com/aleph-im/aleph-vm/releases/download/0.1.7/aleph-vm.debian-0.1.7-0.deb
+sudo apt install .//aleph-vm.debian-0.1.7-0.deb
 ```
 
 ### Configuration
 
-You can update the configuration in `/etc/aleph-vm/supervisor.env`. 
+Update the configuration in `/etc/aleph-vm/supervisor.env`. 
+
+You will want to insert your domain name in the for of:
+```
+ALEPH_VM_DOMAIN_NAME=vm.example.org
+```
 
 On Ubuntu, the default network interface is not `eth0` and you will want to configure the default interface in the form of:
 ```
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
 ```
+(don't forget to replace `enp0s1` with the name of your default network interface).
 
-You can find all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py).
+You can find all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py). Prefix them with `ALEPH_VM_`.
 
 ### Reverse Proxy
 
@@ -64,7 +93,7 @@ sudo cat >/etc/caddy/Caddyfile <<EOL
         burst    5
     }
 }
-vm.yourdomain.org:443, *:443 {
+vm.example.org:443, *:443 {
     tls {
         on_demand
     }
@@ -82,7 +111,7 @@ systemctl restart caddy
 
 https://vm.yourdomain.org/vm/17412050fa1c103c41f983fe305c1ce8c6a809040762cdc1614bc32a06a28a63/state/increment
 
-## 2. Architecture
+## 3. Architecture
 
 ![Aleph im VM - Details](https://user-images.githubusercontent.com/404665/127126908-3225a633-2c36-4129-8766-9810f2fcd7d6.png)
 
@@ -98,9 +127,6 @@ Assist with operations related to the Aleph network.
 
 See [vm_connector/README.md](./vm_connector/README.md).
 
-## Creating and running an Aleph Program 
-
-See [examples/README.md](./examples/README.md).
 
 ---
 
