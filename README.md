@@ -63,9 +63,10 @@ You will want to insert your domain name in the for of:
 ALEPH_VM_DOMAIN_NAME=vm.example.org
 ```
 
-On Ubuntu, the default network interface is not `eth0` and you will want to configure the default interface in the form of:
+On Ubuntu, the default network interface is not `eth0` and you will want to configure the default interface. Due to the DNS being handled by `systemd-resolved` on Ubuntu, you should also configure the DNS to use `resolvectl`.
 ```
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
+ALEPH_VM_DNS_RESOLUTION=resolvectl
 ```
 (don't forget to replace `enp0s1` with the name of your default network interface).
 
