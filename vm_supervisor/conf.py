@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     )
 
     CHECK_FASTAPI_VM_ID: str = (
-        "bbd7f6e2ce72104a334f22e4b29f0ebeb96af3179167521788bce80754f3c58a"
+        "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
     )
 
     def update(self, **kwargs):
