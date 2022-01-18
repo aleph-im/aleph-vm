@@ -50,8 +50,8 @@ sudo apt update
 sudo apt upgrade
 sudo apt install -y docker.io
 sudo docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
-wget https://github.com/aleph-im/aleph-vm/releases/download/0.1.7/aleph-vm.debian-0.1.7-0.deb
-sudo apt install .//aleph-vm.debian-0.1.7-0.deb
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.7/aleph-vm.debian-0.1.7-0.deb
+sudo apt install /opt/aleph-vm.debian-0.1.7-0.deb
 ```
 
 ### Configuration
@@ -71,6 +71,11 @@ ALEPH_VM_DNS_RESOLUTION=resolvectl
 (don't forget to replace `enp0s1` with the name of your default network interface).
 
 You can find all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py). Prefix them with `ALEPH_VM_`.
+
+Finally, restart the service:
+```shell
+systemctl restart aleph-vm-supervisor
+```
 
 ### Reverse Proxy
 
