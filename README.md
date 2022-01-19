@@ -70,7 +70,7 @@ ALEPH_VM_DNS_RESOLUTION=resolvectl
 ```
 (don't forget to replace `enp0s1` with the name of your default network interface).
 
-You can find all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py). Prefix them with `ALEPH_VM_`.
+You can view all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py). Do not edit that file. Instead, add the settings you want to change in `/etc/aleph-vm/supervisor.env` with the prefix `ALEPH_VM_`, below or in replacement from the existing ones.
 
 Finally, restart the service:
 ```shell
