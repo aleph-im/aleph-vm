@@ -70,8 +70,6 @@ ALEPH_VM_DNS_RESOLUTION=resolvectl
 ```
 (don't forget to replace `enp0s1` with the name of your default network interface).
 
-You can view all available options in [./vm_supervisor/conf.py](./vm_supervisor/conf.py). Do not edit that file. Instead, add the settings you want to change in `/etc/aleph-vm/supervisor.env` with the prefix `ALEPH_VM_`, below or in replacement from the existing ones.
-
 Finally, restart the service:
 ```shell
 systemctl restart aleph-vm-supervisor
@@ -115,7 +113,9 @@ systemctl restart caddy
 
 ### Test
 
-https://vm.yourdomain.org/vm/17412050fa1c103c41f983fe305c1ce8c6a809040762cdc1614bc32a06a28a63/state/increment
+Open https://[YOUR DOMAIN] in a web browser, wait for diagnostic to complete and look for 
+
+> ![image](https://user-images.githubusercontent.com/404665/150202090-91a02536-4e04-4af2-967f-fe105d116e1f.png)
 
 ## 3. Architecture
 
