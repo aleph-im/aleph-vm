@@ -12,6 +12,16 @@ logger = logging.getLogger(__name__)
 ALEPH_API_SERVER = "https://api2.aleph.im"
 ALEPH_VM_CONNECTOR = "http://localhost:4021"
 CACHE_EXPIRES_AFTER = 7 * 24 * 3600  # Seconds
+REDIS_ADDRESS = "redis://localhost"
+
+_redis: Optional[aioredis.Redis] = None
+
+
+async def get_redis(address: str = REDIS_ADDRESS) -> aioredis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = await aioredis.create_redis(address=address)
+    return _redis
 
 
 async def proxy(request: web.Request):
@@ -98,7 +108,7 @@ async def get_from_cache(request: web.Request):
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
+    redis: aioredis.Redis = await get_redis()
     body = await redis.get(f"{prefix}:{key}")
     if body:
         return web.Response(body=body, status=200)
@@ -114,7 +124,7 @@ async def put_in_cache(request: web.Request):
 
     value: bytes = await request.read()
 
-    redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
+    redis: aioredis.Redis = await get_redis()
     return web.json_response(
         await redis.set(f"{prefix}:{key}", value, expire=CACHE_EXPIRES_AFTER)
     )
@@ -126,7 +136,7 @@ async def delete_from_cache(request: web.Request):
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
+    redis: aioredis.Redis = await get_redis()
     result = await redis.delete(f"{prefix}:{key}")
     return web.json_response(result)
 
@@ -137,7 +147,7 @@ async def list_keys_from_cache(request: web.Request):
     if not re.match(r"^[\w?*^\-]+$", pattern):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await aioredis.create_redis(address="redis://localhost")
+    redis: aioredis.Redis = await get_redis()
     result = await redis.keys(f"{prefix}:{pattern}")
     keys = [key.decode()[len(prefix) + 1 :] for key in result]
     return web.json_response(keys)
