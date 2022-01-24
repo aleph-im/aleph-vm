@@ -367,17 +367,46 @@ class MicroVM:
             logger.warning("Never received signal from init")
             raise MicroVMFailedInit()
 
+    async def shutdown(self):
+        logger.debug(f"Shutown vm={self.vm_id}")
+        reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
+        payload = b"halt"
+        writer.write(b"CONNECT 52\n" + payload)
+
+        await writer.drain()
+
+        ack: bytes = await reader.readline()
+        logger.debug(f"ack={ack.decode()}")
+
+        msg: bytes = await reader.readline()
+        logger.debug(f"msg={msg}")
+
+        msg2: bytes = await reader.readline()
+        logger.debug(f"msg2={msg2}")
+
+        if msg2 != b"STOPZ\n":
+            logger.error("Unexpected response from VM")
+
     async def stop(self):
         if self.proc:
+            logger.debug("Stopping firecracker process")
             try:
                 self.proc.terminate()
                 self.proc.kill()
             except ProcessLookupError:
-                pass
+                logger.debug(f"Firecracker process pid={self.proc.pid} not found")
             self.proc = None
+        else:
+            logger.debug("No firecracker process to stop")
 
     async def teardown(self):
         """Stop the VM, cleanup network interface and remove data directory."""
+        try:
+            await asyncio.wait_for(self.shutdown(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.exception(f"Timeout during VM shutdown vm={self.vm_id}")
+        logger.debug("Waiting for one second for the process to shudown")
+        await asyncio.sleep(1)
         await self.stop()
 
         if self.stdout_task:
