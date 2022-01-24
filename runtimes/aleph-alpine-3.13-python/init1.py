@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 logger.debug("Imports starting")
 
+import ctypes
 import asyncio
 import os
 import socket
@@ -40,6 +41,10 @@ class Encoding(str, Enum):
 class Interface(str, Enum):
     asgi = "asgi"
     executable = "executable"
+
+
+class ShutdownException(Exception):
+    pass
 
 
 @dataclass
@@ -329,13 +334,26 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
 
 
 async def process_instruction(
-        instruction: bytes, interface: Interface, application
+        instruction: bytes, interface: Interface, application: Union[ASGIApplication, subprocess.Popen]
 ) -> AsyncIterable[bytes]:
 
     if instruction == b"halt":
+        logger.info("Received halt command")
         system("sync")
+        logger.debug("Filesystems synced")
+        if isinstance(application, subprocess.Popen):
+            application.terminate()
+            logger.debug("Application terminated")
+            # application.communicate()
+        else:
+            # Close the cached session in aleph_client:
+            from aleph_client.asynchronous import get_fallback_session
+            session: aiohttp.ClientSession = get_fallback_session()
+            await session.close()
+            logger.debug("Aiohttp cached session closed")
         yield b"STOP\n"
-        sys.exit()
+        logger.debug("Supervisor informed of halt")
+        raise ShutdownException
     elif instruction.startswith(b"!"):
         # Execute shell commands in the form `!ls /`
         msg = instruction[1:].decode()
@@ -417,6 +435,14 @@ def setup_system(config: ConfigurationPayload):
     logger.debug("Setup finished")
 
 
+def umount_volumes(volumes: List[Volume]):
+    "Umount user related filesystems"
+    system("sync")
+    for volume in volumes:
+        logger.debug(f"Umounting /dev/{volume.device} on {volume.mount}")
+        system(f"umount {volume.mount}")
+
+
 async def main():
     client, addr = s.accept()
 
@@ -437,6 +463,11 @@ async def main():
         logger.exception("Program could not be started")
         raise
 
+    class ServerReference:
+        "Reference used to close the server from within `handle_instruction"
+        server: asyncio.AbstractServer
+    server_reference = ServerReference()
+
     async def handle_instruction(reader, writer):
         data = await reader.read(1000_1000)  # Max 1 Mo
 
@@ -445,23 +476,54 @@ async def main():
             data_to_print = f"{data[:500]}..." if len(data) > 500 else data
             logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
 
-        async for result in process_instruction(instruction=data, interface=config.interface,
-                                                application=app):
-            writer.write(result)
-            await writer.drain()
+        try:
+            async for result in process_instruction(instruction=data, interface=config.interface,
+                                                    application=app):
+                writer.write(result)
+                await writer.drain()
 
-        logger.debug("...DONE")
-        writer.close()
+                logger.debug("Instruction processed")
+        except ShutdownException:
+            logger.info("Initiating shutdown")
+            writer.write(b"STOPZ\n")
+            await writer.drain()
+            logger.debug("Shutdown confirmed to supervisor")
+            server_reference.server.close()
+            logger.debug("Supervisor socket server closed")
+        finally:
+            writer.close()
 
     server = await asyncio.start_server(handle_instruction, sock=s)
+    server_reference.server = server
 
     addr = server.sockets[0].getsockname()
     print(f'Serving on {addr}')
 
-    async with server:
-        await server.serve_forever()
-
+    try:
+        async with server:
+            await server.serve_forever()
+    except asyncio.CancelledError:
+        logger.debug("Server was properly cancelled")
+    finally:
+        logger.warning("System shutdown")
+        server.close()
+        logger.debug("Server closed")
+        umount_volumes(config.volumes)
+        logger.debug("User volumes unmounted")
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
     asyncio.run(main())
+
+    logger.info("Unmounting system filesystems")
+    system("umount /dev/shm")
+    system("umount /dev/pts")
+    system("umount -a")
+
+    logger.info("Sending reboot syscall")
+    # Send reboot syscall, see man page
+    # https://man7.org/linux/man-pages/man2/reboot.2.html
+    libc = ctypes.CDLL(None)
+    libc.syscall(169, 0xfee1dead, 672274793, 0x4321fedc, None)
+    # The exit should not happen due to system halt.
+    sys.exit(0)
