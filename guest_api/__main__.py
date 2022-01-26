@@ -6,6 +6,7 @@ from typing import Optional
 import aiohttp
 from aiohttp import web
 import aioredis
+from setproctitle import setproctitle
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ async def list_keys_from_cache(request: web.Request):
 
 
 def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
+    setproctitle(f"aleph-vm guest_api on {unix_socket_path}")
     app = web.Application()
     app["meta_vm_hash"] = vm_hash or "_"
 
