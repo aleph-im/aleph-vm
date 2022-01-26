@@ -16,6 +16,3 @@ COPY ../packaging ./packaging
 COPY ../kernels ./kernels
 
 COPY ../examples/ ./examples
-
-RUN mkdir -p ./runtimes/aleph-debian-11-python
-COPY ../runtimes/aleph-debian-11-python/rootfs.squashfs ./runtimes/aleph-debian-11-python/rootfs.squashfs

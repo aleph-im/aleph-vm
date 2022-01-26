@@ -149,10 +149,10 @@ class Settings(BaseSettings):
             assert isdir(
                 self.FAKE_DATA_PROGRAM
             ), "Local fake program directory is missing"
-        assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
-        assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
-        assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
-        assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
+            assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
+            assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
+            assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
+            assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)

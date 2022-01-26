@@ -17,10 +17,6 @@ jobs:
           git describe --tags
 
       - run: |
-          sudo apt update
-          sudo apt install -y debootstrap
-          cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
-          cd examples/volumes && sudo ./build_squashfs.sh && cd ../..
           cd packaging && make all-podman-debian-11 && cd ..
           cd packaging && make all-podman-ubuntu-2004 && cd ..
           ls packaging/target
@@ -34,6 +30,21 @@ jobs:
         with:
           name: aleph-vm.ubuntu-20.04.deb
           path: packaging/target/aleph-vm.ubuntu-20.04.deb
+
+
+  build_rootfs:
+    name: "Build runtime aleph-debian-11-python"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - run: |
+          sudo apt update
+          sudo apt install -y debootstrap
+          cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
+          cd examples/volumes && sudo ./build_squashfs.sh && cd ../..
 
       - uses: actions/upload-artifact@v2
         with:
