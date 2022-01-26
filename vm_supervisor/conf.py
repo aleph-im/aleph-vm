@@ -78,8 +78,6 @@ class Settings(BaseSettings):
 
     API_SERVER: str = "https://api2.aleph.im"
     USE_JAILER: bool = True
-    # Log level inside the VM
-    VM_LOG_LEVEL: int = Field(default=logging.INFO, description="Log level used inside the VM")
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS: bool = False
     # Networking does not work inside Docker/Podman
