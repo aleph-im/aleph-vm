@@ -94,6 +94,7 @@ class ConfigurationPayload:
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
+    loglevel: Optional[int] = logging.DEBUG
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
@@ -389,6 +390,7 @@ class AlephFirecrackerVM:
             vm_hash=self.vm_hash,
             volumes=volumes,
             variables=self.resources.message_content.variables,
+            loglevel=settings.VM_LOG_LEVEL,
         )
         payload = config.as_msgpack()
         length = f"{len(payload)}\n".encode()
