@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import time
+import tracemalloc
 from typing import AsyncIterable, TypeVar
 
 import aiohttp
@@ -136,3 +137,9 @@ async def stop_watch_for_messages_task(app: web.Application):
         await app["messages_listener"]
     except asyncio.CancelledError:
         logger.debug("Task messages_listener is cancelled now")
+
+    snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics('lineno')
+    # print(snapshot.statistics('lineno'))
+    for stat in top_stats[:10]:
+        print(stat)

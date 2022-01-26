@@ -1,6 +1,7 @@
 import binascii
 import logging
 import os.path
+import tracemalloc
 from string import Template
 from typing import Awaitable
 
@@ -99,6 +100,20 @@ async def about_config(request: web.Request):
         settings,
         dumps=dumps_for_json,
     )
+
+
+previous_snapshot = None
+
+async def snapshot(request: web.Request):
+    global previous_snapshot
+    new_snapshot =  tracemalloc.take_snapshot()
+    if previous_snapshot:
+        top_stats = new_snapshot.compare_to(previous_snapshot, 'lineno')
+        print("[ Top 10 differences ]")
+        for stat in top_stats[:10]:
+            print(stat)
+    previous_snapshot = new_snapshot
+    return web.json_response({"OK": True})
 
 
 async def index(request: web.Request):

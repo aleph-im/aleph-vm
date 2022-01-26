@@ -224,4 +224,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import tracemalloc
+    tracemalloc.start()
     main()
