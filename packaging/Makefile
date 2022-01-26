@@ -16,10 +16,6 @@ debian-package-code:
 	cp ../examples/message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	cp ../examples/volumes/volume-venv.squashfs ./aleph-vm/opt/aleph-vm/examples/volumes/volume-venv.squashfs
-	mkdir -p ./aleph-vm/opt/aleph-vm/runtimes/aleph-debian-11-python/
-	cp ../runtimes/aleph-debian-11-python/rootfs.squashfs ./aleph-vm/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs
-
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message>=0.1.18'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
