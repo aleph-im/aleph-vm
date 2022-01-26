@@ -72,9 +72,13 @@ class MicroVM:
     init_timeout: float
 
     @property
-    def jailer_path(self):
+    def namespace_path(self):
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
-        return f"/srv/jailer/{firecracker_bin_name}/{self.vm_id}/root"
+        return f"/srv/jailer/{firecracker_bin_name}/{self.vm_id}"
+
+    @property
+    def jailer_path(self):
+        return os.path.join(self.namespace_path, "root")
 
     @property
     def socket_path(self):
@@ -399,7 +403,7 @@ class MicroVM:
             )
 
         logger.debug("Removing files")
-        system(f"rm -fr {self.jailer_path}")
+        system(f"rm -fr {self.namespace_path}")
 
     def __del__(self):
         try:
