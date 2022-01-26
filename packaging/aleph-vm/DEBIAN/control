@@ -3,6 +3,6 @@ Version: 0.1.7-0
 Architecture: all
 Maintainer: Aleph.im
 Description: Aleph.im VM execution engine
-Depends: python3,python3-pip,python3-aiohttp,python3-msgpack,python3-aiodns,redis,python3-aioredis,python3-psutil,sudo,acl,curl,systemd-container,squashfs-tools,debootstrap
+Depends: python3,python3-pip,python3-aiohttp,python3-msgpack,python3-aiodns,python3-setproctitle,redis,python3-aioredis,python3-psutil,sudo,acl,curl,systemd-container,squashfs-tools,debootstrap
 Section: aleph-im
 Priority: Extra
