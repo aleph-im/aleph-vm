@@ -67,6 +67,7 @@ class ConfigurationPayload:
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
+    loglevel: Optional[int] = logging.DEBUG
 
 
 @dataclass
@@ -91,6 +92,13 @@ os.environ["ALEPH_REMOTE_CRYPTO_HOST"] = "http://localhost"
 os.environ["ALEPH_REMOTE_CRYPTO_UNIX_SOCKET"] = "/tmp/socat-socket"
 
 logger.debug("init1.py is launching")
+
+
+def setup_loglevel(loglevel: int):
+    logging.basicConfig(
+        level=loglevel,
+        format="%(relativeCreated)4f |V %(levelname)s | %(message)s",
+    )
 
 
 def setup_hostname(hostname: str):
@@ -427,6 +435,7 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_system(config: ConfigurationPayload):
+    setup_loglevel(config.loglevel)
     setup_hostname(config.vm_hash)
     setup_variables(config.variables)
     setup_volumes(config.volumes)
