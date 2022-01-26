@@ -41,6 +41,9 @@ vmlinux:
 	curl -fsSL -o ./target/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
 	#cp ../kernels/vmlinux.bin ./target/vmlinux.bin
 
+version:
+	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
+
 build-dir:
 	mkdir -p target
 
@@ -51,7 +54,7 @@ clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
 
-all-podman-debian-11:
+all-podman-debian-11: version
 	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/debian-11.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
@@ -62,7 +65,7 @@ all-podman-debian-11:
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
 
-all-podman-ubuntu-2004:
+all-podman-ubuntu-2004: version
 	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/ubuntu-20.04.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
