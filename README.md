@@ -43,15 +43,24 @@ This documentation will use the invalid `vm.example.org` domain name. Replace it
 ### 1. Quick install
 
 To quickly install Aleph-VM on a [supported Linux system](./vm_supervisor/README.md#1-supported-platforms)
-for production purposes:
+for production purposes, run the following commands as `root`:
 
 ```shell
-sudo apt update
-sudo apt upgrade
-sudo apt install -y docker.io
-sudo docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.7/aleph-vm.debian-0.1.7-0.deb
-sudo apt install /opt/aleph-vm.debian-0.1.7-0.deb
+apt update
+apt upgrade
+apt install -y docker.io
+docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
+```
+
+On Debian 11:
+```shell
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.9/aleph-vm.debian-11.deb
+apt install /opt/aleph-vm.debian-0.1.9.deb
+```
+On Ubuntu 20.04:
+```shell
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.9/aleph-vm.ubuntu-20.04.deb
+apt install /opt/aleph-vm.ubuntu-20.04.deb
 ```
 
 ### Configuration
@@ -82,6 +91,8 @@ We document how to use Caddy as a reverse proxy since it does automatic HTTPS ce
 First, create a domain name that points to the server on IPv4 and IPv6.
 
 This is a simple configuration. For more options, check [CONFIGURE_CADDY.md](CONFIGURE_CADDY.md).
+
+Again, run these commands as `root` after replacing the domain `vm.example.org` with your own:
 ```shell
 sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo apt-key add -
