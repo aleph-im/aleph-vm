@@ -1,34 +1,9 @@
-# Aleph-VM
+# Aleph-VM - Quick Install Guide to run an Compute Resoure Node 
 
-The Aleph-VM project allows you to run programs on [Aleph.im](https://aleph.im/).
-
-Aleph-VM is optimized to run programs on demand in a "function-as-as-service",
-as a response to HTTP requests.
-
-Programs can be written in any language as long as they can run a web server.
-They benefit from running in their own, customizable Linux virtual environment.
-
-Writing programs in Python using ASGI compatible frameworks (
-[FastAPI](https://github.com/tiangolo/fastapi), 
-[Django](https://docs.djangoproject.com/en/3.0/topics/async/),
-...) allows developers to use advanced functionnalities not yet available for other languages.
-
-## 1. Creating and running an Aleph Program 
-
-Have a look at [tutorials/README.md](tutorials/README.md) for a tutorial on how to program VMs
-as a user.
-
-The rest of this document focuses on how to run an Aleph-VM node that hosts and executes the programs. 
-
-## 2. Installing Aleph-VM on a server
-
-### 0. Requirements
+0. Requirements
 
 - A [supported Linux server](./vm_supervisor/README.md#1-supported-platforms)
-- A public domain name from a trusted registar and domain. 
-
-In order to run an Aleph.im Compute Resource Node, you will also need the following resources:
-
+- A public domain name from a trusted registar and domain with access to add TXT and wildcard records.
 - CPU (2 options):
   - Min. 8 cores / 16 threads, 3.0 ghz+ CPU (gaming CPU for fast boot-up of microVMs)
   - Min. 12 core / 24 threads, 2.4ghz+ CPU (datacenter CPU for multiple concurrent loads)
@@ -36,22 +11,21 @@ In order to run an Aleph.im Compute Resource Node, you will also need the follow
 - STORAGE: 1TB (Nvme SSD prefered, datacenter fast HDD possible under conditions, you’ll want a big and fast cache)
 - BANDWIDTH: Minimum of 500 MB/s
 
-You will need a public domain name with access to add TXT and wildcard records.
+This documentation will use the invalid `vm.example.org` domain name. Replace it with your domain.
 
-This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
-
-### 1. Quick install
+1. Quick install
 
 To quickly install Aleph-VM on a [supported Linux system](./vm_supervisor/README.md#1-supported-platforms)
 for production purposes, run the following commands as `root`:
 
+1.1 - Installing VM-Connector with docker
 ```shell
 apt update
 apt upgrade
-apt install -y docker.io
+apt install -y docker.io  " ignore it if you already has it installed "
 docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
 ```
-
+1.2 - Installing Aleph-VM , chose your O.S 
 On Debian 11:
 ```shell
 wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.9/aleph-vm.debian-11.deb
@@ -66,7 +40,9 @@ apt install /opt/aleph-vm.ubuntu-20.04.deb
 ### Configuration
 
 Update the configuration in `/etc/aleph-vm/supervisor.env`. 
-
+You can use your preference text editor or run 
+$ sudo nano /etc/alep-vm/supervisor.env 
+edit 
 You will want to insert your domain name in the for of:
 ```
 ALEPH_VM_DOMAIN_NAME=vm.example.org
