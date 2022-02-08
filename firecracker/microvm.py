@@ -371,7 +371,7 @@ class MicroVM:
         logger.debug(f"Shutown vm={self.vm_id}")
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
-        except (FileNotFoundError, ConnectionResetError) as error:
+        except (FileNotFoundError, ConnectionResetError, ConnectionRefusedError) as error:
             logger.warning(f"VM={self.vm_id} cannot receive shutdown signal: {error.args}")
             return
 
