@@ -8,11 +8,16 @@ from typing import List, Tuple, Dict, Callable
 
 from aiohttp.web import Response, Request
 
+try:
+    import sentry_sdk
+except ImportError:
+    sentry_sdk = None
+
 from vm_supervisor.pubsub import PubSub
-from .run import run_code_on_request, run_code_on_event
-from .models import VmHash
 from . import supervisor
 from .conf import settings
+from .models import VmHash
+from .run import run_code_on_request, run_code_on_event
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +212,24 @@ def main():
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
         FAKE_DATA_PROGRAM=args.fake_data_program,
     )
+
+    if sentry_sdk:
+        if settings.SENTRY_DSN:
+            sentry_sdk.init(
+                dsn=settings.SENTRY_DSN,
+                server_name=settings.DOMAIN_NAME,
+
+                # Set traces_sample_rate to 1.0 to capture 100%
+                # of transactions for performance monitoring.
+                # We recommend adjusting this value in production.
+                traces_sample_rate=1.0
+            )
+        else:
+            logger.debug("Sentry SDK found with no DNS configured.")
+    else:
+        logger.debug("Sentry SDK not found. \n"
+                     "Use `pip install sentry-sdk` and configure SENTRY_DSN if you'd like to monitor errors.")
+
     settings.setup()
     if args.print_settings:
         print(settings.display())

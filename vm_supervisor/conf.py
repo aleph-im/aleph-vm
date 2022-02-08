@@ -124,6 +124,8 @@ class Settings(BaseSettings):
         "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
     )
 
+    SENTRY_DSN: Optional[str] = None
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if key != key.upper():

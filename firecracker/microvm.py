@@ -391,7 +391,7 @@ class MicroVM:
             logger.debug(f"msg2={msg2}")
 
             if msg2 != b"STOPZ\n":
-                logger.error(f"Unexpected response from VM: {msg2[:20]}")
+                logger.warning(f"Unexpected response from VM: {msg2[:20]}")
         except ConnectionResetError as error:
             logger.warning(f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}")
 
