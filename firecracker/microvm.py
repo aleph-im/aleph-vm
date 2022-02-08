@@ -369,23 +369,31 @@ class MicroVM:
 
     async def shutdown(self):
         logger.debug(f"Shutown vm={self.vm_id}")
-        reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
-        payload = b"halt"
-        writer.write(b"CONNECT 52\n" + payload)
+        try:
+            reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
+        except (FileNotFoundError, ConnectionResetError) as error:
+            logger.warning(f"VM={self.vm_id} cannot receive shutdown signal: {error.args}")
+            return
 
-        await writer.drain()
+        try:
+            payload = b"halt"
+            writer.write(b"CONNECT 52\n" + payload)
 
-        ack: bytes = await reader.readline()
-        logger.debug(f"ack={ack.decode()}")
+            await writer.drain()
 
-        msg: bytes = await reader.readline()
-        logger.debug(f"msg={msg}")
+            ack: bytes = await reader.readline()
+            logger.debug(f"ack={ack.decode()}")
 
-        msg2: bytes = await reader.readline()
-        logger.debug(f"msg2={msg2}")
+            msg: bytes = await reader.readline()
+            logger.debug(f"msg={msg}")
 
-        if msg2 != b"STOPZ\n":
-            logger.error("Unexpected response from VM")
+            msg2: bytes = await reader.readline()
+            logger.debug(f"msg2={msg2}")
+
+            if msg2 != b"STOPZ\n":
+                logger.error(f"Unexpected response from VM: {msg2[:20]}")
+        except ConnectionResetError as error:
+            logger.warning(f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}")
 
     async def stop(self):
         if self.proc:
