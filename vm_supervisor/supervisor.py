@@ -20,6 +20,7 @@ from .views import (
     about_config,
     status_check_fastapi,
 )
+from .run import pool
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ app.add_routes(
     ]
 )
 
+async def stop_all_vms(app: web.Application):
+    await pool.stop()
+
 
 def run():
     """Run the VM Supervisor."""
@@ -49,5 +53,6 @@ def run():
     if settings.WATCH_FOR_MESSAGES:
         app.on_startup.append(start_watch_for_messages_task)
         app.on_cleanup.append(stop_watch_for_messages_task)
+        app.on_cleanup.append(stop_all_vms)
 
     web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
