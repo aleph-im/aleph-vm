@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Dict, Optional, List
 
@@ -50,10 +51,9 @@ class VmPool:
 
     async def stop(self):
         """Stop all VMs in the pool."""
-        hashes_to_forget: List[VmHash] = []
-        for vm_hash, execution in self.executions.items():
-            await execution.stop()
-            hashes_to_forget.append(vm_hash)
 
-        for vm_hash in hashes_to_forget:
-            self.forget_vm(vm_hash)
+        # Stop executions in parallel:
+        await asyncio.gather(*(
+            execution.stop()
+            for vm_hash, execution in self.executions.items()
+        ))
