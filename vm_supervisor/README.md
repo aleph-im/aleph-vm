@@ -73,7 +73,7 @@ ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
 ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
 ```
 
-### 2.d. Clone this reposotiry on the host machine and enter it.
+### 2.d. Clone this repository on the host machine and enter it.
 
 ```shell
 git clone https://github.com/aleph-im/aleph-vm.git

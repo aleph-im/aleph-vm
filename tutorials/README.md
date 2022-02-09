@@ -135,7 +135,7 @@ interface with programs written in Python. ASGI interfaces with many Python fram
 FastAPI but also [Django](https://www.djangoproject.com/) 
 or [Quart](https://github.com/pgjones/quart).
 
-Test your progam locally using uvicorn, an ASGI server:
+Test your program locally using uvicorn, an ASGI server:
 
 ```shell
 uvicorn main:app --reload
