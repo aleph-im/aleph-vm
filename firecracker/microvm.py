@@ -368,7 +368,7 @@ class MicroVM:
             raise MicroVMFailedInit()
 
     async def shutdown(self):
-        logger.debug(f"Shutown vm={self.vm_id}")
+        logger.debug(f"Shutdown vm={self.vm_id}")
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
         except (FileNotFoundError, ConnectionResetError, ConnectionRefusedError) as error:

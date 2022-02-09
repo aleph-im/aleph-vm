@@ -136,7 +136,7 @@ Unlike the cache, you can use these volumes to store any kind of files, includin
 There is no guarantee that these volumes will not be deleted anytime when the
 program is not running and important data must be persisted on the Aleph network.
 
-Host persistend volumes have a fixed size and must be named. The name will be used in the future
+Host persistent volumes have a fixed size and must be named. The name will be used in the future
 to allow changing the mount point of a volume.
 
 
@@ -154,4 +154,3 @@ records:
 `hosted-on-aleph.net IN CNAME aleph.sh`
 2. A `TXT` record to the VM hash with the prefix _aleph-id, for example:
 `_aleph-id.hosted-on-aleph.org 60 IN TXT "b34f193470c349b1d9b60903a6d172e8c335710736d4999ff05971692febe8bc"`
-
