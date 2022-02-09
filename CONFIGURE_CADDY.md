@@ -25,7 +25,7 @@ sudo apt install -y certbot
 
 certbot certonly --manual --email email@yourdomain.org --preferred-challenges dns \
   --server https://acme-v02.api.letsencrypt.org/directory --agree-tos \
-  -d 'vm.yourdomain.org,*.vm.youdomain.org'
+  -d 'vm.yourdomain.org,*.vm.yourdomain.org'
 ```
 
 ## 2. Caddy Server

@@ -11,7 +11,7 @@ They benefit from running in their own, customizable Linux virtual environment.
 Writing programs in Python using ASGI compatible frameworks (
 [FastAPI](https://github.com/tiangolo/fastapi), 
 [Django](https://docs.djangoproject.com/en/3.0/topics/async/),
-...) allows developers to use advanced functionnalities not yet available for other languages.
+...) allows developers to use advanced functionalities not yet available for other languages.
 
 ## 1. Creating and running an Aleph Program 
 
@@ -25,7 +25,7 @@ The rest of this document focuses on how to run an Aleph-VM node that hosts and 
 ### 0. Requirements
 
 - A [supported Linux server](./vm_supervisor/README.md#1-supported-platforms)
-- A public domain name from a trusted registar and domain. 
+- A public domain name from a trusted registrar and domain. 
 
 In order to run an Aleph.im Compute Resource Node, you will also need the following resources:
 
@@ -33,7 +33,7 @@ In order to run an Aleph.im Compute Resource Node, you will also need the follow
   - Min. 8 cores / 16 threads, 3.0 ghz+ CPU (gaming CPU for fast boot-up of microVMs)
   - Min. 12 core / 24 threads, 2.4ghz+ CPU (datacenter CPU for multiple concurrent loads)
 - RAM: 64GB
-- STORAGE: 1TB (Nvme SSD prefered, datacenter fast HDD possible under conditions, you’ll want a big and fast cache)
+- STORAGE: 1TB (Nvme SSD preferred, datacenter fast HDD possible under conditions, you’ll want a big and fast cache)
 - BANDWIDTH: Minimum of 500 MB/s
 
 You will need a public domain name with access to add TXT and wildcard records.

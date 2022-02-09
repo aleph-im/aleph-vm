@@ -47,7 +47,7 @@ Once the command is down, your virtual machine will be booted and ready!
 
 ### Set Vagrantfile configuration
 
-Open the vagranfile and add following `config.vm.box``
+Open the vagrantfile and add following `config.vm.box``
 
 ```shell
 config.vm.network "forwarded_port", guest:8000, host:8000
