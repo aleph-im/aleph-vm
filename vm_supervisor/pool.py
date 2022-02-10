@@ -47,7 +47,10 @@ class VmPool:
             return None
 
     def forget_vm(self, vm_hash: VmHash) -> None:
-        self.executions.pop(vm_hash)
+        try:
+            del self.executions[vm_hash]
+        except KeyError:
+            pass
 
     async def stop(self):
         """Stop all VMs in the pool."""
