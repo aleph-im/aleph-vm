@@ -13,122 +13,29 @@ Writing programs in Python using ASGI compatible frameworks (
 [Django](https://docs.djangoproject.com/en/3.0/topics/async/),
 ...) allows developers to use advanced functionalities not yet available for other languages.
 
-## 1. Creating and running an Aleph Program 
+## 1. Install Aleph-VM from packages
+
+Install Aleph-VM to run an Aleph.im Compute Resource Node easily from official pre-built packages.
+
+- [On Debian 11](./doc/INSTALL-Debian-11.md)
+- [On Ubuntu 20.04](./doc/INSTALL-Ubuntu-20.04.md)
+
+## 2. Install Aleph-VM from source
+
+For development and testing, install Aleph-VM from source.
+
+1. Install the [VM-Connector](./vm_connector/README.md)
+2. Install the [VM-Supervisor](./vm_supervisor/README.md).
+3. Install and [configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
+
+## 3. Create and run an Aleph Program 
 
 Have a look at [tutorials/README.md](tutorials/README.md) for a tutorial on how to program VMs
 as a user.
 
 The rest of this document focuses on how to run an Aleph-VM node that hosts and executes the programs. 
 
-## 2. Installing Aleph-VM on a server
-
-### 0. Requirements
-
-- A [supported Linux server](./vm_supervisor/README.md#1-supported-platforms)
-- A public domain name from a trusted registrar and domain. 
-
-In order to run an Aleph.im Compute Resource Node, you will also need the following resources:
-
-- CPU (2 options):
-  - Min. 8 cores / 16 threads, 3.0 ghz+ CPU (gaming CPU for fast boot-up of microVMs)
-  - Min. 12 core / 24 threads, 2.4ghz+ CPU (datacenter CPU for multiple concurrent loads)
-- RAM: 64GB
-- STORAGE: 1TB (Nvme SSD preferred, datacenter fast HDD possible under conditions, you’ll want a big and fast cache)
-- BANDWIDTH: Minimum of 500 MB/s
-
-You will need a public domain name with access to add TXT and wildcard records.
-
-This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
-
-### 1. Quick install
-
-To quickly install Aleph-VM on a [supported Linux system](./vm_supervisor/README.md#1-supported-platforms)
-for production purposes, run the following commands as `root`:
-
-```shell
-apt update
-apt upgrade
-apt install -y docker.io
-docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
-```
-
-On Debian 11:
-```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.9/aleph-vm.debian-11.deb
-apt install /opt/aleph-vm.debian-0.1.9.deb
-```
-On Ubuntu 20.04:
-```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.9/aleph-vm.ubuntu-20.04.deb
-apt install /opt/aleph-vm.ubuntu-20.04.deb
-```
-
-### Configuration
-
-Update the configuration in `/etc/aleph-vm/supervisor.env`. 
-
-You will want to insert your domain name in the for of:
-```
-ALEPH_VM_DOMAIN_NAME=vm.example.org
-```
-
-On Ubuntu, the default network interface is not `eth0` and you will want to configure the default interface. Due to the DNS being handled by `systemd-resolved` on Ubuntu, you should also configure the DNS to use `resolvectl`.
-```
-ALEPH_VM_NETWORK_INTERFACE=enp0s1
-ALEPH_VM_DNS_RESOLUTION=resolvectl
-```
-(don't forget to replace `enp0s1` with the name of your default network interface).
-
-Finally, restart the service:
-```shell
-systemctl restart aleph-vm-supervisor
-```
-
-### Reverse Proxy
-
-We document how to use Caddy as a reverse proxy since it does automatic HTTPS certificates.
-
-First, create a domain name that points to the server on IPv4 and IPv6.
-
-This is a simple configuration. For more options, check [CONFIGURE_CADDY.md](CONFIGURE_CADDY.md).
-
-Again, run these commands as `root` after replacing the domain `vm.example.org` with your own:
-```shell
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo apt-key add -
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update
-sudo apt install caddy
-
-sudo cat >/etc/caddy/Caddyfile <<EOL
-{
-    https_port 443
-    on_demand_tls {
-        interval 60s
-        burst    5
-    }
-}
-vm.example.org:443, *:443 {
-    tls {
-        on_demand
-    }
-    reverse_proxy http://127.0.0.1:4020 {
-        # Forward Host header to the backend
-        header_up Host {host}
-    }
-} 
-EOL
-
-systemctl restart caddy
-```
-
-### Test
-
-Open https://[YOUR DOMAIN] in a web browser, wait for diagnostic to complete and look for 
-
-> ![image](https://user-images.githubusercontent.com/404665/150202090-91a02536-4e04-4af2-967f-fe105d116e1f.png)
-
-## 3. Architecture
+## 4. Architecture
 
 ![Aleph im VM - Details](https://user-images.githubusercontent.com/404665/127126908-3225a633-2c36-4129-8766-9810f2fcd7d6.png)
 
@@ -143,7 +50,6 @@ See [vm_supervisor/README.md](./vm_supervisor/README.md).
 Assist with operations related to the Aleph network.
 
 See [vm_connector/README.md](./vm_connector/README.md).
-
 
 ---
 
