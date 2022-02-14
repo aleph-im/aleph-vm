@@ -134,7 +134,8 @@ async def run_code_on_request(
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            execution.stop_after_timeout(timeout=min(settings.REUSE_TIMEOUT,
+                                                     execution.program.resources.seconds))
         else:
             await execution.stop()
 
@@ -213,6 +214,7 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=pubsub)
-            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            execution.stop_after_timeout(timeout=min(settings.REUSE_TIMEOUT,
+                                                     execution.program.resources.seconds))
         else:
             await execution.stop()
