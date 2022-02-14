@@ -432,20 +432,26 @@ class AlephFirecrackerVM:
             raise ValueError("MicroVM must be created first")
         logger.debug("running code")
         scope = scope or {}
+
+        async def communicate(reader, writer, scope):
+            payload = RunCodePayload(scope=scope)
+
+            writer.write(b"CONNECT 52\n" + payload.as_msgpack())
+            await writer.drain()
+
+            ack: bytes = await reader.readline()
+            logger.debug(f"ack={ack.decode()}")
+
+            logger.debug("waiting for VM response")
+            response: bytes = await reader.read()
+
+            return response
+
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
-
-        payload = RunCodePayload(scope=scope)
-
-        writer.write(b"CONNECT 52\n" + payload.as_msgpack())
-        await writer.drain()
-
-        ack: bytes = await reader.readline()
-        logger.debug(f"ack={ack.decode()}")
-
-        logger.debug("waiting for VM response")
-        response: bytes = await reader.read()
-
-        logger.debug("cleaning VM resources")
-        writer.close()
-        await writer.wait_closed()
-        return response
+        try:
+            return await asyncio.wait_for(communicate(reader, writer, scope),
+                                          timeout=self.hardware_resources.seconds)
+        finally:
+            logger.debug("Cleaning VM socket resources")
+            writer.close()
+            await writer.wait_closed()
