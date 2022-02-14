@@ -126,6 +126,10 @@ class Settings(BaseSettings):
 
     SENTRY_DSN: Optional[str] = None
 
+    # Fields
+    SENSITIVE_FIELDS: List[str] = Field(default=["SENTRY_DSN"],
+                                        description="Sensitive fields, redacted from `--print-settings`.")
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if key != key.upper():
@@ -174,9 +178,17 @@ class Settings(BaseSettings):
                 assert "This should never happen"
 
     def display(self) -> str:
+        annotations = self.__annotations__.copy()
+
+        for attr in annotations.keys():
+            if attr in self.SENSITIVE_FIELDS:
+                annotations[attr] = "<REDACTED>"
+            else:
+                annotations[attr] = getattr(self, attr)
+
         return "\n".join(
-            f"{annotation:<17} = {getattr(self, annotation)}"
-            for annotation, value in self.__annotations__.items()
+            f"{annotation:<27} = {value}"
+            for annotation, value in annotations.items()
         )
 
     class Config:
