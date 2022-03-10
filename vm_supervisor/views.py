@@ -42,7 +42,9 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     we expect the hash to be encoded in base32 instead of hexadecimal. Padding is added
     automatically.
     """
-    if request.host.split(':')[0] == settings.DOMAIN_NAME:
+    if request.host.split(':')[0] == settings.DOMAIN_NAME \
+            and request.method == "GET" \
+            and request.path == "/":
         # Serve the index page
         return await index(request=request)
 
