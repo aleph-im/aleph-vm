@@ -46,8 +46,10 @@ if format_ == 'deb':
     updated_content = re.sub(r"(Version:)\w*(.*)", "\\1 {}".format(version), target_content)
 elif format_ == 'setup.py':
     updated_content = re.sub(r"(version)\w*=(.*)'", "\\1='{}'".format(version), target_content)
+elif format_ == '__version__':
+    updated_content = re.sub(r"(__version__)\w*(.*)", "\\1 = '{}'".format(version), target_content)
 else:
-    print("Format must be 'deb' or 'setup.py', not '{}'".format(format_))
+    print("Format must be 'deb', 'setup.py' or '__version__', not '{}'".format(format_))
 
 if '--inplace' in args:
     with open(target_file_path, 'w') as target_file:
