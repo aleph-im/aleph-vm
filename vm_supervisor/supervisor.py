@@ -7,9 +7,11 @@ evolve in the future.
 """
 import logging
 from secrets import token_urlsafe
+from typing import Awaitable, Callable
 
 from aiohttp import web
 
+from . import __version__
 from .conf import settings
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .views import (
@@ -18,13 +20,24 @@ from .views import (
     about_login,
     about_executions,
     about_config,
-    status_check_fastapi,
+    status_check_fastapi, about_usage,
 )
-from .run import pool
 
 logger = logging.getLogger(__name__)
 
-app = web.Application()
+
+@web.middleware
+async def server_version_middleware(
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+) -> web.StreamResponse:
+    """Add the version of Aleph-VM in the HTTP headers of the responses.
+    """
+    resp: web.StreamResponse = await handler(request)
+    resp.headers.update({'Server': f"aleph-vm/{__version__}"},)
+    return resp
+
+app = web.Application(middlewares=[server_version_middleware])
 
 app.add_routes(
     [

@@ -43,6 +43,7 @@ vmlinux:
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
+	python3 ./version_from_git.py --inplace __version ./aleph-vm/opt/aleph-vm/vm_supervisor/__init__.py
 
 build-dir:
 	mkdir -p target
