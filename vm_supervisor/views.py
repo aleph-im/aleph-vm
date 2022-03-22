@@ -11,6 +11,7 @@ from aiohttp.web_exceptions import HTTPNotFound
 
 from . import status
 from .conf import settings
+from .metrics import get_execution_records
 from .models import VmHash
 from .run import run_code_on_request, pool
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
@@ -97,6 +98,14 @@ async def about_config(request: web.Request) -> web.Response:
     authenticate_request(request)
     return web.json_response(
         settings,
+        dumps=dumps_for_json,
+    )
+
+
+async def about_execution_records(request: web.Request):
+    records = await get_execution_records()
+    return web.json_response(
+        records,
         dumps=dumps_for_json,
     )
 

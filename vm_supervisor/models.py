@@ -1,15 +1,20 @@
 import asyncio
 import logging
 import sys
+import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NewType, Optional, Dict
 
 from aleph_message.models import ProgramContent
+
+from .metrics import save_record, save_execution_data, ExecutionRecord
 from .pubsub import PubSub
+from .utils import dumps_for_json
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
+from .conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ class VmExecution:
 
     Implementation agnostic (Firecracker, maybe WASM in the future, ...).
     """
-
+    uuid: uuid.UUID  # Unique identifier of this execution
     vm_hash: VmHash
     original: ProgramContent
     program: ProgramContent
@@ -61,6 +66,7 @@ class VmExecution:
     def __init__(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
     ):
+        self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
         self.program = program
         self.original = original
@@ -74,6 +80,9 @@ class VmExecution:
             "is_running": self.is_running,
             **self.__dict__,
         }
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        return dumps_for_json(self.to_dict(), indent=indent)
 
     async def prepare(self):
         """Download VM required files"""
@@ -143,6 +152,7 @@ class VmExecution:
             return
         await self.all_runs_complete()
         self.times.stopping_at = datetime.now()
+        await self.record_usage()
         await self.vm.teardown()
         self.times.stopped_at = datetime.now()
         self.cancel_expiration()
@@ -173,6 +183,31 @@ class VmExecution:
         else:
             logger.debug("Stop: waiting for runs to complete...")
             await self.runs_done_event.wait()
+
+    async def record_usage(self):
+        if settings.EXECUTION_LOG_ENABLED:
+            await save_execution_data(
+                execution_uuid=self.uuid,
+                execution_data=self.to_json()
+            )
+        pid_info = self.vm.to_dict()
+        await save_record(ExecutionRecord(
+            uuid=str(self.uuid),
+            vm_hash=self.vm_hash,
+            time_defined=self.times.defined_at,
+            time_prepared=self.times.prepared_at,
+            time_started=self.times.started_at,
+            time_stopping=self.times.stopping_at,
+            cpu_time_user=pid_info["process"]["cpu_times"].user,
+            cpu_time_system=pid_info["process"]["cpu_times"].system,
+            io_read_count=pid_info["process"]["io_counters"][0],
+            io_write_count=pid_info["process"]["io_counters"][1],
+            io_read_bytes=pid_info["process"]["io_counters"][2],
+            io_write_bytes=pid_info["process"]["io_counters"][3],
+            vcpus=self.vm.hardware_resources.vcpus,
+            memory=self.vm.hardware_resources.memory,
+            network_tap=self.vm.fvm.network_tap,
+        ))
 
     async def run_code(self, scope: dict = None) -> bytes:
         if not self.vm:
