@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     RUNTIME_CACHE = FilePath(join(CACHE_ROOT, "runtime"))
     DATA_CACHE = FilePath(join(CACHE_ROOT, "data"))
 
+    EXECUTION_ROOT: FilePath = FilePath("/var/lib/aleph/vm")
+    EXECUTION_DATABASE: FilePath = FilePath(join(EXECUTION_ROOT, "executions.sqlite3"))
+    EXECUTION_LOG_ENABLED: bool = False
+    EXECUTION_LOG_DIRECTORY: FilePath = FilePath(join(EXECUTION_ROOT, "executions"))
+
     PERSISTENT_VOLUMES_DIR = FilePath(
         join("/var/lib/aleph/vm/volumes", "volumes", "persistent")
     )

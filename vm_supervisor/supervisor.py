@@ -21,7 +21,7 @@ from .views import (
     about_login,
     about_executions,
     about_config,
-    status_check_fastapi,
+    status_check_fastapi, about_execution_records,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ app.add_routes(
     [
         web.get("/about/login", about_login),
         web.get("/about/executions", about_executions),
+        web.get("/about/executions/records", about_execution_records),
         web.get("/about/config", about_config),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
