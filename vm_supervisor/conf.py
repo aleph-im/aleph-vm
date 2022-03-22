@@ -89,14 +89,14 @@ class Settings(BaseSettings):
 
     CONNECTOR_URL: Url = Url("http://localhost:4021")
 
-    CACHE_ROOT: FilePath = FilePath("/tmp/aleph/vm_supervisor")
+    CACHE_ROOT: FilePath = FilePath("/var/cache/aleph/vm")
     MESSAGE_CACHE: FilePath = FilePath(join(CACHE_ROOT, "message"))
     CODE_CACHE: FilePath = FilePath(join(CACHE_ROOT, "code"))
     RUNTIME_CACHE: FilePath = FilePath(join(CACHE_ROOT, "runtime"))
     DATA_CACHE: FilePath = FilePath(join(CACHE_ROOT, "data"))
 
     PERSISTENT_VOLUMES_DIR: FilePath = FilePath(
-        join("/var/tmp/aleph", "volumes", "persistent")
+        join("/var/lib/aleph/vm/volumes", "volumes", "persistent")
     )
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
