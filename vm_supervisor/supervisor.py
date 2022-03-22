@@ -11,6 +11,7 @@ from secrets import token_urlsafe
 from aiohttp import web
 
 from .conf import settings
+from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .views import (
     run_code_from_path,
