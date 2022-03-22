@@ -1,6 +1,7 @@
 import json
 from base64 import b32decode, b16encode
-from typing import Any
+from dataclasses import is_dataclass, asdict as dataclass_as_dict
+from typing import Any, Optional
 
 import aiodns
 
@@ -20,13 +21,15 @@ async def get_ref_from_dns(domain):
 
 
 def to_json(o: Any):
-    if hasattr(o, "to_dict"):  # dataclasses
+    if hasattr(o, "to_dict"):  # default method
         return o.to_dict()
     elif hasattr(o, "dict"):  # Pydantic
         return o.dict()
+    elif is_dataclass(o):
+        return dataclass_as_dict(o)
     else:
         return str(o)
 
 
-def dumps_for_json(o: Any):
-    return json.dumps(o, default=to_json)
+def dumps_for_json(o: Any, indent: Optional[int]=None):
+    return json.dumps(o, default=to_json, indent=indent)
