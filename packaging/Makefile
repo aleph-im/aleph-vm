@@ -54,6 +54,7 @@ target-dir:
 clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
+	rm -fr ./aleph-vm/opt/aleph-vm/
 
 all-podman-debian-11: version
 	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/debian-11.dockerfile .
