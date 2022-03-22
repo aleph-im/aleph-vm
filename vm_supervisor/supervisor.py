@@ -46,10 +46,13 @@ def run():
     """Run the VM Supervisor."""
     settings.check()
 
+    hostname = settings.DOMAIN_NAME
+    protocol = "http" if hostname == "localhost" else "https"
+
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
     app["secret_token"] = secret_token
-    print(f"Login to /about pages /about/login?token={secret_token}")
+    print(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     if settings.WATCH_FOR_MESSAGES:
         app.on_startup.append(start_watch_for_messages_task)
