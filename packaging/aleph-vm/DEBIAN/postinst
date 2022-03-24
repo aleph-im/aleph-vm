@@ -7,6 +7,9 @@ fi
 
 mkdir -p /srv/jailer
 
-systemctl daemon-reload
-systemctl enable aleph-vm-supervisor.service
-systemctl restart aleph-vm-supervisor.service
+# Systemd is absent from containers
+if ! [[ -v container ]]; then
+  systemctl daemon-reload
+  systemctl enable aleph-vm-supervisor.service
+  systemctl restart aleph-vm-supervisor.service
+fi
