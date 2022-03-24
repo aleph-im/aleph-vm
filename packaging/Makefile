@@ -57,26 +57,44 @@ clean:
 	rm -fr ./aleph-vm/opt/aleph-vm/
 
 all-podman-debian-11: version
-	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/debian-11.dockerfile .
+	cd .. && podman build -t localhost/aleph-vm-packaging-debian-11:latest -f ./packaging/debian-11.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
 		-w /opt/packaging \
 		-v ./target:/opt/packaging/target \
-		localhost/aleph-vm-packaging:latest \
+		localhost/aleph-vm-packaging-debian-11:latest \
 		make
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
 
 all-podman-ubuntu-2004: version
-	cd .. && podman build -t localhost/aleph-vm-packaging:latest -f ./packaging/ubuntu-20.04.dockerfile .
+	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2004:latest -f ./packaging/ubuntu-20.04.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
 		-w /opt/packaging \
 		-v ./target:/opt/packaging/target \
-		localhost/aleph-vm-packaging:latest \
+		localhost/aleph-vm-packaging-ubuntu-2004:latest \
 		make
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-20.04.deb
+
+# extract Python requirements from Debian 11 container
+requirements-debian-11: all-podman-debian-11
+	podman run --rm -ti \
+		-v ./target/aleph-vm.debian-11.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-debian-11.txt:/mnt/requirements-debian-11.txt \
+		debian:bullseye \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-11.txt"
+
+# extract Python requirements from Ubuntu 20.04 container
+requirements-ubuntu-2004: all-podman-ubuntu-2004
+	podman run --rm -ti \
+		-v ./target/aleph-vm.ubuntu-20.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-ubuntu-20.04.txt:/mnt/requirements-ubuntu-20.04.txt \
+		ubuntu:focal \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-20.04.txt"
 
 # run on host in order to sign with GPG
 repository-bullseye:
