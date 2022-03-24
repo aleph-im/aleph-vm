@@ -58,7 +58,7 @@ def systemd_resolved_dns_servers(interface):
 
 
 class Settings(BaseSettings):
-    SUPERVISOR_HOST: str = "127.0.0.1"
+    SUPERVISOR_HOST = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
     # Public domain name
@@ -70,32 +70,32 @@ class Settings(BaseSettings):
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
-    WATCH_FOR_MESSAGES: bool = True
-    WATCH_FOR_UPDATES: bool = True
-    NETWORK_INTERFACE: str = "eth0"
+    WATCH_FOR_MESSAGES = True
+    WATCH_FOR_UPDATES = True
+    NETWORK_INTERFACE = "eth0"
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None
 
-    API_SERVER: str = "https://api2.aleph.im"
-    USE_JAILER: bool = True
+    API_SERVER = "https://api2.aleph.im"
+    USE_JAILER = True
     # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS: bool = False
+    PRINT_SYSTEM_LOGS = False
     # Networking does not work inside Docker/Podman
-    ALLOW_VM_NETWORKING: bool = True
-    FIRECRACKER_PATH: str = "/opt/firecracker/firecracker"
-    JAILER_PATH: str = "/opt/firecracker/jailer"
-    LINUX_PATH: str = "/opt/firecracker/vmlinux.bin"
-    INIT_TIMEOUT: float = 20
+    ALLOW_VM_NETWORKING = True
+    FIRECRACKER_PATH = "/opt/firecracker/firecracker"
+    JAILER_PATH = "/opt/firecracker/jailer"
+    LINUX_PATH = "/opt/firecracker/vmlinux.bin"
+    INIT_TIMEOUT: float = 20.
 
-    CONNECTOR_URL: Url = Url("http://localhost:4021")
+    CONNECTOR_URL = Url("http://localhost:4021")
 
-    CACHE_ROOT: FilePath = FilePath("/var/cache/aleph/vm")
-    MESSAGE_CACHE: FilePath = FilePath(join(CACHE_ROOT, "message"))
-    CODE_CACHE: FilePath = FilePath(join(CACHE_ROOT, "code"))
-    RUNTIME_CACHE: FilePath = FilePath(join(CACHE_ROOT, "runtime"))
-    DATA_CACHE: FilePath = FilePath(join(CACHE_ROOT, "data"))
+    CACHE_ROOT = FilePath("/var/cache/aleph/vm")
+    MESSAGE_CACHE = FilePath(join(CACHE_ROOT, "message"))
+    CODE_CACHE = FilePath(join(CACHE_ROOT, "code"))
+    RUNTIME_CACHE = FilePath(join(CACHE_ROOT, "runtime"))
+    DATA_CACHE = FilePath(join(CACHE_ROOT, "data"))
 
-    PERSISTENT_VOLUMES_DIR: FilePath = FilePath(
+    PERSISTENT_VOLUMES_DIR = FilePath(
         join("/var/lib/aleph/vm/volumes", "volumes", "persistent")
     )
 
@@ -103,24 +103,24 @@ class Settings(BaseSettings):
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
     FAKE_DATA_PROGRAM: Optional[FilePath] = None
-    BENCHMARK_FAKE_DATA_PROGRAM: FilePath = FilePath(
+    BENCHMARK_FAKE_DATA_PROGRAM = FilePath(
         abspath(join(__file__, "../../examples/example_fastapi"))
     )
 
-    FAKE_DATA_MESSAGE: FilePath = FilePath(
+    FAKE_DATA_MESSAGE = FilePath(
         abspath(join(__file__, "../../examples/message_from_aleph.json"))
     )
     FAKE_DATA_DATA: Optional[FilePath] = FilePath(
         abspath(join(__file__, "../../examples/data/"))
     )
-    FAKE_DATA_RUNTIME: FilePath = FilePath(
+    FAKE_DATA_RUNTIME = FilePath(
         abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
     )
     FAKE_DATA_VOLUME: Optional[FilePath] = FilePath(
         abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
     )
 
-    CHECK_FASTAPI_VM_ID: str = (
+    CHECK_FASTAPI_VM_ID = (
         "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
     )
 
