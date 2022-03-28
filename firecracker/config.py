@@ -32,7 +32,7 @@ class Drive(BaseModel):
 class MachineConfig(BaseModel):
     vcpu_count: PositiveInt = 1
     mem_size_mib: PositiveInt = 128
-    ht_enabled: bool = False
+    smt: bool = False
 
 
 class Vsock(BaseModel):

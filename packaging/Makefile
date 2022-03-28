@@ -29,7 +29,7 @@ debian-package-resources: firecracker-bins vmlinux
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
 	# Download latest release
-	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.25.2/firecracker-v0.25.2-x86_64.tgz | tar -xz --directory ./build/firecracker-release
+	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory ./build/firecracker-release
 	# Copy binaries:
 	cp ./build/firecracker-release/release-v*/firecracker-v* ./target/firecracker
 	cp ./build/firecracker-release/release-v*/jailer-v* ./target/jailer
