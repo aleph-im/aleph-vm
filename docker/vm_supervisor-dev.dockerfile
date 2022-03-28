@@ -21,7 +21,7 @@ RUN ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
 
 RUN pip3 install typing-extensions 'aleph-message>=0.1.18'
 
-RUN mkdir /srv/jailer
+RUN mkdir /var/lib/aleph/vm/jailer
 
 ENV PYTHONPATH /mnt
 
