@@ -41,6 +41,8 @@ wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.10/aleph
 apt install /opt/aleph-vm.debian-11.deb
 ```
 
+Reboot if required (new kernel, ...).
+
 ### Configuration
 
 Update the configuration in `/etc/aleph-vm/supervisor.env` using your favourite editor.
