@@ -41,6 +41,8 @@ sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.1.10/
 sudo apt install /opt/aleph-vm.ubuntu-20.04.deb
 ```
 
+Reboot if required (new kernel, ...).
+
 ### Configuration
 
 Update the configuration in `/etc/aleph-vm/supervisor.env` using your favourite editor.
