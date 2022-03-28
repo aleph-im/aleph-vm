@@ -1,0 +1,11 @@
+#!/bin/bash
+set -uf -o pipefail
+
+# Systemd is absent from containers
+if ! [[ -v container ]]; then
+  # Stop the service during an upgrade.
+  # The service does not exist during a new install and will fail, this is okay
+  systemctl stop aleph-vm-supervisorz.service
+fi
+
+set -e
