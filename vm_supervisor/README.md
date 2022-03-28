@@ -56,7 +56,7 @@ when running the VM Supervisor.
 
 ```shell
 apt update
-apt install -y git python3 python3-aiohttp python3-msgpack python3-aiodns redis python3-aioredis \
+apt install -y git python3 python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle redis python3-aioredis \
  python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap
 useradd jailman
 ```
@@ -88,7 +88,7 @@ is used to parse and validate Aleph messages.
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
 pip3 install pydantic[dotenv]
-pip3 install --update aleph-message
+pip3 install aleph-message
 ```
 
 ### 2.f. Create the jailer working directory:
