@@ -65,12 +65,11 @@ useradd jailman
 from the [Firecracker project releases](https://github.com/firecracker-microvm/firecracker/releases):
 ```shell
 mkdir /opt/firecracker
-chown $(whoami) /opt/firecracker
-curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.24.2/firecracker-v0.24.2-x86_64.tgz | tar -xz --directory /opt/firecracker
+curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory /opt/firecracker
 
 # Link binaries on version-agnostic paths:
-ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
-ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
+ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
+ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 ```
 
 ### 2.d. Clone this repository on the host machine and enter it.
