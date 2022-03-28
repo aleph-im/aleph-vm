@@ -93,7 +93,7 @@ pip3 install --update aleph-message
 ### 2.f. Create the jailer working directory:
 
 ```shell
-mkdir /srv/jailer
+mkdir -p /var/lib/aleph/vm/jailer
 ```
 
 ### 2.g. Download a Linux kernel

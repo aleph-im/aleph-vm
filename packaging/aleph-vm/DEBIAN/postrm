@@ -2,5 +2,6 @@
 set -euf -o pipefail
 
 rm -r /srv/jailer
+rm -r /var/lib/aleph/vm/jailer
 
 systemctl daemon-reload

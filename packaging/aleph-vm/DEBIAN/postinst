@@ -5,7 +5,8 @@ if ! id -u jailman > /dev/null 2>&1; then
   useradd jailman
 fi
 
-mkdir -p /srv/jailer
+rm -r /srv/jailer  # Upgrade from < 0.1.11
+mkdir -p /var/lib/aleph/vm/jailer
 
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
