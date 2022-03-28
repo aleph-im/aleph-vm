@@ -17,7 +17,7 @@ from .config import Drive
 logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
-
+JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
 
 class MicroVMFailedInit(Exception):
     pass
@@ -74,7 +74,7 @@ class MicroVM:
     @property
     def namespace_path(self):
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
-        return f"/srv/jailer/{firecracker_bin_name}/{self.vm_id}"
+        return f"{JAILER_BASE_DIRECTORY}/{firecracker_bin_name}/{self.vm_id}"
 
     @property
     def jailer_path(self):
