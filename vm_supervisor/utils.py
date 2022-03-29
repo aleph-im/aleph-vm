@@ -31,5 +31,5 @@ def to_json(o: Any):
         return str(o)
 
 
-def dumps_for_json(o: Any, indent: Optional[int]=None):
+def dumps_for_json(o: Any, indent: Optional[int] = None):
     return json.dumps(o, default=to_json, indent=indent)

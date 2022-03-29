@@ -42,9 +42,11 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     we expect the hash to be encoded in base32 instead of hexadecimal. Padding is added
     automatically.
     """
-    if request.host.split(':')[0] == settings.DOMAIN_NAME \
-            and request.method == "GET" \
-            and request.path == "/":
+    if (
+        request.host.split(":")[0] == settings.DOMAIN_NAME
+        and request.method == "GET"
+        and request.path == "/"
+    ):
         # Serve the index page
         return await index(request=request)
 
@@ -114,18 +116,17 @@ async def about_execution_records(request: web.Request):
 
 async def index(request: web.Request):
     assert request.method == "GET"
-    path = os.path.join(os.path.dirname(__file__), 'templates/index.html')
-    with open(path, 'r') as template:
+    path = os.path.join(os.path.dirname(__file__), "templates/index.html")
+    with open(path, "r") as template:
         body = template.read()
         s = Template(body)
         body = s.substitute(
-            public_url=f'https://{settings.DOMAIN_NAME}/',
-            multiaddr_dns4=f'/dns4/{settings.DOMAIN_NAME}/tcp/443/https',
-            multiaddr_dns6=f'/dns6/{settings.DOMAIN_NAME}/tcp/443/https',
+            public_url=f"https://{settings.DOMAIN_NAME}/",
+            multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
+            multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
             check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
         )
-    return web.Response(content_type="text/html",
-                        body=body)
+    return web.Response(content_type="text/html", body=body)
 
 
 async def status_check_fastapi(request: web.Request):

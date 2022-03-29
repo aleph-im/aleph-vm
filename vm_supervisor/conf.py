@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
     JAILER_PATH = "/opt/firecracker/jailer"
     LINUX_PATH = "/opt/firecracker/vmlinux.bin"
-    INIT_TIMEOUT: float = 20.
+    INIT_TIMEOUT: float = 20.0
 
     CONNECTOR_URL = Url("http://localhost:4021")
 
@@ -132,8 +132,10 @@ class Settings(BaseSettings):
     SENTRY_DSN: Optional[str] = None
 
     # Fields
-    SENSITIVE_FIELDS: List[str] = Field(default=["SENTRY_DSN"],
-                                        description="Sensitive fields, redacted from `--print-settings`.")
+    SENSITIVE_FIELDS: List[str] = Field(
+        default=["SENTRY_DSN"],
+        description="Sensitive fields, redacted from `--print-settings`.",
+    )
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -162,8 +164,12 @@ class Settings(BaseSettings):
             ), "Local fake program directory is missing"
             assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
             assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
-            assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
-            assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
+            assert isfile(
+                self.FAKE_DATA_RUNTIME
+            ), "Local runtime .squashfs build is missing"
+            assert isfile(
+                self.FAKE_DATA_VOLUME
+            ), "Local data volume .squashfs is missing"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
@@ -192,8 +198,7 @@ class Settings(BaseSettings):
                 annotations[attr] = getattr(self, attr)
 
         return "\n".join(
-            f"{annotation:<27} = {value}"
-            for annotation, value in annotations.items()
+            f"{annotation:<27} = {value}" for annotation, value in annotations.items()
         )
 
     class Config:

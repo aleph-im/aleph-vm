@@ -22,7 +22,8 @@ from .views import (
     about_login,
     about_executions,
     about_config,
-    status_check_fastapi, about_execution_records,
+    status_check_fastapi,
+    about_execution_records,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,16 @@ logger = logging.getLogger(__name__)
 
 @web.middleware
 async def server_version_middleware(
-        request: web.Request,
-        handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
-    """Add the version of Aleph-VM in the HTTP headers of the responses.
-    """
+    """Add the version of Aleph-VM in the HTTP headers of the responses."""
     resp: web.StreamResponse = await handler(request)
-    resp.headers.update({'Server': f"aleph-vm/{__version__}"},)
+    resp.headers.update(
+        {"Server": f"aleph-vm/{__version__}"},
+    )
     return resp
+
 
 app = web.Application(middlewares=[server_version_middleware])
 
@@ -53,6 +56,7 @@ app.add_routes(
     ]
 )
 
+
 async def stop_all_vms(app: web.Application):
     await pool.stop()
 
@@ -67,7 +71,9 @@ def run():
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
     app["secret_token"] = secret_token
-    print(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
+    print(
+        f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}"
+    )
 
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
