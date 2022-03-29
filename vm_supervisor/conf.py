@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     EXECUTION_LOG_DIRECTORY = FilePath(join(EXECUTION_ROOT, "executions"))
 
     PERSISTENT_VOLUMES_DIR = FilePath(
-        join("/var/lib/aleph/vm/volumes", "volumes", "persistent")
+        join("/var/lib/aleph/vm", "volumes", "persistent")
     )
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
