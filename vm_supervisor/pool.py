@@ -56,7 +56,6 @@ class VmPool:
         """Stop all VMs in the pool."""
 
         # Stop executions in parallel:
-        await asyncio.gather(*(
-            execution.stop()
-            for vm_hash, execution in self.executions.items()
-        ))
+        await asyncio.gather(
+            *(execution.stop() for vm_hash, execution in self.executions.items())
+        )
