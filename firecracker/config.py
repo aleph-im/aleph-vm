@@ -1,9 +1,10 @@
+from pathlib import Path
 from typing import List, Optional
 
 from firecracker.models import FilePath
 from pydantic import BaseModel, PositiveInt
 
-VSOCK_PATH = "/tmp/v.sock"
+VSOCK_PATH = Path("/tmp/v.sock")
 
 
 class BootSource(BaseModel):
@@ -24,7 +25,7 @@ class BootSource(BaseModel):
 
 class Drive(BaseModel):
     drive_id: str = "rootfs"
-    path_on_host: FilePath = FilePath("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
+    path_on_host = Path("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
     is_root_device: bool = True
     is_read_only: bool = True
 
@@ -38,7 +39,7 @@ class MachineConfig(BaseModel):
 class Vsock(BaseModel):
     vsock_id: str = "1"
     guest_cid: PositiveInt = 3
-    uds_path: str = VSOCK_PATH
+    uds_path: Path = VSOCK_PATH
 
 
 class NetworkInterface(BaseModel):

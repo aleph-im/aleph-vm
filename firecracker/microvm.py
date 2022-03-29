@@ -7,8 +7,9 @@ from asyncio import Task
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
+from shutil import rmtree
 from tempfile import NamedTemporaryFile
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 
 from .config import FirecrackerConfig
 from .models import FilePath
@@ -16,8 +17,8 @@ from .config import Drive
 
 logger = logging.getLogger(__name__)
 
-VSOCK_PATH = "/tmp/v.sock"
-JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
+VSOCK_PATH = Path("/tmp/v.sock")
+JAILER_BASE_DIRECTORY = Path("/var/lib/aleph/vm/jailer")
 
 class MicroVMFailedInit(Exception):
     pass
@@ -42,6 +43,8 @@ def system(command):
 
 async def setfacl():
     user = getuid()
+    if not Path("/dev/kvm").exists():
+        raise FileNotFoundError("Device /dev/kvm is required to run Firecracker")
     cmd = f"sudo setfacl -m u:{user}:rw /dev/kvm"
     proc = await asyncio.create_subprocess_shell(
         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -60,8 +63,8 @@ async def setfacl():
 class MicroVM:
     vm_id: int
     use_jailer: bool
-    firecracker_bin_path: str
-    jailer_bin_path: Optional[str]
+    firecracker_bin_path: Path
+    jailer_bin_path: Optional[Path]
     proc: Optional[asyncio.subprocess.Process] = None
     network_tap: Optional[str] = None
     network_interface: Optional[str] = None
@@ -72,42 +75,41 @@ class MicroVM:
     init_timeout: float
 
     @property
-    def namespace_path(self):
-        firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
-        return f"{JAILER_BASE_DIRECTORY}/{firecracker_bin_name}/{self.vm_id}"
+    def namespace_path(self) -> Path:
+        return JAILER_BASE_DIRECTORY.joinpath(self.firecracker_bin_path.parent) / str(self.vm_id)
 
     @property
-    def jailer_path(self):
-        return os.path.join(self.namespace_path, "root")
+    def jailer_path(self) -> Path:
+        return self.namespace_path / "root"
 
     @property
-    def socket_path(self):
+    def socket_path(self) -> Path:
         if self.use_jailer:
-            return f"{self.jailer_path}/run/firecracker.socket"
+            return self.jailer_path / "run/firecracker.socket"
         else:
-            return f"/tmp/firecracker-{self.vm_id}.socket"
+            return Path(f"/tmp/firecracker-{self.vm_id}.socket")
 
     @property
-    def vsock_path(self):
+    def vsock_path(self) -> Path:
         if self.use_jailer:
-            return f"{self.jailer_path}{VSOCK_PATH}"
+            return self.jailer_path.joinpath(VSOCK_PATH)
         else:
-            return f"{VSOCK_PATH}"
+            return VSOCK_PATH
 
     @property
-    def guest_ip(self):
+    def guest_ip(self) -> str:
         return f"172.{self.vm_id // 256}.{self.vm_id % 256}.2"
 
     @property
-    def host_ip(self):
+    def host_ip(self) -> str:
         return f"172.{self.vm_id // 256}.{self.vm_id % 256}.1"
 
     def __init__(
         self,
         vm_id: int,
-        firecracker_bin_path: str,
+        firecracker_bin_path: Path,
         use_jailer: bool = True,
-        jailer_bin_path: Optional[str] = None,
+        jailer_bin_path: Optional[Path] = None,
         init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
@@ -117,18 +119,18 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, str]:
         return {
-            "jailer_path": self.jailer_path,
-            "socket_path": self.socket_path,
-            "vsock_path": self.vsock_path,
+            "jailer_path": self.jailer_path.as_posix(),
+            "socket_path": self.socket_path.as_posix(),
+            "vsock_path": self.vsock_path.as_posix(),
             "guest_ip": self.guest_ip,
             "host_ip": self.host_ip,
             **self.__dict__,
         }
 
     def prepare_jailer(self):
-        system(f"rm -fr {self.jailer_path}")
+        rmtree(self.jailer_path)
 
         # system(f"rm -fr {self.jailer_path}/run/")
         # system(f"rm -fr {self.jailer_path}/dev/")
@@ -137,10 +139,12 @@ class MicroVM:
         # if os.path.exists(path=self.vsock_path):
         #     os.remove(path=self.vsock_path)
         #
-        system(f"mkdir -p {self.jailer_path}/tmp/")
-        system(f"chown jailman:jailman {self.jailer_path}/tmp/")
-        #
-        system(f"mkdir -p {self.jailer_path}/opt")
+
+        (self.jailer_path / "tmp").mkdir(exist_ok=True)
+        jailman_user = getpwnam('jailman')
+        os.chown(uid=jailman_user.pw_uid, gid=jailman_user.pw_gid, path=self.jailer_path.joinpath("tmp"))
+
+        (self.jailer_path / "opt").mkdir(exist_ok=True)
 
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
@@ -155,10 +159,8 @@ class MicroVM:
         self, config: FirecrackerConfig
     ) -> asyncio.subprocess.Process:
 
-        if os.path.exists(VSOCK_PATH):
-            os.remove(VSOCK_PATH)
-        if os.path.exists(self.socket_path):
-            os.remove(self.socket_path)
+        VSOCK_PATH.unlink(missing_ok=True)
+        self.socket_path.unlink(missing_ok=True)
 
         config_file = NamedTemporaryFile()
         config_file.write(
@@ -166,14 +168,13 @@ class MicroVM:
         )
         config_file.flush()
         self.config_file = config_file
-        print(self.config_file)
 
         logger.debug(
             " ".join(
                 (
-                    self.firecracker_bin_path,
+                    self.firecracker_bin_path.as_posix(),
                     "--api-sock",
-                    self.socket_path,
+                    self.socket_path.as_posix(),
                     "--config-file",
                     config_file.name,
                 )
@@ -181,9 +182,9 @@ class MicroVM:
         )
 
         self.proc = await asyncio.create_subprocess_exec(
-            self.firecracker_bin_path,
+            self.firecracker_bin_path.as_posix(),
             "--api-sock",
-            self.socket_path,
+            self.socket_path.as_posix(),
             "--config-file",
             config_file.name,
             stdin=asyncio.subprocess.PIPE,
@@ -197,11 +198,11 @@ class MicroVM:
     ) -> asyncio.subprocess.Process:
         if not self.jailer_bin_path:
             raise ValueError("Jailer binary path is missing")
-        uid = str(getpwnam("jailman").pw_uid)
-        gid = str(getpwnam("jailman").pw_gid)
+        jailman_user = getpwnam('jailman')
 
         # config_file = NamedTemporaryFile(dir=f"{self.jailer_path}/tmp/", suffix='.json')
-        config_file = open(f"{self.jailer_path}/tmp/config.json", "wb")
+        config_file_path: Path = self.jailer_path / "tmp/config.json"
+        config_file = open(config_file_path, "wb")
         config_file.write(
             config.json(by_alias=True, exclude_none=True, indent=4).encode()
         )
@@ -218,12 +219,12 @@ class MicroVM:
                     "--exec-file",
                     self.firecracker_bin_path,
                     "--uid",
-                    uid,
+                    str(jailman_user.pw_uid),
                     "--gid",
-                    gid,
+                    str(jailman_user.pw_gid),
                     "--",
                     "--config-file",
-                    "/tmp/" + os.path.basename(config_file.name),
+                    Path("/tmp") / config_file_path.name,
                 )
             )
         )
@@ -235,9 +236,9 @@ class MicroVM:
             "--exec-file",
             self.firecracker_bin_path,
             "--uid",
-            uid,
+            str(jailman_user.pw_uid),
             "--gid",
-            gid,
+            str(jailman_user.pw_gid),
             "--",
             "--config-file",
             "/tmp/" + os.path.basename(config_file.name),
@@ -254,20 +255,20 @@ class MicroVM:
         """
         if self.use_jailer:
             kernel_filename = Path(kernel_image_path).name
-            jailer_kernel_image_path = f"/opt/{kernel_filename}"
-            os.link(kernel_image_path, f"{self.jailer_path}{jailer_kernel_image_path}")
+            jailer_kernel_image_path = Path("/opt") / kernel_filename
+            os.link(kernel_image_path, self.jailer_path.joinpath(jailer_kernel_image_path))
             kernel_image_path = jailer_kernel_image_path
         return kernel_image_path
 
-    def enable_rootfs(self, path_on_host: str) -> str:
+    def enable_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
         Creates a symlink to the rootfs file if jailer is in use.
         """
         if self.use_jailer:
-            rootfs_filename = Path(path_on_host).name
-            jailer_path_on_host = f"/opt/{rootfs_filename}"
-            os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+            rootfs_filename = path_on_host.name
+            jailer_path_on_host = Path("/opt") / rootfs_filename
+            os.link(path_on_host, self.jailer_path.joinpath(jailer_path_on_host))
             return jailer_path_on_host
         else:
             return path_on_host
@@ -276,7 +277,7 @@ class MicroVM:
     def compute_device_name(index: int) -> str:
         return f"vd{string.ascii_lowercase[index + 1]}"
 
-    def enable_drive(self, drive_path: str, read_only: bool = True) -> Drive:
+    def enable_drive(self, drive_path: Path, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
         Creates a symlink to the volume file if jailer is in use.
@@ -284,14 +285,14 @@ class MicroVM:
         index = len(self.drives)
         device_name = self.compute_device_name(index)
         if self.use_jailer:
-            drive_filename = Path(drive_path).name
-            jailer_path_on_host = f"/opt/{drive_filename}"
-            os.link(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
+            drive_filename = drive_path.name
+            jailer_path_on_host = Path("/opt/") / drive_filename
+            os.link(drive_path, self.jailer_path.joinpath(jailer_path_on_host))
             drive_path = jailer_path_on_host
 
         drive = Drive(
             drive_id=device_name,
-            path_on_host=FilePath(drive_path),
+            path_on_host=drive_path,
             is_root_device=False,
             is_read_only=read_only,
         )
@@ -359,7 +360,8 @@ class MicroVM:
         await asyncio.start_unix_server(
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
-        os.system(f"chown jailman:jailman {self.vsock_path}_52")
+        jailman_user = getpwnam('jailman')
+        os.chown(uid=jailman_user.pw_uid, gid=jailman_user.pw_gid, path=f"{self.vsock_path}_52")
         try:
             await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")
@@ -440,7 +442,7 @@ class MicroVM:
             )
 
         logger.debug("Removing files")
-        system(f"rm -fr {self.namespace_path}")
+        rmtree(self.namespace_path)
 
     def __del__(self):
         try:
