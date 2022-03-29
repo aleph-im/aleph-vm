@@ -67,12 +67,12 @@ async def download_message(
     ref: str, use_latest: Optional[bool] = True
 ) -> Union[Dict, Response]:
     """
-        Fetch on Aleph and return a VM function message, after checking its validity.
-        Used by the VM Supervisor run the code.
+    Fetch on Aleph and return a VM function message, after checking its validity.
+    Used by the VM Supervisor run the code.
 
-        :param ref: item_hash of the code file
-        :param use_latest: should the last amend to the code be used
-        :return: a file containing the code file
+    :param ref: item_hash of the code file
+    :param use_latest: should the last amend to the code be used
+    :return: a file containing the code file
     """
 
     msg = await get_message(hash_=ref)

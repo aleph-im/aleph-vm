@@ -41,6 +41,7 @@ class VmExecution:
 
     Implementation agnostic (Firecracker, maybe WASM in the future, ...).
     """
+
     uuid: uuid.UUID  # Unique identifier of this execution
     vm_hash: VmHash
     original: ProgramContent
@@ -187,27 +188,28 @@ class VmExecution:
     async def record_usage(self):
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(
-                execution_uuid=self.uuid,
-                execution_data=self.to_json()
+                execution_uuid=self.uuid, execution_data=self.to_json()
             )
         pid_info = self.vm.to_dict()
-        await save_record(ExecutionRecord(
-            uuid=str(self.uuid),
-            vm_hash=self.vm_hash,
-            time_defined=self.times.defined_at,
-            time_prepared=self.times.prepared_at,
-            time_started=self.times.started_at,
-            time_stopping=self.times.stopping_at,
-            cpu_time_user=pid_info["process"]["cpu_times"].user,
-            cpu_time_system=pid_info["process"]["cpu_times"].system,
-            io_read_count=pid_info["process"]["io_counters"][0],
-            io_write_count=pid_info["process"]["io_counters"][1],
-            io_read_bytes=pid_info["process"]["io_counters"][2],
-            io_write_bytes=pid_info["process"]["io_counters"][3],
-            vcpus=self.vm.hardware_resources.vcpus,
-            memory=self.vm.hardware_resources.memory,
-            network_tap=self.vm.fvm.network_tap,
-        ))
+        await save_record(
+            ExecutionRecord(
+                uuid=str(self.uuid),
+                vm_hash=self.vm_hash,
+                time_defined=self.times.defined_at,
+                time_prepared=self.times.prepared_at,
+                time_started=self.times.started_at,
+                time_stopping=self.times.stopping_at,
+                cpu_time_user=pid_info["process"]["cpu_times"].user,
+                cpu_time_system=pid_info["process"]["cpu_times"].system,
+                io_read_count=pid_info["process"]["io_counters"][0],
+                io_write_count=pid_info["process"]["io_counters"][1],
+                io_read_bytes=pid_info["process"]["io_counters"][2],
+                io_write_bytes=pid_info["process"]["io_counters"][3],
+                vcpus=self.vm.hardware_resources.vcpus,
+                memory=self.vm.hardware_resources.memory,
+                network_tap=self.vm.fvm.network_tap,
+            )
+        )
 
     async def run_code(self, scope: dict = None) -> bytes:
         if not self.vm:

@@ -449,8 +449,10 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         try:
-            return await asyncio.wait_for(communicate(reader, writer, scope),
-                                          timeout=self.hardware_resources.seconds)
+            return await asyncio.wait_for(
+                communicate(reader, writer, scope),
+                timeout=self.hardware_resources.seconds,
+            )
         finally:
             logger.debug("Cleaning VM socket resources")
             writer.close()

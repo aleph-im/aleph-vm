@@ -18,8 +18,7 @@ async def try_get_message(ref: str) -> ProgramMessage:
         raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
     except ClientResponseError as error:
         if error.status == 404:
-            raise HTTPNotFound(reason="Hash not found",
-                               body=f"Hash not found: {ref}")
+            raise HTTPNotFound(reason="Hash not found", body=f"Hash not found: {ref}")
         else:
             raise
 
@@ -31,8 +30,9 @@ async def get_latest_ref(item_hash: str) -> str:
         raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
     except ClientResponseError as error:
         if error.status == 404:
-            raise HTTPNotFound(reason="Hash not found",
-                               body=f"Hash not found: {item_hash}")
+            raise HTTPNotFound(
+                reason="Hash not found", body=f"Hash not found: {item_hash}"
+            )
         else:
             raise
 

@@ -218,17 +218,18 @@ def main():
             sentry_sdk.init(
                 dsn=settings.SENTRY_DSN,
                 server_name=settings.DOMAIN_NAME,
-
                 # Set traces_sample_rate to 1.0 to capture 100%
                 # of transactions for performance monitoring.
                 # We recommend adjusting this value in production.
-                traces_sample_rate=1.0
+                traces_sample_rate=1.0,
             )
         else:
             logger.debug("Sentry SDK found with no DNS configured.")
     else:
-        logger.debug("Sentry SDK not found. \n"
-                     "Use `pip install sentry-sdk` and configure SENTRY_DSN if you'd like to monitor errors.")
+        logger.debug(
+            "Sentry SDK not found. \n"
+            "Use `pip install sentry-sdk` and configure SENTRY_DSN if you'd like to monitor errors."
+        )
 
     settings.setup()
     if args.print_settings:
