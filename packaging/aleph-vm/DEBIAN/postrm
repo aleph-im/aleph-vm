@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euf -o pipefail
 
-rm -r /srv/jailer
+rm -fr /srv/jailer  # Upgrade from < 0.1.11
+rm -fr /tmp/aleph/  # Upgrade from < 0.1.11
 rm -r /var/lib/aleph/vm/jailer
 
 systemctl daemon-reload
