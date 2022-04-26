@@ -14,7 +14,7 @@ except ImportError:
     sentry_sdk = None
 
 from vm_supervisor.pubsub import PubSub
-from . import supervisor
+from . import supervisor, metrics
 from .conf import settings
 from .models import VmHash
 from .run import run_code_on_request, run_code_on_event
@@ -115,6 +115,9 @@ async def benchmark(runs: int):
     """Measure performance by immediately running the supervisor
     with fake requests.
     """
+    engine = metrics.setup_engine()
+    metrics.create_tables(engine)
+
     ref = VmHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
