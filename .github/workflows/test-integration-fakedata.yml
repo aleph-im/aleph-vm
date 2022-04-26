@@ -8,25 +8,44 @@ jobs:
       ALEPH_VM_FAKE_DATA: true
       ALEPH_VM_LINUX_PATH: /opt/vmlinux.bin
       ALEPH_VM_INIT_TIMEOUT: 20
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
+      - name: Initial cleanup (some files are created with sudo and need sudo removal)
+        run: |
+          sudo rm -fr /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
+          mkdir /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
+
       - name: Check out repository code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Ensure dependencies are present
+        run: |
+          sudo apt-get update
+          sudo apt-get upgrade
+          sudo apt-get install --yes docker.io debootstrap squashfs-tools 
+          sudo apt-get install --yes python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle python3-aioredis python3-psutil
+#          usermod -aG docker github-runner
+#          usermod -aG sudo github-runner
 
       - name: Upgrade aleph-message
-        run: pip3 install --upgrade aleph-message
+        run: sudo pip3 install --upgrade aleph-message
 
       - name: Build the example squashfs
         run: |
           cd examples/volumes
-          bash build_squashfs.sh
+          sudo bash build_squashfs.sh
 
       - name: Update the rootfs
         run: |
           cd runtimes/aleph-debian-11-python/
-          cp -pr /var/tmp/rootfs-debian ./rootfs
-          bash update_inits.sh
-#          bash ./create_disk_image.sh
+          if [ -f "./rootfs.squashfs" ]; then
+            sudo bash update_inits.sh 
+          else
+            sudo bash ./create_disk_image.sh
+          fi
 
       - name: Build VM Connector
         run: |
@@ -35,14 +54,14 @@ jobs:
       - name: Run the VM Connector
         run: |
           docker stop aleph-connector || true
-          docker run -d --rm -p 8000:8000/tcp \
+          docker run -d --rm -p 4021:4021/tcp \
             -v $(pwd)/kernels:/opt/kernels:ro \
             -v $(pwd)/vm_connector:/opt/vm_connector:ro \
             --name aleph-connector \
             aleph-connector $@
 
       - name: Run the main entrypoint
-        run: python3 -m vm_supervisor -p -vv --profile --print-settings --system-logs --benchmark=1
+        run: sudo python3 -m vm_supervisor -p -vv --profile --print-settings --system-logs --benchmark=1
 
       - name: Stop the VM Connector
         run: |
