@@ -3,25 +3,25 @@
 FROM debian:bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
-    sudo acl curl systemd-container  \
-    python3 python3-aiohttp python3-msgpack python3-pip python3-aiodns python3-aioredis \
-    squashfs-tools python3-psutil \
+    sudo acl curl squashfs-tools git \
+    python3 python3-aiohttp python3-msgpack python3-pip python3-aiodns python3-aioredis  \
+    python3-psutil python3-setproctitle python3-sqlalchemy \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd jailman
 
 RUN mkdir /opt/firecracker
 RUN chown $(whoami) /opt/firecracker
-RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v0.24.2/firecracker-v0.24.2-x86_64.tgz | tar -xz --directory /opt/firecracker
+RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory /opt/firecracker
 RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
 
 # Link binaries on version-agnostic paths:
-RUN ln /opt/firecracker/firecracker-v* /opt/firecracker/firecracker
-RUN ln /opt/firecracker/jailer-v* /opt/firecracker/jailer
+RUN ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
+RUN ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 
 RUN pip3 install typing-extensions 'aleph-message>=0.1.18'
 
-RUN mkdir /var/lib/aleph/vm/jailer
+RUN mkdir -p /var/lib/aleph/vm/jailer
 
 ENV PYTHONPATH /mnt
 
