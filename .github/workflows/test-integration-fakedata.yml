@@ -25,8 +25,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get upgrade
-          sudo apt-get install docker.io debootstrap squashfs-tools 
-          sudo apt-get install python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle python3-aioredis python3-psutil
+          sudo apt-get install --yes docker.io debootstrap squashfs-tools 
+          sudo apt-get install --yes python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle python3-aioredis python3-psutil
 #          usermod -aG docker github-runner
 #          usermod -aG sudo github-runner
 
