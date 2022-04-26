@@ -8,6 +8,7 @@ jobs:
       ALEPH_VM_FAKE_DATA: true
       ALEPH_VM_LINUX_PATH: /opt/vmlinux.bin
       ALEPH_VM_INIT_TIMEOUT: 20
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
       - name: Initial cleanup (some files are created with sudo and need sudo removal)
@@ -21,8 +22,6 @@ jobs:
           fetch-depth: 0
 
       - name: Ensure dependencies are present
-        env:
-          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
           sudo apt-get upgrade
