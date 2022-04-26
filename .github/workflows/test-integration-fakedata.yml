@@ -30,7 +30,7 @@ jobs:
       - name: Update the rootfs
         run: |
           cd runtimes/aleph-debian-11-python/
-          bash ./create_disk_image.sh
+          sudo bash ./create_disk_image.sh
 #          cp -pr /var/tmp/rootfs-debian ./rootfs
 #          bash update_inits.sh
 
