@@ -17,4 +17,4 @@ $DOCKER_COMMAND run -ti --rm \
   -v "$(pwd)/firecracker:/opt/aleph-vm/firecracker:ro" \
   --device /dev/kvm \
   -p 4020:4020 \
-  alephim/vm-supervisor-dev
+  alephim/vm-supervisor-dev $@
