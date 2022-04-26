@@ -13,6 +13,11 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v2
 
+#      - name: Ensure dependencies are present
+#        run: |
+#          apt-get install --yes python3-pip docker.io
+#          usermod -aG docker github-runner
+
       - name: Upgrade aleph-message
         run: pip3 install --upgrade aleph-message
 
@@ -24,9 +29,9 @@ jobs:
       - name: Update the rootfs
         run: |
           cd runtimes/aleph-debian-11-python/
-          cp -pr /var/tmp/rootfs-debian ./rootfs
-          bash update_inits.sh
-#          bash ./create_disk_image.sh
+          bash ./create_disk_image.sh
+#          cp -pr /var/tmp/rootfs-debian ./rootfs
+#          bash update_inits.sh
 
       - name: Build VM Connector
         run: |
