@@ -192,7 +192,7 @@ class Settings(BaseSettings):
         annotations = self.__annotations__.copy()
 
         for attr in annotations.keys():
-            if attr in self.SENSITIVE_FIELDS:
+            if getattr(self, attr) and attr in self.SENSITIVE_FIELDS:
                 annotations[attr] = "<REDACTED>"
             else:
                 annotations[attr] = getattr(self, attr)
