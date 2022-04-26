@@ -228,19 +228,23 @@ class AlephFirecrackerVM:
 
     def to_dict(self):
         if self.fvm.proc and psutil:
-            p = psutil.Process(self.fvm.proc.pid)
-            pid_info = {
-                "status": p.status(),
-                "create_time": p.create_time(),
-                "cpu_times": p.cpu_times(),
-                "cpu_percent": p.cpu_percent(),
-                "memory_info": p.memory_info(),
-                "io_counters": p.io_counters(),
-                "open_files": p.open_files(),
-                "connections": p.connections(),
-                "num_threads": p.num_threads(),
-                "num_ctx_switches": p.num_ctx_switches(),
-            }
+            try:
+                p = psutil.Process(self.fvm.proc.pid)
+                pid_info = {
+                    "status": p.status(),
+                    "create_time": p.create_time(),
+                    "cpu_times": p.cpu_times(),
+                    "cpu_percent": p.cpu_percent(),
+                    "memory_info": p.memory_info(),
+                    "io_counters": p.io_counters(),
+                    "open_files": p.open_files(),
+                    "connections": p.connections(),
+                    "num_threads": p.num_threads(),
+                    "num_ctx_switches": p.num_ctx_switches(),
+                }
+            except psutil.NoSuchProcess:
+                logger.warning("Cannot read process metrics (process not found)", exc_info=True)
+                pid_info = None
         else:
             pid_info = None
 
