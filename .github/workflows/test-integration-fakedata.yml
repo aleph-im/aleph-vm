@@ -10,7 +10,7 @@ jobs:
       ALEPH_VM_INIT_TIMEOUT: 20
 
     steps:
-      - name: Initial cleanup
+      - name: Initial cleanup (some files are created with sudo and need sudo removal)
         run: |
           sudo rm -fr /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
           mkdir /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
@@ -21,8 +21,13 @@ jobs:
           fetch-depth: 0
 
       - name: Ensure dependencies are present
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install --yes python3-pip docker.io debootstrap squashfs-tools
+          sudo apt-get update
+          sudo apt-get upgrade
+          sudo apt-get install docker.io debootstrap squashfs-tools 
+          sudo apt-get install python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle python3-aioredis python3-psutil
 #          usermod -aG docker github-runner
 #          usermod -aG sudo github-runner
 
