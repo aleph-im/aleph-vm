@@ -59,7 +59,7 @@ jobs:
             aleph-connector $@
 
       - name: Run the main entrypoint
-        run: python3 -m vm_supervisor -p -vv --profile --print-settings --system-logs --benchmark=1
+        run: sudo python3 -m vm_supervisor -p -vv --profile --print-settings --system-logs --benchmark=1
 
       - name: Stop the VM Connector
         run: |
