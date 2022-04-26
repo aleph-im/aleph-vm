@@ -11,7 +11,9 @@ jobs:
 
     steps:
       - name: Initial cleanup
-        run: sudo rm -fr /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
+        run: |
+          sudo rm -fr /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
+          mkdir /home/github-runner/actions-runner/_work/aleph-vm/aleph-vm
 
       - name: Check out repository code
         uses: actions/checkout@v3
