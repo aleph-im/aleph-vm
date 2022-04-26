@@ -31,7 +31,7 @@ jobs:
 #          usermod -aG sudo github-runner
 
       - name: Upgrade aleph-message
-        run: pip3 install --upgrade aleph-message
+        run: sudo pip3 install --upgrade aleph-message
 
       - name: Build the example squashfs
         run: |
@@ -41,9 +41,11 @@ jobs:
       - name: Update the rootfs
         run: |
           cd runtimes/aleph-debian-11-python/
-          sudo bash ./create_disk_image.sh
-#          cp -pr /var/tmp/rootfs-debian ./rootfs
-#          bash update_inits.sh
+          if [ -f "./rootfs.squashfs" ]; then
+            sudo bash update_inits.sh 
+          else
+            sudo bash ./create_disk_image.sh
+          fi
 
       - name: Build VM Connector
         run: |
