@@ -13,10 +13,11 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v2
 
-#      - name: Ensure dependencies are present
-#        run: |
-#          apt-get install --yes python3-pip docker.io
+      - name: Ensure dependencies are present
+        run: |
+          sudo apt-get install --yes python3-pip docker.io debootstrap squashfs-tools
 #          usermod -aG docker github-runner
+#          usermod -aG sudo github-runner
 
       - name: Upgrade aleph-message
         run: pip3 install --upgrade aleph-message
@@ -24,7 +25,7 @@ jobs:
       - name: Build the example squashfs
         run: |
           cd examples/volumes
-          bash build_squashfs.sh
+          sudo bash build_squashfs.sh
 
       - name: Update the rootfs
         run: |
