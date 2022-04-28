@@ -145,10 +145,9 @@ sudo docker logs -f vm-connector
 
 #### "Network interface eth0 does not exist"
 
-Did you update the configuration file `/etc/aleph-vm/vm-supervisor.env` with `ALEPH_VM_NETWORK_INTERFACE` equal to 
+Did you update the configuration file `/etc/aleph-vm/supervisor.env` with `ALEPH_VM_NETWORK_INTERFACE` equal to 
 the default network interface of your server ?
 
 #### "Aleph Connector unavailable"
 
 Investigate the installation of the VM-Connector using Docker in step 2.
-
