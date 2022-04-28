@@ -47,7 +47,7 @@ While not supported at the moment, it is possible to run the VM Supervisor insid
 container. 
 
 This will be less secure since the `Jailer` tool used to secure Firecracker MicroVMs
-will not run inside containers. Pass the command-lien argument `--no-jailer` to disable the Jailer
+will not run inside containers. Pass the command-line argument `--no-jailer` to disable the Jailer
 when running the VM Supervisor.
 
 ## 2. Installation
@@ -126,7 +126,7 @@ http://localhost:4020/
 
 The VM Supervisor can be configured using command-line arguments or using environment variables.
 
-List the available command-lien arguments using:
+List the available command-line arguments using:
 ```shell
 python3 -m vm_supervisor --help
 ```
@@ -144,10 +144,6 @@ ALEPH_VM_DNS_RESOLUTION=resolvectl
 ALEPH_VM_NETWORK_INTERFACE=enp7s0
 ```
 
-
-
-```
-
 ## 6. Production security concerns
 
 See advanced security related concerns here:
@@ -162,8 +158,7 @@ A runtime consist in the root filesystem used by a VM.
 Runtimes contain a customized init that allows the VM Supervisor to run
 functions within the MicroVM.
 
-Official Aleph runtimes are built using scripts located in 
-in [`../runtimes`](../runtimes), and are distributed on the Aleph network.
+Official Aleph runtimes are built using scripts located in [`../runtimes`](../runtimes), and are distributed on the Aleph network.
 
 To build the default runtime locally:
 
