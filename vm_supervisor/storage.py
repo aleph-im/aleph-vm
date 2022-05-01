@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 from os.path import isfile, join, dirname
 from shutil import make_archive
 
@@ -34,21 +35,32 @@ async def download_file(url: str, local_path: FilePath) -> None:
     if isfile(local_path):
         logger.debug(f"File already exists: {local_path}")
     else:
-        logger.debug(f"Downloading {url} -> {local_path}")
+        tmp_path = f"{local_path}.part"
+        logger.debug(f"Downloading {url} -> {tmp_path}")
         async with aiohttp.ClientSession() as session:
             resp = await session.get(url)
             resp.raise_for_status()
             try:
-                with open(local_path, "wb") as cache_file:
+                with open(tmp_path, "wb") as cache_file:
+                    counter = 0
                     while True:
                         chunk = await resp.content.read(65536)
                         if not chunk:
                             break
                         cache_file.write(chunk)
-                logger.debug("Download complete")
+                        counter += 1
+                        if not (counter % 20):
+                            sys.stdout.write(".")
+                            sys.stdout.flush()
+
+                os.rename(tmp_path, local_path)
+                logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
             except Exception:
                 # Ensure no partial file is left
-                os.remove(local_path)
+                try:
+                    os.remove(tmp_path)
+                except FileNotFoundError:
+                    pass
                 raise
 
 
