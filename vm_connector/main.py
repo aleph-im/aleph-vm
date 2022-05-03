@@ -99,12 +99,15 @@ async def download_code(
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
+    media_type = msg["content"].get("mime_type", default="application/octet-stream")
+
     data_hash = msg["content"]["item_hash"]
     if msg["content"]["item_type"] == "ipfs":
         url = f"{settings.IPFS_SERVER}/{data_hash}"
     else:
         url = f"{settings.API_SERVER}/api/v0/storage/raw/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url), media_type="application/zip")
+
+    return StreamingResponse(stream_url_chunks(url), media_type=media_type)
 
 
 @app.get("/download/data/{ref}")
@@ -125,9 +128,15 @@ async def download_data(
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
+    media_type = msg["content"].get("mime_type", default="application/octet-stream")
+
     data_hash = msg["content"]["item_hash"]
-    url = f"{settings.IPFS_SERVER}/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url), media_type="application/gzip")
+    if msg["content"]["item_type"] == "ipfs":
+        url = f"{settings.IPFS_SERVER}/{data_hash}"
+    else:
+        url = f"{settings.API_SERVER}/api/v0/storage/raw/{data_hash}"
+
+    return StreamingResponse(stream_url_chunks(url), media_type=media_type)
 
 
 @app.get("/download/runtime/{ref}")
