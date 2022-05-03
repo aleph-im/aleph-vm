@@ -94,20 +94,7 @@ async def download_code(
     :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
-
-    msg = await get_message(hash_=ref)
-    if not msg:
-        return Response(status_code=404, content="Hash not found")
-
-    media_type = msg["content"].get("mime_type", default="application/octet-stream")
-
-    data_hash = msg["content"]["item_hash"]
-    if msg["content"]["item_type"] == "ipfs":
-        url = f"{settings.IPFS_SERVER}/{data_hash}"
-    else:
-        url = f"{settings.API_SERVER}/api/v0/storage/raw/{data_hash}"
-
-    return StreamingResponse(stream_url_chunks(url), media_type=media_type)
+    return await download_data(ref=ref, use_latest=use_latest)
 
 
 @app.get("/download/data/{ref}")
@@ -151,15 +138,7 @@ async def download_runtime(
     :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
-
-    # Download message
-    msg = await get_message(hash_=ref)
-    if not msg:
-        return Response(status_code=404, content="Hash not found")
-
-    data_hash = msg["content"]["item_hash"]
-    url = f"{settings.IPFS_SERVER}/{data_hash}"
-    return StreamingResponse(stream_url_chunks(url), media_type="application/ext4")
+    return await download_data(ref=ref, use_latest=use_latest)
 
 
 @app.get("/compute/latest_amend/{item_hash}")
