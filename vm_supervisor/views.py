@@ -9,7 +9,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 
-from . import status
+from . import status, get_version_from_git
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
@@ -125,6 +125,7 @@ async def index(request: web.Request):
             multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
             multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
             check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
+            version=get_version_from_git(),
         )
     return web.Response(content_type="text/html", body=body)
 
