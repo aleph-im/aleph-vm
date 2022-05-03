@@ -107,6 +107,22 @@
         <a href="/status/check/fastapi">Diagnostics checks</a> |
         <a href="/vm/$check_fastapi_vm_id">Open diagnostic VM</a>
     </p>
+</section>
+<section>
+    <h2>Version</h2>
+    <p>
+        Running version <i>$version</i>.
+    </p>
+    <p>
+        <button id="status_check_button" onclick="fetchLatestRelease()">Check if this is the latest release</button>
+        <span id="status_latest_version" style="display: none">This is the latest release &#10004;&#65039;</span>
+        <span id="status_outdated_version" style="display: none">
+            The latest release is <a href="https://github.com/aleph-im/aleph-vm/releases/latest"></a> &#10060;
+        </span>
+        <p id="status_error_version" style="display: none">Your browser could not fetch the latest release:
+            <span id="status_error_version_reason"></span>
+        </p>
+    </p>
 
 </section>
 
@@ -146,6 +162,27 @@
     }
     fetchMoviesJSON();
 
+    async function fetchLatestRelease() {
+        const response = await fetch('https://api.github.com/repos/aleph-im/aleph-vm/releases/latest');
+        if (response.ok) {
+            const response_data = await response.json();
+            const latest_version = response_data['tag_name'];
+            document.getElementById("status_check_button").style.display = "none";
+            if (latest_version === "$version") {
+                document.getElementById("status_latest_version").style.display = "";
+            }
+            else {
+                const comment = document.getElementById("status_outdated_version");
+                comment.style.display = "";
+                comment.getElementsByTagName('a')[0].textContent = latest_version;
+            }
+        }
+        else {
+            document.getElementById("status_error_version").style.display = "";
+            document.getElementById("status_error_version_reason").innerText = response.status + " " + response.statusText;
+        }
+        return response.status;
+    }
 </script>
 
 </body>
