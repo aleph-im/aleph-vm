@@ -63,9 +63,7 @@ async def stream_url_chunks(url):
 
 
 @app.get("/download/message/{ref}")
-async def download_message(
-    ref: str, use_latest: Optional[bool] = True
-) -> Union[Dict, Response]:
+async def download_message(ref: str) -> Union[Dict, Response]:
     """
     Fetch on Aleph and return a VM function message, after checking its validity.
     Used by the VM Supervisor run the code.
@@ -83,9 +81,7 @@ async def download_message(
 
 
 @app.get("/download/code/{ref}")
-async def download_code(
-    ref: str, use_latest: Optional[bool] = True
-) -> Union[StreamingResponse, Response]:
+async def download_code(ref: str) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM code file, after checking its validity.
     Used by the VM Supervisor to download function source code.
@@ -94,13 +90,11 @@ async def download_code(
     :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
-    return await download_data(ref=ref, use_latest=use_latest)
+    return await download_data(ref=ref)
 
 
 @app.get("/download/data/{ref}")
-async def download_data(
-    ref: str, use_latest: Optional[bool] = True
-) -> Union[StreamingResponse, Response]:
+async def download_data(ref: str) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM data file, after checking its validity.
     Used by the VM Supervisor to download state data.
@@ -127,9 +121,7 @@ async def download_data(
 
 
 @app.get("/download/runtime/{ref}")
-async def download_runtime(
-    ref: str, use_latest: Optional[bool] = True
-) -> Union[StreamingResponse, Response]:
+async def download_runtime(ref: str) -> Union[StreamingResponse, Response]:
     """
     Fetch on Aleph and return a VM runtime, after checking its validity.
     Used by the VM Supervisor to download a runtime.
@@ -138,7 +130,7 @@ async def download_runtime(
     :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
-    return await download_data(ref=ref, use_latest=use_latest)
+    return await download_data(ref=ref)
 
 
 @app.get("/compute/latest_amend/{item_hash}")
