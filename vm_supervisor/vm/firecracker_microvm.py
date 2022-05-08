@@ -420,7 +420,7 @@ class AlephFirecrackerVM:
         logger.debug(f"started guest API for {self.vm_id}")
 
     async def stop_guest_api(self):
-        if self.guest_api_process:
+        if self.guest_api_process and self.guest_api_process._popen:
             self.guest_api_process.terminate()
 
     async def teardown(self):
