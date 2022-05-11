@@ -151,7 +151,7 @@ filters = [{
 async def aleph_event(event):
     print("aleph_event", event)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
-        async with session.get("https://api2.aleph.im/api/v0/info/public.json") as resp:
+        async with session.get("https://official.aleph.cloud/api/v0/info/public.json") as resp:
             print('RESP', resp)
             resp.raise_for_status()
     return {
