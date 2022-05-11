@@ -9,7 +9,7 @@ Url = NewType("Url", str)
 
 
 class ConnectorSettings(BaseSettings):
-    API_SERVER: Url = "https://api2.aleph.im"
+    API_SERVER: Url = "https://official.aleph.cloud"
     IPFS_SERVER: Url = "https://ipfs.aleph.im/ipfs"
     OFFLINE_TEST_MODE: bool = False
 

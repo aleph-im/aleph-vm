@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None
 
-    API_SERVER = "https://api2.aleph.im"
+    API_SERVER = "https://official.aleph.cloud"
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
