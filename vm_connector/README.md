@@ -38,6 +38,6 @@ docker run -d -p 4021:4021/tcp --restart=always --name vm-connector alephim/vm-c
 The VM Supervisor can be configured using environment variables:
 
 `API_SERVER` should point to your Aleph Node. 
-Defaults to https://api2.aleph.im
+Defaults to https://official.aleph.cloud
 
 `IPFS_SERVER` should point to your IPFS Gateway, defaults to https://ipfs.aleph.im/ipfs
