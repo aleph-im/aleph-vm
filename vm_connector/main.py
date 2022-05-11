@@ -6,6 +6,7 @@ import aiohttp
 from aleph_client.asynchronous import create_post
 from aleph_client.chains.common import get_fallback_private_key
 from aleph_client.chains.ethereum import ETHAccount
+from aleph_client.types import StorageEnum
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -177,7 +178,7 @@ async def publish_data(body: PostBody):
         ref=None,
         channel=message["channel"],
         inline=True,
-        storage_engine="storage",
+        storage_engine=StorageEnum.storage,
     )
     return {"status": "success"}
 
