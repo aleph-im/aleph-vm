@@ -2,7 +2,8 @@ import binascii
 import logging
 import os.path
 from string import Template
-from typing import Awaitable
+from typing import Awaitable, Optional
+from packaging.version import Version, InvalidVersion
 
 import aiodns
 import aiohttp
@@ -141,3 +142,26 @@ async def status_check_fastapi(request: web.Request):
             "persistent_storage": await status.check_persistent_storage(session),
         }
         return web.json_response(result, status=200 if all(result.values()) else 503)
+
+
+async def status_check_version(request: web.Request):
+    """Check if the software is running a version equal or newer than the given one"""
+    reference_str: Optional[str] = request.query.get("reference")
+    if not reference_str:
+        raise web.HTTPBadRequest(text="Query field '?reference=` must be specified")
+    try:
+        reference = Version(reference_str)
+    except InvalidVersion as error:
+        raise web.HTTPBadRequest(text=error.args[0])
+
+    try:
+        current = Version(get_version_from_git())
+    except InvalidVersion as error:
+        raise web.HTTPServiceUnavailable(text=error.args[0])
+
+    if current >= reference:
+        return web.Response(
+            status=200, text=f"Up-to-date: version {current} >= {reference}"
+        )
+    else:
+        return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
