@@ -77,7 +77,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 def authenticate_request(request: web.Request) -> web.Response:
     """Check that the token in the cookies matches the app's secret token."""
     if request.cookies.get("token") != request.app["secret_token"]:
-        raise web.HTTPUnauthorized(reason="Invalid token", body="401 Invalid token")
+        raise web.HTTPUnauthorized(reason="Invalid token", text="401 Invalid token")
 
 
 async def about_login(request: web.Request) -> web.Response:
