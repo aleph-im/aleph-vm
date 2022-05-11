@@ -1,0 +1,47 @@
+name: "Run tests on DigitalOcean Droplet"
+on:
+  push
+
+jobs:
+  build_deb:
+    name: "Run in DigitalOcean Droplet"
+    runs-on: ubuntu-latest
+    concurrency: droplet-aleph-vm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Setup SSH private key
+        run: |
+          mkdir ~/.ssh
+          echo $DIGITALOCEAN_SSH_PRIVATE_KEY | base64 --decode > ~/.ssh/id_ed25519
+          chmod 0700 ~/.ssh
+          chmod 0600 ~/.ssh/id_ed25519
+        env:
+          DIGITALOCEAN_SSH_PRIVATE_KEY: ${{ secrets.DIGITALOCEAN_SSH_PRIVATE_KEY }}
+
+      - name: Create the droplet
+        run: |
+          doctl compute droplet create --image debian-11-x64 \
+          --size s-1vcpu-1gb --region ams3 aleph-vm-ci \
+          --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5
+
+      - name: Wait for the system to setup and boot
+        run: sleep 60
+
+      - run: |
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          echo $DROPLET_IPV4
+          echo ${DROPLET_IPV4}
+          ssh -o "StrictHostKeyChecking no" root@${DROPLET_IPV4} ls /etc 
+
+      - name: Cleanup
+        if: always()
+        run: |
+          doctl compute droplet delete -f aleph-vm-ci
