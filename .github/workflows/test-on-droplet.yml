@@ -57,6 +57,15 @@ jobs:
           
           scp packaging/target/aleph-vm.debian-11.deb root@${DROPLET_IPV4}:/opt
           ssh root@${DROPLET_IPV4} "apt install -y /opt/aleph-vm.debian-11.deb"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
+
+      - name: Test Aleph-VM on the Droplet
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          
+          sleep 3
+          curl --retry 5 "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Cleanup
         if: always()
