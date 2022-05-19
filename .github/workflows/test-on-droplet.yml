@@ -112,6 +112,7 @@ jobs:
       - name: Wait for the system to setup and boot
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-ubuntu-20-04 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          echo ${DROPLET_IPV4}
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
 
       - name: Install Aleph-VM on the Droplet
