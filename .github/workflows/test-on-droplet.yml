@@ -122,7 +122,9 @@ jobs:
           
           sleep 10
           ssh root@${DROPLET_IPV4} "apt-get update"
+          sleep 5
           ssh root@${DROPLET_IPV4} "apt-get upgrade -y"
+          sleep 5
           ssh root@${DROPLET_IPV4} "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
