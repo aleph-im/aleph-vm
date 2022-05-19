@@ -10,7 +10,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 
-from . import status, get_version
+from . import status, __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
@@ -126,7 +126,7 @@ async def index(request: web.Request):
             multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
             multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
             check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
-            version=get_version(),
+            version=__version__,
         )
     return web.Response(content_type="text/html", body=body)
 
@@ -155,7 +155,7 @@ async def status_check_version(request: web.Request):
         raise web.HTTPBadRequest(text=error.args[0])
 
     try:
-        current = Version(get_version())
+        current = Version(__version__)
     except InvalidVersion as error:
         raise web.HTTPServiceUnavailable(text=error.args[0])
 
