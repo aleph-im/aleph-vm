@@ -20,11 +20,13 @@ from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .views import (
     run_code_from_path,
     run_code_from_hostname,
+    run_durable_vm,
     about_login,
     about_executions,
     about_config,
     status_check_fastapi,
-    about_execution_records, status_check_version,
+    about_execution_records,
+    status_check_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,10 +52,12 @@ app.add_routes(
         web.get("/about/login", about_login),
         web.get("/about/executions", about_executions),
         web.get("/about/executions/records", about_execution_records),
-        web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
+        web.get("/status/usage/system", about_system_usage),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
+        web.post("/run/vm/{ref}", run_durable_vm),
+        # web.post("/run/job/{ref}", run_job_in_vm),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]

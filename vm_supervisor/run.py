@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 
 import msgpack
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
+from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError, HTTPUnprocessableEntity
 from msgpack import UnpackValueError
 
 from firecracker.microvm import MicroVMFailedInit
@@ -41,6 +41,12 @@ async def build_event_scope(event) -> Dict[str, Any]:
     return {
         "type": "aleph.message",
         "body": event,
+    }
+
+
+async def build_durable_scope() -> Dict[str, Any]:
+    return {
+        "type": "durable",
     }
 
 
@@ -224,3 +230,87 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
+
+
+async def start_durable_vm(vm_hash: VmHash, pubsub: PubSub):
+    """Start a durable VM.
+    """
+    message, original_message = await load_updated_message(vm_hash)
+    pool.message_cache[vm_hash] = message
+
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
+
+    # TODO: Prevent stop_after_timeout if instructed as durable
+
+    if not execution:
+        message, original_message = await load_updated_message(vm_hash)
+        pool.message_cache[vm_hash] = message
+
+        # if not message.content.on.durable:
+        #     raise HTTPUnprocessableEntity(reason="This VM cannot be run since it is not durable")
+
+        try:
+            execution = await pool.create_a_vm(
+                vm_hash=vm_hash,
+                program=message.content,
+                original=original_message.content,
+            )
+        except ResourceDownloadError as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPBadRequest(reason="Code, runtime or data not available")
+        except FileTooLargeError as error:
+            raise HTTPInternalServerError(reason=error.args[0])
+        except VmSetupError as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPInternalServerError(reason="Error during program initialisation")
+        except MicroVMFailedInit as error:
+            logger.exception(error)
+            pool.forget_vm(vm_hash=vm_hash)
+            raise HTTPInternalServerError(reason="Error during runtime initialisation")
+
+    if not execution.vm:
+        raise ValueError("The VM has not been created")
+
+    logger.debug(f"Using vm={execution.vm.vm_id}")
+
+    # scope: Dict = await build_durable_scope()
+
+    try:
+        await execution.becomes_ready()
+        # result_raw: bytes = await execution.run_code(scope=scope)
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
+
+    try:
+        # result = msgpack.loads(result_raw, raw=False)
+        #
+        # logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
+        #
+        # if "traceback" in result:
+        #     logger.warning(result["traceback"])
+        #     return web.Response(
+        #         status=500,
+        #         reason="Error in VM execution",
+        #         body=result["traceback"],
+        #         content_type="text/plain",
+        #     )
+
+        return web.Response(
+            status=200,
+            body="VM started",
+            headers={
+                "Aleph-Program-ItemHash": execution.vm_hash,
+                "Aleph-Program-Code-Ref": execution.program.code.ref,
+                # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
+            },
+        )
+
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=502, reason="Invalid response from VM")
+    finally:
+        if settings.WATCH_FOR_UPDATES:
+            execution.start_watching_for_updates(pubsub=pubsub)

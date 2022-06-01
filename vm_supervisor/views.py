@@ -14,7 +14,8 @@ from . import status, __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
-from .run import run_code_on_request, pool
+from .pubsub import PubSub
+from .run import run_code_on_request, start_durable_vm, pool
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,19 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     return await run_code_on_request(message_ref, path, request)
 
 
-def authenticate_request(request: web.Request) -> web.Response:
+def run_durable_vm(request: web.Request) -> Awaitable[web.Response]:
+    """Start a durable VM.
+    """
+    message_ref = VmHash(request.match_info["ref"])
+    pubsub: PubSub = request.app["pubsub"]
+
+    print("message_ref", message_ref)
+    logger.warning(f"message_ref {message_ref}")
+
+    return start_durable_vm(message_ref, pubsub=pubsub)
+
+
+def authenticate_request(request: web.Request):
     """Check that the token in the cookies matches the app's secret token."""
     if request.cookies.get("token") != request.app["secret_token"]:
         raise web.HTTPUnauthorized(reason="Invalid token", text="401 Invalid token")
