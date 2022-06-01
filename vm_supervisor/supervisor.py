@@ -14,6 +14,7 @@ from aiohttp import web
 from . import __version__
 from . import metrics
 from .conf import settings
+from .resources import about_system_usage
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .views import (
@@ -49,6 +50,7 @@ app.add_routes(
         web.get("/about/login", about_login),
         web.get("/about/executions", about_executions),
         web.get("/about/executions/records", about_execution_records),
+        web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
