@@ -198,6 +198,10 @@ class VmSetupError(Exception):
     pass
 
 
+class VmInitNotConnected(Exception):
+    pass
+
+
 class AlephFirecrackerVM:
     vm_id: int
     vm_hash: str
@@ -451,7 +455,10 @@ class AlephFirecrackerVM:
 
             return response
 
-        reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+        try:
+            reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+        except ConnectionRefusedError:
+            raise VmInitNotConnected("MicroVM may have crashed")
         try:
             return await asyncio.wait_for(
                 communicate(reader, writer, scope),
