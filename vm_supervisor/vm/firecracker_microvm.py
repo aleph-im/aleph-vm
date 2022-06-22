@@ -243,7 +243,7 @@ class AlephFirecrackerVM:
                     "num_ctx_switches": p.num_ctx_switches(),
                 }
             except psutil.NoSuchProcess:
-                logger.warning("Cannot read process metrics (process not found)", exc_info=True)
+                logger.warning("Cannot read process metrics (process not found)")
                 pid_info = None
         else:
             pid_info = None
