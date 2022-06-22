@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 from datetime import datetime
 from os import listdir
 from typing import Dict
@@ -140,6 +141,20 @@ class Data(BaseModel):
 @app.post("/post")
 async def receive_post(data: Data):
     return str(data)
+
+
+class CustomError(Exception):
+    pass
+
+
+@app.get("/raise")
+def raise_error():
+    raise CustomError("Whoops")
+
+
+@app.get("/crash")
+def crash():
+    sys.exit(1)
 
 
 filters = [{

@@ -87,3 +87,29 @@ async def check_persistent_storage(session: ClientSession) -> bool:
         return True
     except ClientResponseError:
         return False
+
+
+async def check_error_raised(session: ClientSession) -> bool:
+    try:
+        async with session.get(f"{CHECK_VM_URL}/raise") as resp:
+            text = await resp.text()
+            return (resp.status == 500 and "Traceback" in text)
+    except ClientResponseError:
+        return False
+
+
+async def check_crash_and_restart(session: ClientSession) -> bool:
+
+    # Crash the VM init.
+    async with session.get(f"{CHECK_VM_URL}/crash") as resp:
+        if resp.status != 502:
+            return False
+
+    # Try loading the index page. A new execution should be created.
+    try:
+        result: Dict = await get_json_from_vm(session, "/")
+        assert result["Example"] == "example_fastapi"
+        return True
+
+    except ClientResponseError:
+        return False

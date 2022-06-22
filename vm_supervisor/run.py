@@ -94,6 +94,18 @@ async def run_code_on_request(
     try:
         await execution.becomes_ready()
         result_raw: bytes = await execution.run_code(scope=scope)
+
+        if result_raw == b'':
+            # Missing result from the init process of the virtual machine, not even an error message.
+            # It may have completely crashed.
+
+            # Stop the virtual machine with due to failing init.
+            # It will be restarted on a future request.
+            await execution.stop()
+
+            return web.Response(status=502, reason="No response from VM",
+                                text="VM did not respond and was shutdown")
+
     except asyncio.TimeoutError:
         logger.warning(
             f"VM{execution.vm.vm_id} did not respond within `resource.seconds`"
