@@ -1,7 +1,7 @@
 import logging
 import os
 from os.path import join
-from typing import Iterable
+from typing import Iterable, Optional
 from uuid import UUID
 
 from sqlalchemy import Column, Integer, String, Float, DateTime
@@ -41,13 +41,13 @@ class ExecutionRecord(Base):
     time_started = Column(DateTime)
     time_stopping = Column(DateTime)
 
-    cpu_time_user = Column(Float)
-    cpu_time_system = Column(Float)
+    cpu_time_user: Optional[float] = Column(Float, nullable=True)
+    cpu_time_system: Optional[float] = Column(Float, nullable=True)
 
-    io_read_count = Column(Integer)
-    io_write_count = Column(Integer)
-    io_read_bytes = Column(Integer)
-    io_write_bytes = Column(Integer)
+    io_read_count: Optional[int] = Column(Integer, nullable=True)
+    io_write_count: Optional[int] = Column(Integer, nullable=True)
+    io_read_bytes: Optional[int] = Column(Integer, nullable=True)
+    io_write_bytes: Optional[int] = Column(Integer, nullable=True)
 
     vcpus = Column(Integer, nullable=False)
     memory = Column(Integer, nullable=False)
