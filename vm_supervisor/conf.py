@@ -4,7 +4,7 @@ import re
 from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
 from subprocess import check_output
-from typing import NewType, Optional, List
+from typing import NewType, Optional, List, Dict, Any
 
 from firecracker.models import FilePath
 from pydantic import BaseSettings, Field
@@ -189,16 +189,20 @@ class Settings(BaseSettings):
                 assert "This should never happen"
 
     def display(self) -> str:
-        annotations = self.__annotations__.copy()
+        attributes: Dict[str, Any] = {}
 
-        for attr in annotations.keys():
+        for attr in self.__dict__.keys():
+            if attr != attr.upper():
+                # Settings are expected to be ALL_UPPERCASE, other attributes snake_case or CamelCase
+                continue
+
             if getattr(self, attr) and attr in self.SENSITIVE_FIELDS:
-                annotations[attr] = "<REDACTED>"
+                attributes[attr] = "<REDACTED>"
             else:
-                annotations[attr] = getattr(self, attr)
+                attributes[attr] = getattr(self, attr)
 
         return "\n".join(
-            f"{annotation:<27} = {value}" for annotation, value in annotations.items()
+            f"{attribute:<27} = {value}" for attribute, value in attributes.items()
         )
 
     class Config:
