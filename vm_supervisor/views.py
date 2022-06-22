@@ -140,6 +140,8 @@ async def status_check_fastapi(request: web.Request):
             "internet": await status.check_internet(session),
             "cache": await status.check_cache(session),
             "persistent_storage": await status.check_persistent_storage(session),
+            "error_handling": await status.check_error_raised(session),
+            "crash_handling": await status.check_crash_and_restart(session),
         }
         return web.json_response(result, status=200 if all(result.values()) else 503)
 
