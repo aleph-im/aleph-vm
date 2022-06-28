@@ -1,11 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Tuple
 
 import psutil
 from aiohttp import web
 from pydantic import BaseModel
 
-from vm_supervisor.utils import dumps_for_json
 from .conf import settings
 
 
@@ -65,6 +64,11 @@ class UsagePeriod(BaseModel):
     start_timestamp: datetime
     duration_seconds: float
 
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+        }
+
 
 class MachineUsage(BaseModel):
     cpu: CpuUsage
@@ -74,7 +78,7 @@ class MachineUsage(BaseModel):
 
 
 async def about_system_usage(request: web.Request):
-    period_start = datetime.utcnow().replace(second=0, microsecond=0)
+    period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
@@ -98,6 +102,5 @@ async def about_system_usage(request: web.Request):
         ),
     )
     return web.json_response(
-        usage,
-        dumps=dumps_for_json,
+        text=usage.json(),
     )
