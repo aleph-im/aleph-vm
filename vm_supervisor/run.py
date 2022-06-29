@@ -213,3 +213,31 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
+
+
+async def start_long_running(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
+
+    if not execution:
+        execution = await create_vm_execution(vm_hash=vm_hash)\
+
+    # If the VM was already running in lambda mode, it should not expire
+    # as long as it is also scheduled as long-running
+    execution.marked_as_long_running = True
+    execution.cancel_expiration()
+
+    await execution.becomes_ready()
+
+    # if settings.WATCH_FOR_UPDATES:
+    #     # FIXME: Is this added for every request ?
+    #     execution.start_watching_for_updates(pubsub=request.app["pubsub"])
+
+    return execution
+
+
+async def stop_long_running(vm_hash: VmHash) -> Optional[VmExecution]:
+    logger.info(f"Stopping long running {vm_hash}")
+    execution = await pool.get_running_vm(vm_hash)
+    if execution:
+        await execution.stop()
+    return execution
