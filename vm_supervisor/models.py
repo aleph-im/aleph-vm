@@ -56,6 +56,8 @@ class VmExecution:
     runs_done_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
 
+    marked_as_long_running: bool = False
+
     @property
     def is_running(self):
         return self.times.starting_at and not self.times.stopping_at
@@ -116,7 +118,11 @@ class VmExecution:
             await vm.teardown()
             raise
 
-    def stop_after_timeout(self, timeout: float = 5.0) -> Task:
+    def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
+        if self.marked_as_long_running:
+            logger.debug("VM marked as long running. Ignoring timeout.")
+            return
+
         if self.expire_task:
             logger.debug("VM already has a timeout. Extending it.")
             self.expire_task.cancel()
