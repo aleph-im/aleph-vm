@@ -55,6 +55,7 @@ class VmExecution:
     concurrent_runs: int
     runs_done_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
+    update_task: Optional[asyncio.Task] = None
 
     marked_as_long_running: bool = False
 
@@ -153,6 +154,13 @@ class VmExecution:
         else:
             return False
 
+    def cancel_update(self) -> bool:
+        if self.update_task:
+            self.update_task.cancel()
+            return True
+        else:
+            return False
+
     async def stop(self):
         if self.times.stopped_at is not None:
             logger.debug(f"VM={self.vm.vm_id} already stopped")
@@ -163,10 +171,12 @@ class VmExecution:
         await self.vm.teardown()
         self.times.stopped_at = datetime.now()
         self.cancel_expiration()
+        self.cancel_update()
 
     def start_watching_for_updates(self, pubsub: PubSub):
-        pool = asyncio.get_running_loop()
-        pool.create_task(self.watch_for_updates(pubsub=pubsub))
+        if not self.update_task:
+            loop = asyncio.get_running_loop()
+            self.update_task = loop.create_task(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
         await pubsub.msubscribe(
