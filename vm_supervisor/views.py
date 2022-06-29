@@ -3,18 +3,20 @@ import logging
 import os.path
 from string import Template
 from typing import Awaitable, Optional
-from packaging.version import Version, InvalidVersion
 
 import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
+from packaging.version import Version, InvalidVersion
+from pydantic import ValidationError
 
 from . import status, __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
-from .run import run_code_on_request, pool
+from .resources import Allocation
+from .run import run_code_on_request, pool, start_long_running
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
 
 logger = logging.getLogger(__name__)
@@ -166,3 +168,35 @@ async def status_check_version(request: web.Request):
         )
     else:
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
+
+
+async def update_allocations(request: web.Request):
+    try:
+        data = await request.json()
+        allocation = Allocation(**data)
+    except ValidationError as error:
+        return web.json_response(
+            data=error.json(), status=web.HTTPBadRequest.status_code
+        )
+
+    pubsub = request.app["pubsub"]
+
+    for vm_hash in allocation.long_running_vms:
+        vm_hash = VmHash(vm_hash)
+        logger.info(f"Starting long running VM {vm_hash}")
+        # TODO: Handle when a VM is already running in lambda mode and should not expire
+        #       as long as it is also scheduled as long running
+        await start_long_running(vm_hash, pubsub)
+
+    for execution in pool.get_long_running_executions():
+        if execution.vm_hash not in allocation.long_running_vms:
+            logger.info(f"Stopping long running VM {execution.vm_hash}")
+            await execution.stop()
+            execution.marked_as_long_running = False
+
+    if allocation.on_demand_vms:
+        logger.info("Not supported yet: 'allocation.on_demand_vms'")
+    if allocation.jobs:
+        logger.info("Not supported yet: 'allocation.on_demand_vms'")
+
+    return web.json_response(data={"success": True})
