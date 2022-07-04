@@ -31,6 +31,5 @@ class PubSub:
         return await queue.get()
 
     async def publish(self, key, value):
-        logger.debug(f"publish({key}, ...)")
         for queue in self.subscribers.get(key, tuple()):
             await queue.put(value)

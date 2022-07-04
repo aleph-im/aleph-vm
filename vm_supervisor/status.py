@@ -2,12 +2,14 @@
 Used to check that the example_fastapi program works as expected
 in a deployed supervisor.
 """
-
+import logging
 from typing import Dict, Any, List
 
 from aiohttp import ClientSession, ClientResponseError
 
 from vm_supervisor.conf import settings
+
+logger = logging.getLogger(__name__)
 
 CHECK_VM_URL = f"http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}/vm/{settings.CHECK_FASTAPI_VM_ID}"
 
