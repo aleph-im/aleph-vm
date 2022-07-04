@@ -41,7 +41,6 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
         async with session.ws_connect(url) as ws:
             logger.debug(f"Websocket connected on {url}")
             async for msg in ws:
-                logger.debug(f"Websocket received data...")
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
@@ -96,7 +95,6 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
     )
 
     async for message in retry_generator(subscribe_via_ws(url)):
-        logger.info(f"Websocket received message: {message.item_hash}")
 
         # Dispatch update to running VMs
         await dispatcher.publish(key=message.item_hash, value=message)
