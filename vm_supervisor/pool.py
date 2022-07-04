@@ -1,8 +1,9 @@
 import asyncio
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, Iterable
 
 from aleph_message.models import ProgramContent, ProgramMessage
+
 from .conf import settings
 from .models import VmHash, VmExecution
 
@@ -33,9 +34,26 @@ class VmPool:
         execution = VmExecution(vm_hash=vm_hash, program=program, original=original)
         self.executions[vm_hash] = execution
         await execution.prepare()
-        self.counter += 1
-        await execution.create(address=self.counter)
+        vm_id = self.get_unique_vm_id()
+        await execution.create(vm_id=vm_id)
         return execution
+
+    def get_unique_vm_id(self) -> int:
+        """Get a unique identifier for the VM.
+
+        This identifier is used to name the network interface and in the IPv4 range
+        dedicated to the VM.
+        """
+        self.counter += 1
+        if self.counter < 255**2:
+            return self.counter
+        else:
+            # Recycle counter values
+            currently_used_vm_ids = set(execution.vm.vm_id
+                                        for execution in self.executions.values())
+            for i in range(settings.START_ID_INDEX, 255**2):
+                if i not in currently_used_vm_ids:
+                    return i
 
     async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
         """Return a running VM or None. Disables the VM expiration task."""
@@ -47,6 +65,10 @@ class VmPool:
             return None
 
     def forget_vm(self, vm_hash: VmHash) -> None:
+        """Remove a VM from the pool executions.
+
+        Used after an error prevented the creation of the corresponding VM.
+        """
         try:
             del self.executions[vm_hash]
         except KeyError:
