@@ -34,6 +34,8 @@ class ExecutionRecord(Base):
     __tablename__ = "records"
 
     uuid = Column(String, primary_key=True)
+
+    execution_uuid = Column(String, nullable=False)
     vm_hash = Column(String, nullable=False)
 
     time_defined = Column(DateTime, nullable=False)
