@@ -211,7 +211,8 @@ class VmExecution:
         if pid_info and pid_info.get("process"):
             await save_record(
                 ExecutionRecord(
-                    uuid=str(self.uuid),
+                    uuid=str(uuid.uuid4()),
+                    execution_uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
@@ -233,7 +234,8 @@ class VmExecution:
             # and its metrics are not available anymore.
             await save_record(
                 ExecutionRecord(
-                    uuid=str(self.uuid),
+                    uuid=str(uuid.uuid4()),
+                    execution_uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
