@@ -4,6 +4,7 @@ import logging
 import os.path
 import string
 from asyncio import Task
+from asyncio.base_events import Server
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
@@ -70,6 +71,8 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
+
+    _unix_socket: Server
 
     @property
     def namespace_path(self):
@@ -359,7 +362,7 @@ class MicroVM:
         async def unix_client_connected(*_):
             await queue.put(True)
 
-        await asyncio.start_unix_server(
+        self._unix_socket = await asyncio.start_unix_server(
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
         os.system(f"chown jailman:jailman {self.vsock_path}_52")
@@ -441,6 +444,11 @@ class MicroVM:
             system(
                 f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
             )
+
+        if self._unix_socket:
+            logger.debug("Closing unix socket")
+            self._unix_socket.close()
+            await self._unix_socket.wait_closed()
 
         logger.debug("Removing files")
         if self.config_file_path:
