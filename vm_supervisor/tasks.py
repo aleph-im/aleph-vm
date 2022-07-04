@@ -97,11 +97,9 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
     async for message in retry_generator(subscribe_via_ws(url)):
 
         # Dispatch update to running VMs
+        await dispatcher.publish(key=message.item_hash, value=message)
         if hasattr(message.content, "ref") and message.content.ref:
-            ref = message.content.ref
-        else:
-            ref = message.item_hash
-        await dispatcher.publish(key=ref, value=message)
+            await dispatcher.publish(key=message.content.ref, value=message)
 
         # Register new VM to run on future messages:
         if isinstance(message, ProgramMessage):
