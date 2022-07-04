@@ -11,6 +11,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 from .conf import settings
+from .migrations.env import do_run_migrations
 
 Session: sessionmaker
 
@@ -23,6 +24,12 @@ def setup_engine():
     global Session
     engine = create_engine(f"sqlite:///{settings.EXECUTION_DATABASE}", echo=True)
     Session = sessionmaker(bind=engine)
+
+    # Run migrations
+    with engine.connect() as connection:
+        do_run_migrations(connection)
+    engine.dispose()
+
     return engine
 
 
