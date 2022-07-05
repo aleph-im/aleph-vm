@@ -25,10 +25,25 @@ class PubSub:
         """Subscribe to multiple keys"""
         keys = tuple(key for key in keys if key is not None)
         logger.debug(f"msubscribe({keys})")
+
         queue = asyncio.Queue()
+
+        # Register the queue on all keys
         for key in keys:
             self.subscribers.setdefault(key, set()).add(queue)
-        return await queue.get()
+
+        # Wait for any subscription
+        await queue.get()
+
+        # Cleanup: remove the queue from the subscribers
+        for key in keys:
+            for subscriber in self.subscribers.values():
+                subscriber.discard(queue)
+                # Remove keys with no remaining queue
+                if not self.subscribers.get(key):
+                    self.subscribers.pop(key)
+
+        return
 
     async def publish(self, key, value):
         for queue in self.subscribers.get(key, tuple()):

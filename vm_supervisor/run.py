@@ -170,39 +170,10 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
     Execute code in response to an event.
     """
 
-    try:
-        execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
-    except Exception as error:
-        logger.exception(error)
-        raise
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        message, original_message = await load_updated_message(vm_hash)
-        pool.message_cache[vm_hash] = message
-
-        try:
-            execution = await pool.create_a_vm(
-                vm_hash=vm_hash,
-                program=message.content,
-                original=original_message.content,
-            )
-        except ResourceDownloadError as error:
-            logger.exception(error)
-            pool.forget_vm(vm_hash=vm_hash)
-            raise HTTPBadRequest(reason="Code, runtime or data not available")
-        except FileTooLargeError as error:
-            raise HTTPInternalServerError(reason=error.args[0])
-        except VmSetupError as error:
-            logger.exception(error)
-            pool.forget_vm(vm_hash=vm_hash)
-            raise HTTPInternalServerError(reason="Error during program initialisation")
-        except MicroVMFailedInit as error:
-            logger.exception(error)
-            pool.forget_vm(vm_hash=vm_hash)
-            raise HTTPInternalServerError(reason="Error during runtime initialisation")
-
-    if not execution.vm:
-        raise ValueError("The VM has not been created")
+        execution = await create_vm_execution(vm_hash=vm_hash)
 
     logger.debug(f"Using vm={execution.vm.vm_id}")
 
@@ -242,3 +213,28 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
+
+
+async def start_long_running(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
+
+    if not execution:
+        execution = await create_vm_execution(vm_hash=vm_hash)\
+
+    execution.marked_as_long_running = True
+    execution.cancel_expiration()
+
+    await execution.becomes_ready()
+
+    # if settings.WATCH_FOR_UPDATES:
+    #     # FIXME: Is this added for every request ?
+    #     execution.start_watching_for_updates(pubsub=request.app["pubsub"])
+
+    return execution
+
+
+async def stop_long_running(vm_hash: VmHash) -> Optional[VmExecution]:
+    execution = await pool.get_running_vm(vm_hash)
+    if execution:
+        await execution.stop()
+    return execution

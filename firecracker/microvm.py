@@ -4,6 +4,7 @@ import logging
 import os.path
 import string
 from asyncio import Task
+from asyncio.base_events import Server
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
@@ -67,9 +68,11 @@ class MicroVM:
     network_interface: Optional[str] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
-    config_file = None
+    config_file_path: Optional[str] = None
     drives: List[Drive]
     init_timeout: float
+
+    _unix_socket: Server
 
     @property
     def namespace_path(self):
@@ -160,13 +163,13 @@ class MicroVM:
         if os.path.exists(self.socket_path):
             os.remove(self.socket_path)
 
-        config_file = NamedTemporaryFile()
-        config_file.write(
-            config.json(by_alias=True, exclude_none=True, indent=4).encode()
-        )
-        config_file.flush()
-        self.config_file = config_file
-        print(self.config_file)
+        with NamedTemporaryFile() as config_file:
+            config_file.write(
+                config.json(by_alias=True, exclude_none=True, indent=4).encode()
+            )
+            config_file.flush()
+            os.chmod(config_file.name, 0o644)
+            self.config_file_path = config_file.name
 
         logger.debug(
             " ".join(
@@ -200,14 +203,13 @@ class MicroVM:
         uid = str(getpwnam("jailman").pw_uid)
         gid = str(getpwnam("jailman").pw_gid)
 
-        # config_file = NamedTemporaryFile(dir=f"{self.jailer_path}/tmp/", suffix='.json')
-        config_file = open(f"{self.jailer_path}/tmp/config.json", "wb")
-        config_file.write(
-            config.json(by_alias=True, exclude_none=True, indent=4).encode()
-        )
-        config_file.flush()
-        os.chmod(config_file.name, 0o644)
-        self.config_file = config_file
+        with open(f"{self.jailer_path}/tmp/config.json", "wb") as config_file:
+            config_file.write(
+                config.json(by_alias=True, exclude_none=True, indent=4).encode()
+            )
+            config_file.flush()
+            os.chmod(config_file.name, 0o644)
+            self.config_file_path = config_file.name
 
         logger.debug(
             " ".join(
@@ -360,7 +362,7 @@ class MicroVM:
         async def unix_client_connected(*_):
             await queue.put(True)
 
-        await asyncio.start_unix_server(
+        self._unix_socket = await asyncio.start_unix_server(
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
         os.system(f"chown jailman:jailman {self.vsock_path}_52")
@@ -442,6 +444,10 @@ class MicroVM:
             system(
                 f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
             )
+
+        logger.debug("Closing unix socket")
+        self._unix_socket.close()
+        await self._unix_socket.wait_closed()
 
         logger.debug("Removing files")
         system(f"rm -fr {self.namespace_path}")

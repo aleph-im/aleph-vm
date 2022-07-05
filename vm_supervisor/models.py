@@ -55,6 +55,9 @@ class VmExecution:
     concurrent_runs: int
     runs_done_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
+    update_task: Optional[asyncio.Task] = None
+
+    marked_as_long_running: bool = False
 
     @property
     def is_running(self):
@@ -93,12 +96,12 @@ class VmExecution:
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
-    async def create(self, address: int) -> AlephFirecrackerVM:
+    async def create(self, vm_id: int) -> AlephFirecrackerVM:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
         self.vm = vm = AlephFirecrackerVM(
-            vm_id=address,
+            vm_id=vm_id,
             vm_hash=self.vm_hash,
             resources=self.resources,
             enable_networking=self.program.environment.internet,
@@ -116,7 +119,11 @@ class VmExecution:
             await vm.teardown()
             raise
 
-    def stop_after_timeout(self, timeout: float = 5.0) -> Task:
+    def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
+        if self.marked_as_long_running:
+            logger.debug("VM marked as long running. Ignoring timeout.")
+            return
+
         if self.expire_task:
             logger.debug("VM already has a timeout. Extending it.")
             self.expire_task.cancel()
@@ -147,6 +154,13 @@ class VmExecution:
         else:
             return False
 
+    def cancel_update(self) -> bool:
+        if self.update_task:
+            self.update_task.cancel()
+            return True
+        else:
+            return False
+
     async def stop(self):
         if self.times.stopped_at is not None:
             logger.debug(f"VM={self.vm.vm_id} already stopped")
@@ -157,10 +171,12 @@ class VmExecution:
         await self.vm.teardown()
         self.times.stopped_at = datetime.now()
         self.cancel_expiration()
+        self.cancel_update()
 
     def start_watching_for_updates(self, pubsub: PubSub):
-        pool = asyncio.get_running_loop()
-        pool.create_task(self.watch_for_updates(pubsub=pubsub))
+        if not self.update_task:
+            loop = asyncio.get_running_loop()
+            self.update_task = loop.create_task(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
         await pubsub.msubscribe(
@@ -195,7 +211,8 @@ class VmExecution:
         if pid_info and pid_info.get("process"):
             await save_record(
                 ExecutionRecord(
-                    uuid=str(self.uuid),
+                    uuid=str(uuid.uuid4()),
+                    execution_uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
@@ -217,7 +234,8 @@ class VmExecution:
             # and its metrics are not available anymore.
             await save_record(
                 ExecutionRecord(
-                    uuid=str(self.uuid),
+                    uuid=str(uuid.uuid4()),
+                    execution_uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
