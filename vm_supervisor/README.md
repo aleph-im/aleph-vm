@@ -104,7 +104,7 @@ A more optimized kernel may be made available in the future.
 See section _Compile your kernel_ below to build your own.
 
 ```shell
-curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
+curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.2.2/vmlinux.bin
 ```
 
 ## 3. Running
