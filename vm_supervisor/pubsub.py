@@ -19,7 +19,15 @@ class PubSub:
     async def subscribe(self, key):
         queue = asyncio.Queue()
         self.subscribers.setdefault(key, set()).add(queue)
-        return await queue.get()
+        await queue.get()
+
+        # Cleanup: remove the queue from the subscribers
+        self.subscribers.get(key).discard(queue)
+        # Remove keys with no remaining queue
+        if not self.subscribers.get(key):
+            self.subscribers.pop(key)
+
+        return
 
     async def msubscribe(self, *keys):
         """Subscribe to multiple keys"""
