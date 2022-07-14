@@ -1,4 +1,4 @@
-FROM debian:buster
+FROM debian:bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     python3-venv \
@@ -6,6 +6,6 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
-RUN /opt/venv/bin/pip install 'aleph-message>=0.1.19'
+RUN /opt/venv/bin/pip install 'aleph-message==0.1.20'
 
 CMD mksquashfs /opt/venv /mnt/volume-venv.squashfs
