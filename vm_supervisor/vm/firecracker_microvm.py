@@ -387,7 +387,7 @@ class AlephFirecrackerVM:
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
             ip=self.fvm.guest_ip if self.enable_networking else None,
-            route=self.fvm.host_ip if self.enable_console else None,
+            route=self.fvm.host_ip if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
