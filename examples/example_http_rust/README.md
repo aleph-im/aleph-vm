@@ -28,6 +28,6 @@ make podman-publish
 ### Using Docker
 
 ```shell
-make prepare
-make publish
+make docker-prepare
+make docker-publish
 ```

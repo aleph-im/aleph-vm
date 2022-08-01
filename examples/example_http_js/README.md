@@ -1,7 +1,6 @@
-# Aleph VM Rust Example
+# Aleph VM JS Example
 
-A simple example program written in Rust that 
-can run in an Aleph VM.
+A simple example program written in JS that can run in an Aleph VM.
 
 ## About
 
@@ -28,6 +27,6 @@ make podman-publish
 ### Using Docker
 
 ```shell
-make prepare
-make publish
+make docker-prepare
+make docker-publish
 ```
