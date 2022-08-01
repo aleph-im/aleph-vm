@@ -47,7 +47,7 @@ Once the command is down, your virtual machine will be booted and ready!
 
 ### Set Vagrantfile configuration
 
-Open the vagrantfile and add following `config.vm.box``
+Open the vagrantfile and add following `config.vm.box`
 
 ```shell
 config.vm.network "forwarded_port", guest:8000, host:8000
@@ -78,7 +78,7 @@ aleph upload packages.squashfs
 ```
 
 ```shell
-ipfs add venv.squashfs
+ipfs add packages.squashfs
 ```
 | added QmWWX6BaaRkRSr2iNdwH5e29ACPg2nCHHXTRTfuBmVm3Ga venv.squashfs
 
