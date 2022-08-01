@@ -44,9 +44,26 @@ jobs:
           sudo apt update
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
-          cd examples/volumes && sudo ./build_squashfs.sh && cd ../..
 
       - uses: actions/upload-artifact@v2
         with:
           name: aleph-debian-11-python.squashfs
           path: runtimes/aleph-debian-11-python/rootfs.squashfs
+
+
+  build_example_venv_volume:
+    name: "Build example squashfs volume using Docker"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - run: |
+          docker build -t aleph-vm-build-squashfs -f examples/volumes/Dockerfile examples/volumes
+          docker run --rm -v "$(pwd)":/mnt aleph-vm-build-squashfs
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: example-volume-venv.squashfs
+          path: volume-venv.squashfs
