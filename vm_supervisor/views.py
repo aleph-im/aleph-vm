@@ -171,6 +171,7 @@ async def status_check_version(request: web.Request):
 
 
 async def update_allocations(request: web.Request):
+    # TODO: Add some form of authentication
     try:
         data = await request.json()
         allocation = Allocation(**data)
@@ -184,8 +185,6 @@ async def update_allocations(request: web.Request):
     for vm_hash in allocation.long_running_vms:
         vm_hash = VmHash(vm_hash)
         logger.info(f"Starting long running VM {vm_hash}")
-        # TODO: Handle when a VM is already running in lambda mode and should not expire
-        #       as long as it is also scheduled as long running
         await start_long_running(vm_hash, pubsub)
 
     for execution in pool.get_long_running_executions():

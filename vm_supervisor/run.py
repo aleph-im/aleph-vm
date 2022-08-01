@@ -221,6 +221,8 @@ async def start_long_running(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
     if not execution:
         execution = await create_vm_execution(vm_hash=vm_hash)\
 
+    # If the VM was already running in lambda mode, it should not expire
+    # as long as it is also scheduled as long-running
     execution.marked_as_long_running = True
     execution.cancel_expiration()
 
@@ -234,6 +236,7 @@ async def start_long_running(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
 
 
 async def stop_long_running(vm_hash: VmHash) -> Optional[VmExecution]:
+    logger.info(f"Stopping long running {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
     if execution:
         await execution.stop()

@@ -8,10 +8,6 @@ from pydantic import BaseModel
 from .conf import settings
 
 
-class Period(BaseModel):
-    datetime: datetime
-
-
 class LoadAverage(BaseModel):
     load1: float
     load5: float
