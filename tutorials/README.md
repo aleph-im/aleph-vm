@@ -36,12 +36,25 @@ Some cryptographic functionalities of Aleph use curve secp256k1 and require inst
 Archiving programs and volumes requires
 [Squashfs user space tools](https://github.com/plougher/squashfs-tools).
 
-    sudo apt-get install -y python3-pip libsecp256k1-dev squashfs-tools
+- Linux : 
+``` 
+sudo apt-get install -y python3-pip libsecp256k1-dev squashfs-tools
+``` 
+
+- macOs : 
+``` 
+brew tap cuber/homebrew-libsecp256k1
+brew install libsecp256k1 squashfs
+```
 
 You will also need [Uvicorn](https://www.uvicorn.org/) for local testing 
 and the [Python Aleph client](https://github.com/aleph-im/aleph-client) for it's command-line tools:
 
-    pip3 install uvicorn[standard] aleph-client fastapi eth_account
+- Linux/ macOs :
+
+``` 
+pip3 install "uvicorn[standard]" aleph-client fastapi eth_account
+``` 
 
 ## 1. Understanding the VMs
 
