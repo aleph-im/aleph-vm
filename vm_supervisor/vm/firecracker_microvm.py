@@ -148,7 +148,7 @@ class AlephFirecrackerResources:
             self.code_path = await get_code_path(code_ref)
         except ClientResponseError as error:
             raise ResourceDownloadError(error)
-        assert isfile(self.code_path)
+        assert isfile(self.code_path), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self):
         runtime_ref: str = self.message_content.runtime.ref
