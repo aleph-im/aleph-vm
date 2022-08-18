@@ -106,9 +106,11 @@ async def get_code_path(ref: str) -> FilePath:
             if os.path.exists(f"{archive_path}.squashfs"):
                 os.remove(f"{archive_path}.squashfs")
             os.system(f"mksquashfs {archive_path} {archive_path}.squashfs")
+            logger.debug(f"Squashfs generated on {archive_path}.squashfs")
             return FilePath(f"{archive_path}.squashfs")
         elif encoding == Encoding.zip:
             make_archive(archive_path, "zip", root_dir=archive_path)
+            logger.debug(f"Zip generated on {archive_path}.zip")
             return FilePath(f"{archive_path}.zip")
         else:
             raise ValueError(f"Unsupported encoding: {encoding}")
