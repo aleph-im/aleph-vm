@@ -12,8 +12,8 @@ RUN useradd jailman
 
 RUN mkdir /opt/firecracker
 RUN chown $(whoami) /opt/firecracker
-RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory /opt/firecracker
-RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
+RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.1.1/firecracker-v1.1.1-x86_64.tgz | tar -xz --directory /opt/firecracker
+RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
 
 # Link binaries on version-agnostic paths:
 RUN ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
