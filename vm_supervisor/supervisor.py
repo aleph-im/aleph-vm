@@ -10,6 +10,7 @@ from secrets import token_urlsafe
 from typing import Awaitable, Callable
 
 from aiohttp import web
+from aiohttp.web_exceptions import HTTPBadRequest
 
 from . import __version__
 from . import metrics
@@ -54,6 +55,7 @@ app.add_routes(
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
+        web.get("/control/allocations", lambda _: HTTPBadRequest(text="This endpoint only supports POST")),
         web.post("/control/allocations", update_allocations),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),

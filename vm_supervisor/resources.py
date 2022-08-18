@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Tuple, Set, Optional
 
+import cpuinfo
 import psutil
 from aiohttp import web
+from aleph_message.models.program import CpuProperties
 from pydantic import BaseModel
 
 from .conf import settings
@@ -66,11 +69,33 @@ class UsagePeriod(BaseModel):
         }
 
 
+class MachineProperties(BaseModel):
+    cpu: CpuProperties
+
+
 class MachineUsage(BaseModel):
     cpu: CpuUsage
     mem: MemoryUsage
     disk: DiskUsage
     period: UsagePeriod
+    properties: MachineProperties
+    active: bool = True
+
+
+@lru_cache
+def get_machine_properties() -> MachineProperties:
+    """Fetch machine properties such as architectyre, CPU vendor, ...
+    These should not change while the supervisor is running.
+
+    In the future, some properties may have to be fetched from within a VM.
+    """
+    cpu_info = cpuinfo.get_cpu_info()  # Slow
+    return MachineProperties(
+        cpu=CpuProperties(
+            architecture=cpu_info['raw_arch_string'],
+            vendor=cpu_info['vendor_id'],
+        ),
+    )
 
 
 async def about_system_usage(request: web.Request):
@@ -96,9 +121,10 @@ async def about_system_usage(request: web.Request):
             start_timestamp=period_start,
             duration_seconds=60,
         ),
+        properties=get_machine_properties(),
     )
     return web.json_response(
-        text=usage.json(),
+        text=usage.json(exclude_none=True),
     )
 
 
