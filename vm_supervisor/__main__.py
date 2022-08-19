@@ -73,6 +73,14 @@ def parse_args(args):
         const=logging.DEBUG,
     )
     parser.add_argument(
+        "-d",
+        "--debug-asyncio",
+        dest="debug_asyncio",
+        help="Enable asyncio debugging",
+        action="store_true",
+        default=settings.DEBUG_ASYNCIO,
+    )
+    parser.add_argument(
         "-p",
         "--print-settings",
         dest="print_settings",
@@ -214,6 +222,7 @@ def main():
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
         FAKE_DATA_PROGRAM=args.fake_data_program,
+        DEBUG_ASYNCIO=args.debug_asyncio,
     )
 
     if sentry_sdk:

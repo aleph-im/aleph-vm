@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -80,6 +81,7 @@ class Settings(BaseSettings):
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
+    DEBUG_ASYNCIO = False
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
@@ -187,6 +189,10 @@ class Settings(BaseSettings):
                 )
             else:
                 assert "This should never happen"
+
+        if self.DEBUG:
+            loop = asyncio.get_event_loop()
+            loop.set_debug(True)
 
     def display(self) -> str:
         attributes: Dict[str, Any] = {}
