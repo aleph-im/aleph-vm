@@ -250,8 +250,7 @@ def main():
     settings.check()
 
     if args.benchmark > 0:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(benchmark(runs=args.benchmark))
+        asyncio.run(benchmark(runs=args.benchmark))
         print("Finished")
     elif args.do_not_run:
         logger.info("Option --do-not-run, exiting")
