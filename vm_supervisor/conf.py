@@ -3,10 +3,10 @@ import os
 import re
 from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
+from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any
+from typing import NewType, Optional, List
 
-from firecracker.models import FilePath
 from pydantic import BaseSettings, Field
 
 logger = logging.getLogger(__name__)
@@ -89,39 +89,37 @@ class Settings(BaseSettings):
 
     CONNECTOR_URL = Url("http://localhost:4021")
 
-    CACHE_ROOT = FilePath("/var/cache/aleph/vm")
-    MESSAGE_CACHE = FilePath(join(CACHE_ROOT, "message"))
-    CODE_CACHE = FilePath(join(CACHE_ROOT, "code"))
-    RUNTIME_CACHE = FilePath(join(CACHE_ROOT, "runtime"))
-    DATA_CACHE = FilePath(join(CACHE_ROOT, "data"))
+    CACHE_ROOT = Path("/var/cache/aleph/vm")
+    MESSAGE_CACHE = CACHE_ROOT / "message"
+    CODE_CACHE = CACHE_ROOT / "code"
+    RUNTIME_CACHE = CACHE_ROOT / "runtime"
+    DATA_CACHE = CACHE_ROOT / "data"
 
-    EXECUTION_ROOT = FilePath("/var/lib/aleph/vm")
-    EXECUTION_DATABASE = FilePath(join(EXECUTION_ROOT, "executions.sqlite3"))
+    EXECUTION_ROOT = Path("/var/lib/aleph/vm")
+    EXECUTION_DATABASE = EXECUTION_ROOT / "executions.sqlite3"
     EXECUTION_LOG_ENABLED = False
-    EXECUTION_LOG_DIRECTORY = FilePath(join(EXECUTION_ROOT, "executions"))
+    EXECUTION_LOG_DIRECTORY = EXECUTION_ROOT / "executions"
 
-    PERSISTENT_VOLUMES_DIR = FilePath(
-        join("/var/lib/aleph/vm", "volumes", "persistent")
-    )
+    PERSISTENT_VOLUMES_DIR = EXECUTION_ROOT / "volumes" / "persistent"
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
-    FAKE_DATA_PROGRAM: Optional[FilePath] = None
-    BENCHMARK_FAKE_DATA_PROGRAM = FilePath(
+    FAKE_DATA_PROGRAM: Optional[Path] = None
+    BENCHMARK_FAKE_DATA_PROGRAM = Path(
         abspath(join(__file__, "../../examples/example_fastapi"))
     )
 
-    FAKE_DATA_MESSAGE = FilePath(
+    FAKE_DATA_MESSAGE = Path(
         abspath(join(__file__, "../../examples/message_from_aleph.json"))
     )
-    FAKE_DATA_DATA: Optional[FilePath] = FilePath(
+    FAKE_DATA_DATA: Optional[Path] = Path(
         abspath(join(__file__, "../../examples/data/"))
     )
-    FAKE_DATA_RUNTIME = FilePath(
+    FAKE_DATA_RUNTIME = Path(
         abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
     )
-    FAKE_DATA_VOLUME: Optional[FilePath] = FilePath(
+    FAKE_DATA_VOLUME: Optional[Path] = Path(
         abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
     )
 

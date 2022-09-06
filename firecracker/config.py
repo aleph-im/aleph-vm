@@ -1,13 +1,13 @@
+from pathlib import Path
 from typing import List, Optional
 
-from firecracker.models import FilePath
 from pydantic import BaseModel, PositiveInt
 
 VSOCK_PATH = "/tmp/v.sock"
 
 
 class BootSource(BaseModel):
-    kernel_image_path: FilePath = FilePath("vmlinux.bin")
+    kernel_image_path: Path = Path("vmlinux.bin")
     boot_args: str = (
         "console=ttyS0 reboot=k panic=1 pci=off "
         "ro noapic nomodules random.trust_cpu=on"
@@ -24,7 +24,7 @@ class BootSource(BaseModel):
 
 class Drive(BaseModel):
     drive_id: str = "rootfs"
-    path_on_host: FilePath = FilePath("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
+    path_on_host: Path = Path("./runtimes/aleph-alpine-3.13-python/rootfs.ext4")
     is_root_device: bool = True
     is_read_only: bool = True
 
