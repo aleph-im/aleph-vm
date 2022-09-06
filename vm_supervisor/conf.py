@@ -5,7 +5,7 @@ from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any
+from typing import NewType, Optional, List
 
 from pydantic import BaseSettings, Field
 
