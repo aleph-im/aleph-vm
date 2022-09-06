@@ -12,7 +12,6 @@ from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, List
 
 from .config import FirecrackerConfig
-from .models import FilePath
 from .config import Drive
 
 logger = logging.getLogger(__name__)
@@ -297,7 +296,7 @@ class MicroVM:
 
         drive = Drive(
             drive_id=device_name,
-            path_on_host=FilePath(drive_path),
+            path_on_host=Path(drive_path),
             is_root_device=False,
             is_read_only=read_only,
         )
