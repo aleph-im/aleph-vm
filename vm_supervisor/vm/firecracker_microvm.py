@@ -8,6 +8,7 @@ from enum import Enum
 from multiprocessing import Process, set_start_method
 from os.path import isfile, exists
 from typing import Optional, Dict, List
+from pathlib import Path
 
 import msgpack
 
@@ -28,7 +29,6 @@ from firecracker.config import (
     NetworkInterface,
 )
 from firecracker.microvm import MicroVM, setfacl
-from firecracker.models import FilePath
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 set_start_method("spawn")
 
 
-def load_file_content(path: FilePath) -> bytes:
+def load_file_content(path: Path) -> bytes:
     if path:
         with open(path, "rb") as fd:
             return fd.read()
@@ -118,14 +118,14 @@ class AlephFirecrackerResources:
 
     message_content: ProgramContent
 
-    kernel_image_path: FilePath
-    code_path: FilePath
+    kernel_image_path: Path
+    code_path: Path
     code_encoding: Encoding
     code_entrypoint: str
-    rootfs_path: FilePath
+    rootfs_path: Path
     volumes: List[HostVolume]
-    volume_paths: Dict[str, FilePath]
-    data_path: Optional[FilePath]
+    volume_paths: Dict[str, Path]
+    data_path: Optional[Path]
     namespace: str
 
     def __init__(self, message_content: ProgramContent, namespace: str):
@@ -271,7 +271,7 @@ class AlephFirecrackerVM:
 
         config = FirecrackerConfig(
             boot_source=BootSource(
-                kernel_image_path=FilePath(
+                kernel_image_path=Path(
                     fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
                 boot_args=BootSource.args(enable_console=self.enable_console),
@@ -279,9 +279,7 @@ class AlephFirecrackerVM:
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=FilePath(
-                        fvm.enable_rootfs(self.resources.rootfs_path)
-                    ),
+                    path_on_host=Path(fvm.enable_rootfs(self.resources.rootfs_path)),
                     is_root_device=True,
                     is_read_only=True,
                 ),
