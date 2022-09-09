@@ -8,6 +8,8 @@ from typing import List, Tuple, Dict, Callable
 
 from aiohttp.web import Response, Request
 
+from vm_supervisor.utils import exception_handler
+
 try:
     import sentry_sdk
 except ImportError:
@@ -71,6 +73,14 @@ def parse_args(args):
         help="set loglevel to DEBUG",
         action="store_const",
         const=logging.DEBUG,
+    )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        dest="debug",
+        help="enable debug logging",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "-p",
@@ -240,8 +250,14 @@ def main():
 
     settings.check()
 
+    loop = asyncio.get_event_loop()
+
+    if args.debug:
+        loop.set_debug(True)
+
+    loop.set_exception_handler(exception_handler)
+
     if args.benchmark > 0:
-        loop = asyncio.get_event_loop()
         loop.run_until_complete(benchmark(runs=args.benchmark))
         print("Finished")
     elif args.do_not_run:

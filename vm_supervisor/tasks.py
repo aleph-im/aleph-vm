@@ -17,6 +17,7 @@ from .messages import load_updated_message
 from .models import VmHash
 from .pubsub import PubSub
 from .reactor import Reactor
+from .utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ async def start_watch_for_messages_task(app: web.Application):
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
-    app["messages_listener"] = asyncio.create_task(watch_for_messages(pubsub, reactor))
+    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor))
 
 
 async def stop_watch_for_messages_task(app: web.Application):
