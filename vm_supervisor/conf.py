@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
+    DEBUG_ASYNCIO = False
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
