@@ -45,12 +45,11 @@ class PubSub:
 
         # Cleanup: remove the queue from the subscribers
         for key in keys:
-            for subscriber in self.subscribers.values():
+            for subscriber in list(self.subscribers.values()):
                 subscriber.discard(queue)
                 # Remove keys with no remaining queue
-                if not self.subscribers.get(key):
+                if self.subscribers.get(key) == set():
                     self.subscribers.pop(key)
-
         return
 
     async def publish(self, key, value):
