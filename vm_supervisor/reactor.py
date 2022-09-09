@@ -1,12 +1,12 @@
-import asyncio
 import logging
-from typing import List, Dict, Coroutine
-
-from aleph_message.models.program import Subscription
+from typing import List, Coroutine
 
 from aleph_message.models import Message, ProgramMessage
+from aleph_message.models.program import Subscription
+
 from vm_supervisor.pubsub import PubSub
 from vm_supervisor.run import run_code_on_event
+from vm_supervisor.utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,8 @@ class Reactor:
                     break
 
         # Call all listeners asynchronously from the event loop:
-        loop = asyncio.get_event_loop()
         for coroutine in coroutines:
-            loop.create_task(coroutine)
+            create_task_log_exceptions(coroutine)
 
     def register(self, message: ProgramMessage):
         if message.content.on.message:

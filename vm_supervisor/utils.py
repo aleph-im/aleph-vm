@@ -1,9 +1,13 @@
+import asyncio
 import json
+import logging
 from base64 import b32decode, b16encode
 from dataclasses import is_dataclass, asdict as dataclass_as_dict
-from typing import Any, Optional
+from typing import Any, Optional, Coroutine, Dict
 
 import aiodns
+
+logger = logging.getLogger(__name__)
 
 
 def b32_to_b16(hash: str) -> bytes:
@@ -33,3 +37,17 @@ def to_json(o: Any):
 
 def dumps_for_json(o: Any, indent: Optional[int] = None):
     return json.dumps(o, default=to_json, indent=indent)
+
+
+async def run_and_log_exception(coro: Coroutine):
+    """Exceptions in coroutines may go unnoticed if they are not handled."""
+    try:
+        return await coro
+    except Exception as error:
+        logger.exception(error)
+        raise
+
+
+def create_task_log_exceptions(coro: Coroutine, *, name=None):
+    """Ensure that exceptions running in coroutines are logged."""
+    return asyncio.create_task(run_and_log_exception(coro), name=name)
