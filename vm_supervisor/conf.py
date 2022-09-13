@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     FAKE_DATA_PROGRAM: Optional[Path] = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
         abspath(join(__file__, "../../examples/example_fastapi"))
+        # abspath(join(__file__, "../../examples/example_docker_container"))
     )
 
     FAKE_DATA_MESSAGE = Path(
@@ -129,9 +130,11 @@ class Settings(BaseSettings):
     )
     FAKE_DATA_RUNTIME = Path(
         abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
+        # abspath(join(__file__, "../../runtimes/aleph-docker/rootfs.squashfs"))
     )
     FAKE_DATA_VOLUME: Optional[Path] = Path(
         abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+        # abspath(join(__file__, "../../examples/volumes/docker-data.squashfs"))
     )
 
     CHECK_FASTAPI_VM_ID = (

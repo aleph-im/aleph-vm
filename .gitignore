@@ -13,6 +13,8 @@ __pycache__
 /pydantic/
 node_modules
 *.squashfs
+.vscode
+rootfs/
 /examples/example_http_rust/target/
 /examples/example_django/static/admin/
 /runtimes/aleph-debian-11-python/rootfs/
