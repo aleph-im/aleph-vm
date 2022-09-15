@@ -5,7 +5,7 @@ set -uf -o pipefail
 if ! [[ -v container ]]; then
   # Stop the service during an upgrade.
   # The service does not exist during a new install and will fail, this is okay
-  systemctl stop aleph-vm-supervisorz.service
+  systemctl stop aleph-vm-supervisor.service
 fi
 
 set -e
