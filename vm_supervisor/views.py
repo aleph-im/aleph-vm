@@ -1,6 +1,7 @@
 import binascii
 import logging
 import os.path
+from hashlib import sha256
 from string import Template
 from typing import Awaitable, Optional
 
@@ -170,8 +171,26 @@ async def status_check_version(request: web.Request):
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
 
 
+def authenticate_api_request(request: web.Request) -> bool:
+    """Authenticate an API request to update the VM allocations.
+    """
+    signature: str = request.headers.get('X-Auth-Signature')
+    # body: bytes = await request.read()
+    if not signature:
+        raise web.HTTPUnauthorized(text="Authentication token is missing")
+
+    # Use a simple authentication method: the hash of the signature should match the value in the settings
+    if sha256(signature).hexdigest() != settings.ALLOCATION_TOKEN_HASH:
+        raise web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    return True
+
+
+
 async def update_allocations(request: web.Request):
-    # TODO: Add some form of authentication
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Invalid authentication")
+
     try:
         data = await request.json()
         allocation = Allocation(**data)
