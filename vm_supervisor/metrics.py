@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from .conf import settings
+from vm_supervisor.conf import make_db_url, settings
 
 Session: sessionmaker
 
@@ -21,7 +21,7 @@ Base = declarative_base()
 
 def setup_engine():
     global Session
-    engine = create_engine(f"sqlite:///{settings.EXECUTION_DATABASE}", echo=True)
+    engine = create_engine(make_db_url(), echo=True)
     Session = sessionmaker(bind=engine)
     return engine
 
