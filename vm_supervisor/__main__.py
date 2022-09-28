@@ -17,7 +17,8 @@ from . import metrics, supervisor
 from .conf import settings
 from .models import VmHash
 from .pubsub import PubSub
-from .run import run_code_on_event, run_code_on_request
+from .run import run_code_on_request, run_code_on_event
+import alembic.config
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,12 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
+def run_db_migrations():
+    from vm_supervisor.conf import make_db_url
+    print(make_db_url())
+    alembic.config.main(argv=["--config", "vm_supervisor/alembic.ini", "upgrade", "head"])
+
+
 def main():
     args = parse_args(sys.argv[1:])
 
@@ -248,6 +255,10 @@ def main():
         print(settings.display())
 
     settings.check()
+
+    logger.debug("Initialising the DB...")
+    run_db_migrations()
+    logger.debug("DB up to date.")
 
     if args.benchmark > 0:
         asyncio.run(benchmark(runs=args.benchmark), debug=args.debug_asyncio)
