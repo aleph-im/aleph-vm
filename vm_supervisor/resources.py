@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Set, Optional
@@ -122,6 +121,6 @@ async def about_system_usage(request: web.Request):
 
 
 class Allocation(BaseModel):
-    long_running_vms: Set[str]
+    persistent_vms: Set[str]
     on_demand_vms: Optional[Set[str]] = None
     jobs: Optional[Set] = None

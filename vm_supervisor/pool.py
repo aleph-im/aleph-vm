@@ -95,7 +95,7 @@ class VmPool:
             *(execution.stop() for vm_hash, execution in self.executions.items())
         )
 
-    def get_long_running_executions(self) -> Iterable[VmExecution]:
+    def get_persistent_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():
-            if execution.marked_as_long_running and execution.is_running:
+            if execution.marked_as_persistent and execution.is_running:
                 yield execution

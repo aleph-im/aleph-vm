@@ -17,7 +17,7 @@ from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
 from .resources import Allocation
-from .run import run_code_on_request, pool, start_long_running
+from .run import run_code_on_request, pool, start_persistent_vm
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
 
 logger = logging.getLogger(__name__)
@@ -201,17 +201,20 @@ async def update_allocations(request: web.Request):
 
     pubsub = request.app["pubsub"]
 
-    for vm_hash in allocation.long_running_vms:
+    # Start VMs
+    for vm_hash in allocation.persistent_vms:
         vm_hash = VmHash(vm_hash)
         logger.info(f"Starting long running VM {vm_hash}")
-        await start_long_running(vm_hash, pubsub)
+        await start_persistent_vm(vm_hash, pubsub)
 
-    for execution in pool.get_long_running_executions():
-        if execution.vm_hash not in allocation.long_running_vms:
+    # Stop VMs
+    for execution in pool.get_persistent_executions():
+        if execution.vm_hash not in allocation.persistent_vms:
             logger.info(f"Stopping long running VM {execution.vm_hash}")
             await execution.stop()
-            execution.marked_as_long_running = False
+            execution.marked_as_persistent = False
 
+    # Log unsupported features
     if allocation.on_demand_vms:
         logger.info("Not supported yet: 'allocation.on_demand_vms'")
     if allocation.jobs:

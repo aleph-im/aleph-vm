@@ -57,7 +57,7 @@ class VmExecution:
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
 
-    marked_as_long_running: bool = False
+    marked_as_persistent: bool = False
 
     @property
     def is_running(self):
@@ -124,7 +124,7 @@ class VmExecution:
             raise
 
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
-        if self.marked_as_long_running:
+        if self.marked_as_persistent:
             logger.debug("VM marked as long running. Ignoring timeout.")
             return
 
