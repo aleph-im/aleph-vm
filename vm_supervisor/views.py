@@ -10,7 +10,8 @@ from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 from packaging.version import Version, InvalidVersion
 
-from . import status, __version__
+from . import status
+from .version import __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash

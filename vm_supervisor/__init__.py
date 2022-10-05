@@ -16,8 +16,7 @@ from . import version
 from . import views
 from . import vm
 
-# The version number is hardcoded in the following line when packaging the software
-__version__ = version.get_version() or "version-unavailable"
+__version__ = version.__version__
 
 __all__ = (
     "conf",

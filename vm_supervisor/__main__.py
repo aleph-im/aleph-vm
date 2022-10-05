@@ -13,7 +13,7 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from vm_supervisor.pubsub import PubSub
+from .pubsub import PubSub
 from . import supervisor, metrics
 from .conf import settings
 from .models import VmHash

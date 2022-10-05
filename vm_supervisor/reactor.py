@@ -4,9 +4,9 @@ from typing import List, Coroutine
 from aleph_message.models import Message, ProgramMessage
 from aleph_message.models.program import Subscription
 
-from vm_supervisor.pubsub import PubSub
-from vm_supervisor.run import run_code_on_event
-from vm_supervisor.utils import create_task_log_exceptions
+from .pubsub import PubSub
+from .run import run_code_on_event
+from .utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 

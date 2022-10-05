@@ -124,7 +124,9 @@ async def start_watch_for_messages_task(app: web.Application):
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
-    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor))
+    app["messages_listener"] = create_task_log_exceptions(
+        watch_for_messages(pubsub, reactor)
+    )
 
 
 async def stop_watch_for_messages_task(app: web.Application):

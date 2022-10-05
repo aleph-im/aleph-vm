@@ -110,9 +110,7 @@ async def run_code_on_request(
             )
 
     except asyncio.TimeoutError:
-        logger.warning(
-            f"VM{execution.vm_id} did not respond within `resource.seconds`"
-        )
+        logger.warning(f"VM{execution.vm_id} did not respond within `resource.seconds`")
         return web.HTTPGatewayTimeout(
             body="Program did not respond within `resource.seconds`"
         )

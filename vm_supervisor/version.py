@@ -28,3 +28,7 @@ def get_version_from_apt() -> Optional[str]:
 
 def get_version() -> Optional[str]:
     return get_version_from_git() or get_version_from_apt()
+
+
+# The version number is hardcoded in the following line when packaging the software
+__version__ = get_version() or "version-unavailable"

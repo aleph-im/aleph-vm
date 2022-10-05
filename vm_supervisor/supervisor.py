@@ -11,12 +11,12 @@ from typing import Awaitable, Callable
 
 from aiohttp import web
 
-from . import __version__
 from . import metrics
 from .conf import settings
 from .resources import about_system_usage
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
+from .version import __version__
 from .views import (
     run_code_from_path,
     run_code_from_hostname,

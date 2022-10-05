@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 
 from aiohttp import ClientSession, ClientResponseError
 
-from vm_supervisor.conf import settings
+from .conf import settings
 
 logger = logging.getLogger(__name__)
 
