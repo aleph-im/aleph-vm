@@ -214,3 +214,30 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
+
+
+async def start_persistent_vm(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
+
+    if not execution:
+        logger.info(f"Starting persistent VM {vm_hash}")
+        execution = await create_vm_execution(vm_hash=vm_hash)
+    # If the VM was already running in lambda mode, it should not expire
+    # as long as it is also scheduled as long-running
+    execution.persistent = True
+    execution.cancel_expiration()
+
+    await execution.becomes_ready()
+
+    if settings.WATCH_FOR_UPDATES:
+        execution.start_watching_for_updates(pubsub=pubsub)
+
+    return execution
+
+
+async def stop_persistent_vm(vm_hash: VmHash) -> Optional[VmExecution]:
+    logger.info(f"Stopping persistent VM {vm_hash}")
+    execution = await pool.get_running_vm(vm_hash)
+    if execution:
+        await execution.stop()
+    return execution

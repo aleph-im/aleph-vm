@@ -1,6 +1,7 @@
 import binascii
 import logging
 import os.path
+from hashlib import sha256
 from string import Template
 from typing import Awaitable, Optional
 
@@ -9,13 +10,16 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 from packaging.version import Version, InvalidVersion
+from pydantic import ValidationError
 
 from . import status
 from .version import __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
-from .run import run_code_on_request, pool
+from .pubsub import PubSub
+from .resources import Allocation
+from .run import run_code_on_request, pool, start_persistent_vm
 from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
 
 logger = logging.getLogger(__name__)
@@ -167,3 +171,50 @@ async def status_check_version(request: web.Request):
         )
     else:
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
+
+
+def authenticate_api_request(request: web.Request) -> bool:
+    """Authenticate an API request to update the VM allocations."""
+    signature: bytes = request.headers.get("X-Auth-Signature").encode()
+
+    if not signature:
+        raise web.HTTPUnauthorized(text="Authentication token is missing")
+
+    # Use a simple authentication method: the hash of the signature should match the value in the settings
+    return sha256(signature).hexdigest() == settings.ALLOCATION_TOKEN_HASH
+
+
+async def update_allocations(request: web.Request):
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    try:
+        data = await request.json()
+        allocation = Allocation.parse_obj(data)
+    except ValidationError as error:
+        return web.json_response(
+            data=error.json(), status=web.HTTPBadRequest.status_code
+        )
+
+    pubsub: PubSub = request.app["pubsub"]
+
+    # Start VMs
+    for vm_hash in allocation.persistent_vms:
+        vm_hash = VmHash(vm_hash)
+        logger.info(f"Starting long running VM {vm_hash}")
+        await start_persistent_vm(vm_hash, pubsub)
+
+    # Stop VMs
+    for execution in pool.get_persistent_executions():
+        if execution.vm_hash not in allocation.persistent_vms:
+            logger.info(f"Stopping long running VM {execution.vm_hash}")
+            await execution.stop()
+            execution.persistent = False
+
+    # Log unsupported features
+    if allocation.on_demand_vms:
+        logger.warning("Not supported yet: 'allocation.on_demand_vms'")
+    if allocation.jobs:
+        logger.warning("Not supported yet: 'allocation.on_demand_vms'")
+
+    return web.json_response(data={"success": True})

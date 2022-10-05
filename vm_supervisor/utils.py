@@ -3,7 +3,7 @@ import json
 import logging
 from base64 import b32decode, b16encode
 from dataclasses import is_dataclass, asdict as dataclass_as_dict
-from typing import Any, Optional, Coroutine, Dict
+from typing import Any, Optional, Coroutine
 
 import aiodns
 
