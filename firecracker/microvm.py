@@ -11,6 +11,8 @@ from pwd import getpwnam
 from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, List
 
+from aleph_message.models.program import PortMapping
+
 from .config import FirecrackerConfig
 from .config import Drive
 
@@ -327,6 +329,17 @@ class MicroVM:
 
         return host_dev_name
 
+    def publish_ports(self, port_mappings: List[PortMapping]):
+        interface = self.network_interface
+
+        for mapping in port_mappings:
+            system(f"iptables -A PREROUTING -t nat "
+                   f"-i {interface} "
+                   f"-p {mapping.protocol} "
+                   f"--dport {mapping.public_port} "
+                   f"-j DNAT "
+                   f"--to {self.guest_ip}:{mapping.port}")
+
     async def print_logs(self):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
@@ -443,6 +456,10 @@ class MicroVM:
             system(
                 f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
             )
+
+            # system(
+            #     ... # TODO remove nat rules for the VM
+            # )
 
         if self._unix_socket:
             logger.debug("Closing unix socket")

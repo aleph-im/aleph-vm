@@ -1,16 +1,17 @@
 
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Set, Optional
+from typing import Set, Optional, List
 from typing import Tuple
 
 import cpuinfo
 import psutil
 from aiohttp import web
-from aleph_message.models.program import CpuProperties
+from aleph_message.models.program import CpuProperties, PortMapping
 from pydantic import BaseModel
 
 from .conf import settings
+from .models import VmHash
 
 
 class Period(BaseModel):
@@ -119,6 +120,11 @@ async def about_system_usage(request: web.Request):
     return web.json_response(
         text=usage.json(exclude_none=True),
     )
+
+
+class ProgramAllocation(BaseModel):
+    program_id: VmHash
+    port_mappings: Optional[List[PortMapping]] = None
 
 
 class Allocation(BaseModel):

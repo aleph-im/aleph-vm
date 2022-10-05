@@ -1,10 +1,14 @@
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import msgpack
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
+from aiohttp.web_exceptions import (
+    HTTPBadRequest,
+    HTTPInternalServerError,
+)
+from aleph_message.models.program import PortMapping
 from msgpack import UnpackValueError
 
 from firecracker.microvm import MicroVMFailedInit
@@ -13,6 +17,7 @@ from .messages import load_updated_message
 from .models import VmHash, VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
+from .resources import ProgramAllocation
 from .vm.firecracker_microvm import (
     ResourceDownloadError,
     VmSetupError,
@@ -44,8 +49,17 @@ async def build_event_scope(event) -> Dict[str, Any]:
     }
 
 
-async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
+async def create_vm_execution(vm_hash: VmHash, port_mappings: Optional[List[PortMapping]] = None) -> VmExecution:
+
+    # try:
+    #     message, original_message = try_load_updated_message(vm_hash, attempts=5)
+    # except HTTPNotFound as error:
+    #     raise HTTPServiceUnavailable(text=f"Message could not be loaded {error.args}")
+
     message, original_message = await load_updated_message(vm_hash)
+
+    # TODO: Verify that port mappings match ports published
+
     pool.message_cache[vm_hash] = message
 
     try:
@@ -53,6 +67,7 @@ async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
             vm_hash=vm_hash,
             program=message.content,
             original=original_message.content,
+            port_mappings=port_mappings,
         )
     except ResourceDownloadError as error:
         logger.exception(error)
@@ -215,11 +230,12 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             await execution.stop()
 
 
-async def start_long_running(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
-    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
+async def start_long_running(program_allocation: ProgramAllocation, pubsub: PubSub) -> VmExecution:
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=program_allocation.program_id)
 
     if not execution:
-        execution = await create_vm_execution(vm_hash=vm_hash)\
+        execution = await create_vm_execution(vm_hash=program_allocation.program_id,
+                                              port_mappings=program_allocation.port_mappings)
 
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running

@@ -5,16 +5,17 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NewType, Optional, Dict
+from typing import NewType, Optional, Dict, List
 
 from aleph_message.models import ProgramContent
+from aleph_message.models.program import PortMapping
 
+from .conf import settings
 from .metrics import save_record, save_execution_data, ExecutionRecord
 from .pubsub import PubSub
 from .utils import dumps_for_json
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
-from .conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class VmExecution:
     update_task: Optional[asyncio.Task] = None
 
     marked_as_long_running: bool = False
+    port_mappings: List[PortMapping]
 
     @property
     def is_running(self):
@@ -68,7 +70,8 @@ class VmExecution:
         return self.ready_event.wait
 
     def __init__(
-        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+            self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent,
+            port_mappings: Optional[List[PortMapping]] = None
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -78,6 +81,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.port_mappings = port_mappings or []
 
     def to_dict(self) -> Dict:
         return {
@@ -109,6 +113,7 @@ class VmExecution:
         )
         try:
             await vm.setup()
+            await vm.publish_ports(self.port_mappings)
             await vm.start()
             await vm.configure()
             await vm.start_guest_api()
