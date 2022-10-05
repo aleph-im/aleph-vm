@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Iterable
 
 from aleph_message.models import ProgramContent, ProgramMessage
 
@@ -94,3 +94,8 @@ class VmPool:
         await asyncio.gather(
             *(execution.stop() for vm_hash, execution in self.executions.items())
         )
+
+    def get_persistent_executions(self) -> Iterable[VmExecution]:
+        for vm_hash, execution in self.executions.items():
+            if execution.persistent and execution.is_running:
+                yield execution
