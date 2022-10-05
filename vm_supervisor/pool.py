@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Iterable
 
 from aleph_message.models import ProgramContent, ProgramMessage
 

@@ -106,7 +106,9 @@ class Settings(BaseSettings):
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
     # hashlib.sha256(b"secret-token").hexdigest()
-    ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
+    ALLOCATION_TOKEN_HASH = (
+        "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
+    )
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
