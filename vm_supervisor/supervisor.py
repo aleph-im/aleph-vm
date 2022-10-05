@@ -24,7 +24,8 @@ from .views import (
     about_executions,
     about_config,
     status_check_fastapi,
-    about_execution_records, status_check_version,
+    about_execution_records,
+    status_check_version,
 )
 
 logger = logging.getLogger(__name__)

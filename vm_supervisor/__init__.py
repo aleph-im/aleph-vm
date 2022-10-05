@@ -2,6 +2,10 @@ import logging
 from subprocess import check_output, CalledProcessError
 from typing import Optional
 
+from . import supervisor
+
+assert supervisor
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,7 +23,8 @@ def get_version_from_git() -> Optional[str]:
 def get_version_from_apt() -> Optional[str]:
     try:
         import apt
-        return apt.Cache().get('aleph-vm').installed.version
+
+        return apt.Cache().get("aleph-vm").installed.version
     except ImportError:
         logger.warning("apt version not available")
         return None
@@ -31,6 +36,3 @@ def get_version() -> Optional[str]:
 
 # The version number is harcoded in the following line when packaging the software
 __version__ = get_version() or "version-unavailable"
-
-
-from . import supervisor

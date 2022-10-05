@@ -9,12 +9,12 @@ from typing import NewType, Optional, Dict
 
 from aleph_message.models import ProgramContent
 
+from .conf import settings
 from .metrics import save_record, save_execution_data, ExecutionRecord
 from .pubsub import PubSub
 from .utils import dumps_for_json
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
-from .conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ class VmExecution:
     @property
     def becomes_ready(self):
         return self.ready_event.wait
+
+    @property
+    def vm_id(self) -> Optional[int]:
+        return self.vm.vm_id if self.vm else None
 
     def __init__(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent

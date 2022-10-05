@@ -67,7 +67,7 @@ async def check_internet(session: ClientSession) -> bool:
 async def check_cache(session: ClientSession) -> bool:
     try:
         result1: bool = await get_json_from_vm(session, "/cache/set/a/42")
-        assert result1 == True
+        assert result1 is True
         result2: int = await get_json_from_vm(session, "/cache/get/a")
         assert result2 == "42"
         keys: List[str] = await get_json_from_vm(session, "/cache/keys")
@@ -95,7 +95,7 @@ async def check_error_raised(session: ClientSession) -> bool:
     try:
         async with session.get(f"{CHECK_VM_URL}/raise") as resp:
             text = await resp.text()
-            return (resp.status == 500 and "Traceback" in text)
+            return resp.status == 500 and "Traceback" in text
     except ClientResponseError:
         return False
 

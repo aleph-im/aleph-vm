@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional, Iterable
+from typing import Dict, Optional
 
 from aleph_message.models import ProgramContent, ProgramMessage
 
@@ -55,12 +55,16 @@ class VmPool:
             #
             # We therefore recycle vm_id values from executions that are not running
             # anymore.
-            currently_used_vm_ids = set(execution.vm.vm_id
-                                        for execution in self.executions.values()
-                                        if execution.is_running)
+            currently_used_vm_ids = set(
+                execution.vm_id
+                for execution in self.executions.values()
+                if execution.is_running
+            )
             for i in range(settings.START_ID_INDEX, 255**2):
                 if i not in currently_used_vm_ids:
                     return i
+            else:
+                raise ValueError("No available value for vm_id.")
 
     async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
         """Return a running VM or None. Disables the VM expiration task."""
