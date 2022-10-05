@@ -224,7 +224,7 @@ async def start_persistent_vm(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
         execution = await create_vm_execution(vm_hash=vm_hash)
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
-    execution.marked_as_persistent = True
+    execution.persistent = True
     execution.cancel_expiration()
 
     await execution.becomes_ready()

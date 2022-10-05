@@ -209,7 +209,7 @@ async def update_allocations(request: web.Request):
         if execution.vm_hash not in allocation.persistent_vms:
             logger.info(f"Stopping long running VM {execution.vm_hash}")
             await execution.stop()
-            execution.marked_as_persistent = False
+            execution.persistent = False
 
     # Log unsupported features
     if allocation.on_demand_vms:

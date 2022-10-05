@@ -97,5 +97,5 @@ class VmPool:
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():
-            if execution.marked_as_persistent and execution.is_running:
+            if execution.persistent and execution.is_running:
                 yield execution
