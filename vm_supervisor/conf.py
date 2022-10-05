@@ -5,7 +5,7 @@ from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List
+from typing import NewType, Optional, List, Dict, Any
 
 from pydantic import BaseSettings, Field
 
@@ -28,7 +28,7 @@ def etc_resolv_conf_dns_servers():
 
 
 def systemd_resolved_dns_servers(interface):
-    ## Example output format from systemd-resolve --status {interface}:
+    # Example output format from systemd-resolve --status {interface}:
     # Link 2 (enp7s0)
     #       Current Scopes: DNS
     # DefaultRoute setting: yes

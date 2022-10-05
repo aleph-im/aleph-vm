@@ -77,7 +77,7 @@ class Volume:
 @dataclass
 class HostVolume:
     mount: str
-    path_on_host: str
+    path_on_host: Path
     read_only: bool
 
 
@@ -454,7 +454,9 @@ class AlephFirecrackerVM:
             return response
 
         try:
-            reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+            reader, writer = await asyncio.open_unix_connection(
+                path=self.fvm.vsock_path
+            )
         except ConnectionRefusedError:
             raise VmInitNotConnected("MicroVM may have crashed")
         try:

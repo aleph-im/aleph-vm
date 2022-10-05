@@ -71,6 +71,7 @@ async def repost(request: web.Request):
 
 async def properties(request: web.Request):
     logger.debug("Forwarding signing properties")
+    _ = request
 
     url = f"{ALEPH_VM_CONNECTOR}/properties"
     async with aiohttp.ClientSession() as session:
@@ -150,7 +151,7 @@ async def list_keys_from_cache(request: web.Request):
 
     redis: aioredis.Redis = await get_redis()
     result = await redis.keys(f"{prefix}:{pattern}")
-    keys = [key.decode()[len(prefix) + 1 :] for key in result]
+    keys = [key.decode()[len(prefix) + 1:] for key in result]
     return web.json_response(keys)
 
 

@@ -1,3 +1,4 @@
+from . import firecracker_microvm
 from .firecracker_microvm import AlephFirecrackerVM
 
-assert AlephFirecrackerVM
+__all__ = ("firecracker_microvm", "AlephFirecrackerVM")
