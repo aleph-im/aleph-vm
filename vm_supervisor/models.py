@@ -9,12 +9,12 @@ from typing import NewType, Optional, Dict
 
 from aleph_message.models import ProgramContent
 
+from .conf import settings
 from .metrics import save_record, save_execution_data, ExecutionRecord
 from .pubsub import PubSub
 from .utils import dumps_for_json, create_task_log_exceptions
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
-from .conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ class VmExecution:
     @property
     def becomes_ready(self):
         return self.ready_event.wait
+
+    @property
+    def vm_id(self) -> Optional[int]:
+        return self.vm.vm_id if self.vm else None
 
     def __init__(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
@@ -122,7 +126,6 @@ class VmExecution:
             logger.debug("VM already has a timeout. Extending it.")
             self.expire_task.cancel()
 
-        loop = asyncio.get_event_loop()
         if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
             # Task can be named
             vm_id: str = str(self.vm.vm_id if self.vm else None)
@@ -169,7 +172,9 @@ class VmExecution:
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
-            self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
+            self.update_task = create_task_log_exceptions(
+                self.watch_for_updates(pubsub=pubsub)
+            )
 
     async def watch_for_updates(self, pubsub: PubSub):
         await pubsub.msubscribe(

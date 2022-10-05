@@ -87,7 +87,7 @@ async def run_code_on_request(
     if not execution:
         execution = await create_vm_execution(vm_hash=vm_hash)
 
-    logger.debug(f"Using vm={execution.vm.vm_id}")
+    logger.debug(f"Using vm={execution.vm_id}")
 
     scope: Dict = await build_asgi_scope(path, request)
 
@@ -95,7 +95,7 @@ async def run_code_on_request(
         await execution.becomes_ready()
         result_raw: bytes = await execution.run_code(scope=scope)
 
-        if result_raw == b'':
+        if result_raw == b"":
             # Missing result from the init process of the virtual machine, not even an error message.
             # It may have completely crashed.
 
@@ -103,13 +103,14 @@ async def run_code_on_request(
             # It will be restarted on a future request.
             await execution.stop()
 
-            return web.Response(status=502, reason="No response from VM",
-                                text="VM did not respond and was shut down")
+            return web.Response(
+                status=502,
+                reason="No response from VM",
+                text="VM did not respond and was shut down",
+            )
 
     except asyncio.TimeoutError:
-        logger.warning(
-            f"VM{execution.vm.vm_id} did not respond within `resource.seconds`"
-        )
+        logger.warning(f"VM{execution.vm_id} did not respond within `resource.seconds`")
         return web.HTTPGatewayTimeout(
             body="Program did not respond within `resource.seconds`"
         )
@@ -175,7 +176,7 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
     if not execution:
         execution = await create_vm_execution(vm_hash=vm_hash)
 
-    logger.debug(f"Using vm={execution.vm.vm_id}")
+    logger.debug(f"Using vm={execution.vm_id}")
 
     scope: Dict = await build_event_scope(event)
 

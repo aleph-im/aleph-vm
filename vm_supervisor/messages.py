@@ -4,8 +4,8 @@ from typing import Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPServiceUnavailable, HTTPNotFound
-
 from aleph_message.models import ProgramMessage
+
 from .models import VmHash
 from .storage import get_message, get_latest_amend
 

@@ -109,7 +109,7 @@ async def get_code_path(ref: str) -> Path:
             logger.debug(f"Squashfs generated on {archive_path}.squashfs")
             return Path(f"{archive_path}.squashfs")
         elif encoding == Encoding.zip:
-            make_archive(archive_path, "zip", root_dir=archive_path)
+            make_archive(str(archive_path), "zip", root_dir=archive_path)
             logger.debug(f"Zip generated on {archive_path}.zip")
             return Path(f"{archive_path}.zip")
         else:
@@ -124,7 +124,7 @@ async def get_code_path(ref: str) -> Path:
 async def get_data_path(ref: str) -> Path:
     if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_DATA:
         data_dir = settings.FAKE_DATA_DATA
-        make_archive(data_dir, "zip", data_dir)
+        make_archive(str(data_dir), "zip", data_dir)
         return Path(f"{data_dir}.zip")
 
     cache_path = Path(join(settings.DATA_CACHE, ref))
