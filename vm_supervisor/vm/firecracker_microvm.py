@@ -19,7 +19,7 @@ except ImportError:
 from aiohttp import ClientResponseError
 
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources, Encoding
+from aleph_message.models.program import MachineResources, Encoding, PortMapping
 from firecracker.config import (
     BootSource,
     Drive,
@@ -319,6 +319,11 @@ class AlephFirecrackerVM:
         except Exception:
             await fvm.teardown()
             raise
+
+    async def publish_ports(self, port_mappings: List[PortMapping]):
+        if not self.fvm:
+            raise ValueError("MicroVM is not defined yet")
+        return self.fvm.publish_ports(port_mappings=port_mappings)
 
     async def start(self):
         logger.debug(f"starting vm {self.vm_id}")
