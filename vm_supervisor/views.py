@@ -3,14 +3,15 @@ import logging
 import os.path
 from string import Template
 from typing import Awaitable, Optional
-from packaging.version import Version, InvalidVersion
 
 import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
+from packaging.version import Version, InvalidVersion
 
-from . import status, __version__
+from . import status
+from .version import __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
@@ -75,7 +76,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
     return await run_code_on_request(message_ref, path, request)
 
 
-def authenticate_request(request: web.Request) -> web.Response:
+def authenticate_request(request: web.Request) -> None:
     """Check that the token in the cookies matches the app's secret token."""
     if request.cookies.get("token") != request.app["secret_token"]:
         raise web.HTTPUnauthorized(reason="Invalid token", text="401 Invalid token")

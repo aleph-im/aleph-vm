@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 VSOCK_PATH = "/tmp/v.sock"
 JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
 
+
 class MicroVMFailedInit(Exception):
     pass
 
@@ -376,8 +377,14 @@ class MicroVM:
         logger.debug(f"Shutdown vm={self.vm_id}")
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
-        except (FileNotFoundError, ConnectionResetError, ConnectionRefusedError) as error:
-            logger.warning(f"VM={self.vm_id} cannot receive shutdown signal: {error.args}")
+        except (
+            FileNotFoundError,
+            ConnectionResetError,
+            ConnectionRefusedError,
+        ) as error:
+            logger.warning(
+                f"VM={self.vm_id} cannot receive shutdown signal: {error.args}"
+            )
             return
 
         try:
@@ -390,15 +397,17 @@ class MicroVM:
             logger.debug(f"ack={ack.decode()}")
 
             msg: bytes = await reader.readline()
-            logger.debug(f"msg={msg}")
+            logger.debug(f"msg={msg!r}")
 
             msg2: bytes = await reader.readline()
-            logger.debug(f"msg2={msg2}")
+            logger.debug(f"msg2={msg2!r}")
 
             if msg2 != b"STOPZ\n":
                 logger.warning(f"Unexpected response from VM: {msg2[:20]}")
         except ConnectionResetError as error:
-            logger.warning(f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}")
+            logger.warning(
+                f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}"
+            )
 
     async def stop(self):
         if self.proc:
