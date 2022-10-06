@@ -11,22 +11,32 @@ logger = logging.getLogger(__name__)
 logger.debug("Imports starting")
 
 import ctypes
+logger.debug("1")
 import asyncio
 import os
+logger.debug("2")
 import socket
 from enum import Enum
+logger.debug("3")
 import subprocess
 import sys
 import traceback
+logger.debug("4")
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from io import StringIO
+logger.debug("5")
 from os import system
+logger.debug("6")
 from shutil import make_archive
+logger.debug("7")
 from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
+logger.debug("8")
 
 import aiohttp
+logger.debug("9")
 import msgpack
+logger.debug("10")
 
 logger.debug("Imports finished")
 
@@ -449,8 +459,17 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_docker():
+    # tmp docker test overlay
+# mkdir -p /docker
+# /bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker
+# mkdir -p /docker/persist/work /docker/persist/upper
+# /bin/mount -o noatime,lowerdir=/opt/docker,upperdir=/docker/persist/upper,workdir=/docker/persist/work -t overlay "overlayfs:/docker/persist/upper" /var/lib/docker
+
+# echo HERE
+# stat -f -c %T /overlay/
     docker_mountpoint = os.environ.get("DOCKER_MOUNTPOINT")
-    system(f"ls {docker_mountpoint}")
+    os.makedirs("/docker", exist_ok=True)
+    system("bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker")
     os.makedirs("/docker/persist/work", exist_ok=True)
     os.makedirs("/docker/persist/upper", exist_ok=True)
     system("stat -f /")

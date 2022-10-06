@@ -10,5 +10,7 @@ else
   DOCKER_COMMAND=docker
 fi
 
+echo DOCKER_COMMAND=$DOCKER_COMMAND
+
 $DOCKER_COMMAND build -t aleph-vm-build-squashfs .
 $DOCKER_COMMAND run --rm -v "$(pwd)":/mnt aleph-vm-build-squashfs

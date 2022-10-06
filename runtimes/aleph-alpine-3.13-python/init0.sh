@@ -43,5 +43,7 @@ log "Setup socat"
 socat UNIX-LISTEN:/tmp/socat-socket,fork,reuseaddr VSOCK-CONNECT:2:53 &
 log "Socat ready"
 
+pip show aiohttp
+
 # Replace this script with the manager
 exec /root/init1.py
