@@ -5,15 +5,15 @@ FROM debian:bullseye
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl squashfs-tools git \
     python3 python3-aiohttp python3-msgpack python3-pip python3-aiodns python3-aioredis  \
-    python3-psutil python3-setproctitle python3-sqlalchemy python3-packaging \
+    python3-psutil python3-setproctitle python3-sqlalchemy python3-packaging python3-cpuinfo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd jailman
 
 RUN mkdir /opt/firecracker
 RUN chown $(whoami) /opt/firecracker
-RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory /opt/firecracker
-RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.1.0/vmlinux.bin
+RUN curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.1.1/firecracker-v1.1.1-x86_64.tgz | tar -xz --directory /opt/firecracker
+RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
 
 # Link binaries on version-agnostic paths:
 RUN ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
@@ -36,7 +36,14 @@ ENV ALEPH_VM_FAKE_DATA True
 ENV ALEPH_VM_SUPERVISOR_HOST "0.0.0.0"
 
 # Make it easy to enter this command from a shell script
-RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_docker_container > log.txt 2>&1"  >> /root/.bash_history
+RUN echo "python3 -m vm_supervisor --print-settings --very-verbose --system-logs --profile -f ./examples/example_docker_container" >> /root/.bash_history
+
+
+ENV BENCHMARK_FAKE_DATA_PROGRAM="/opt/aleph-vm/examples/example_docker_container"
+ENV FAKE_DATA_MESSAGE="/opt/aleph-vm/examples/message_from_aleph_docker_runtime.json"
+ENV FAKE_DATA_DATA="/opt/aleph-vm/examples/data/"
+ENV FAKE_DATA_RUNTIME="/opt/aleph-vm/runtimes/aleph-docker/rootfs.squashfs"
+ENV FAKE_DATA_VOLUME="/opt/aleph-vm/examples/volumes/docker-data.squashfs"
 
 RUN mkdir /opt/aleph-vm/
 COPY ./vm_supervisor /opt/aleph-vm/vm_supervisor

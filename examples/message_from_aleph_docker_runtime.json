@@ -50,7 +50,7 @@
         "runtime": {
             "ref": "5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51",
             "use_latest": false,
-            "comment": "Aleph Alpine Linux with Python 3.8"
+            "comment": "Aleph Debian Linux with Docker"
         },
         "volumes": [
             {

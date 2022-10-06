@@ -10,22 +10,27 @@ logger = logging.getLogger(__name__)
 
 logger.debug("Imports starting")
 
-import ctypes
-import asyncio
-import os
-import socket
-from enum import Enum
-import subprocess
-import sys
-import traceback
-from contextlib import redirect_stdout
-from dataclasses import dataclass, field
-from io import StringIO
-from os import system
-from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
+# import ctypes
+# import asyncio
+# import os
+# import socket
+# from enum import Enum
+# import subprocess
+# import sys
+# import traceback
+# from contextlib import redirect_stdout
+# from dataclasses import dataclass, field
+# from io import StringIO
+# from os import system
+# from shutil import make_archive
+# from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
 
-import aiohttp
+from aiohttp import (
+    ClientTimeout,
+    ClientConnectorError,
+    ClientSession
+)
+
 import msgpack
 
 logger.debug("Imports finished")
@@ -332,13 +337,13 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
     headers = None
     body = None
 
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    timeout = ClientTimeout(total=5)
+    async with ClientSession(timeout=timeout) as session:
         while not body:
             try:
                 tries += 1
                 headers, body = await make_request(session, scope)
-            except aiohttp.ClientConnectorError:
+            except ClientConnectorError:
                 if tries > 20:
                     raise
                 await asyncio.sleep(0.05)
@@ -367,7 +372,7 @@ async def process_instruction(
             # Close the cached session in aleph_client:
             from aleph_client.asynchronous import get_fallback_session
 
-            session: aiohttp.ClientSession = get_fallback_session()
+            session: ClientSession = get_fallback_session()
             await session.close()
             logger.debug("Aiohttp cached session closed")
         yield b"STOP\n"

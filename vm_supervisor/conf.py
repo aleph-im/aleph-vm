@@ -6,6 +6,7 @@ from os.path import isfile, join, exists, abspath, isdir
 from pathlib import Path
 from subprocess import check_output
 from typing import NewType, Optional, List
+from os import environ
 
 from pydantic import BaseSettings, Field
 
@@ -110,23 +111,25 @@ class Settings(BaseSettings):
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
-        abspath(join(__file__, "../../examples/example_fastapi"))
-        # abspath(join(__file__, "../../examples/example_docker_container"))
+        environ.get("BENCHMARK_FAKE_DATA_PROGRAM")
+        or abspath(join(__file__, "../../examples/example_fastapi"))
     )
 
     FAKE_DATA_MESSAGE = Path(
-        abspath(join(__file__, "../../examples/message_from_aleph.json"))
+        environ.get("FAKE_DATA_MESSAGE")
+        or abspath(join(__file__, "../../examples/message_from_aleph.json"))
     )
     FAKE_DATA_DATA: Optional[Path] = Path(
-        abspath(join(__file__, "../../examples/data/"))
+        environ.get("FAKE_DATA_DATA")
+        or abspath(join(__file__, "../../examples/data/"))
     )
     FAKE_DATA_RUNTIME = Path(
-        abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
-        # abspath(join(__file__, "../../runtimes/aleph-docker/rootfs.squashfs"))
+        environ.get("FAKE_DATA_RUNTIME")
+        or abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
     )
     FAKE_DATA_VOLUME: Optional[Path] = Path(
-        abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
-        # abspath(join(__file__, "../../examples/volumes/docker-data.squashfs"))
+        environ.get("FAKE_DATA_VOLUME")
+        or abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
     )
 
     CHECK_FASTAPI_VM_ID = (

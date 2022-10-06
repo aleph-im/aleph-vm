@@ -15,8 +15,6 @@ mkdir -p /overlay
 mkdir -p /overlay/root/rw /overlay/root/work
 /bin/mount -o noatime,lowerdir=/,upperdir=/overlay/root/rw,workdir=/overlay/root/work -t overlay "overlayfs:/overlay/root/rw" /mnt
 
-echo HERE
-stat -f -c %T /overlay/
 
 # Same for /var/lib/docker
 # /data
@@ -41,6 +39,7 @@ mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mount -t tmpfs shm /dev/shm -omode=1777,nosuid,nodev
 
 cgroupfs-mount
+
 # List block devices
 lsblk
 
