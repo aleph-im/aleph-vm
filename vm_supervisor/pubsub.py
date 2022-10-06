@@ -5,13 +5,18 @@ Used to trigger VM shutdown on updates.
 
 import asyncio
 import logging
+import sys
 from typing import Dict, Hashable, Set
 
 logger = logging.getLogger(__name__)
 
 
 class PubSub:
-    subscribers: Dict[Hashable, Set[asyncio.Queue[set]]]
+    if sys.version_info >= (3, 9):
+        subscribers: Dict[Hashable, Set[asyncio.Queue[Set]]]
+    else:
+        # Support for Python 3.8 (Ubuntu 20.04)
+        subscribers: Dict[Hashable, Set[asyncio.Queue]]
 
     def __init__(self):
         self.subscribers = {}
