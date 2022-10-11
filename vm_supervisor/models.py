@@ -100,7 +100,9 @@ class VmExecution:
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
-    async def create(self, vm_id: int) -> AlephFirecrackerVM:
+    async def create(
+        self, vm_id: int, host_ip: str = None, guest_ip: str = None
+    ) -> AlephFirecrackerVM:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
@@ -110,6 +112,8 @@ class VmExecution:
             resources=self.resources,
             enable_networking=self.program.environment.internet,
             hardware_resources=self.program.resources,
+            guest_ip=guest_ip,
+            host_ip=host_ip,
         )
         try:
             await vm.setup()

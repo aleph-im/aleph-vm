@@ -12,6 +12,8 @@ from pathlib import Path
 
 import msgpack
 
+from ..utils import get_ip_addresses
+
 try:
     import psutil as psutil
 except ImportError:
@@ -211,6 +213,8 @@ class AlephFirecrackerVM:
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
+    host_ip: Optional[str] = None
+    guest_ip: Optional[str] = None
 
     def __init__(
         self,
@@ -220,11 +224,16 @@ class AlephFirecrackerVM:
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
+        host_ip: Optional[str] = None,
+        guest_ip: Optional[str] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
         self.resources = resources
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
+        if self.enable_networking:
+            self.host_ip = host_ip
+            self.guest_ip = guest_ip
         if enable_console is None:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
@@ -260,12 +269,19 @@ class AlephFirecrackerVM:
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
+        host_ip, guest_ip = get_ip_addresses(
+            self.vm_id,
+            address_pool=settings.IPV4_ADDRESS_POOL,
+            ip_network_size=settings.IPV4_NETWORK_SIZE,
+        )
         fvm = MicroVM(
             vm_id=self.vm_id,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
+            host_ip=host_ip,
+            guest_ip=guest_ip,
         )
         fvm.prepare_jailer()
 

@@ -123,11 +123,11 @@ def setup_network(
     system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
-    system(f"ip addr add {ip}/24 dev eth0")
+    system(f"ip addr add {ip} dev eth0")
     system("ip link set eth0 up")
 
     if route:
-        system(f"ip route add default via {route} dev eth0")
+        system(f"ip route add default via {route.split('/')[0]} dev eth0")
         logger.debug("IP and route set")
     else:
         logger.warning("IP set with no network route")
