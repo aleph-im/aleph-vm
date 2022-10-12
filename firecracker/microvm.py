@@ -71,6 +71,8 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
+    guest_ip: Optional[str]
+    host_ip: Optional[str]
 
     _unix_socket: Server
 
@@ -97,14 +99,6 @@ class MicroVM:
         else:
             return f"{VSOCK_PATH}"
 
-    @property
-    def guest_ip(self):
-        return f"172.{self.vm_id // 256}.{self.vm_id % 256}.2"
-
-    @property
-    def host_ip(self):
-        return f"172.{self.vm_id // 256}.{self.vm_id % 256}.1"
-
     def __init__(
         self,
         vm_id: int,
@@ -112,6 +106,8 @@ class MicroVM:
         use_jailer: bool = True,
         jailer_bin_path: Optional[str] = None,
         init_timeout: float = 5.0,
+        guest_ip: Optional[str] = None,
+        host_ip: Optional[str] = None,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
@@ -119,6 +115,8 @@ class MicroVM:
         self.jailer_bin_path = jailer_bin_path
         self.drives = []
         self.init_timeout = init_timeout
+        self.guest_ip = guest_ip
+        self.host_ip = host_ip
 
     def to_dict(self):
         return {
@@ -316,7 +314,7 @@ class MicroVM:
         self.network_tap = host_dev_name
 
         system(f"ip tuntap add {host_dev_name} mode tap")
-        system(f"ip addr add {self.host_ip}/24 dev {host_dev_name}")
+        system(f"ip addr add {self.host_ip} dev {host_dev_name}")
         system(f"ip link set {host_dev_name} up")
         system('sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"')
         # TODO: Don't fill iptables with duplicate rules; purge rules on delete

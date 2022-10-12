@@ -44,8 +44,10 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
+        _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
+        available_bits = int(network_range) - settings.IPV4_NETWORK_SIZE
         self.counter += 1
-        if self.counter < 255**2:
+        if self.counter < 2**available_bits:
             # In common cases, use the counter itself as the vm_id. This makes it
             # easier to debug.
             return self.counter

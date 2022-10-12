@@ -72,17 +72,22 @@ class Settings(BaseSettings):
     REUSE_TIMEOUT: float = 60 * 60.0
     WATCH_FOR_MESSAGES = True
     WATCH_FOR_UPDATES = True
-    NETWORK_INTERFACE = "eth0"
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
-    DNS_NAMESERVERS: Optional[List[str]] = None
 
     API_SERVER = "https://official.aleph.cloud"
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
     DEBUG_ASYNCIO = False
+
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
+    NETWORK_INTERFACE = "eth0"
+    IPV4_ADDRESS_POOL = "172.16.0.0/12"
+    IPV4_NETWORK_SIZE = 24
+
+    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
+    DNS_NAMESERVERS: Optional[List[str]] = None
+
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
     JAILER_PATH = "/opt/firecracker/jailer"
     LINUX_PATH = "/opt/firecracker/vmlinux.bin"
