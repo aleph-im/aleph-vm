@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -OO
 
 import logging
+from time import sleep
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -11,37 +12,27 @@ logger = logging.getLogger(__name__)
 logger.debug("Imports starting")
 
 import ctypes
-logger.debug("1")
 import asyncio
 import os
-logger.debug("2")
 import socket
 from enum import Enum
-logger.debug("3")
 import subprocess
 import sys
 import traceback
-logger.debug("4")
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from io import StringIO
-logger.debug("5")
 from os import system
-logger.debug("6")
+
 from shutil import make_archive
-logger.debug("7")
 from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
-logger.debug("8")
 
 import aiohttp
-logger.debug("9")
 import msgpack
-logger.debug("10")
 
 logger.debug("Imports finished")
 
 ASGIApplication = NewType("AsgiApplication", Any)
-docker_daemon = None
 
 class Encoding(str, Enum):
     plain = "plain"
@@ -459,37 +450,28 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_docker():
-    # tmp docker test overlay
-# mkdir -p /docker
-# /bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker
-# mkdir -p /docker/persist/work /docker/persist/upper
-# /bin/mount -o noatime,lowerdir=/opt/docker,upperdir=/docker/persist/upper,workdir=/docker/persist/work -t overlay "overlayfs:/docker/persist/upper" /var/lib/docker
-
-# echo HERE
-# stat -f -c %T /overlay/
     docker_mountpoint = os.environ.get("DOCKER_MOUNTPOINT")
     os.makedirs("/docker", exist_ok=True)
     system("bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker")
     os.makedirs("/docker/persist/work", exist_ok=True)
     os.makedirs("/docker/persist/upper", exist_ok=True)
-    system("stat -f /")
-    system(f"stat -f {docker_mountpoint}")
-    system("stat -f /docker/")
-    system("stat -f /docker/persist/")
-    system("stat -f /docker/persist/upper")
-    system("stat -f /docker/persist/work")
-    system("stat -f /var/lib/docker")
+    # system("stat -f /")
+    # system(f"stat -f {docker_mountpoint}")
+    # system("stat -f /docker/")
+    # system("stat -f /docker/persist/")
+    # system("stat -f /docker/persist/upper")
+    # system("stat -f /docker/persist/work")
+    # system("stat -f /var/lib/docker")
     logger.debug(os.path.isdir("/docker/persist"))
     logger.debug(os.path.isdir("/docker/persist/upper"))
     system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint},upperdir=/docker/persist/upper,workdir=/docker/persist/work -t overlay "overlayfs:/docker/persist/upper" /var/lib/docker')
-    docker_daemon = subprocess.Popen("/usr/sbin/dockerd", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+    return subprocess.Popen("/usr/sbin/dockerd", stderr=subprocess.PIPE, encoding='utf-8')
 
 def setup_system(config: ConfigurationPayload):
     setup_hostname(config.vm_hash)
     setup_variables(config.variables)
     setup_volumes(config.volumes)
-    setup_docker()
+    docker_daemon = setup_docker()
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")

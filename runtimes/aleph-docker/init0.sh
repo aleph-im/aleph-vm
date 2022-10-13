@@ -14,15 +14,6 @@ mkdir -p /overlay
 /bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /overlay
 mkdir -p /overlay/root/rw /overlay/root/work
 /bin/mount -o noatime,lowerdir=/,upperdir=/overlay/root/rw,workdir=/overlay/root/work -t overlay "overlayfs:/overlay/root/rw" /mnt
-
-
-# Same for /var/lib/docker
-# /data
-
-# mkdir -p /overlay/docker/ro /overlay/docker/rw /overlay/docker/work
-# /bin/mount -o lowerdir=/opt/docker/ro,upperdir=/overlay/docker/rw,workdir=/overlay/docker/work -t overlay "overlayfs:/overlay/docker/rw" /var/lib
-
-
 mkdir -p /mnt/rom
 pivot_root /mnt /mnt/rom
 
@@ -38,7 +29,6 @@ mount -t tmpfs run /run -o mode=0755,nosuid,nodev
 mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mount -t tmpfs shm /dev/shm -omode=1777,nosuid,nodev
 
-cgroupfs-mount
 
 # List block devices
 lsblk
@@ -54,6 +44,12 @@ log "Setup socat"
 socat UNIX-LISTEN:/tmp/socat-socket,fork,reuseaddr VSOCK-CONNECT:2:53 &
 log "Socat ready"
 
-log "INIT 0 DONE"
+cgroupfs-mount
+
+export PATH=$PATH:/usr/local/bin:/usr/bin:/usr/sbin
+
+/usr/sbin/dockerd 2>&1 | tee /log_docker.txt &
+
+log "INIT 0 DONE2"
 # Replace this script with the manager
 exec /root/init1.py
