@@ -18,7 +18,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   openssh-server \
   socat libsecp256k1-0 \
   \
-  python3-aiohttp python3-msgpack \
+  python3-msgpack \
   python3-setuptools \
   python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip \
@@ -27,6 +27,8 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   cgroupfs-mount \
   build-essential python3-dev
 pip3 install 'fastapi~=0.71.0'
+pip3 install aiohttp
+
 
 
 echo "Pip installing aleph-client"
@@ -51,8 +53,6 @@ EOT
 echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
 
 echo -ne '{\n"storage-driver": "vfs"\n}\n' > ./rootfs/etc/docker/daemon.json
-rm -fr ./rootfs/var/lib/docker
-mkdir ./rootfs/var/lib/docker
 
 # Generate SSH host keys
 #systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
