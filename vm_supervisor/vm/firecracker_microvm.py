@@ -12,8 +12,6 @@ from pathlib import Path
 
 import msgpack
 
-from ..utils import get_ip_addresses
-
 try:
     import psutil as psutil
 except ImportError:
@@ -34,6 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
+from network.network import Network
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -264,19 +263,12 @@ class AlephFirecrackerVM:
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
-        host_ip, guest_ip = get_ip_addresses(
-            self.vm_id,
-            address_pool=settings.IPV4_ADDRESS_POOL,
-            ip_network_size=settings.IPV4_NETWORK_SIZE,
-        )
         fvm = MicroVM(
             vm_id=self.vm_id,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
-            host_ip=host_ip,
-            guest_ip=guest_ip,
         )
         fvm.prepare_jailer()
 
@@ -312,9 +304,7 @@ class AlephFirecrackerVM:
             network_interfaces=[
                 NetworkInterface(
                     iface_id="eth0",
-                    host_dev_name=await fvm.create_network_interface(
-                        interface=settings.NETWORK_INTERFACE
-                    ),
+                    host_dev_name=Network.create_tap_interface(fvm.vm_id)
                 )
             ]
             if self.enable_networking
@@ -395,8 +385,8 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
-            ip=self.fvm.guest_ip if self.enable_networking else None,
-            route=self.fvm.host_ip if self.enable_networking else None,
+            ip=Network.vm_info[self.vm_id]["ip_addresses"]["guest"] if self.enable_networking else None,
+            route=Network.vm_info[self.vm_id]["ip_addresses"]["host"] if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,

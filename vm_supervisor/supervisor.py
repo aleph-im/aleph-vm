@@ -14,6 +14,8 @@ from aiohttp import web
 from . import metrics
 from .conf import settings
 from .resources import about_system_usage
+from network.firewall import Firewall
+from network.network import Network
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .version import __version__
@@ -84,9 +86,23 @@ def run():
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
 
-    if settings.WATCH_FOR_MESSAGES:
-        app.on_startup.append(start_watch_for_messages_task)
-        app.on_cleanup.append(stop_watch_for_messages_task)
-        app.on_cleanup.append(stop_all_vms)
+    try:
+        if settings.ALLOW_VM_NETWORKING:
+            Network.initialize(
+                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_network_size=settings.IPV4_NETWORK_SIZE,
+                external_interface=settings.NETWORK_INTERFACE,
+            )
+            Network.enable_ipv4_forwarding()
+            Firewall.initialize_nftables()
 
-    web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+        if settings.WATCH_FOR_MESSAGES:
+            app.on_startup.append(start_watch_for_messages_task)
+            app.on_cleanup.append(stop_watch_for_messages_task)
+            app.on_cleanup.append(stop_all_vms)
+
+        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+    finally:
+        if settings.ALLOW_VM_NETWORKING:
+            Firewall.teardown_nftables()
+            Network.reset_ipv4_forwarding_state()
