@@ -14,8 +14,8 @@ from aiohttp import web
 from . import metrics
 from .conf import settings
 from .resources import about_system_usage
-from network.firewall import Firewall
-from network.network import network_instance
+from vm_supervisor.network.firewall import Firewall
+from vm_supervisor.network.ip import network_instance
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .version import __version__

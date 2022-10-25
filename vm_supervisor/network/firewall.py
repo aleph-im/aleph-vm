@@ -2,7 +2,7 @@ import logging
 import json
 from typing import List, Dict
 
-from network.network import network_instance
+from vm_supervisor.network.ip import network_instance
 from nftables import Nftables
 
 logger = logging.getLogger(__name__)
