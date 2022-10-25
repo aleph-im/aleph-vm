@@ -11,11 +11,10 @@ from typing import Awaitable, Callable
 
 from aiohttp import web
 
+from vm_supervisor.network.ip import network_instance
 from . import metrics
 from .conf import settings
 from .resources import about_system_usage
-from vm_supervisor.network.firewall import firewall_instance
-from vm_supervisor.network.ip import network_instance
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .version import __version__
@@ -94,7 +93,7 @@ def run():
                 external_interface=settings.NETWORK_INTERFACE,
             )
             network_instance.enable_ipv4_forwarding()
-            firewall_instance.initialize_nftables()
+            pool.firewall.initialize_nftables()
 
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
@@ -104,5 +103,5 @@ def run():
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
     finally:
         if settings.ALLOW_VM_NETWORKING:
-            firewall_instance.teardown_nftables()
+            pool.firewall.teardown_nftables()
             network_instance.reset_ipv4_forwarding_state()

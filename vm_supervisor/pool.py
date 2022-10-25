@@ -6,6 +6,8 @@ from aleph_message.models import ProgramContent, ProgramMessage
 
 from .conf import settings
 from .models import VmHash, VmExecution
+from .network.firewall import Firewall
+from .network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +24,12 @@ class VmPool:
     counter: int  # Used to provide distinct ids to network interfaces
     executions: Dict[VmHash, VmExecution]
     message_cache: Dict[str, ProgramMessage] = {}
+    firewall: Firewall
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.firewall = Firewall()
 
     async def create_a_vm(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
@@ -35,7 +39,9 @@ class VmPool:
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
-        await execution.create(vm_id=vm_id)
+
+        tap_interface = TapInterface.from_vm_id(vm_id=vm_id, firewall=self.firewall)
+        await execution.create(vm_id=vm_id, tap_interface=tap_interface)
         return execution
 
     def get_unique_vm_id(self) -> int:
