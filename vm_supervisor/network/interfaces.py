@@ -4,7 +4,7 @@ import asyncio
 from subprocess import run
 from typing import Type
 
-from vm_supervisor.network.firewall import Firewall
+from vm_supervisor.network.firewall import firewall_instance
 from vm_supervisor.network.ip import network_instance, logger
 
 
@@ -37,12 +37,12 @@ class TapInterface:
         run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
         logger.debug(f"Network interface created: {self.device_name}")
 
-        Firewall.setup_nftables_for_vm(self.vm_id)
+        firewall_instance.setup_nftables_for_vm(self.vm_id)
 
     async def delete(self):
         """Asks the firewall to teardown any rules for the VM with id provided.
         Then removes the interface from the host."""
-        Firewall.teardown_nftables_for_vm(self.vm_id)
+        firewall_instance.teardown_nftables_for_vm(self.vm_id)
 
         logger.debug(f"Removing interface {self.device_name}")
         await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug

@@ -7,41 +7,51 @@ from nftables import Nftables
 
 logger = logging.getLogger(__name__)
 
-nft = Nftables()
-nft.set_json_output(True)
-nft.set_stateless_output(True)
-nft.set_service_output(False)
-nft.set_reversedns_output(False)
-nft.set_numeric_proto_output(True)
+
+def get_customized_nftables() -> Nftables:
+    nft = Nftables()
+    nft.set_json_output(True)
+    nft.set_stateless_output(True)
+    nft.set_service_output(False)
+    nft.set_reversedns_output(False)
+    nft.set_numeric_proto_output(True)
+    return nft
 
 
 class Firewall:
-    firewall_has_been_setup = False
-    postrouting_info: Dict[str, str] = {}
-    forwarding_info: Dict[str, str] = {}
-    vm_info: Dict[int, Dict] = {}
+    firewall_has_been_setup: bool
+    postrouting_info: Dict[str, str]
+    forwarding_info: Dict[str, str]
+    vm_info: Dict[int, Dict]
+    nft: Nftables
 
-    @classmethod
-    def execute_json_nft_commands(cls, commands: List[Dict]) -> int:
+    def __init__(self):
+        self.firewall_has_been_setup = False
+        self.postrouting_info = {}
+        self.forwarding_info = {}
+        self.vm_info = {}
+
+        self.nft = get_customized_nftables()
+
+    def execute_json_nft_commands(self, commands: List[Dict]) -> int:
         """Executes a list of nftables commands, and returns the exit status"""
         commands_dict = {"nftables": commands}
         try:
             logger.debug("Validating nftables rules")
-            nft.json_validate(commands_dict)
+            self.nft.json_validate(commands_dict)
         except Exception as e:
             logger.error(f"Failed to verify nftables rules: {e}")
 
         logger.debug("Inserting nftables rules")
-        rc, output, error = nft.json_cmd(commands_dict)
+        rc, output, error = self.nft.json_cmd(commands_dict)
         if rc != 0:
             logger.error(f"Failed to add nftables rules: {error}")
 
         return rc
 
-    @classmethod
-    def get_existing_nftables_ruleset(cls) -> Dict:
+    def get_existing_nftables_ruleset(self) -> Dict:
         """Retrieves the full nftables ruleset and returns it"""
-        rc, output, error = nft.cmd("list ruleset")
+        rc, output, error = self.nft.cmd("list ruleset")
 
         if rc != 0:
             logger.error(f"Unable to get nftables ruleset: {error}")
@@ -49,11 +59,10 @@ class Firewall:
         nft_ruleset = json.loads(output)
         return nft_ruleset
 
-    @classmethod
-    def get_base_chains_for_hook(cls, hook: str, family: str = "ip") -> List:
+    def get_base_chains_for_hook(self, hook: str, family: str = "ip") -> List:
         """Looks through the nftables ruleset and creates a list of
         all chains that are base chains for the specified hook"""
-        nft_ruleset = cls.get_existing_nftables_ruleset()
+        nft_ruleset = self.get_existing_nftables_ruleset()
         chains = []
 
         for entry in nft_ruleset["nftables"]:
@@ -71,10 +80,9 @@ class Firewall:
 
         return chains
 
-    @classmethod
-    def check_if_table_exists(cls, family: str, table: str) -> bool:
+    def check_if_table_exists(self, family: str, table: str) -> bool:
         """Checks whether the specified table exists in the nftables ruleset"""
-        nft_ruleset = cls.get_existing_nftables_ruleset()
+        nft_ruleset = self.get_existing_nftables_ruleset()
         for entry in nft_ruleset["nftables"]:
             if (
                 isinstance(entry, dict)
@@ -85,8 +93,7 @@ class Firewall:
                 return True
         return False
 
-    @classmethod
-    def initialize_nftables(cls) -> None:
+    def initialize_nftables(self) -> None:
         """Creates basic chains and rules in the nftables ruleset to build on further.
         Additionally, stores some information in the class for later use."""
         commands: List[Dict] = []
@@ -95,12 +102,12 @@ class Firewall:
             "forward": {},
         }
         for hook in base_chains:
-            chains = cls.get_base_chains_for_hook(hook)
+            chains = self.get_base_chains_for_hook(hook)
             if len(chains) == 0:
                 table = "nat" if hook == "postrouting" else "filter"
                 chain = "POSTROUTING" if hook == "postrouting" else "FORWARD"
                 prio = 100 if hook == "postrouting" else 0
-                if not cls.check_if_table_exists("ip", table):
+                if not self.check_if_table_exists("ip", table):
                     commands.append({"add": {"table": {"family": "ip", "name": table}}})
                 new_chain = {
                     "chain": {
@@ -121,31 +128,31 @@ class Firewall:
                 # TODO: gracefully exit
             base_chains[hook] = chains.pop()
 
-        cls.forwarding_info = base_chains["forward"]["chain"]
-        cls.postrouting_info = base_chains["postrouting"]["chain"]
+        self.forwarding_info = base_chains["forward"]["chain"]
+        self.postrouting_info = base_chains["postrouting"]["chain"]
 
-        cls.add_chain("ip", cls.postrouting_info["table"], "aleph-supervisor-nat")
+        self.add_chain("ip", self.postrouting_info["table"], "aleph-supervisor-nat")
         commands.append(
             {
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.postrouting_info["table"],
-                        "chain": cls.postrouting_info["name"],
+                        "table": self.postrouting_info["table"],
+                        "chain": self.postrouting_info["name"],
                         "expr": [{"jump": {"target": "aleph-supervisor-nat"}}],
                     }
                 }
             }
         )
 
-        cls.add_chain("ip", cls.forwarding_info["table"], "aleph-supervisor-filter")
+        self.add_chain("ip", self.forwarding_info["table"], "aleph-supervisor-filter")
         commands.append(
             {
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.forwarding_info["table"],
-                        "chain": cls.forwarding_info["name"],
+                        "table": self.forwarding_info["table"],
+                        "chain": self.forwarding_info["name"],
                         "expr": [{"jump": {"target": "aleph-supervisor-filter"}}],
                     }
                 }
@@ -156,7 +163,7 @@ class Firewall:
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.forwarding_info["table"],
+                        "table": self.forwarding_info["table"],
                         "chain": "aleph-supervisor-filter",
                         "expr": [
                             {
@@ -173,27 +180,25 @@ class Firewall:
             }
         )
 
-        cls.execute_json_nft_commands(commands)
-        cls.firewall_has_been_setup = True
+        self.execute_json_nft_commands(commands)
+        self.firewall_has_been_setup = True
         return
 
-    @classmethod
-    def teardown_nftables(cls) -> None:
+    def teardown_nftables(self) -> None:
         """Removes all of this project's related rules in the nftables ruleset."""
-        if not cls.firewall_has_been_setup:
+        if not self.firewall_has_been_setup:
             logger.debug("Firewall hasn't been set up, skipping teardown")
             return
 
         logger.debug("Tearing down nftables setup")
-        cls.remove_chain("aleph-supervisor-nat")
-        cls.postrouting_info = {}
-        cls.remove_chain("aleph-supervisor-filter")
-        cls.forwarding_info = {}
+        self.remove_chain("aleph-supervisor-nat")
+        self.postrouting_info = {}
+        self.remove_chain("aleph-supervisor-filter")
+        self.forwarding_info = {}
 
         return
 
-    @classmethod
-    def add_chain(cls, family: str, table: str, name: str) -> int:
+    def add_chain(self, family: str, table: str, name: str) -> int:
         """Helper function to quickly create a new chain in the nftables ruleset
         Returns the exit code from executing the nftables commands"""
         commands = [
@@ -207,13 +212,12 @@ class Firewall:
                 }
             }
         ]
-        return cls.execute_json_nft_commands(commands)
+        return self.execute_json_nft_commands(commands)
 
-    @classmethod
-    def remove_chain(cls, name: str) -> int:
+    def remove_chain(self, name: str) -> int:
         """Removes all rules that jump to the chain, and then removes the chain itself.
         Returns the exit code from executing the nftables commands"""
-        nft_ruleset = cls.get_existing_nftables_ruleset()
+        nft_ruleset = self.get_existing_nftables_ruleset()
         commands = []
         remove_chain_commands = []
 
@@ -255,48 +259,45 @@ class Firewall:
                 )
 
         commands += remove_chain_commands
-        return cls.execute_json_nft_commands(commands)
+        return self.execute_json_nft_commands(commands)
 
-    @classmethod
-    def add_postrouting_chain(cls, name: str) -> int:
+    def add_postrouting_chain(self, name: str) -> int:
         """Adds a chain and creates a rule from the base chain with the postrouting hook.
         Returns the exit code from executing the nftables commands"""
-        cls.add_chain("ip", cls.postrouting_info["table"], name)
+        self.add_chain("ip", self.postrouting_info["table"], name)
         command = [
             {
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.postrouting_info["table"],
+                        "table": self.postrouting_info["table"],
                         "chain": "aleph-supervisor-nat",
                         "expr": [{"jump": {"target": name}}],
                     }
                 }
             }
         ]
-        return cls.execute_json_nft_commands(command)
+        return self.execute_json_nft_commands(command)
 
-    @classmethod
-    def add_forward_chain(cls, name):
+    def add_forward_chain(self, name):
         """Adds a chain and creates a rule from the base chain with the forward hook.
         Returns the exit code from executing the nftables commands"""
-        cls.add_chain("ip", cls.forwarding_info["table"], name)
+        self.add_chain("ip", self.forwarding_info["table"], name)
         command = [
             {
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.forwarding_info["table"],
+                        "table": self.forwarding_info["table"],
                         "chain": "aleph-supervisor-filter",
                         "expr": [{"jump": {"target": name}}],
                     }
                 }
             }
         ]
-        return cls.execute_json_nft_commands(command)
+        return self.execute_json_nft_commands(command)
 
-    @classmethod
-    def add_masquerading_rule(cls, vm_id: int) -> int:
+    def add_masquerading_rule(self, vm_id: int) -> int:
         """Creates a rule for the VM with the specified id to allow outbound traffic to be masqueraded (NAT)
         Returns the exit code from executing the nftables commands"""
         command = [
@@ -304,8 +305,8 @@ class Firewall:
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.postrouting_info["table"],
-                        "chain": cls.vm_info[vm_id]["nat_chain"],
+                        "table": self.postrouting_info["table"],
+                        "chain": self.vm_info[vm_id]["nat_chain"],
                         "expr": [
                             {
                                 "match": {
@@ -328,13 +329,12 @@ class Firewall:
             }
         ]
 
-        return cls.execute_json_nft_commands(command)
+        return self.execute_json_nft_commands(command)
 
-    @classmethod
-    def add_forward_rule_to_external(cls, vm_id: int) -> int:
+    def add_forward_rule_to_external(self, vm_id: int) -> int:
         """Creates a rule for the VM with the specified id to allow outbound traffic
         Returns the exit code from executing the nftables commands"""
-        if vm_id not in cls.vm_info:
+        if vm_id not in self.vm_info:
             logger.error(f"VM ruleset not yet initialized: {vm_id}")
             return 1
 
@@ -343,8 +343,8 @@ class Firewall:
                 "add": {
                     "rule": {
                         "family": "ip",
-                        "table": cls.forwarding_info["table"],
-                        "chain": cls.vm_info[vm_id]["filter_chain"],
+                        "table": self.forwarding_info["table"],
+                        "chain": self.vm_info[vm_id]["filter_chain"],
                         "expr": [
                             {
                                 "match": {
@@ -367,30 +367,31 @@ class Firewall:
             }
         ]
 
-        return cls.execute_json_nft_commands(command)
+        return self.execute_json_nft_commands(command)
 
-    @classmethod
-    def setup_nftables_for_vm(cls, vm_id: int) -> None:
+    def setup_nftables_for_vm(self, vm_id: int) -> None:
         """Sets up chains for filter and nat purposes specific to this VM, and makes sure those chains are jumped to"""
-        if vm_id in cls.vm_info:
+        if vm_id in self.vm_info:
             logger.error(f"VM already setup in firewall: {vm_id}")
             return
 
-        cls.vm_info[vm_id] = {
+        self.vm_info[vm_id] = {
             "nat_chain": f"aleph-vm-nat-{vm_id}",
             "filter_chain": f"aleph-vm-filter-{vm_id}",
         }
-        cls.add_postrouting_chain(cls.vm_info[vm_id]["nat_chain"])
-        cls.add_forward_chain(cls.vm_info[vm_id]["filter_chain"])
-        cls.add_masquerading_rule(vm_id)
-        cls.add_forward_rule_to_external(vm_id)
+        self.add_postrouting_chain(self.vm_info[vm_id]["nat_chain"])
+        self.add_forward_chain(self.vm_info[vm_id]["filter_chain"])
+        self.add_masquerading_rule(vm_id)
+        self.add_forward_rule_to_external(vm_id)
 
-    @classmethod
-    def teardown_nftables_for_vm(cls, vm_id: int) -> None:
+    def teardown_nftables_for_vm(self, vm_id: int) -> None:
         """Remove all nftables rules related to the specified VM"""
-        if vm_id not in cls.vm_info:
+        if vm_id not in self.vm_info:
             logger.error(f"No firewall configuration found to teardown for vm {vm_id}")
             return
 
-        cls.remove_chain(cls.vm_info[vm_id]["nat_chain"])
-        cls.remove_chain(cls.vm_info[vm_id]["filter_chain"])
+        self.remove_chain(self.vm_info[vm_id]["nat_chain"])
+        self.remove_chain(self.vm_info[vm_id]["filter_chain"])
+
+
+firewall_instance = Firewall()
