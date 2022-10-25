@@ -32,7 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from network.network import network_instance
+from network.network import network_instance, TapInterface
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -212,8 +212,7 @@ class AlephFirecrackerVM:
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
-    host_ip: Optional[str] = None
-    guest_ip: Optional[str] = None
+    tap_interface = Optional[TapInterface] = None
 
     def __init__(
         self,
@@ -263,6 +262,10 @@ class AlephFirecrackerVM:
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
+
+        self.tap_interface = TapInterface.from_vm_id(self.vm_id)
+        await self.tap_interface.create()
+
         fvm = MicroVM(
             vm_id=self.vm_id,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
@@ -304,7 +307,7 @@ class AlephFirecrackerVM:
             network_interfaces=[
                 NetworkInterface(
                     iface_id="eth0",
-                    host_dev_name=network_instance.create_tap_interface(fvm.vm_id)
+                    host_dev_name=self.tap_interface.device_name
                 )
             ]
             if self.enable_networking
@@ -319,6 +322,7 @@ class AlephFirecrackerVM:
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
+            await self.tap_interface.delete()
             raise
 
     async def start(self):
@@ -429,6 +433,7 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
+            await self.tap_interface.delete()
         await self.stop_guest_api()
 
     async def run_code(
