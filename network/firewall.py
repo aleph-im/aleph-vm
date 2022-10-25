@@ -2,7 +2,7 @@ import logging
 import json
 from typing import List, Dict
 
-import network.network as nw
+from network.network import network_instance
 from nftables import Nftables
 
 logger = logging.getLogger(__name__)
@@ -311,14 +311,14 @@ class Firewall:
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "iifname"}},
-                                    "right": nw.Network.vm_info[vm_id]["tap_interface"],
+                                    "right": network_instance.vm_info[vm_id]["tap_interface"],
                                 }
                             },
                             {
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "oifname"}},
-                                    "right": nw.Network.external_interface,
+                                    "right": network_instance.external_interface,
                                 }
                             },
                             {"masquerade": None},
@@ -350,14 +350,14 @@ class Firewall:
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "iifname"}},
-                                    "right": nw.Network.vm_info[vm_id]["tap_interface"],
+                                    "right": network_instance.vm_info[vm_id]["tap_interface"],
                                 }
                             },
                             {
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "oifname"}},
-                                    "right": nw.Network.external_interface,
+                                    "right": network_instance.external_interface,
                                 }
                             },
                             {"accept": None},

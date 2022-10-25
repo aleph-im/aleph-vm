@@ -11,7 +11,7 @@ from pwd import getpwnam
 from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, List
 
-from network.network import Network
+from network.network import network_instance
 from .config import FirecrackerConfig
 from .config import Drive
 
@@ -407,7 +407,7 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
-        await Network.remove_tap_interface(self.vm_id)
+        await network_instance.remove_tap_interface(self.vm_id)
 
         if self._unix_socket:
             logger.debug("Closing unix socket")

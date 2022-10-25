@@ -32,7 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from network.network import Network
+from network.network import network_instance
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -304,7 +304,7 @@ class AlephFirecrackerVM:
             network_interfaces=[
                 NetworkInterface(
                     iface_id="eth0",
-                    host_dev_name=Network.create_tap_interface(fvm.vm_id)
+                    host_dev_name=network_instance.create_tap_interface(fvm.vm_id)
                 )
             ]
             if self.enable_networking
@@ -385,8 +385,8 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
-            ip=Network.vm_info[self.vm_id]["ip_addresses"]["guest"] if self.enable_networking else None,
-            route=Network.vm_info[self.vm_id]["ip_addresses"]["host"] if self.enable_networking else None,
+            ip=network_instance.vm_info[self.vm_id]["ip_addresses"]["guest"] if self.enable_networking else None,
+            route=network_instance.vm_info[self.vm_id]["ip_addresses"]["host"] if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
