@@ -71,8 +71,6 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
-    guest_ip: Optional[str]
-    host_ip: Optional[str]
 
     _unix_socket: Server
 
@@ -119,8 +117,6 @@ class MicroVM:
             "jailer_path": self.jailer_path,
             "socket_path": self.socket_path,
             "vsock_path": self.vsock_path,
-            "guest_ip": self.guest_ip,
-            "host_ip": self.host_ip,
             **self.__dict__,
         }
 

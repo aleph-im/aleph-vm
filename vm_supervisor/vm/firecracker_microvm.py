@@ -32,8 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from vm_supervisor.network.ip import network_instance
-from ..network.interfaces import TapInterface
+from ..network.ip import TapInterface
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -213,7 +212,7 @@ class AlephFirecrackerVM:
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
-    tap_interface = Optional[TapInterface] = None
+    tap_interface: Optional[TapInterface] = None
 
     def __init__(
         self,
@@ -223,6 +222,7 @@ class AlephFirecrackerVM:
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
+        tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -232,6 +232,7 @@ class AlephFirecrackerVM:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
+        self.tap_interface = tap_interface
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -263,9 +264,6 @@ class AlephFirecrackerVM:
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
-
-        self.tap_interface = TapInterface.from_vm_id(self.vm_id)
-        await self.tap_interface.create()
 
         fvm = MicroVM(
             vm_id=self.vm_id,
@@ -323,7 +321,7 @@ class AlephFirecrackerVM:
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
-            await self.tap_interface.delete()
+            await self.tap_interface.free_vm_ip(fvm.vm_id)
             raise
 
     async def start(self):
@@ -390,8 +388,8 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
-            ip=network_instance.vm_info[self.vm_id]["ip_addresses"]["guest"] if self.enable_networking else None,
-            route=network_instance.vm_info[self.vm_id]["ip_addresses"]["host"] if self.enable_networking else None,
+            ip=self.tap_interface.get_or_assign_guest_ip(self.vm_id).with_prefixlen if self.enable_networking else None,
+            route=self.tap_interface.ip_address.with_prefixlen if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
@@ -434,7 +432,7 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
-            await self.tap_interface.delete()
+            await self.tap_interface.free_vm_ip(self.vm_id)
         await self.stop_guest_api()
 
     async def run_code(

@@ -128,7 +128,7 @@ def setup_network(
 
     if route:
         system(f"ip route add default via {route.split('/')[0]} dev eth0")
-        logger.debug("IP and route set")
+        logger.debug(f"IP and route set: {ip} via {route.split('/')[0]}")
     else:
         logger.warning("IP set with no network route")
 

@@ -15,6 +15,7 @@ from .pubsub import PubSub
 from .utils import dumps_for_json, create_task_log_exceptions
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
+from .network.ip import TapInterface
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class VmExecution:
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
-    async def create(self, vm_id: int) -> AlephFirecrackerVM:
+    async def create(self, vm_id: int, tap_interface: TapInterface) -> AlephFirecrackerVM:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
@@ -110,6 +111,7 @@ class VmExecution:
             resources=self.resources,
             enable_networking=self.program.environment.internet,
             hardware_resources=self.program.resources,
+            tap_interface = tap_interface,
         )
         try:
             await vm.setup()
