@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from subprocess import run
-from typing import Tuple, Iterable, Dict, List
+from typing import Iterable, Dict, List
 from ipaddress import IPv4Interface, IPv4Network
 
 from nftables import Nftables
@@ -34,55 +34,34 @@ class IPv4NetworkWithInterfaces(IPv4Network):
 class TapInterface:
     device_name: str
     ip_network: IPv4NetworkWithInterfaces
-    ip_address: IPv4Interface
-    client_id: int
     used_by: Dict[int, IPv4Interface]
 
-    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces, client: int, network):
+    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces, network):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
-        self.ip_address = self.ip_network[1]
-        self.used_by: Dict[int, IPv4Interface] = {-1: self.ip_address}
-        self.client_id = client
-        self.network= network
+        self.network = network
 
+    @property
+    def guest_ip(self) -> IPv4Interface:
+        return self.ip_network[2]
+
+    @property
+    def host_ip(self) -> IPv4Interface:
+        return self.ip_network[1]
     async def create(self):
         logger.debug("Create network interface")
 
         run(["/usr/bin/ip", "tuntap", "add", self.device_name, "mode", "tap"])
-        run(["/usr/bin/ip", "addr", "add", str(self.ip_address.with_prefixlen), "dev", self.device_name])
+        run(["/usr/bin/ip", "addr", "add", str(self.host_ip.with_prefixlen), "dev", self.device_name])
         run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
         logger.debug(f"Network interface created: {self.device_name}")
 
     async def delete(self):
         """Asks the firewall to teardown any rules for the VM with id provided.
         Then removes the interface from the host."""
-        if not len(self.used_by) == 1:
-            logger.debug(f"Tap Interface still in use, not removing")
-            return
-
         logger.debug(f"Removing interface {self.device_name}")
         await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug
         run(["ip", "tuntap", "del", self.device_name, "mode", "tap"])
-
-        self.network.remove_tapinterface_reference(self.client_id)
-
-    async def free_vm_ip(self, vm_id: int):
-        if vm_id in self.used_by:
-            del self.used_by[vm_id]
-
-        if len(self.used_by) == 1:
-            await self.delete()
-
-    def get_free_ip_in_network(self) -> IPv4Interface:
-        available_ips = [ip for ip in self.ip_network.hosts() if ip not in self.used_by.values()]
-        return available_ips[0]
-
-    def get_or_assign_guest_ip(self, vm_id: int) -> IPv4Interface:
-        if vm_id not in self.used_by:
-            self.used_by[vm_id] = self.get_free_ip_in_network()
-
-        return self.used_by[vm_id]
 
 
 def get_ipv4_forwarding_state() -> int:
@@ -478,6 +457,7 @@ class Firewall:
         self.remove_chain(self.vm_info[vm_id]["nat_chain"])
         self.remove_chain(self.vm_info[vm_id]["filter_chain"])
 
+
 class Network:
     firewall: Firewall = Firewall()
     ipv4_forward_state_before_setup = None
@@ -486,7 +466,6 @@ class Network:
     network_initialized = False
     external_interface = "eth0"
     vm_info: Dict = {}
-    tap_interfaces: Dict[int, TapInterface] = {}
 
     def get_network_for_tap(self, vm_id: int) -> IPv4NetworkWithInterfaces:
         subnets = list(self.address_pool.subnets(new_prefix=self.network_size))
@@ -525,21 +504,12 @@ class Network:
         self.firewall.teardown_nftables()
         self.reset_ipv4_forwarding_state()
 
-    async def get_or_create_tap(self, vm_id: int) -> TapInterface:
+    async def create_tap(self, vm_id: int) -> TapInterface:
         """Checks if a tap interface is already created. If it is, it returns it. If not, it creates on.
         Currently this will create a new tap interface for each vm, but the structure is made this way
         to facilitate future tap interface sharing.
         """
-        if vm_id not in self.tap_interfaces:
-            self.tap_interfaces[vm_id] = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id), vm_id, self)
-            await self.tap_interfaces[vm_id].create()
-
-        self.firewall.setup_nftables_for_vm(vm_id, self.tap_interfaces[vm_id])
-        return self.tap_interfaces[vm_id]
-
-    def remove_tapinterface_reference(self, vm_id: int):
-        if vm_id in self.tap_interfaces:
-            self.firewall.teardown_nftables_for_vm(vm_id)
-            del self.tap_interfaces[vm_id]
-
-
+        interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id), self)
+        await interface.create()
+        self.firewall.setup_nftables_for_vm(vm_id, interface)
+        return interface

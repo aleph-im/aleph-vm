@@ -39,7 +39,7 @@ class VmPool:
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
 
-        tap_interface = await self.network.get_or_create_tap(vm_id)
+        tap_interface = await self.network.create_tap(vm_id)
         await execution.create(vm_id=vm_id, tap_interface=tap_interface)
         return execution
 
