@@ -48,6 +48,7 @@ class TapInterface:
     @property
     def host_ip(self) -> IPv4Interface:
         return self.ip_network[1]
+
     async def create(self):
         logger.debug("Create network interface")
 

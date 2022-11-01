@@ -321,6 +321,7 @@ class AlephFirecrackerVM:
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
+            self.tap_interface.network.firewall.teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
             raise
 
@@ -432,6 +433,7 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
+            self.tap_interface.network.firewall.teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
         await self.stop_guest_api()
 
