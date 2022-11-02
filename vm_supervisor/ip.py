@@ -68,9 +68,10 @@ class TapInterface:
         run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
         logger.debug(f"Network interface created: {self.device_name}")
 
-    async def delete(self):
+    async def delete(self, vm_id: int) -> None:
         """Asks the firewall to teardown any rules for the VM with id provided.
         Then removes the interface from the host."""
+        self.network.firewall.teardown_nftables_for_vm(vm_id)
         logger.debug(f"Removing interface {self.device_name}")
         await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug
         run(["ip", "tuntap", "del", self.device_name, "mode", "tap"])
