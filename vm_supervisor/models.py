@@ -233,7 +233,6 @@ class VmExecution:
                     io_write_bytes=pid_info["process"]["io_counters"][3],
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.fvm.network_tap,
                 )
             )
         else:
@@ -255,7 +254,6 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.fvm.network_tap,
                 )
             )
 

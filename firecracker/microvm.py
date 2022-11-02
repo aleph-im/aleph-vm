@@ -64,8 +64,6 @@ class MicroVM:
     firecracker_bin_path: str
     jailer_bin_path: Optional[str]
     proc: Optional[asyncio.subprocess.Process] = None
-    network_tap: Optional[str] = None
-    network_interface: Optional[str] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
     config_file_path: Optional[Path] = None
