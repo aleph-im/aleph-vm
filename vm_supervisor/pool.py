@@ -6,7 +6,7 @@ from aleph_message.models import ProgramContent, ProgramMessage
 
 from .conf import settings
 from .models import VmHash, VmExecution
-from .network.ip import Network
+from .ip import Network
 
 logger = logging.getLogger(__name__)
 

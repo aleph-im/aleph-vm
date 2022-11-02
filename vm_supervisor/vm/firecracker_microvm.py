@@ -32,7 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from ..network.ip import TapInterface
+from ..ip import TapInterface
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
