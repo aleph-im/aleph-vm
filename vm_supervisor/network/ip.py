@@ -22,12 +22,12 @@ class IPv4NetworkWithInterfaces(IPv4Network):
         broadcast = int(self.broadcast_address)
         if n >= 0:
             if network + n > broadcast:
-                raise IndexError('address out of range')
+                raise IndexError("address out of range")
             return IPv4Interface((network + n, self.prefixlen))
         else:
             n += 1
             if broadcast + n < network:
-                raise IndexError('address out of range')
+                raise IndexError("address out of range")
             return IPv4Interface((broadcast + n, self.prefixlen))
 
 
@@ -36,7 +36,9 @@ class TapInterface:
     ip_network: IPv4NetworkWithInterfaces
     used_by: Dict[int, IPv4Interface]
 
-    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces, network):
+    def __init__(
+        self, device_name: str, ip_network: IPv4NetworkWithInterfaces, network
+    ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
         self.network = network
@@ -53,7 +55,16 @@ class TapInterface:
         logger.debug("Create network interface")
 
         run(["/usr/bin/ip", "tuntap", "add", self.device_name, "mode", "tap"])
-        run(["/usr/bin/ip", "addr", "add", str(self.host_ip.with_prefixlen), "dev", self.device_name])
+        run(
+            [
+                "/usr/bin/ip",
+                "addr",
+                "add",
+                str(self.host_ip.with_prefixlen),
+                "dev",
+                self.device_name,
+            ]
+        )
         run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
         logger.debug(f"Network interface created: {self.device_name}")
 
@@ -132,12 +143,12 @@ class Firewall:
 
         for entry in nft_ruleset["nftables"]:
             if (
-                    not isinstance(entry, dict)
-                    or "chain" not in entry
-                    or "family" not in entry["chain"]
-                    or entry["chain"]["family"] != family
-                    or "hook" not in entry["chain"]
-                    or entry["chain"]["hook"] != hook
+                not isinstance(entry, dict)
+                or "chain" not in entry
+                or "family" not in entry["chain"]
+                or entry["chain"]["family"] != family
+                or "hook" not in entry["chain"]
+                or entry["chain"]["hook"] != hook
             ):
                 continue
 
@@ -150,10 +161,10 @@ class Firewall:
         nft_ruleset = self.get_existing_nftables_ruleset()
         for entry in nft_ruleset["nftables"]:
             if (
-                    isinstance(entry, dict)
-                    and "table" in entry
-                    and entry["family"] == family
-                    and entry["name"] == table
+                isinstance(entry, dict)
+                and "table" in entry
+                and entry["family"] == family
+                and entry["name"] == table
             ):
                 return True
         return False
@@ -288,11 +299,11 @@ class Firewall:
 
         for entry in nft_ruleset["nftables"]:
             if (
-                    isinstance(entry, dict)
-                    and "rule" in entry
-                    and "expr" in entry["rule"]
-                    and "jump" in entry["rule"]["expr"][0]
-                    and entry["rule"]["expr"][0]["jump"]["target"] == name
+                isinstance(entry, dict)
+                and "rule" in entry
+                and "expr" in entry["rule"]
+                and "jump" in entry["rule"]["expr"][0]
+                and entry["rule"]["expr"][0]["jump"]["target"] == name
             ):
                 commands.append(
                     {
@@ -307,9 +318,9 @@ class Firewall:
                     }
                 )
             elif (
-                    isinstance(entry, dict)
-                    and "chain" in entry
-                    and entry["chain"]["name"] == name
+                isinstance(entry, dict)
+                and "chain" in entry
+                and entry["chain"]["name"] == name
             ):
                 remove_chain_commands.append(
                     {
@@ -415,14 +426,14 @@ class Firewall:
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "iifname"}},
-                                    "right": interface.device_name
+                                    "right": interface.device_name,
                                 }
                             },
                             {
                                 "match": {
                                     "op": "==",
                                     "left": {"meta": {"key": "oifname"}},
-                                    "right": self.external_interface
+                                    "right": self.external_interface,
                                 }
                             },
                             {"accept": None},
@@ -493,7 +504,9 @@ class Network:
         """Sets up the Network class with some information it needs so future function calls work as expected"""
         self.address_pool = IPv4NetworkWithInterfaces(vm_address_pool_range)
         if not self.address_pool.is_private:
-            logger.warning(f"Using a network range that is not private: {self.address_pool}")
+            logger.warning(
+                f"Using a network range that is not private: {self.address_pool}"
+            )
         self.network_size = vm_network_size
         self.external_interface = external_interface
         self.firewall.external_interface = external_interface

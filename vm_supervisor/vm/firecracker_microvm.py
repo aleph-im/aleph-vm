@@ -305,8 +305,7 @@ class AlephFirecrackerVM:
             vsock=Vsock(),
             network_interfaces=[
                 NetworkInterface(
-                    iface_id="eth0",
-                    host_dev_name=self.tap_interface.device_name
+                    iface_id="eth0", host_dev_name=self.tap_interface.device_name
                 )
             ]
             if self.enable_networking
@@ -389,7 +388,9 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
-            ip=self.tap_interface.guest_ip.with_prefixlen if self.enable_networking else None,
+            ip=self.tap_interface.guest_ip.with_prefixlen
+            if self.enable_networking
+            else None,
             route=str(self.tap_interface.host_ip) if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
