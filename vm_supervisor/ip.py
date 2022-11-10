@@ -472,7 +472,9 @@ class Firewall:
 
 
 class Network:
-    firewall: Firewall = Firewall()
+    firewall: Firewall
+    def __init__(self):
+        self.firewall = Firewall()
     ipv4_forward_state_before_setup = None
     address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
     network_size = 24
