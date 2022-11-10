@@ -15,7 +15,7 @@ from .pubsub import PubSub
 from .utils import dumps_for_json, create_task_log_exceptions
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
-from .ip import TapInterface
+from .network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
 

@@ -85,13 +85,6 @@ def run():
     metrics.create_tables(engine)
 
     try:
-        if settings.ALLOW_VM_NETWORKING:
-            pool.network.initialize(
-                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
-                vm_network_size=settings.IPV4_NETWORK_SIZE,
-                external_interface=settings.NETWORK_INTERFACE,
-            )
-
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
             app.on_cleanup.append(stop_watch_for_messages_task)

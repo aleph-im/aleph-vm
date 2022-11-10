@@ -1,86 +1,12 @@
-import asyncio
 import json
+from typing import Dict, List
 import logging
-from subprocess import run
-from typing import Iterable, Dict, List
-from ipaddress import IPv4Interface, IPv4Network
 
 from nftables import Nftables
 
+from .interfaces import TapInterface
+
 logger = logging.getLogger(__name__)
-
-
-class IPv4NetworkWithInterfaces(IPv4Network):
-    def hosts(self) -> Iterable[IPv4Interface]:
-        network = int(self.network_address)
-        broadcast = int(self.broadcast_address)
-        for x in range(network + 1, broadcast):
-            yield IPv4Interface((x, self.prefixlen))
-
-    def __getitem__(self, n) -> IPv4Interface:
-        network = int(self.network_address)
-        broadcast = int(self.broadcast_address)
-        if n >= 0:
-            if network + n > broadcast:
-                raise IndexError("address out of range")
-            return IPv4Interface((network + n, self.prefixlen))
-        else:
-            n += 1
-            if broadcast + n < network:
-                raise IndexError("address out of range")
-            return IPv4Interface((broadcast + n, self.prefixlen))
-
-
-class TapInterface:
-    device_name: str
-    ip_network: IPv4NetworkWithInterfaces
-    used_by: Dict[int, IPv4Interface]
-
-    def __init__(
-        self, device_name: str, ip_network: IPv4NetworkWithInterfaces, network
-    ):
-        self.device_name: str = device_name
-        self.ip_network: IPv4NetworkWithInterfaces = ip_network
-        self.network = network
-
-    @property
-    def guest_ip(self) -> IPv4Interface:
-        return self.ip_network[2]
-
-    @property
-    def host_ip(self) -> IPv4Interface:
-        return self.ip_network[1]
-
-    async def create(self):
-        logger.debug("Create network interface")
-
-        run(["/usr/bin/ip", "tuntap", "add", self.device_name, "mode", "tap"])
-        run(
-            [
-                "/usr/bin/ip",
-                "addr",
-                "add",
-                str(self.host_ip.with_prefixlen),
-                "dev",
-                self.device_name,
-            ]
-        )
-        run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
-        logger.debug(f"Network interface created: {self.device_name}")
-
-    async def delete(self, vm_id: int) -> None:
-        """Asks the firewall to teardown any rules for the VM with id provided.
-        Then removes the interface from the host."""
-        self.network.firewall.teardown_nftables_for_vm(vm_id)
-        logger.debug(f"Removing interface {self.device_name}")
-        await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug
-        run(["ip", "tuntap", "del", self.device_name, "mode", "tap"])
-
-
-def get_ipv4_forwarding_state() -> int:
-    """Reads the current ipv4 forwarding setting from the hosts, converts it to int and returns it"""
-    with open("/proc/sys/net/ipv4/ip_forward") as f:
-        return int(f.read())
 
 
 def get_customized_nftables() -> Nftables:
@@ -101,12 +27,12 @@ class Firewall:
     vm_info: Dict[int, Dict]
     nft: Nftables
 
-    def __init__(self):
+    def __init__(self, external_interface: str):
         self.firewall_has_been_setup = False
         self.postrouting_info = {}
         self.forwarding_info = {}
         self.vm_info = {}
-        self.external_interface = "eth0"
+        self.external_interface = external_interface
 
         self.nft = get_customized_nftables()
 
@@ -469,64 +395,3 @@ class Firewall:
 
         self.remove_chain(self.vm_info[vm_id]["nat_chain"])
         self.remove_chain(self.vm_info[vm_id]["filter_chain"])
-
-
-class Network:
-    firewall: Firewall
-    def __init__(self):
-        self.firewall = Firewall()
-    ipv4_forward_state_before_setup = None
-    address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
-    network_size = 24
-    network_initialized = False
-    external_interface = "eth0"
-    vm_info: Dict = {}
-
-    def get_network_for_tap(self, vm_id: int) -> IPv4NetworkWithInterfaces:
-        subnets = list(self.address_pool.subnets(new_prefix=self.network_size))
-        return subnets[vm_id]
-
-    def enable_ipv4_forwarding(self) -> None:
-        """Saves the hosts IPv4 forwarding state, and if it was disabled, enables it"""
-        logger.debug(f"Enabling IPv4 forwarding")
-        self.ipv4_forward_state_before_setup = get_ipv4_forwarding_state()
-        if not self.ipv4_forward_state_before_setup:
-            with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
-                f.write("1")
-
-    def reset_ipv4_forwarding_state(self) -> None:
-        """Returns the hosts IPv4 forwarding state how it was before we enabled it"""
-        logger.debug("Resetting IPv4 forwarding state to state before we enabled it")
-        if self.ipv4_forward_state_before_setup != get_ipv4_forwarding_state():
-            with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
-                f.write(str(self.ipv4_forward_state_before_setup))
-
-    def initialize(
-        self, vm_address_pool_range: str, vm_network_size: int, external_interface: str
-    ) -> None:
-        """Sets up the Network class with some information it needs so future function calls work as expected"""
-        self.address_pool = IPv4NetworkWithInterfaces(vm_address_pool_range)
-        if not self.address_pool.is_private:
-            logger.warning(
-                f"Using a network range that is not private: {self.address_pool}"
-            )
-        self.network_size = vm_network_size
-        self.external_interface = external_interface
-        self.firewall.external_interface = external_interface
-        self.enable_ipv4_forwarding()
-        self.firewall.initialize_nftables()
-        self.network_initialized = True
-
-    def teardown(self):
-        self.firewall.teardown_nftables()
-        self.reset_ipv4_forwarding_state()
-
-    async def create_tap(self, vm_id: int) -> TapInterface:
-        """Checks if a tap interface is already created. If it is, it returns it. If not, it creates on.
-        Currently this will create a new tap interface for each vm, but the structure is made this way
-        to facilitate future tap interface sharing.
-        """
-        interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id), self)
-        await interface.create()
-        self.firewall.setup_nftables_for_vm(vm_id, interface)
-        return interface
