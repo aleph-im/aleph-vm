@@ -32,7 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from ..ip import TapInterface
+from ..ip import TapInterface, Firewall
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -213,6 +213,7 @@ class AlephFirecrackerVM:
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
     tap_interface: Optional[TapInterface] = None
+    firewall: Optional[Firewall] = None
 
     def __init__(
         self,
@@ -223,6 +224,7 @@ class AlephFirecrackerVM:
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
+        firewall: Optional[Firewall] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -233,6 +235,7 @@ class AlephFirecrackerVM:
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
+        self.firewall = firewall
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -314,13 +317,15 @@ class AlephFirecrackerVM:
 
         logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
 
+        self.configure_firewall()
+
         try:
             await fvm.start(config)
             logger.debug("setup done")
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
-            await self.tap_interface.delete(self.vm_id)
+            await self.teardown_networking()
             raise
 
     async def start(self):
@@ -433,7 +438,7 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
-            await self.tap_interface.delete(self.vm_id)
+            await self.teardown_networking()
         await self.stop_guest_api()
 
     async def run_code(
@@ -474,3 +479,24 @@ class AlephFirecrackerVM:
             logger.debug("Cleaning VM socket resources")
             writer.close()
             await writer.wait_closed()
+
+    async def teardown_networking(self):
+        """Remove VM specific networking configuration, including firewall rules and tap interface."""
+        if self.firewall:
+            self.cleanup_firewall()
+        if self.tap_interface:
+            await self.tap_interface.delete()
+
+    def configure_firewall(self):
+        """Configure the firewall to forward packets to the VM."""
+        if self.firewall:
+            self.firewall.setup_nftables_for_vm(
+                vm_id=self.vm_id, interface=self.tap_interface
+            )
+
+    def cleanup_firewall(self):
+        """Remove firewall rules specific to the VM."""
+        if self.firewall:
+            self.firewall.teardown_nftables_for_vm(
+                vm_id=self.vm_id
+            )

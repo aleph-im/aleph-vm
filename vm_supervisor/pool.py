@@ -40,7 +40,9 @@ class VmPool:
         vm_id = self.get_unique_vm_id()
 
         tap_interface = await self.network.create_tap(vm_id)
-        await execution.create(vm_id=vm_id, tap_interface=tap_interface)
+        await execution.create(
+            vm_id=vm_id, tap_interface=tap_interface, firewall=self.network.firewall
+        )
         return execution
 
     def get_unique_vm_id(self) -> int:
