@@ -57,7 +57,7 @@ class Network:
     async def create_tap(self, vm_id: int) -> TapInterface:
         """ Create TAP interface to be used by VM
         """
-        interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id), self)
+        interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id))
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
         return interface

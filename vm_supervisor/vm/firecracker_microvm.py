@@ -33,6 +33,7 @@ from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
 from ..network.interfaces import TapInterface
+from ..network.firewall import teardown_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -320,7 +321,8 @@ class AlephFirecrackerVM:
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
-            await self.tap_interface.delete(self.vm_id)
+            teardown_nftables_for_vm(self.vm_id)
+            await self.tap_interface.delete()
             raise
 
     async def start(self):
@@ -433,7 +435,8 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
-            await self.tap_interface.delete(self.vm_id)
+            teardown_nftables_for_vm(self.vm_id)
+            await self.tap_interface.delete()
         await self.stop_guest_api()
 
     async def run_code(
