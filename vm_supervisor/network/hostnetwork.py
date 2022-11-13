@@ -1,6 +1,6 @@
 import logging
 
-from .firewall import Firewall
+from .firewall import initialize_nftables, teardown_nftables, setup_nftables_for_vm
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
 
@@ -14,7 +14,6 @@ def get_ipv4_forwarding_state() -> int:
 
 
 class Network:
-    firewall: Firewall
     ipv4_forward_state_before_setup: int
     address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
     network_size: int
@@ -48,12 +47,11 @@ class Network:
             )
         self.network_size = vm_network_size
         self.external_interface = external_interface
-        self.firewall = Firewall(external_interface)
         self.enable_ipv4_forwarding()
-        self.firewall.initialize_nftables()
+        initialize_nftables()
 
     def teardown(self) -> None:
-        self.firewall.teardown_nftables()
+        teardown_nftables()
         self.reset_ipv4_forwarding_state()
 
     async def create_tap(self, vm_id: int) -> TapInterface:
@@ -61,5 +59,5 @@ class Network:
         """
         interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id), self)
         await interface.create()
-        self.firewall.setup_nftables_for_vm(vm_id, interface)
+        setup_nftables_for_vm(vm_id, interface)
         return interface
