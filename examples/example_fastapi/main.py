@@ -149,11 +149,13 @@ class CustomError(Exception):
 
 @app.get("/raise")
 def raise_error():
+    """Raises an error to check that the init handles it properly without crashing"""
     raise CustomError("Whoops")
 
 
 @app.get("/crash")
 def crash():
+    """Crash the entire VM in order to check that the supervisor can handle it"""
     sys.exit(1)
 
 
