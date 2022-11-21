@@ -33,19 +33,19 @@ def execute_json_nft_commands(commands: List[Dict]) -> int:
         logger.error(f"Failed to verify nftables rules: {e}")
 
     logger.debug("Inserting nftables rules")
-    rc, output, error = nft.json_cmd(commands_dict)
-    if rc != 0:
+    return_code, output, error = nft.json_cmd(commands_dict)
+    if return_code != 0:
         logger.error(f"Failed to add nftables rules: {error}")
 
-    return rc
+    return return_code
 
 
 def get_existing_nftables_ruleset() -> Dict:
     """Retrieves the full nftables ruleset and returns it"""
     nft = get_customized_nftables()
-    rc, output, error = nft.cmd("list ruleset")
+    return_code, output, error = nft.cmd("list ruleset")
 
-    if rc != 0:
+    if return_code != 0:
         logger.error(f"Unable to get nftables ruleset: {error}")
 
     nft_ruleset = json.loads(output)
