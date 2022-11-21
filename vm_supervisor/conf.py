@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     NETWORK_INTERFACE = "eth0"
     IPV4_ADDRESS_POOL = "172.16.0.0/12"
     IPV4_NETWORK_SIZE = 24
+    NFTABLES_CHAIN_PREFIX = "aleph"
 
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None

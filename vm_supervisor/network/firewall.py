@@ -67,6 +67,7 @@ def get_base_chains_for_hook(hook: str, family: str = "ip") -> List:
             or "hook" not in entry["chain"]
             or entry["chain"]["hook"] != hook
         ):
+            # Ignoring all entries that are not a base chain.
             continue
 
         chains.append(entry)
@@ -123,13 +124,16 @@ def initialize_nftables() -> None:
             commands.append({"add": new_chain})
             chains.append(new_chain)
         elif len(chains) > 1:
-            logger.critical(
-                f"Unsupported: Multiple base chains already defined for hook {hook}."
+            raise NotImplementedError(
+                f"Multiple base chains for an nftables basechain are not supported: {hook}"
             )
-            # TODO: gracefully exit
         base_chains[hook] = chains.pop()["chain"]
 
-    add_chain("ip", base_chains["postrouting"]["table"], "aleph-supervisor-nat")
+    add_chain(
+        "ip",
+        base_chains["postrouting"]["table"],
+        f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
+    )
     commands.append(
         {
             "add": {
@@ -137,13 +141,23 @@ def initialize_nftables() -> None:
                     "family": "ip",
                     "table": base_chains["postrouting"]["table"],
                     "chain": base_chains["postrouting"]["name"],
-                    "expr": [{"jump": {"target": "aleph-supervisor-nat"}}],
+                    "expr": [
+                        {
+                            "jump": {
+                                "target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat"
+                            }
+                        }
+                    ],
                 }
             }
         }
     )
 
-    add_chain("ip", base_chains["forward"]["table"], "aleph-supervisor-filter")
+    add_chain(
+        "ip",
+        base_chains["forward"]["table"],
+        f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+    )
     commands.append(
         {
             "add": {
@@ -151,7 +165,13 @@ def initialize_nftables() -> None:
                     "family": "ip",
                     "table": base_chains["forward"]["table"],
                     "chain": base_chains["forward"]["name"],
-                    "expr": [{"jump": {"target": "aleph-supervisor-filter"}}],
+                    "expr": [
+                        {
+                            "jump": {
+                                "target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter"
+                            }
+                        }
+                    ],
                 }
             }
         }
@@ -162,7 +182,7 @@ def initialize_nftables() -> None:
                 "rule": {
                     "family": "ip",
                     "table": base_chains["forward"]["table"],
-                    "chain": "aleph-supervisor-filter",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
                     "expr": [
                         {
                             "match": {
@@ -185,8 +205,8 @@ def initialize_nftables() -> None:
 def teardown_nftables() -> None:
     """Removes all of this project's related rules in the nftables ruleset."""
     logger.debug("Tearing down nftables setup")
-    remove_chain("aleph-supervisor-nat")
-    remove_chain("aleph-supervisor-filter")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter")
     return
 
 
@@ -266,7 +286,7 @@ def add_postrouting_chain(name: str) -> int:
                 "rule": {
                     "family": "ip",
                     "table": table,
-                    "chain": "aleph-supervisor-nat",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
                     "expr": [{"jump": {"target": name}}],
                 }
             }
@@ -286,7 +306,7 @@ def add_forward_chain(name: str) -> int:
                 "rule": {
                     "family": "ip",
                     "table": table,
-                    "chain": "aleph-supervisor-filter",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
                     "expr": [{"jump": {"target": name}}],
                 }
             }
@@ -305,7 +325,7 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> int:
                 "rule": {
                     "family": "ip",
                     "table": table,
-                    "chain": f"aleph-vm-nat-{vm_id}",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
                     "expr": [
                         {
                             "match": {
@@ -341,7 +361,7 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
                 "rule": {
                     "family": "ip",
                     "table": table,
-                    "chain": f"aleph-vm-filter-{vm_id}",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
                     "expr": [
                         {
                             "match": {
@@ -369,13 +389,13 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
 
 def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
     """Sets up chains for filter and nat purposes specific to this VM, and makes sure those chains are jumped to"""
-    add_postrouting_chain(f"aleph-vm-nat-{vm_id}")
-    add_forward_chain(f"aleph-vm-filter-{vm_id}")
+    add_postrouting_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
+    add_forward_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
     add_masquerading_rule(vm_id, interface)
     add_forward_rule_to_external(vm_id, interface)
 
 
 def teardown_nftables_for_vm(vm_id: int) -> None:
     """Remove all nftables rules related to the specified VM"""
-    remove_chain(f"aleph-vm-nat-{vm_id}")
-    remove_chain(f"aleph-vm-filter-{vm_id}")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
