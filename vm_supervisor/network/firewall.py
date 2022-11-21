@@ -3,6 +3,7 @@ from typing import Dict, List
 import logging
 
 from nftables import Nftables
+from functools import lru_cache
 
 from ..conf import settings
 from .interfaces import TapInterface
@@ -10,6 +11,7 @@ from .interfaces import TapInterface
 logger = logging.getLogger(__name__)
 
 
+@lru_cache()
 def get_customized_nftables() -> Nftables:
     nft = Nftables()
     nft.set_json_output(True)
