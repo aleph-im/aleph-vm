@@ -12,8 +12,6 @@ from pathlib import Path
 
 import msgpack
 
-from ..utils import get_ip_addresses
-
 try:
     import psutil as psutil
 except ImportError:
@@ -34,6 +32,8 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
+from ..network.interfaces import TapInterface
+from ..network.firewall import teardown_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -213,8 +213,7 @@ class AlephFirecrackerVM:
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
-    host_ip: Optional[str] = None
-    guest_ip: Optional[str] = None
+    tap_interface: Optional[TapInterface] = None
 
     def __init__(
         self,
@@ -224,6 +223,7 @@ class AlephFirecrackerVM:
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
+        tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -233,6 +233,7 @@ class AlephFirecrackerVM:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
+        self.tap_interface = tap_interface
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -264,19 +265,13 @@ class AlephFirecrackerVM:
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
-        host_ip, guest_ip = get_ip_addresses(
-            self.vm_id,
-            address_pool=settings.IPV4_ADDRESS_POOL,
-            ip_network_size=settings.IPV4_NETWORK_SIZE,
-        )
+
         fvm = MicroVM(
             vm_id=self.vm_id,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
-            host_ip=host_ip,
-            guest_ip=guest_ip,
         )
         fvm.prepare_jailer()
 
@@ -311,10 +306,7 @@ class AlephFirecrackerVM:
             vsock=Vsock(),
             network_interfaces=[
                 NetworkInterface(
-                    iface_id="eth0",
-                    host_dev_name=await fvm.create_network_interface(
-                        interface=settings.NETWORK_INTERFACE
-                    ),
+                    iface_id="eth0", host_dev_name=self.tap_interface.device_name
                 )
             ]
             if self.enable_networking
@@ -329,6 +321,8 @@ class AlephFirecrackerVM:
             self.fvm = fvm
         except Exception:
             await fvm.teardown()
+            teardown_nftables_for_vm(self.vm_id)
+            await self.tap_interface.delete()
             raise
 
     async def start(self):
@@ -395,8 +389,10 @@ class AlephFirecrackerVM:
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         config = ConfigurationPayload(
-            ip=self.fvm.guest_ip if self.enable_networking else None,
-            route=self.fvm.host_ip if self.enable_networking else None,
+            ip=self.tap_interface.guest_ip.with_prefixlen
+            if self.enable_networking
+            else None,
+            route=str(self.tap_interface.host_ip) if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
@@ -439,6 +435,8 @@ class AlephFirecrackerVM:
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
+            teardown_nftables_for_vm(self.vm_id)
+            await self.tap_interface.delete()
         await self.stop_guest_api()
 
     async def run_code(

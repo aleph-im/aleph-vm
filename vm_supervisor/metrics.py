@@ -51,7 +51,6 @@ class ExecutionRecord(Base):
 
     vcpus = Column(Integer, nullable=False)
     memory = Column(Integer, nullable=False)
-    network_tap = Column(String, nullable=True)
 
     def __repr__(self):
         return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash})>"

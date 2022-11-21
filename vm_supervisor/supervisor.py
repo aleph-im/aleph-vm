@@ -84,9 +84,13 @@ def run():
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
 
-    if settings.WATCH_FOR_MESSAGES:
-        app.on_startup.append(start_watch_for_messages_task)
-        app.on_cleanup.append(stop_watch_for_messages_task)
-        app.on_cleanup.append(stop_all_vms)
+    try:
+        if settings.WATCH_FOR_MESSAGES:
+            app.on_startup.append(start_watch_for_messages_task)
+            app.on_cleanup.append(stop_watch_for_messages_task)
+            app.on_cleanup.append(stop_all_vms)
 
-    web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+    finally:
+        if settings.ALLOW_VM_NETWORKING:
+            pool.network.teardown()
