@@ -6,6 +6,7 @@ from aleph_message.models import ProgramContent, ProgramMessage
 
 from .conf import settings
 from .models import VmHash, VmExecution
+from vm_supervisor.network.hostnetwork import Network
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,16 @@ class VmPool:
     counter: int  # Used to provide distinct ids to network interfaces
     executions: Dict[VmHash, VmExecution]
     message_cache: Dict[str, ProgramMessage] = {}
+    network: Optional[Network]
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.network = Network(
+            vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+            vm_network_size=settings.IPV4_NETWORK_SIZE,
+            external_interface=settings.NETWORK_INTERFACE,
+        ) if settings.ALLOW_VM_NETWORKING else None
 
     async def create_a_vm(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
@@ -35,7 +42,9 @@ class VmPool:
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
-        await execution.create(vm_id=vm_id)
+
+        tap_interface = await self.network.create_tap(vm_id)
+        await execution.create(vm_id=vm_id, tap_interface=tap_interface)
         return execution
 
     def get_unique_vm_id(self) -> int:

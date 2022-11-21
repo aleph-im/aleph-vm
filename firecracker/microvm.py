@@ -64,15 +64,11 @@ class MicroVM:
     firecracker_bin_path: str
     jailer_bin_path: Optional[str]
     proc: Optional[asyncio.subprocess.Process] = None
-    network_tap: Optional[str] = None
-    network_interface: Optional[str] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
-    guest_ip: Optional[str]
-    host_ip: Optional[str]
 
     _unix_socket: Server
 
@@ -106,8 +102,6 @@ class MicroVM:
         use_jailer: bool = True,
         jailer_bin_path: Optional[str] = None,
         init_timeout: float = 5.0,
-        guest_ip: Optional[str] = None,
-        host_ip: Optional[str] = None,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
@@ -115,16 +109,12 @@ class MicroVM:
         self.jailer_bin_path = jailer_bin_path
         self.drives = []
         self.init_timeout = init_timeout
-        self.guest_ip = guest_ip
-        self.host_ip = host_ip
 
     def to_dict(self):
         return {
             "jailer_path": self.jailer_path,
             "socket_path": self.socket_path,
             "vsock_path": self.vsock_path,
-            "guest_ip": self.guest_ip,
-            "host_ip": self.host_ip,
             **self.__dict__,
         }
 
@@ -302,30 +292,6 @@ class MicroVM:
         self.drives.append(drive)
         return drive
 
-    async def create_network_interface(self, interface: str = "eth0") -> str:
-        logger.debug("Create network interface")
-
-        assert self.network_interface is None  # Only one is supported at the moment
-        assert self.network_tap is None
-
-        self.network_interface = interface
-
-        host_dev_name = f"vmtap{self.vm_id}"
-        self.network_tap = host_dev_name
-
-        system(f"ip tuntap add {host_dev_name} mode tap")
-        system(f"ip addr add {self.host_ip} dev {host_dev_name}")
-        system(f"ip link set {host_dev_name} up")
-        system('sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"')
-        # TODO: Don't fill iptables with duplicate rules; purge rules on delete
-        system(f"iptables -t nat -A POSTROUTING -o {interface} -j MASQUERADE")
-        system(
-            "iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
-        )
-        system(f"iptables -A FORWARD -i {host_dev_name} -o {interface} -j ACCEPT")
-
-        return host_dev_name
-
     async def print_logs(self):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
@@ -433,23 +399,6 @@ class MicroVM:
             self.stdout_task.cancel()
         if self.stderr_task:
             self.stderr_task.cancel()
-
-        if self.network_tap:
-            await asyncio.sleep(
-                0.01
-            )  # Used to prevent `ioctl(TUNSETIFF): Device or resource busy`
-            logger.debug(f"Removing interface {self.network_tap}")
-            system(f"ip tuntap del {self.network_tap} mode tap")
-            logger.debug("Removing iptables rules")
-            system(
-                f"iptables -t nat -D POSTROUTING -o {self.network_interface} -j MASQUERADE"
-            )
-            system(
-                "iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
-            )
-            system(
-                f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
-            )
 
         if self._unix_socket:
             logger.debug("Closing unix socket")
