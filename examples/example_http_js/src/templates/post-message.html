@@ -59,22 +59,24 @@
             e.preventDefault();
 
             addToReqStatus('Sending request...')
+            const _msgContent = document.getElementById('message_content')
 
-            const req = await fetch('/post_a_message', {
-                method: 'post',
-                body: JSON.stringify({data: document.getElementById('message_content').value}),
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            })
-            const data = await req.json()
-
-            if(data.error === undefined)
-                return addToReqStatus(
-                    `<a href="https://explorer.aleph.im/address/ETH/${data.address}/message/POST/${data.hash}" target="_blank">See message on explorer</a>`
-                )
-            
-            addToReqStatus(data.error)
+            try{
+                const req = await fetch('/http_post', {
+                    method: 'post',
+                    body: JSON.stringify({data: _msgContent.value}),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                _msgContent.value = ''
+                const { data } = await req.json()
+    
+                return addToReqStatus(`"${data}" received!`)
+            }
+            catch(err){
+                addToReqStatus(`<strong style="color:red;">Network error</strong>`)
+            }
         })
     </script>
 </body>

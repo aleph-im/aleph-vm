@@ -14,7 +14,7 @@ const app = express()
 
 // `account` and `mnemonic` are stored as global variables
 // They are reassigned using `newRandomKeypair`
-// and used in the /new_keypair and /post_a_message endpoints
+// and used in the /new_keypair and /post_aleph_message endpoints
 let account, mnemonic
 const newRandomKeypair = async () => {
   console.log('Creating an ephemeral keypair...')
@@ -42,7 +42,8 @@ app.get('/', async (req, res) => {
     env: 'Lists environment variables',
     messages: 'Read data from Aleph using the Aleph client library',
     internet: 'Read data from the public Internet using an http request',
-    post_a_message: 'Posts a message on the Aleph network',
+    http_post: 'Posts data from a form to this server',
+    post_aleph_message: 'Posts a message on the Aleph network',
     new_keypair: 'Simple counter state machine',
     raise: 'Raises an error to check that the init handles it properly without crashing',
     crash: 'Crash the entire VM in order to check that the supervisor can handle it',
@@ -92,7 +93,7 @@ app.get('/internet', async (_req, res) => {
   try {
     console.time('HTTP request')
     const URL = 'https://aleph.im'
-    
+
     // Axios is a dependency of the Aleph SDK
     // So we do not need to install it
 	  const request = await axios.get(URL)
@@ -108,11 +109,16 @@ app.get('/internet', async (_req, res) => {
   }
 })
 
-app.get('/post_a_message', (req, res) => {
+app.get('/http_post', (_req, res) => {
   return res.sendFile(join(dirname(fileURLToPath(import.meta.url)), 'templates/post-message.html'))
 })
 
-app.post('/post_a_message', async (req, res) => {
+app.post('/http_post', (req, res) => {
+  const { data } = req.body
+  return res.send({ data })
+})
+
+app.get('/post_aleph_message', async (req, res) => {
   try{
     const msg = await post.Publish({
       APIServer: "https://api2.aleph.im",
@@ -121,7 +127,9 @@ app.post('/post_a_message', async (req, res) => {
       channel: 'Aleph-VM',
       inlineRequested: true,
       storageEngine: 'inline',
-      content: req.body
+      content: {
+        text: 'This was posted from the Aleph VM Node.js demo',
+      }
     })
 
     return res.send({
@@ -136,7 +144,7 @@ app.post('/post_a_message', async (req, res) => {
   }
 })
 
-app.get('/new_keypair', async (req, res) => {
+app.get('/new_keypair', async (_req, res) => {
   try {
     await newRandomKeypair()
 
