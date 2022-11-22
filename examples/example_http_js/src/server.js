@@ -6,14 +6,15 @@ import { exec } from 'child_process'
 import express from 'express'
 import axios from 'axios'
 import { post, accounts } from 'aleph-sdk-ts'
+import { buildUrl } from './helpers.js'
+import state from './state.js'
 
 const PORT = process.env.PORT || 3000
 const app = express()
 
-const buildUrl = (req, url) => (
-  req.protocol + '://' + req.get('host') + '/' + url
-)
-
+// `account` and `mnemonic` are stored as global variables
+// They are reassigned using `newRandomKeypair`
+// and used in the /new_keypair and /post_a_message endpoints
 let account, mnemonic
 const newRandomKeypair = async () => {
   console.log('Creating an ephemeral keypair...')
@@ -24,9 +25,12 @@ const newRandomKeypair = async () => {
   console.log(mnemonic)
 }
 
+// A keypair is generated during boot
 await newRandomKeypair()
 
 app.use(express.json())
+
+// Just a simple query logger
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method.padEnd(8, ' ')} ${req.url}`)
   return next()
@@ -41,7 +45,8 @@ app.get('/', async (req, res) => {
     post_a_message: 'Posts a message on the Aleph network',
     new_keypair: 'Simple counter state machine',
     raise: 'Raises an error to check that the init handles it properly without crashing',
-    crash: 'Crash the entire VM in order to check that the supervisor can handle it'
+    crash: 'Crash the entire VM in order to check that the supervisor can handle it',
+    state: 'Stores a simple counter on disk'
   }
 
   return res.send({
@@ -54,6 +59,8 @@ app.get('/', async (req, res) => {
     files
   })
 })
+
+app.use('/state', state)
 
 app.get('/env', (_req, res) => {
   return res.send(process.env)
@@ -82,11 +89,12 @@ app.get('/messages', async (_req, res) => {
 })
 
 app.get('/internet', async (_req, res) => {
-  // Axios is a dependency of the Aleph SDK
-  // So we do not need to install it
   try {
     console.time('HTTP request')
     const URL = 'https://aleph.im'
+    
+    // Axios is a dependency of the Aleph SDK
+    // So we do not need to install it
 	  const request = await axios.get(URL)
     console.timeEnd('HTTP request')
 
