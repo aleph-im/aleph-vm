@@ -90,6 +90,8 @@ class Settings(BaseSettings):
         default=24,
         description="Individual VM network prefix length in bits",
     )
+    ALLOW_IPV6_NETWORKING = True
+    IPV6_ADDRESS_POOL = "host"
     NFTABLES_CHAIN_PREFIX = "aleph"
 
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf

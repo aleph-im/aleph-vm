@@ -29,15 +29,12 @@ class VmPool:
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
-        self.network = (
-            Network(
-                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
-                vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
-                external_interface=settings.NETWORK_INTERFACE,
-            )
-            if settings.ALLOW_VM_NETWORKING
-            else None
-        )
+        self.network = Network(
+            vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+            vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+            external_interface=settings.NETWORK_INTERFACE,
+            ipv6_address_pool=settings.IPV6_ADDRESS_POOL if settings.ALLOW_IPV6_NETWORKING else None,
+        ) if settings.ALLOW_VM_NETWORKING else None
 
     async def create_a_vm(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent

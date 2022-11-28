@@ -65,6 +65,7 @@ class ConfigurationPayload:
     vm_hash: str
     ip: Optional[str] = None
     route: Optional[str] = None
+    ipv6: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
@@ -107,7 +108,10 @@ def setup_variables(variables: Optional[Dict[str, str]]):
 
 
 def setup_network(
-    ip: Optional[str], route: Optional[str], dns_servers: Optional[List[str]] = None
+    ip: Optional[str],
+    route: Optional[str],
+    dns_servers: Optional[List[str]] = None,
+    ipv6: Optional[str] = None,
 ):
     """Setup the system with info from the host."""
     dns_servers = dns_servers or []
@@ -115,27 +119,35 @@ def setup_network(
         logger.info("No network interface eth0")
         return
 
-    if not ip:
+    if not (ip or ipv6):
         logger.info("No network IP")
         return
 
-    logger.debug("Setting up networking")
-    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
-    system("ip addr add ::1/128 dev lo")
-    system("ip link set lo up")
-    if "/" in ip:
-        # Forward compatibility with future supervisors that pass the mask with the IP.
-        system(f"ip addr add {ip} dev eth0")
-    else:
-        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
-        system(f"ip addr add {ip}/24 dev eth0")
-    system("ip link set eth0 up")
+    if ip:
+        logger.debug("Setting up IPv4")
+        system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
+        system("ip addr add ::1/128 dev lo")
+        system("ip link set lo up")
+        if "/" in ip:
+            # Forward compatibility with future supervisors that pass the mask with the IP.
+            system(f"ip addr add {ip} dev eth0")
+        else:
+            logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
+            system(f"ip addr add {ip}/24 dev eth0")
+        system("ip link set eth0 up")
 
-    if route:
-        system(f"ip route add default via {route} dev eth0")
-        logger.debug(f"IP and route set: {ip} via {route}")
-    else:
-        logger.warning("IP set with no network route")
+        if route:
+            system(f"ip route add default via {route} dev eth0")
+            logger.debug(f"IP and route set: {ip} via {route}")
+        else:
+            logger.warning("IPv4 set with no network route")
+
+    if ipv6:
+        logger.debug("Setting up IPv6")
+        system(f"ip addr add {ipv6} dev eth0")
+        system("ip link set eth0 up")
+        system("ip -6 route add default via fe80::1 dev eth0")
+        logger.debug(f"IPv6 setup to address {ipv6}")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
@@ -459,7 +471,7 @@ def setup_system(config: ConfigurationPayload):
 
     setup_variables(config.variables)
     setup_volumes(config.volumes)
-    setup_network(config.ip, config.route, config.dns_servers)
+    setup_network(config.ip, config.route, config.dns_servers, config.ipv6)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")
 

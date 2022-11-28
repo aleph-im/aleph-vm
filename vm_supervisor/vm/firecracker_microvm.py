@@ -95,6 +95,7 @@ class ConfigurationPayload:
     vm_hash: str
     ip: Optional[str] = None
     route: Optional[str] = None
+    ipv6: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
@@ -397,8 +398,11 @@ class AlephFirecrackerVM:
         route = str(self.tap_interface.host_ip).split("/", 1)[0]
 
         config = ConfigurationPayload(
-            ip=ip if self.enable_networking else None,
-            route=route if self.enable_networking else None,
+            ip=self.tap_interface.guest_ip.with_prefixlen
+            if self.enable_networking
+            else None,
+            route=str(self.tap_interface.host_ip) if self.enable_networking else None,
+            ipv6=str(self.tap_interface.guest_ipv6) if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,

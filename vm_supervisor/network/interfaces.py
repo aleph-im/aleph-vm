@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from ipaddress import IPv4Interface
+from ipaddress import IPv4Interface, IPv6Address
 from subprocess import run
+from typing import Optional
 
 from .ipaddresses import IPv4NetworkWithInterfaces
 import shutil
@@ -12,10 +13,17 @@ logger = logging.getLogger(__name__)
 class TapInterface:
     device_name: str
     ip_network: IPv4NetworkWithInterfaces
+    guest_ipv6: Optional[IPv6Address]
 
-    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces):
+    def __init__(
+        self,
+        device_name: str,
+        ip_network: IPv4NetworkWithInterfaces,
+        ipv6_address: Optional[IPv6Address],
+    ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
+        self.guest_ipv6 = ipv6_address if ipv6_address else None
 
     @property
     def guest_ip(self) -> IPv4Interface:
@@ -25,7 +33,7 @@ class TapInterface:
     def host_ip(self) -> IPv4Interface:
         return self.ip_network[1]
 
-    async def create(self):
+    async def create(self, external_interface: str):
         logger.debug("Create network interface")
 
         ip_command = shutil.which("ip")
@@ -41,6 +49,33 @@ class TapInterface:
             ]
         )
         run([ip_command, "link", "set", self.device_name, "up"])
+        if self.guest_ipv6:
+            run(
+                [ip_command, "-6", "addr", "add", "fe80::1", "dev", self.device_name]
+            )
+            run(
+                [
+                    ip_command,
+                    "-6",
+                    "route",
+                    "add",
+                    str(self.guest_ipv6),
+                    "dev",
+                    self.device_name,
+                ]
+            )
+            run(
+                [
+                    ip_command,
+                    "-6",
+                    "neigh",
+                    "add",
+                    "proxy",
+                    str(self.guest_ipv6),
+                    "dev",
+                    external_interface,
+                ]
+            )
         logger.debug(f"Network interface created: {self.device_name}")
 
     async def delete(self) -> None:
