@@ -32,6 +32,7 @@ class VmPool:
             vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
             vm_network_size=settings.IPV4_NETWORK_SIZE,
             external_interface=settings.NETWORK_INTERFACE,
+            ipv6_address_pool=settings.IPV6_ADDRESS_POOL if settings.ALLOW_IPV6_NETWORKING else None,
         ) if settings.ALLOW_VM_NETWORKING else None
 
     async def create_a_vm(
