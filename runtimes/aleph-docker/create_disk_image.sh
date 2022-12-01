@@ -41,18 +41,27 @@ echo "root:toor" | /usr/sbin/chpasswd
 
 mkdir -p /overlay
 
+mkdir -p /var/lib/docker
+cd /var/lib/docker
+mkdir -m  710 vfs
+mkdir -m 700 image
+mkdir -m 700 image/vfs
+mkdir -m 700 plugins
+mkdir -m 700 swarm
+cmkdir -m 750 network
+mkdir -m 700 trust
+mkdir -m 701 volumes
+mkdir -m 711 buildkit
+mkdir -m 710 containers
+
 # Set up a login terminal on the serial console (ttyS0):
 ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 
 update-alternatives --set iptables /usr/sbin/iptables-legacy
 EOT
-# The docker service starts automatically on Debian based distributions. https://docs.docker.com/engine/install/debian/
-
 
 echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
-
-echo -ne '{\n"storage-driver": "vfs"\n}\n' > ./rootfs/etc/docker/daemon.json
 
 # Generate SSH host keys
 #systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key

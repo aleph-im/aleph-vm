@@ -157,9 +157,14 @@ def create_ext4(path: Path, size_mib: int) -> bool:
 
 async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
+        print(volume)
         ref = volume.ref
         if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
-            return Path(settings.FAKE_DATA_VOLUME)
+            if "," not in str(settings.FAKE_DATA_VOLUME):
+                return Path(settings.FAKE_DATA_VOLUME)
+            for volume_bind in str(settings.FAKE_DATA_VOLUME).split(","):
+                if volume.mount == volume_bind.split(":")[1]:
+                    return volume_bind.split(":")[0]
 
         cache_path = Path(join(settings.DATA_CACHE, ref))
         url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
