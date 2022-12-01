@@ -182,9 +182,15 @@ class Settings(BaseSettings):
             assert isfile(
                 self.FAKE_DATA_RUNTIME
             ), "Local runtime .squashfs build is missing"
-            assert isfile(
-                self.FAKE_DATA_VOLUME
-            ), "Local data volume .squashfs is missing"
+            if "," in str(self.FAKE_DATA_VOLUME): # allow multiple volumes with format "host_path:mountpoint,host_path:mountpoint"
+                for volume_bind in str(self.FAKE_DATA_VOLUME).split(","):
+                    assert isfile(
+                        volume_bind.split(":")[0]
+                    ), f"Local data volume {volume_bind.split(':')[0]} is missing"
+            else:
+                assert isfile(
+                    self.FAKE_DATA_VOLUME
+                ), f"Local data volume {volume_bind.split(':')[0]} is missing"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)

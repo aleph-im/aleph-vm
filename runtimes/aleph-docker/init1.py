@@ -104,6 +104,7 @@ def setup_variables(variables: Optional[Dict[str, str]]):
     if variables is None:
         return
     for key, value in variables.items():
+        print(key)
         os.environ[key] = value
 
 
@@ -121,6 +122,7 @@ def setup_network(
         return
 
     logger.debug("Setting up networking")
+    logger.debug("IP ADDR:" + ip)
     system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
@@ -156,9 +158,6 @@ def setup_volumes(volumes: List[Volume]):
             system(f"mount -t squashfs -o ro /dev/{volume.device} {volume.mount}")
         else:
             system(f"mount -o rw /dev/{volume.device} {volume.mount}")
-
-    system("mount")
-
 
 def setup_code_asgi(
     code: bytes, encoding: Encoding, entrypoint: str
@@ -450,28 +449,43 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_docker():
+    logger.debug("Setting up docker")
     docker_mountpoint = os.environ.get("DOCKER_MOUNTPOINT")
     os.makedirs("/docker", exist_ok=True)
     system("bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker")
-    os.makedirs("/docker/persist/work", exist_ok=True)
-    os.makedirs("/docker/persist/upper", exist_ok=True)
-    # system("stat -f /")
-    # system(f"stat -f {docker_mountpoint}")
-    # system("stat -f /docker/")
-    # system("stat -f /docker/persist/")
-    # system("stat -f /docker/persist/upper")
-    # system("stat -f /docker/persist/work")
-    # system("stat -f /var/lib/docker")
-    logger.debug(os.path.isdir("/docker/persist"))
-    logger.debug(os.path.isdir("/docker/persist/upper"))
-    system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint},upperdir=/docker/persist/upper,workdir=/docker/persist/work -t overlay "overlayfs:/docker/persist/upper" /var/lib/docker')
-    return subprocess.Popen("/usr/sbin/dockerd", stderr=subprocess.PIPE, encoding='utf-8')
+    os.makedirs("/docker/persist/layers/work", exist_ok=True)
+    os.makedirs("/docker/persist/metadata/work", exist_ok=True)
+    os.makedirs("/docker/persist/layers/upper", exist_ok=True)
+    os.makedirs("/docker/persist/metadata/upper", exist_ok=True)
+    # docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
+    system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint}/layers,upperdir=/docker/persist/layers/upper,workdir=/docker/persist/layers/work -t overlay "overlayfs:/docker/persist/layers/upper" /var/lib/docker/vfs')
+    system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint}/metadata,upperdir=/docker/persist/metadata/upper,workdir=/docker/persist/metadata/work -t overlay "overlayfs:/docker/persist/metadata/upper" /var/lib/docker/image/vfs')
+    print("Before daemon:\n")
+    os.system("stat -f /var/lib/docker/image/vfs/repositories.json")
+    os.system("cat /var/lib/docker/image/vfs/repositories.json")
+    print("here")
+    # docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
+    print("there")
+    os.system("docker info")
+    docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, encoding='utf-8')
+    # os.system("/usr/sbin/dockerd --storage-driver=vfs")
+    while os.system("docker ps > /dev/null 2>&1") != 0:
+        # print("yulu")
+        # stderr = docker_daemon.communicate()
+        # print("stderr: " + stderr)
+        continue
+    print("After daemon:\n")
+    os.system("stat -f /var/lib/docker/image/vfs/repositories.json")
+    os.system("cat /var/lib/docker/image/vfs/repositories.json")
+    system("mount")
+
 
 def setup_system(config: ConfigurationPayload):
     setup_hostname(config.vm_hash)
     setup_variables(config.variables)
     setup_volumes(config.volumes)
-    docker_daemon = setup_docker()
+    setup_docker()
+    print("dameon ready")
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")

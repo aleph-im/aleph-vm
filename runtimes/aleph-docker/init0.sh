@@ -48,8 +48,6 @@ cgroupfs-mount
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/usr/sbin
 
-/usr/sbin/dockerd 2>&1 | tee /log_docker.txt &
-
 log "INIT 0 DONE2"
 # Replace this script with the manager
 exec /root/init1.py
