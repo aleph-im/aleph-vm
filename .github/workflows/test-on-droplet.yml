@@ -78,7 +78,7 @@ jobs:
           ssh root@${DROPLET_IPV4} "systemctl start aleph-vm-supervisor"
 
           sleep 3
-          curl --retry 5 "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
+          curl --retry 5 --fail "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
 
       - name: Cleanup
         if: always()
