@@ -75,10 +75,16 @@ jobs:
           # Restart the supervisor in fakedata mode
           ssh root@${DROPLET_IPV4} "systemctl stop aleph-vm-supervisor"
           ssh root@${DROPLET_IPV4} "sed --in-place 's/--very-verbose /--very-verbose -f examples\/example_fastapi/' /etc/systemd/system/aleph-vm-supervisor.service"          
+          ssh root@${DROPLET_IPV4} "systemctl daemon-reload"
           ssh root@${DROPLET_IPV4} "systemctl start aleph-vm-supervisor"
 
           sleep 3
-          curl --retry 5 --fail "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
+
+      - name: Print the logs
+        if: always()
+        run: |
+          journalctl -u aleph-vm-supervisor
 
       - name: Cleanup
         if: always()
