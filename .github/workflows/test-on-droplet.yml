@@ -70,7 +70,7 @@ jobs:
           curl --retry 5 "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Build runtime aleph-debian-11-python
-      - run: |
+        run: |
           sudo apt update
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
