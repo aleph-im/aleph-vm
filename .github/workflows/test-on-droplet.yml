@@ -64,6 +64,7 @@ jobs:
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           
+          echo "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
           sleep 3
           curl --retry 5 "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 "http://${DROPLET_IPV4}:4020/status/check/fastapi"
@@ -77,14 +78,15 @@ jobs:
           ssh root@${DROPLET_IPV4} "sed --in-place 's/--very-verbose /--very-verbose -f examples\/example_fastapi/' /etc/systemd/system/aleph-vm-supervisor.service"          
           ssh root@${DROPLET_IPV4} "systemctl daemon-reload"
           ssh root@${DROPLET_IPV4} "systemctl start aleph-vm-supervisor"
-
+          
           sleep 3
           curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
 
       - name: Print the logs
         if: always()
         run: |
-          journalctl -u aleph-vm-supervisor
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          ssh root@${DROPLET_IPV4} journalctl -u aleph-vm-supervisor
 
       - name: Cleanup
         if: always()
