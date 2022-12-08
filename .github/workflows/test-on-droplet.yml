@@ -93,7 +93,7 @@ jobs:
           
           cd examples/volumes && ./build-squashfs.sh && cd ../..
           scp examples/volumes/volume-venv.squashfs root@${DROPLET_IPV4}:/opt/aleph-vm/examples/volumes/volume-venv.squashfs
-          
+          ssh root@${DROPLET_IPV4} "mkdir -p /opt/aleph-vm/runtimes/aleph-debian-11-python/"
           scp runtimes/aleph-debian-11-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs
           
           ssh root@${DROPLET_IPV4} "systemctl start aleph-vm-supervisor"
