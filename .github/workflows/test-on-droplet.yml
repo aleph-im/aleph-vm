@@ -100,6 +100,16 @@ jobs:
           
           sleep 3
           curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/environ"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/messages"
+#          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/internet"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/cache/set/mykey/10"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/cache/get/mykey"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/cache/remove/mykey"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/cache/keys"
+          curl --fail --verbose "http://${DROPLET_IPV4}:4020/vm/ANY-ITEM-HASH/state/increment"
+          
+#          curl --fail --verbose "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Print the logs
         if: always()
