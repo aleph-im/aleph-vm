@@ -91,7 +91,7 @@ jobs:
           ssh root@${DROPLET_IPV4} "cat /etc/systemd/system/aleph-vm-supervisor.service"
           ssh root@${DROPLET_IPV4} "systemctl daemon-reload"
           
-          cd examples/volumes && ./build-squashfs.sh && cd ../..
+          cd examples/volumes && ./build_squashfs.sh && cd ../..
           scp examples/volumes/volume-venv.squashfs root@${DROPLET_IPV4}:/opt/aleph-vm/examples/volumes/volume-venv.squashfs
           ssh root@${DROPLET_IPV4} "mkdir -p /opt/aleph-vm/runtimes/aleph-debian-11-python/"
           scp runtimes/aleph-debian-11-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs
