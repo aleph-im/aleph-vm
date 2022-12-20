@@ -19,7 +19,7 @@ logger.debug("import fastapi")
 from fastapi import FastAPI, WebSocket
 
 logger.debug("import models")
-from examples.fishnet_api.model import *
+from .model import *
 
 logger.debug("imports done")
 
