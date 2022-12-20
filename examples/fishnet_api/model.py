@@ -1,7 +1,7 @@
-from typing import List
+from typing import List, Tuple, Optional
 from enum import Enum
 
-from aars import Record
+from aars import Record, Index
 
 
 class UserInfo(Record):
@@ -16,14 +16,14 @@ class Timeseries(Record):
     name: str
     desc: str
     owner: str
-    data: List[float]
+    data: List[Tuple[int, float]]
 
 
 class Dataset(Record):
     name: str
     desc: str
-    creator: str
-    creatorIsOwner: bool
+    owner: str
+    ownsAllTimeseries: bool
     timeseriesIDs: List[str]
 
 
@@ -32,7 +32,7 @@ class Algorithm(Record):
     desc: str
     owner: str
     code: str
-    executionIDs: List[str]
+    executionIDs: List[str] = []
 
 
 class ExecutionStatus(Enum):
@@ -47,8 +47,8 @@ class Execution(Record):
     algorithmID: str
     datasetID: str
     owner: str
-    status: ExecutionStatus
-    exitCode: int
+    status: ExecutionStatus = ExecutionStatus.REQUESTED
+    exitCode: Optional[int]
 
 
 class PermissionStatus(Enum):
@@ -64,3 +64,13 @@ class Permission(Record):
     reader: str
     status: PermissionStatus
     executionCount: int
+
+
+# create indexes to fetch by owner
+Index(Timeseries, 'owner')
+Index(Dataset, 'owner')
+Index(Algorithm, 'owner')
+Index(Execution, 'owner')
+Index(Permission, 'owner')
+
+Index(Execution, 'datasetID')
