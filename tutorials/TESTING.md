@@ -46,7 +46,7 @@ bash ./docker/run_vm_supervisor.sh
 
 Within the container, run the supervisor with fake data:
 ```shell
-python3 -m vm_supervisor --print-settings --very-verbose --system-logs --fake-data-program ./examples/example_fastapi
+python3 -m vm_supervisor --print-settings --very-verbose --system-logs --fake-data-program ./examples/fishnet_api
 ```
 
 > ℹ️ The command is in your .bash_history, press key up to skip typing it. 
@@ -60,6 +60,6 @@ See [../vm_supervisor/README.md](../vm_supervisor/README.md) to install the syst
 ### 2.b. Run the supervisor with fake data:
 
 ```shell
-python3 -m vm_supervisor --print-settings --very-verbose --system-logs --fake-data-program ./examples/example_fastapi
+python3 -m vm_supervisor --print-settings --very-verbose --system-logs --fake-data-program ./examples/fishnet_api
 ```
 

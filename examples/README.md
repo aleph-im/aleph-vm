@@ -41,7 +41,7 @@ Uvicorn is used to run ASGI compatible web applications, such as the `app`
 web application from the example above. You need to specify it the name of the
 Python module to use and the name of the app:
 ```shell
-uvicorn example_fastapi:app --reload
+uvicorn fishnet_api:app --reload
 ```
 
 Then open the app in a web browser on http://localhost:8000
@@ -59,7 +59,7 @@ To achieve this, we need to follow the following steps:
 ### 1. Create a zip archive containing the app
 
 ```shell
-zip -r example_fastapi.zip example_fastapi
+zip -r fishnet_api.zip fishnet_api
 ```
 
 ### 2. Store the zip archive on Aleph
