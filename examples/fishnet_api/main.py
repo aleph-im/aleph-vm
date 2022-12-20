@@ -37,8 +37,10 @@ async def index():
         opt_venv = []
     return {
         "vm_name": "fishnet_api",
-        "endpoints": ["/timeseries", "/timeseries/upload", "/datasets", "/datasets/upload",
-                      "/state/increment", "/wait-for/{delay}"],
+        "endpoints": ["/timeseries/upload",
+                      "/datasets", "/user/{address}/datasets", "/datasets/upload",
+                      "/algorithms", "/user/{address}/algorithms", "/algorithms/upload",
+                      "/executions", "/user/{address}/executions"],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
         },
