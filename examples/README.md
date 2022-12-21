@@ -1,47 +1,19 @@
-# Creating and running an Aleph Program
+# Creating and running Fishnet API
 
 In this example, we will cover how to develop and run a small webapp based on
 on [FastAPI](https://fastapi.tiangolo.com/).
 
 ## Initial setup
-
-Let's start by creating a package for our app: 
-Create a directory named `example_fastapi` 
-and an empty file named `__init__.py` file within the directory.
-```
-example_fastapi/
-example_fastapi/__init__.py
-```
-
-The copy the example from the FastAPI tutorial in `__init__.py`:
-```python
-from typing import Optional
-
-from fastapi import FastAPI
-
-app = FastAPI()
-
-
-@app.get("/")
-def index():
-    return {"Hello": "World"}
-
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Optional[str] = None):
-    return {"item_id": item_id, "q": q}
-```
-
 Install the FastAPI library and Uvicorn: 
 ```shell
-pip install fastapi uvicorn
+pip install -r ./fishnet_api/requirements.txt
 ```
 
 Uvicorn is used to run ASGI compatible web applications, such as the `app`
 web application from the example above. You need to specify it the name of the
 Python module to use and the name of the app:
 ```shell
-uvicorn fishnet_api:app --reload
+python -m uvicorn fishnet_api:app --reload
 ```
 
 Then open the app in a web browser on http://localhost:8000
@@ -54,27 +26,15 @@ The same `app` we just used with Gunicorn can be used by Aleph to run
 the web app, since Aleph attempts to be compatible with 
 [ASGI](https://asgi.readthedocs.io/ASGI).
 
-To achieve this, we need to follow the following steps:
-
-### 1. Create a zip archive containing the app
-
+To upload the app, we can use the `aleph` command line tool. 
 ```shell
-zip -r fishnet_api.zip fishnet_api
+aleph program fishnet_api app
 ```
 
-### 2. Store the zip archive on Aleph
-
-You can use [aleph-client](https://github.com/aleph-im/aleph-client) to achieve this.
-See `examples/store.py`.
-
-### 3. Create an Aleph message describing how to run your app
-
-See [this example](https://explorer.aleph.im/address/ETH/0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba/message/POST/91c83eff3ba23d6b501a2aa3c4364ec235eb8283b6fa8ac20d235642a48791b8).
-
-In the `code` section, replace the `ref` with the `item_hash` of the messages
-storing your code.
-
-Update the `entrypoint` field according to your app if necessary.
+### TODO:
+In order to make this fully work, we need to create an immutable volume which contains
+the python modules required by the app, or create a `Dockerfile` which installs the
+required modules as soon as the VM is deployed.
 
 ## Testing
 
