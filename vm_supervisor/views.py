@@ -150,6 +150,11 @@ async def status_check_fastapi(request: web.Request):
         return web.json_response(result, status=200 if all(result.values()) else 503)
 
 
+async def version(request: web.Request):
+    """Returns the version of the VM supervisor."""
+    return {"version": __version__}
+
+
 async def status_check_version(request: web.Request):
     """Check if the software is running a version equal or newer than the given one"""
     reference_str: Optional[str] = request.query.get("reference")
