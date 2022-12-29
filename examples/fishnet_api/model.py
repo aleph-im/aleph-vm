@@ -64,13 +64,16 @@ class Permission(Record):
     reader: str
     status: PermissionStatus
     executionCount: int
+    maxExecutionCount: Optional[int]
 
 
-# create indexes to fetch by owner
-Index(Timeseries, 'owner')
+# indexes to fetch by owner
 Index(Dataset, 'owner')
 Index(Algorithm, 'owner')
 Index(Execution, 'owner')
 Index(Permission, 'owner')
+
+# index to fetch permissions by timeseriesID and reader
+Index(Permission, ['reader', 'timeseriesID'])
 
 Index(Execution, 'datasetID')
