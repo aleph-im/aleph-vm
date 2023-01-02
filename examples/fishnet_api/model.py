@@ -17,6 +17,7 @@ class Timeseries(Record):
     name: str
     desc: str
     owner: str
+    available: bool = True
     data: List[Tuple[int, float]]
 
 
@@ -24,6 +25,7 @@ class Dataset(Record):
     name: str
     desc: str
     owner: str
+    available: bool = True
     ownsAllTimeseries: bool
     timeseriesIDs: List[str]
 
@@ -39,6 +41,7 @@ class Algorithm(Record):
 class ExecutionStatus(Enum):
     REQUESTED = "REQUESTED"
     PENDING = "PENDING"
+    DENIED = "DENIED"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"

@@ -29,6 +29,8 @@ cache = VmCache()
 aars = AARS(channel="FISHNET_TEST")
 
 
+# TODO: Include OpenAPI from FastAPI and document endpoints
+
 @app.get("/")
 async def index():
     if os.path.exists("/opt/venv"):
@@ -47,7 +49,7 @@ async def index():
     }
 
 
-@app.post("/timeseries/upload")
+@app.put("/timeseries/upload")
 async def upload_timeseries(timeseries: List[Timeseries]) -> List[Timeseries]:
     created_timeseries = await asyncio.gather(
         *[Timeseries.create(**dict(ts)) for ts in timeseries]
@@ -65,7 +67,7 @@ async def get_user_datasets(address: str) -> List[Dataset]:
     return await Dataset.query(owner=address)
 
 
-@app.post("/datasets/upload")
+@app.put("/datasets/upload")
 async def upload_dataset(dataset: Dataset) -> Dataset:
     if dataset.ownsAllTimeseries:
         # check if _really_ owns all timeseries
@@ -84,7 +86,7 @@ async def get_user_algorithms(address: str) -> List[Algorithm]:
     return await Algorithm.query(owner=address)
 
 
-@app.post("/algorithms/upload")
+@app.put("/algorithms/upload")
 async def upload_algorithm(algorithm: Algorithm) -> Algorithm:
     # TODO: Deploy program with the code and required packages
     return await algorithm.upsert()
@@ -100,7 +102,7 @@ async def get_user_executions(address: str) -> List[Execution]:
     return await Execution.query(owner=address)
 
 
-@app.post("/executions/request")
+@app.put("/executions/request")
 async def request_execution(execution: Execution) -> Execution:
     dataset = (await Dataset.get([execution.datasetID]))[0]
     # allow execution if dataset owner == execution owner
@@ -121,6 +123,9 @@ async def request_execution(execution: Execution) -> Execution:
     for ts in requested_timeseries:
         if ts.owner == execution.owner:
             continue
+        if not ts.available:
+            execution.status = ExecutionStatus.DENIED
+            return await execution.upsert()  # TODO: return unavailable timeseries too
         if ts.item_hash not in permissions:
             requests.append(Permission.create(
                 timeseriesID=ts.item_hash,
@@ -150,13 +155,54 @@ async def request_execution(execution: Execution) -> Execution:
     return await execution.upsert()  # TODO: return new permission requests
 
 
-@app.post("/executions/request")
+@app.get("/executions/{execution_id}/possible_execution_count")
+async def get_possible_execution_count(execution_id: str) -> int:
+    """
+    THIS IS AN OPTIONAL ENDPOINT. It is a nice challenge to implement this endpoint, as the code is not trivial and
+    it might be still good to have this code in the future.
+
+    This endpoint returns the number of times the execution can be executed. This is the maximum number of times
+    the algorithm can be executed on the dataset, given the permissions of each timeseries. It can only be executed
+    as many times as the least available timeseries can be executed.
+    """
+    pass
+
+
+@app.put("/permissions/approve")
 async def approve_permissions(permission_hashes: List[str]):
+    """
+    Approve a list of permissions by their item hashes.
+    """
     # TODO: Check signature to match with owner's
     permissions = Permission.get(permission_hashes)
     # TODO: grant permissions and update records
 
 
+@app.put("/permissions/deny")
+async def deny_permissions(permission_hashes: List[str]):
+    """
+    Deny a list of permissions by their item hashes.
+    """
+    permissions = Permission.get(permission_hashes)
+    # TODO: deny permissions and update records
+    # TODO: get all executions that are waiting for this permission (status == PENDING) and update their status to DENIED
+
+
+@app.put("/datasets/{dataset_id}/available/{available}")
+async def set_dataset_available(dataset_id: str, available: bool):
+    """
+    Set a dataset to be available or not. This will also update the status of all executions that are waiting for
+    permission on this dataset.
+    """
+    # TODO: Check signature to match with owner's
+    resp = (await Dataset.get(dataset_id))
+    # TODO: Check if dataset exists
+    dataset = resp[0]
+    # TODO: Check if action is necessary
+    dataset.available = available
+    await dataset.upsert()
+    # TODO: Get all timeseries in the dataset and set them to available or not
+    # TODO: Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
 
 
 filters = [{
