@@ -2,6 +2,7 @@ from typing import List, Tuple, Optional
 from enum import Enum
 
 from aars import Record, Index
+from pydantic import BaseModel
 
 
 class UserInfo(Record):
@@ -65,6 +66,11 @@ class Permission(Record):
     status: PermissionStatus
     executionCount: int
     maxExecutionCount: Optional[int]
+
+
+class AlgorithmRequestResponse(BaseModel):
+    execution: Execution
+    requested_permissions: List[Permission]
 
 
 # indexes to fetch by owner

@@ -102,7 +102,7 @@ async def get_user_executions(address: str) -> List[Execution]:
 
 @app.post("/executions/request")
 async def request_execution(execution: Execution) -> Execution:
-    dataset = await Dataset.get([execution.datasetID])[0]
+    dataset = (await Dataset.get([execution.datasetID]))[0]
     # allow execution if dataset owner == execution owner
     if dataset.owner == execution.owner and dataset.ownsAllTimeseries:
         execution.status = ExecutionStatus.PENDING
@@ -147,7 +147,7 @@ async def request_execution(execution: Execution) -> Execution:
         new_permission_requests = await asyncio.gather(*requests)
     execution.status = ExecutionStatus.REQUESTED
 
-    return await execution.upsert()
+    return await execution.upsert()  # TODO: return new permission requests
 
 
 filters = [{
