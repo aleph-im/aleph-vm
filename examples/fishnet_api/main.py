@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from os import listdir
-
 logger = logging.getLogger(__name__)
 
 logger.debug("import aiohttp")
@@ -19,7 +18,7 @@ logger.debug("import fastapi")
 from fastapi import FastAPI
 
 logger.debug("import models")
-from .model import *
+from model import *
 
 logger.debug("imports done")
 
