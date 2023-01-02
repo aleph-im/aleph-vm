@@ -150,8 +150,19 @@ async def request_execution(execution: Execution) -> Execution:
     return await execution.upsert()  # TODO: return new permission requests
 
 
+@app.post("/executions/request")
+async def approve_permissions(permission_hashes: List[str]):
+    # TODO: Check signature to match with owner's
+    permissions = Permission.get(permission_hashes)
+    # TODO: grant permissions and update records
+
+
+
+
 filters = [{
-    "channel": aars.channel
+    "channel": aars.channel,
+    "type": "POST",
+    "post_type": "Execution"
 }]
 
 # TODO: Add listener for execution status changes (maybe extra VM?)
