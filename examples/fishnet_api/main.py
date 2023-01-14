@@ -61,9 +61,6 @@ async def index():
     }
 
 
-"""----------GET REQUEST----------"""
-
-
 @app.get("/datasets")
 async def datasets() -> List[Dataset]:
     return await Dataset.fetch_all()
@@ -271,7 +268,7 @@ async def set_dataset_available(dataset_id: str, available: bool):
             await ts_record.upsert()
         else:
             print("No Timeseries data found")
-    # TODO: Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
+        # TODO: Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
         execution_lst = await Execution.fetch_all()
         for execution_rec in execution_lst:
             if execution_rec.datasetID == dataset_id and execution_rec.status == ExecutionStatus.PENDING:
