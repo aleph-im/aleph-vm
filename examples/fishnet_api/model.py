@@ -1,5 +1,5 @@
-from typing import List, Tuple, Optional
 from enum import Enum
+from typing import List, Tuple, Optional
 
 from aars import Record, Index
 from pydantic import BaseModel
@@ -38,7 +38,7 @@ class Algorithm(Record):
     executionIDs: List[str] = []
 
 
-class ExecutionStatus(Enum):
+class ExecutionStatus(str, Enum):
     REQUESTED = "REQUESTED"
     PENDING = "PENDING"
     DENIED = "DENIED"
@@ -55,7 +55,7 @@ class Execution(Record):
     exitCode: Optional[int]
 
 
-class PermissionStatus(Enum):
+class PermissionStatus(str, Enum):
     REQUESTED = "REQUESTED"
     GRANTED = "GRANTED"
     DENIED = "DENIED"
@@ -81,8 +81,13 @@ Index(Dataset, 'owner')
 Index(Algorithm, 'owner')
 Index(Execution, 'owner')
 Index(Permission, 'owner')
+Index(Timeseries, 'owner')
+Index(Execution, 'algorithmID')
 
 # index to fetch permissions by timeseriesID and reader
-Index(Permission, ['reader', 'timeseriesID'])
+Index(Permission, ['reader', 'timeseriesID','status'])
+Index(Permission, 'id_hash')
+Index(Permission, 'status')
+Index(Execution, 'algorithmID')
+Index(Dataset,"id_hash")
 
-Index(Execution, 'datasetID')
