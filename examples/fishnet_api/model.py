@@ -82,12 +82,12 @@ Index(Algorithm, 'owner')
 Index(Execution, 'owner')
 Index(Permission, 'owner')
 Index(Timeseries, 'owner')
-Index(Execution, 'algorithmID')
 
 # index to fetch permissions by timeseriesID and reader
-Index(Permission, ['reader', 'timeseriesID','status'])
+Index(Permission, ['reader', 'timeseriesID', 'status'])
 Index(Permission, 'id_hash')
 Index(Permission, 'status')
-Index(Execution, 'algorithmID')
-Index(Dataset,"id_hash")
+Index(Dataset, "id_hash")
 
+# index to fetch execution by the status
+Index(Execution, 'status')

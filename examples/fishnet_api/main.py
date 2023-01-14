@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from os import listdir
+
 logger = logging.getLogger(__name__)
 
 logger.debug("import aiohttp")
@@ -18,7 +19,7 @@ logger.debug("import fastapi")
 from fastapi import FastAPI
 
 logger.debug("import models")
-from model import *
+from .model import *
 
 logger.debug("imports done")
 
@@ -119,7 +120,7 @@ async def get_possible_execution_count(execution_id: str) -> int:
     """
 
     execution = await Execution.fetch(execution_id)
-    # need to be discussed first
+    # challenged accepted but after moving the house
 
 
 @app.put("/timeseries/upload")
@@ -148,6 +149,7 @@ async def upload_algorithm(algorithm: Algorithm) -> Algorithm:
 
 @app.put("/executions/request")
 async def request_execution(execution: Execution) -> Execution:
+    """This is not working so risky to change the code"""
     dataset = (await Dataset.fetch([execution.datasetID]))[0]
 
     # allow execution if dataset owner == execution owner
@@ -223,23 +225,23 @@ async def deny_permissions(permission_hashes: List[str]):
     """
     await re_index()
     permission_record = await Permission.fetch(permission_hashes)
-    tsid = []
+    ts_ids = []
 
     for permission in permission_record:
-        # TODO: deny permissions and update records
+        # deny permissions and update records
         permission.status = PermissionStatus.DENIED
-        tsid.append(permission.timeseriesID)
+        ts_ids.append(permission.timeseriesID)
         await permission.upsert()
-    # TODO: get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
+    # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
     dataset = await Dataset.fetch_all()
     ds_ids = []
     for data in dataset:
-        if [i for i, j in zip(data.timeseriesIDs, tsid) if i == j]:
+        if [i for i, j in zip(data.timeseriesIDs, ts_ids) if i == j]:
             ds_ids.append(data.id_hash)
 
     execution = await Execution.fetch_all()
     for rec in execution:
-        if rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING:
+        if ds_ids and rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING:
             rec.status = ExecutionStatus.DENIED
             await rec.upsert()
 
@@ -251,57 +253,32 @@ async def set_dataset_available(dataset_id: str, available: bool):
     permission on this dataset.
     """
     await re_index()
-    # TODO: Check signature to match with owner's
+    # Check signature to match with owner's
     # This signature will be implemented by Mike
     resp = await Dataset.fetch(dataset_id)
     dataset = resp[0]
-    # TODO: Check if dataset exists
-    if len(resp) > 0:
+    # Check if dataset exists
+    if resp:
         dataset.available = available
         await dataset.upsert()
-        # TODO: Get all timeseries in the dataset and set them to available or not
+
+        # Get all timeseries in the dataset and set them to available or not
         ts_list = await Timeseries.fetch(dataset.timeseriesIDs)
         ts_record = ts_list[0]
-        if len(ts_list) > 0:
+        if ts_record:
             ts_record.available = available
             await ts_record.upsert()
         else:
             print("No Timeseries data found")
-        # TODO: Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
-        execution_lst = await Execution.fetch_all()
-        for execution_rec in execution_lst:
+
+        # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
+        execution = await Execution.fetch_all()
+        for execution_rec in execution:
             if execution_rec.datasetID == dataset_id and execution_rec.status == ExecutionStatus.PENDING:
                 execution_rec.status = ExecutionStatus.DENIED
                 await execution_rec.upsert()
     else:
         return {"error": "dataset not found"}
-
-
-@app.post("/post/Timeseries")
-async def post_timeseries(timeseries: Timeseries):
-    print(timeseries, "Here is the data")
-    return await timeseries.upsert()
-
-
-@app.post("/post/datasets")
-async def post_datasets(dataset: Dataset):
-    return await dataset.upsert()
-
-
-@app.post("/post/execution")
-async def post_datasets(execution: Execution):
-    return await execution.upsert()
-
-
-@app.post("/post/algorithm")
-async def post_datasets(algorithm: Algorithm):
-    return await algorithm.upsert()
-
-
-@app.post('/post/Permission')
-async def post_permission(permission: Permission):
-    await re_index()
-    return await permission.upsert()
 
 
 filters = [{
