@@ -135,7 +135,7 @@ async def upload_timeseries(timeseries: List[Timeseries]) -> List[Timeseries]:
 async def upload_dataset(dataset: Dataset) -> Dataset:
     if dataset.ownsAllTimeseries:
         # check if _really_ owns all timeseries
-        timeseries = await Timeseries.get(dataset.timeseriesIDs)
+        timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
         dataset.ownsAllTimeseries = all([ts.owner == dataset.owner for ts in timeseries])
     return await dataset.upsert()
 
@@ -148,14 +148,14 @@ async def upload_algorithm(algorithm: Algorithm) -> Algorithm:
 
 
 @app.put("/executions/request")
-async def request_execution(execution: Execution) -> Execution:
+async def request_execution(execution: Execution) -> Tuple[Execution, Union[List[Permission], List[Timeseries]]]:
     """This is not working so risky to change the code"""
     dataset = (await Dataset.fetch([execution.datasetID]))[0]
 
     # allow execution if dataset owner == execution owner
     if dataset.owner == execution.owner and dataset.ownsAllTimeseries:
         execution.status = ExecutionStatus.PENDING
-        return await execution.upsert()
+        return await execution.upsert(), []
 
     # check if execution owner has permission to read all timeseries
     requested_timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
@@ -172,10 +172,15 @@ async def request_execution(execution: Execution) -> Execution:
             continue
         if not ts.available:
             execution.status = ExecutionStatus.DENIED
-            return await execution.upsert()  # TODO: return unavailable timeseries too
-        if ts.item_hash not in permissions:
+            unavailable_timeseries.append(ts)
+            await execution.upsert()
+        if execution.status == ExecutionStatus.DENIED:
+            # continue to fetch all the unavailable timeseries
+            continue
+        if ts.id_hash not in permissions:
+            # create permission request
             requests.append(Permission.create(
-                timeseriesID=ts.item_hash,
+                timeseriesID=ts.id_hash,
                 algorithmID=execution.algorithmID,
                 owner=ts.owner,
                 reader=execution.owner,
@@ -185,21 +190,27 @@ async def request_execution(execution: Execution) -> Execution:
             ))
         else:
             # check if permission is valid
-            permission = permissions[ts.item_hash]
-            needs_update = False
+            permission = permissions[ts.id_hash]
+            needs_update = False  # helper variable to avoid unnecessary updates
             if permission.status == PermissionStatus.DENIED:
                 permission.status = PermissionStatus.REQUESTED
                 needs_update = True
             if permission.maxExecutionCount <= permission.executionCount:
                 permission.maxExecutionCount = permission.executionCount + 1
+                permission.status = PermissionStatus.REQUESTED  # re-request permission
                 needs_update = True
             if needs_update:
                 requests.append(permission.upsert())
-    if len(requests) > 0:
+    if unavailable_timeseries:
+        return execution, unavailable_timeseries
+    if requests:
         new_permission_requests = await asyncio.gather(*requests)
-    execution.status = ExecutionStatus.REQUESTED
+        execution.status = ExecutionStatus.REQUESTED
+    else:
+        new_permission_requests = []
+        execution.status = ExecutionStatus.PENDING
 
-    return await execution.upsert()  # TODO: return new permission requests
+    return await execution.upsert(), new_permission_requests
 
 
 @app.put("/permissions/approve")
