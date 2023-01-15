@@ -284,18 +284,17 @@ async def set_dataset_available(dataset_id: str, available: bool):
 filters = [{
     "channel": aars.channel,
     "type": "POST",
-    "post_type": "Execution"
+    "post_type": ["Execution", "Permission", "Dataset", "Timeseries", "Algorithm", "amend"],
 }]
 
 
-# TODO: Add listener for execution status changes (maybe extra VM?)
 @app.event(filters=filters)
-async def fishnet_event(event):
+async def fishnet_event(event: PostMessage):
     print("fishnet_event", event)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
-        async with session.get("https://official.aleph.cloud/api/v0/info/public.json") as resp:
-            print('RESP', resp)
-            resp.raise_for_status()
-    return {
-        "result": "Good"
-    }
+    if event.content.type in ["Execution", "Permission", "Dataset", "Timeseries", "Algorithm"]:
+        cls: Record = globals()[event.content.type]
+        record = await cls.from_post(event)
+    else:  # amend
+        record = Record.fetch(event.content.ref)
+    # update indexes
+    [index.add_record(record) for index in record.get_indices()]
