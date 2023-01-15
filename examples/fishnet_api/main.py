@@ -2,6 +2,9 @@ import asyncio
 import logging
 import os
 from os import listdir
+from typing import Union
+
+from aleph_message.models import PostMessage
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +33,21 @@ aars = AARS(channel="FISHNET_TEST")
 
 
 async def re_index():
-    await Timeseries.regenerate_indices()
-    await  UserInfo.regenerate_indices()
-    await Dataset.regenerate_indices()
-    await Algorithm.regenerate_indices()
-    await Execution.regenerate_indices()
-    await Permission.regenerate_indices()
-
     print("This will take few sec ...")
-    await asyncio.sleep(3)
+    await asyncio.gather(
+        Timeseries.regenerate_indices(),
+        UserInfo.regenerate_indices(),
+        Dataset.regenerate_indices(),
+        Algorithm.regenerate_indices(),
+        Execution.regenerate_indices(),
+        Permission.regenerate_indices(),
+        asyncio.sleep(3)
+    )
+
+
+@app.on_event("startup")
+async def startup():
+    await re_index()
 
 
 # TODO: Include OpenAPI from FastAPI and document endpoints
@@ -167,6 +176,7 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
         )
     }
     requests = []
+    unavailable_timeseries = []
     for ts in requested_timeseries:
         if ts.owner == execution.owner:
             continue
@@ -218,15 +228,13 @@ async def approve_permissions(permission_hashes: List[str]):
     """
     Approve a list of permissions by their item hashes.
     """
-
     # TODO: Check signature to match with owner's
 
-    # TODO: grant permissions and update records
-    await re_index()
     permission_record = await Permission.fetch(permission_hashes)
     for rec in permission_record:
         rec.status = PermissionStatus.GRANTED
         await rec.upsert()
+    # TODO: check if execution can be executed now
 
 
 @app.put("/permissions/deny")
@@ -234,7 +242,6 @@ async def deny_permissions(permission_hashes: List[str]):
     """
     Deny a list of permissions by their item hashes.
     """
-    await re_index()
     permission_record = await Permission.fetch(permission_hashes)
     ts_ids = []
 
@@ -263,7 +270,6 @@ async def set_dataset_available(dataset_id: str, available: bool):
     Set a dataset to be available or not. This will also update the status of all executions that are waiting for
     permission on this dataset.
     """
-    await re_index()
     # Check signature to match with owner's
     # This signature will be implemented by Mike
     resp = await Dataset.fetch(dataset_id)
