@@ -8,9 +8,6 @@ from aleph_message.models import PostMessage
 
 logger = logging.getLogger(__name__)
 
-logger.debug("import aiohttp")
-import aiohttp
-
 logger.debug("import aleph_client")
 from aleph_client.vm.cache import VmCache
 from aleph_client.vm.app import AlephApp
@@ -245,12 +242,14 @@ async def deny_permissions(permission_hashes: List[str]):
     permission_record = await Permission.fetch(permission_hashes)
     ts_ids = []
 
+    # TODO: await permission.upserts in parallel
     for permission in permission_record:
         # deny permissions and update records
         permission.status = PermissionStatus.DENIED
         ts_ids.append(permission.timeseriesID)
         await permission.upsert()
     # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
+    # TODO: Avoid fetching all executions, use indices instead
     dataset = await Dataset.fetch_all()
     ds_ids = []
     for data in dataset:
@@ -273,6 +272,7 @@ async def set_dataset_available(dataset_id: str, available: bool):
     # Check signature to match with owner's
     # This signature will be implemented by Mike
     resp = await Dataset.fetch(dataset_id)
+    # TODO: Handle the case when the dataset is not found
     dataset = resp[0]
     # Check if dataset exists
     if resp:
@@ -282,11 +282,14 @@ async def set_dataset_available(dataset_id: str, available: bool):
         # Get all timeseries in the dataset and set them to available or not
         ts_list = await Timeseries.fetch(dataset.timeseriesIDs)
         ts_record = ts_list[0]
+        requests = []  # TODO: execute all requests in parallel
         if ts_record:
+            # TODO: check if the timeseries is updated or not and only update the timeseries when it is needed
             ts_record.available = available
             await ts_record.upsert()
         else:
             print("No Timeseries data found")
+        await asyncio.gather(*requests)
 
         # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
         execution = await Execution.fetch_all()
