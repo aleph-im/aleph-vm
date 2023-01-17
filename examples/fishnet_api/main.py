@@ -220,18 +220,50 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
     return await execution.upsert(), new_permission_requests
 
 
+@app.post("/datapost")
+async def datapost(permission: Permission):
+    await permission.upsert()
+
+
 @app.put("/permissions/approve")
 async def approve_permissions(permission_hashes: List[str]):
     """
     Approve a list of permissions by their item hashes.
     """
+    ts_ids = []
+    requests = []
     # TODO: Check signature to match with owner's
 
     permission_record = await Permission.fetch(permission_hashes)
-    for rec in permission_record:
-        rec.status = PermissionStatus.GRANTED
-        await rec.upsert()
-    # TODO: check if execution can be executed now
+    if permission_record:
+        for rec in permission_record:
+            rec.status = PermissionStatus.GRANTED
+            ts_ids.append(rec.timeseriesID)
+            requests.append(rec.upsert())
+
+        # TODO: check if execution can be executed now
+        ds_ids = []
+        dataset = await Dataset.fetch(ts_ids)
+        if dataset:
+            for data in dataset:
+                if data.id_hash in ds_ids:
+                    ds_ids.append(data.id_hash)
+
+            executions = await Execution.fetch(ds_ids)
+            if executions:
+                for execution in executions:
+                    if ds_ids and execution.datasetID in ds_ids:
+                        execution.status = ExecutionStatus.PENDING
+                        requests.append(rec.upsert())
+
+                await asyncio.gather(requests)
+                return {"Permission Approved Sucessfully"}
+            else:
+                return {"Execution": "No Execution found "}
+        else:
+            return {"dataset": "No Dataset found"}
+    else:
+        return {"Permission:No Permission Found with this Hashes"}
 
 
 @app.put("/permissions/deny")
@@ -240,27 +272,38 @@ async def deny_permissions(permission_hashes: List[str]):
     Deny a list of permissions by their item hashes.
     """
     permission_record = await Permission.fetch(permission_hashes)
-    ts_ids = []
+    if permission_record:
+        ts_ids = []
+        # await permission.upserts in parallel
+        requests = []
+        for permission in permission_record:
+            # deny permissions and update records
+            permission.status = PermissionStatus.DENIED
+            ts_ids.append(permission.timeseriesID)
+            requests.append(permission.upsert())
+        dataset = await Dataset.fetch(ts_ids)
+        ds_ids = []
+        if dataset:
+            for data in dataset:
+                ds_ids.append(data.id_hash)
+            # Avoided fetching all executions
+            execution = await Execution.fetch(ds_ids)
+            if execution:
+                for rec in execution:
+                    # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
+                    if rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING:
+                        rec.status = ExecutionStatus.DENIED
+                        requests.append(rec.upsert())
+                # parellel processed
+                await asyncio.gather(requests)
+                return {"Successfully Denied Permission"}
 
-    # TODO: await permission.upserts in parallel
-    for permission in permission_record:
-        # deny permissions and update records
-        permission.status = PermissionStatus.DENIED
-        ts_ids.append(permission.timeseriesID)
-        await permission.upsert()
-    # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
-    # TODO: Avoid fetching all executions, use indices instead
-    dataset = await Dataset.fetch_all()
-    ds_ids = []
-    for data in dataset:
-        if [i for i, j in zip(data.timeseriesIDs, ts_ids) if i == j]:
-            ds_ids.append(data.id_hash)
-
-    execution = await Execution.fetch_all()
-    for rec in execution:
-        if ds_ids and rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING:
-            rec.status = ExecutionStatus.DENIED
-            await rec.upsert()
+            else:
+                return {"Execution": "No Execution found "}
+        else:
+            return {"Timeseries":"No Timeseries found"}
+    else:
+        return {"Permission": "No Permission found with this Hashes"}
 
 
 @app.put("/datasets/{dataset_id}/available/{available}")
@@ -271,34 +314,41 @@ async def set_dataset_available(dataset_id: str, available: bool):
     """
     # Check signature to match with owner's
     # This signature will be implemented by Mike
+    requests = []
     resp = await Dataset.fetch(dataset_id)
-    # TODO: Handle the case when the dataset is not found
-    dataset = resp[0]
-    # Check if dataset exists
+    # Handled the case when the dataset is not found
     if resp:
+        dataset = resp[0]
         dataset.available = available
-        await dataset.upsert()
+        requests.append(dataset.upsert())
 
         # Get all timeseries in the dataset and set them to available or not
         ts_list = await Timeseries.fetch(dataset.timeseriesIDs)
-        ts_record = ts_list[0]
-        requests = []  # TODO: execute all requests in parallel
-        if ts_record:
-            # TODO: check if the timeseries is updated or not and only update the timeseries when it is needed
-            ts_record.available = available
-            await ts_record.upsert()
-        else:
-            print("No Timeseries data found")
-        await asyncio.gather(*requests)
+        if ts_list:
+            ts_record = ts_list[0]
+            # check if the timeseries is updated or not and only update the timeseries when it is needed
+            if ts_record.available != available:
+                ts_record.available = available
+                requests.append(ts_record.upsert())
+            else:
+                return {"error:Recorded is already Updated"}
 
-        # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
-        execution = await Execution.fetch_all()
-        for execution_rec in execution:
-            if execution_rec.datasetID == dataset_id and execution_rec.status == ExecutionStatus.PENDING:
-                execution_rec.status = ExecutionStatus.DENIED
-                await execution_rec.upsert()
+            # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
+            execution = await Execution.fetch(dataset_id)
+            if execution:
+                for execution_rec in execution:
+                    if execution_rec.status == ExecutionStatus.PENDING:
+                        execution_rec.status = ExecutionStatus.DENIED
+                        requests.append(execution_rec.upsert())
+
+                # executed all requests in parallel
+                await asyncio.gather(requests)
+            else:
+                return {"Execution": "No Execution found "}
+        else:
+            return {"Timeseries":"No Timeseries found"}
     else:
-        return {"error": "dataset not found"}
+        return {"dataset": "No Dataset found"}
 
 
 filters = [{
