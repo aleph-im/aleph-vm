@@ -6,7 +6,8 @@ from typing import Union
 
 from aleph_message.models import PostMessage
 
-from .requests import DenyPermissionsResponse, UploadDatasetRequest
+from .requests import DenyPermissionsResponse, UploadDatasetRequest, RequestExecutionRequest, UploadTimeseriesRequest, \
+    UploadAlgorithmRequest
 
 logger = logging.getLogger(__name__)
 
@@ -99,21 +100,6 @@ async def get_user_executions(address: str) -> List[Execution]:
     return await Execution.query(owner=address)
 
 
-@app.get("/allTimeseries")
-async def post_timeseries():
-    return await Timeseries.fetch_all()
-
-
-@app.get("/allexecution")
-async def post_timeseries():
-    return await Execution.fetch_all()
-
-
-@app.get("/allpermission")
-async def post_timeseries():
-    return await Permission.fetch_all()
-
-
 @app.get("/executions/{execution_id}/possible_execution_count")
 async def get_possible_execution_count(execution_id: str) -> int:
     """
@@ -132,11 +118,22 @@ async def get_possible_execution_count(execution_id: str) -> int:
 
 
 @app.put("/timeseries/upload")
-async def upload_timeseries(timeseries: List[Timeseries]) -> List[Timeseries]:
-    created_timeseries = await asyncio.gather(
-        *[Timeseries.create(**dict(ts)) for ts in timeseries]
-    )
-    return [ts for ts in created_timeseries if not isinstance(ts, BaseException)]
+async def upload_timeseries(timeseries: List[UploadTimeseriesRequest]) -> List[Timeseries]:
+    ids_to_fetch = [ts.id_hash for ts in timeseries if ts.id_hash is not None]
+    requests = []
+    old_time_series = {ts.id_hash: ts for ts in await Timeseries.fetch(ids_to_fetch)} if ids_to_fetch else {}
+    for ts in timeseries:
+        if old_time_series.get(ts.id_hash) is None:
+            requests.append(Timeseries.create(**dict(ts)))
+            continue
+        old_ts: Timeseries = old_time_series[ts.id_hash]
+        if ts.owner != old_ts.owner:
+            raise Exception("Cannot overwrite timeseries that is not owned by you")
+        old_ts.data = ts.data
+        old_ts.desc = ts.desc
+        requests.append(old_ts.upsert())
+    upserted_timeseries = await asyncio.gather(*requests)
+    return [ts for ts in upserted_timeseries if not isinstance(ts, BaseException)]
 
 
 @app.put("/datasets/upload")
