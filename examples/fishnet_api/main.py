@@ -6,9 +6,6 @@ from typing import Union
 
 from aleph_message.models import PostMessage
 
-from .requests import DenyPermissionsResponse, UploadDatasetRequest, RequestExecutionRequest, UploadTimeseriesRequest, \
-    UploadAlgorithmRequest
-
 logger = logging.getLogger(__name__)
 
 logger.debug("import aleph_client")
@@ -21,8 +18,9 @@ from aars import AARS
 logger.debug("import fastapi")
 from fastapi import FastAPI
 
-logger.debug("import models")
+logger.debug("import project modules")
 from .model import *
+from .requests import *
 
 logger.debug("imports done")
 
@@ -33,16 +31,16 @@ aars = AARS(channel="FISHNET_TEST")
 
 
 async def re_index():
-    print("This will take few sec ...")
+    logger.info("API re-indexing")
     await asyncio.gather(
         Timeseries.regenerate_indices(),
         UserInfo.regenerate_indices(),
         Dataset.regenerate_indices(),
         Algorithm.regenerate_indices(),
         Execution.regenerate_indices(),
-        Permission.regenerate_indices(),
-        asyncio.sleep(3)
+        Permission.regenerate_indices()
     )
+    logger.info("API re-indexing done")
 
 
 @app.on_event("startup")
@@ -129,6 +127,7 @@ async def upload_timeseries(timeseries: List[UploadTimeseriesRequest]) -> List[T
         old_ts: Timeseries = old_time_series[ts.id_hash]
         if ts.owner != old_ts.owner:
             raise Exception("Cannot overwrite timeseries that is not owned by you")
+        old_ts.name = ts.name
         old_ts.data = ts.data
         old_ts.desc = ts.desc
         requests.append(old_ts.upsert())
@@ -142,14 +141,35 @@ async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
         # check if _really_ owns all timeseries
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
         dataset.ownsAllTimeseries = all([ts.owner == dataset.owner for ts in timeseries])
+    if dataset.id_hash is not None:
+        # update existing dataset
+        resp = (await Dataset.fetch(dataset.id_hash))
+        old_dataset = resp[0] if resp else None
+        if old_dataset is not None:
+            if old_dataset.owner != dataset.owner:
+                raise Exception("Cannot overwrite dataset that is not owned by you")
+            old_dataset.name = dataset.name
+            old_dataset.desc = dataset.desc
+            old_dataset.timeseriesIDs = dataset.timeseriesIDs
+            old_dataset.ownsAllTimeseries = dataset.ownsAllTimeseries
+            return await old_dataset.upsert()
     return await Dataset.create(**dataset.dict())
 
 
 @app.put("/algorithms/upload")
-async def upload_algorithm(algorithm: Algorithm) -> Algorithm:
-    # TODO: Deploy program with the code and required packages
-
-    return await algorithm.upsert()
+async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
+    if algorithm.id_hash is not None:
+        # update existing algorithm
+        resp = (await Algorithm.fetch(algorithm.id_hash))
+        old_algorithm = resp[0] if resp else None
+        if old_algorithm is not None:
+            if old_algorithm.owner != algorithm.owner:
+                raise Exception("Cannot overwrite algorithm that is not owned by you")
+            old_algorithm.name = algorithm.name
+            old_algorithm.desc = algorithm.desc
+            old_algorithm.code = algorithm.code
+            return await old_algorithm.upsert()
+    return await Algorithm.create(**algorithm.dict())
 
 
 @app.put("/executions/request")

@@ -15,16 +15,16 @@ class UserInfo(Record):
 
 class Timeseries(Record):
     name: str
-    desc: str
     owner: str
+    desc: Optional[str]
     available: bool = True
     data: List[Tuple[int, float]]
 
 
 class Dataset(Record):
     name: str
-    desc: str
     owner: str
+    desc: Optional[str]
     available: bool = True
     ownsAllTimeseries: bool
     timeseriesIDs: List[str]
