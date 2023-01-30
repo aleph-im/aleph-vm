@@ -6,6 +6,8 @@ from typing import Union
 
 from aleph_message.models import PostMessage
 
+from .requests import DenyPermissionsResponse, UploadDatasetRequest
+
 logger = logging.getLogger(__name__)
 
 logger.debug("import aleph_client")
@@ -138,12 +140,12 @@ async def upload_timeseries(timeseries: List[Timeseries]) -> List[Timeseries]:
 
 
 @app.put("/datasets/upload")
-async def upload_dataset(dataset: Dataset) -> Dataset:
+async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
     if dataset.ownsAllTimeseries:
         # check if _really_ owns all timeseries
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
         dataset.ownsAllTimeseries = all([ts.owner == dataset.owner for ts in timeseries])
-    return await dataset.upsert()
+    return await Dataset.create(**dataset.dict())
 
 
 @app.put("/algorithms/upload")
@@ -220,15 +222,12 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
     return await execution.upsert(), new_permission_requests
 
 
-@app.post("/datapost")
-async def datapost(permission: Permission):
-    await permission.upsert()
-
-
 @app.put("/permissions/approve")
 async def approve_permissions(permission_hashes: List[str]):
     """
     Approve a list of permissions by their item hashes.
+
+    :param permission_hashes: list of permission item hashes
     """
     ts_ids = []
     requests = []
@@ -266,7 +265,7 @@ async def approve_permissions(permission_hashes: List[str]):
 
 
 @app.put("/permissions/deny")
-async def deny_permissions(permission_hashes: List[str]):
+async def deny_permissions(permission_hashes: List[str]) -> DenyPermissionsResponse:
     """
     Deny a list of permissions by their item hashes.
     """
@@ -294,13 +293,13 @@ async def deny_permissions(permission_hashes: List[str]):
                         requests.append(rec.upsert())
                 # parellel processed
                 await asyncio.gather(requests)
-                return {"Success": "Denied all Permissions"}
+                return DenyPermissionsResponse(success=True, message="Denied all Permissions")
             else:
-                return {"Execution": "No Execution found "}
+                return DenyPermissionsResponse(success=True, message="No Execution found")
         else:
-            return {"Timeseries": "No Timeseries found"}
+            return {"message": "No Timeseries found"}
     else:
-        return {"Permission": "No Permission found with this Hashes"}
+        return {"message": "No Permission found with this Hashes"}
 
 
 @app.put("/datasets/{dataset_id}/available/{available}")
