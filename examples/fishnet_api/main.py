@@ -101,7 +101,7 @@ async def get_user_executions(address: str) -> List[Execution]:
 @app.get("/executions/{execution_id}/possible_execution_count")
 async def get_possible_execution_count(execution_id: str) -> int:
     """
-    THIS IS AN OPTIONAL ENDPOINT. It is a nice challenge to implement this endpoint, as the code is not trivial and
+    THIS IS AN OPTIONAL ENDPOINT. It is a nice challenge to implement this endpoint, as the code is not trivial, and
     it might be still good to have this code in the future.
 
     This endpoint returns the number of times the execution can be executed.
@@ -117,6 +117,12 @@ async def get_possible_execution_count(execution_id: str) -> int:
 
 @app.put("/timeseries/upload")
 async def upload_timeseries(timeseries: List[UploadTimeseriesRequest]) -> List[Timeseries]:
+    """
+    Upload a list of timeseries. If the passed timeseries has an `id_hash` and it already exists,
+    it will be overwritten. If the timeseries does not exist, it will be created.
+    A list of the created/updated timeseries is returned. If the list is shorter than the passed list, then
+    it might be that a passed timeseries contained illegal data.
+    """
     ids_to_fetch = [ts.id_hash for ts in timeseries if ts.id_hash is not None]
     requests = []
     old_time_series = {ts.id_hash: ts for ts in await Timeseries.fetch(ids_to_fetch)} if ids_to_fetch else {}
@@ -137,6 +143,10 @@ async def upload_timeseries(timeseries: List[UploadTimeseriesRequest]) -> List[T
 
 @app.put("/datasets/upload")
 async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
+    """
+    Upload a dataset.
+    If an `id_hash` is provided, it will update the dataset with that id.
+    """
     if dataset.ownsAllTimeseries:
         # check if _really_ owns all timeseries
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
@@ -158,6 +168,10 @@ async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
 
 @app.put("/algorithms/upload")
 async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
+    """
+    Upload an algorithm.
+    If an `id_hash` is provided, it will update the algorithm with that id.
+    """
     if algorithm.id_hash is not None:
         # update existing algorithm
         resp = (await Algorithm.fetch(algorithm.id_hash))
@@ -172,15 +186,25 @@ async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
     return await Algorithm.create(**algorithm.dict())
 
 
-@app.put("/executions/request")
-async def request_execution(execution: Execution) -> Tuple[Execution, Union[List[Permission], List[Timeseries]]]:
-    """This is not working so risky to change the code"""
+@app.post("/executions/request")
+async def request_execution(
+        execution: RequestExecutionRequest
+) -> Tuple[Execution, Union[List[Permission], List[Timeseries]]]:
+    """
+    This endpoint is used to request an execution.
+    If the user needs some permissions, the timeseries for which the user needs permissions are returned and
+    the execution status is set to "requested". The needed permissions are also being requested. As soon as the
+    permissions are granted, the execution is automatically executed.
+    If some timeseries are not available, the execution is "denied" and the execution as well as the
+    unavailable timeseries are returned.
+    If the user has all permissions, the execution is started and the execution is returned.
+    """
     dataset = (await Dataset.fetch([execution.datasetID]))[0]
 
     # allow execution if dataset owner == execution owner
     if dataset.owner == execution.owner and dataset.ownsAllTimeseries:
         execution.status = ExecutionStatus.PENDING
-        return await execution.upsert(), []
+        return await Execution.create(**execution.dict()), []
 
     # check if execution owner has permission to read all timeseries
     requested_timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
@@ -197,11 +221,9 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
         if ts.owner == execution.owner:
             continue
         if not ts.available:
-            execution.status = ExecutionStatus.DENIED
             unavailable_timeseries.append(ts)
-            await execution.upsert()
-        if execution.status == ExecutionStatus.DENIED:
-            # continue to fetch all the unavailable timeseries
+        if requested_timeseries:
+            # continue to fetch all the unavailable timeseries for the denied response
             continue
         if ts.id_hash not in permissions:
             # create permission request
@@ -228,7 +250,8 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
             if needs_update:
                 requests.append(permission.upsert())
     if unavailable_timeseries:
-        return execution, unavailable_timeseries
+        execution.status = ExecutionStatus.DENIED
+        return await Execution.create(**execution.dict()), unavailable_timeseries
     if requests:
         new_permission_requests = await asyncio.gather(*requests)
         execution.status = ExecutionStatus.REQUESTED
@@ -236,15 +259,13 @@ async def request_execution(execution: Execution) -> Tuple[Execution, Union[List
         new_permission_requests = []
         execution.status = ExecutionStatus.PENDING
 
-    return await execution.upsert(), new_permission_requests
+    return await Execution.create(**execution.dict()), new_permission_requests
 
 
 @app.put("/permissions/approve")
 async def approve_permissions(permission_hashes: List[str]):
     """
     Approve a list of permissions by their item hashes.
-
-    :param permission_hashes: list of permission item hashes
     """
     ts_ids = []
     requests = []
