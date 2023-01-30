@@ -116,17 +116,17 @@ async def get_possible_execution_count(execution_id: str) -> int:
 
 
 @app.put("/timeseries/upload")
-async def upload_timeseries(timeseries: List[UploadTimeseriesRequest]) -> List[Timeseries]:
+async def upload_timeseries(req: UploadTimeseriesRequest) -> List[Timeseries]:
     """
     Upload a list of timeseries. If the passed timeseries has an `id_hash` and it already exists,
     it will be overwritten. If the timeseries does not exist, it will be created.
     A list of the created/updated timeseries is returned. If the list is shorter than the passed list, then
     it might be that a passed timeseries contained illegal data.
     """
-    ids_to_fetch = [ts.id_hash for ts in timeseries if ts.id_hash is not None]
+    ids_to_fetch = [ts.id_hash for ts in req.timeseries if ts.id_hash is not None]
     requests = []
     old_time_series = {ts.id_hash: ts for ts in await Timeseries.fetch(ids_to_fetch)} if ids_to_fetch else {}
-    for ts in timeseries:
+    for ts in req.timeseries:
         if old_time_series.get(ts.id_hash) is None:
             requests.append(Timeseries.create(**dict(ts)))
             continue
@@ -189,7 +189,7 @@ async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
 @app.post("/executions/request")
 async def request_execution(
         execution: RequestExecutionRequest
-) -> Tuple[Execution, Union[List[Permission], List[Timeseries]]]:
+) -> RequestExecutionResponse:
     """
     This endpoint is used to request an execution.
     If the user needs some permissions, the timeseries for which the user needs permissions are returned and
@@ -204,7 +204,9 @@ async def request_execution(
     # allow execution if dataset owner == execution owner
     if dataset.owner == execution.owner and dataset.ownsAllTimeseries:
         execution.status = ExecutionStatus.PENDING
-        return await Execution.create(**execution.dict()), []
+        return RequestExecutionResponse(
+            execution=await Execution.create(**execution.dict())
+        )
 
     # check if execution owner has permission to read all timeseries
     requested_timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
@@ -251,15 +253,22 @@ async def request_execution(
                 requests.append(permission.upsert())
     if unavailable_timeseries:
         execution.status = ExecutionStatus.DENIED
-        return await Execution.create(**execution.dict()), unavailable_timeseries
+        return RequestExecutionResponse(
+            execution=await Execution.create(**execution.dict()),
+            unavailableTimeseries=unavailable_timeseries
+        )
     if requests:
         new_permission_requests = await asyncio.gather(*requests)
         execution.status = ExecutionStatus.REQUESTED
+        return RequestExecutionResponse(
+            execution=await Execution.create(**execution.dict()),
+            permissionRequests=new_permission_requests
+        )
     else:
-        new_permission_requests = []
         execution.status = ExecutionStatus.PENDING
-
-    return await Execution.create(**execution.dict()), new_permission_requests
+        return RequestExecutionResponse(
+            execution=await Execution.create(**execution.dict())
+        )
 
 
 @app.put("/permissions/approve")
