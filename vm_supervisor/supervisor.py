@@ -27,7 +27,7 @@ from .views import (
     about_execution_records,
     status_check_version,
     update_allocations,
-    version,
+    status_get_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,9 +56,9 @@ app.add_routes(
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
         web.post("/control/allocations", update_allocations),
+        web.get("/status/version", status_get_version),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
-        web.get("/version", version),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]
