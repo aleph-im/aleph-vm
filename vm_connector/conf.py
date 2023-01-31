@@ -9,8 +9,8 @@ Url = NewType("Url", str)
 
 
 class ConnectorSettings(BaseSettings):
-    API_SERVER: Url = "https://official.aleph.cloud"
-    IPFS_SERVER: Url = "https://ipfs.aleph.im/ipfs"
+    API_SERVER: Url = Url("https://official.aleph.cloud")
+    IPFS_SERVER: Url = Url("https://ipfs.aleph.im/ipfs")
     OFFLINE_TEST_MODE: bool = False
 
     def update(self, **kwargs):
