@@ -2,3 +2,5 @@ pydantic
 aiohttp
 aleph_client
 aars
+pytest
+httpx

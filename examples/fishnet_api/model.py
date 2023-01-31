@@ -2,7 +2,6 @@ from enum import Enum
 from typing import List, Tuple, Optional
 
 from aars import Record, Index
-from pydantic import BaseModel
 
 
 class UserInfo(Record):
@@ -15,16 +14,16 @@ class UserInfo(Record):
 
 class Timeseries(Record):
     name: str
-    desc: str
     owner: str
+    desc: Optional[str]
     available: bool = True
     data: List[Tuple[int, float]]
 
 
 class Dataset(Record):
     name: str
-    desc: str
     owner: str
+    desc: Optional[str]
     available: bool = True
     ownsAllTimeseries: bool
     timeseriesIDs: List[str]
@@ -69,11 +68,6 @@ class Permission(Record):
     status: PermissionStatus
     executionCount: int
     maxExecutionCount: Optional[int]
-
-
-class AlgorithmRequestResponse(BaseModel):
-    execution: Execution
-    requested_permissions: List[Permission]
 
 
 # indexes to fetch by owner
