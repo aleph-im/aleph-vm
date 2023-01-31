@@ -388,11 +388,15 @@ class AlephFirecrackerVM:
             ]
 
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
+
+        # The ip and route should not contain the network mask in order to maintain
+        # compatibility with the existing runtimes.
+        ip = self.tap_interface.guest_ip.with_prefixlen.split('/', 1)[0]
+        route = str(self.tap_interface.host_ip).split('/', 1)[0]
+
         config = ConfigurationPayload(
-            ip=self.tap_interface.guest_ip.with_prefixlen
-            if self.enable_networking
-            else None,
-            route=str(self.tap_interface.host_ip) if self.enable_networking else None,
+            ip=ip if self.enable_networking else None,
+            route=route if self.enable_networking else None,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
