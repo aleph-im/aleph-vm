@@ -123,7 +123,12 @@ def setup_network(
     system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
-    system(f"ip addr add {ip} dev eth0")
+    if "/" in ip:
+        # Forward compatibility with future supervisors that pass the mask with the IP.
+        system(f"ip addr add {ip} dev eth0")
+    else:
+        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
+        system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
     if route:
