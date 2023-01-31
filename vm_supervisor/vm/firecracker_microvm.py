@@ -445,7 +445,7 @@ class AlephFirecrackerVM:
 
     async def run_code(
         self,
-        scope: dict = None,
+        scope: Optional[dict] = None,
     ):
         if not self.fvm:
             raise ValueError("MicroVM must be created first")

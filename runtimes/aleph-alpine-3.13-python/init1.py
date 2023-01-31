@@ -30,7 +30,7 @@ import msgpack
 
 logger.debug("Imports finished")
 
-ASGIApplication = NewType("AsgiApplication", Any)
+ASGIApplication = NewType("ASGIApplication", Any)
 
 
 class Encoding(str, Enum):
@@ -171,6 +171,7 @@ def setup_code_asgi(
     sys.path.append("/opt/packages")
 
     logger.debug("Extracting code")
+    app: ASGIApplication
     if encoding == Encoding.squashfs:
         sys.path.append("/opt/code")
         module_name, app_name = entrypoint.split(":", 1)
@@ -178,7 +179,7 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app: ASGIApplication = getattr(module, app_name)
+        app = getattr(module, app_name)
     elif encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         if not os.path.exists("/opt/archive.zip"):
@@ -191,12 +192,12 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app: ASGIApplication = getattr(module, app_name)
+        app = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint
         locals: Dict[str, Any] = {}
         exec(code, globals(), locals)
-        app: ASGIApplication = locals[entrypoint]
+        app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
     return app
