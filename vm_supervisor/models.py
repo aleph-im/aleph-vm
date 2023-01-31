@@ -130,7 +130,7 @@ class VmExecution:
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
         if self.persistent:
             logger.debug("VM marked as long running. Ignoring timeout.")
-            return
+            return None
 
         if self.expire_task:
             logger.debug("VM already has a timeout. Extending it.")
@@ -257,7 +257,7 @@ class VmExecution:
                 )
             )
 
-    async def run_code(self, scope: dict = None) -> bytes:
+    async def run_code(self, scope: Optional[dict] = None) -> bytes:
         if not self.vm:
             raise ValueError("The VM has not been created yet")
         self.concurrent_runs += 1
