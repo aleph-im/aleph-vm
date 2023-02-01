@@ -31,9 +31,14 @@ jobs:
 
       - name: Create the Droplet
         run: |
-          doctl compute droplet create --image debian-11-x64 \
-          --size s-1vcpu-1gb --region ams3 aleph-vm-ci \
-          --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5
+          doctl compute droplet create \
+          --image debian-11-x64 \
+          --size c-2 \
+          --region fra1 \
+          --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
+          --enable-ipv6 \
+          --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
+          aleph-vm-ci
 
       - name: Build Debian Package
         run: |
