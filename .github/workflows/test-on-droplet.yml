@@ -33,7 +33,7 @@ jobs:
         run: |
           doctl compute droplet create \
           --image debian-11-x64 \
-          --size c-2-4GiB \
+          --size c-2 \
           --region fra1 \
           --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
           --enable-ipv6 \
