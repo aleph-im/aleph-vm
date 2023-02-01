@@ -186,9 +186,9 @@ class Settings(BaseSettings):
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
         os.makedirs(self.DATA_CACHE, exist_ok=True)
-        # os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
-        # os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
-        # os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
+        os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
+        os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
+        os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
 
         if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
             if self.DNS_RESOLUTION == DnsResolver.resolv_conf:
