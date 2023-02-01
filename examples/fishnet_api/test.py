@@ -1,8 +1,14 @@
 from fastapi.testclient import TestClient
+<<<<<<< HEAD
 
 from .main import app
 from .model import *
 from .requests import *
+=======
+from .main import app
+from .requests import *
+from .model import *
+>>>>>>> dd7aec7b8ceac4ecffade75250288b1fd3f622c0
 
 client = TestClient(app)
 
@@ -52,6 +58,7 @@ def test_full_request_execution_flow_with_own_dataset():
     assert response.status_code == 200
     assert response.json()['execution']['status'] == ExecutionStatus.PENDING
 
+<<<<<<< HEAD
 
 def test_requests_approval_deny():
     req: TimeseriesItem = TimeseriesItem(
@@ -93,3 +100,5 @@ def test_requests_approval_deny():
 
 
 
+=======
+>>>>>>> dd7aec7b8ceac4ecffade75250288b1fd3f622c0
