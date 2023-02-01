@@ -68,8 +68,8 @@ jobs:
           curl --retry 5 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
-      - name: Cleanup
-        if: always()
-        run: |
-          doctl compute droplet delete -f aleph-vm-ci
+#      - name: Cleanup
+#        if: always()
+#        run: |
+#          doctl compute droplet delete -f aleph-vm-ci
 
