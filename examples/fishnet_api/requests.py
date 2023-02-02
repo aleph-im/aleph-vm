@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel
 
-from .model import Execution, Permission, Timeseries
+from .model import Execution, Permission, Timeseries, Dataset
 
 
 class TimeseriesItem(BaseModel):
@@ -47,6 +47,6 @@ class RequestExecutionResponse(BaseModel):
     unavailableTimeseries: Optional[List[Timeseries]]
 
 
-class DenyPermissionsResponse(BaseModel):
+class FishnetResponseDataset(BaseModel):
     success: bool
-    message: str
+    message: List[Dataset]

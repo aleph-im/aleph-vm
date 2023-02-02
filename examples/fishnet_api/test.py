@@ -58,7 +58,6 @@ def test_full_request_execution_flow_with_own_dataset():
     assert response.status_code == 200
     assert response.json()['execution']['status'] == ExecutionStatus.PENDING
 
-<<<<<<< HEAD
 
 def test_requests_approval_deny():
     req: TimeseriesItem = TimeseriesItem(
