@@ -1,14 +1,8 @@
 from fastapi.testclient import TestClient
-<<<<<<< HEAD
 
 from .main import app
 from .model import *
 from .requests import *
-=======
-from .main import app
-from .requests import *
-from .model import *
->>>>>>> dd7aec7b8ceac4ecffade75250288b1fd3f622c0
 
 client = TestClient(app)
 
@@ -61,11 +55,11 @@ def test_full_request_execution_flow_with_own_dataset():
 
 def test_requests_approval_deny():
     req: TimeseriesItem = TimeseriesItem(
-            name='Approve_test',
-            owner='test',
-            available = True,
-            data=[[1.0, 2.0], [3.0, 4.0]]
-        )
+        name='Approve_test',
+        owner='test',
+        available=True,
+        data=[[1.0, 2.0], [3.0, 4.0]]
+    )
     req_body = req.dict()
     response = client.post('/Timeseries', json=req_body)
     assert response.status_code == 200
@@ -96,8 +90,10 @@ def test_requests_approval_deny():
     print(algorithm_id)
 
 
+def test_execution_dataset():
+    dataset_Id = "5fecb379a0efdbd88a3d06f9b587dd3161dc8da6a8497f280f86bb3aa05eea94"
+    response = client.get(f'/executions/{dataset_Id}')
+    assert response.json()
+    data = response.json()
+    print("data", data)
 
-
-
-=======
->>>>>>> dd7aec7b8ceac4ecffade75250288b1fd3f622c0

@@ -1,8 +1,8 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from .model import Execution, Permission, Timeseries, Dataset
+from .model import Execution, Permission, Timeseries, Dataset, Algorithm
 
 
 class TimeseriesItem(BaseModel):
@@ -10,7 +10,7 @@ class TimeseriesItem(BaseModel):
     name: str
     owner: str
     desc: Optional[str]
-    data: List[List[float]]
+    data: List[Tuple[int, float]]
 
 
 class UploadTimeseriesRequest(BaseModel):
@@ -49,4 +49,9 @@ class RequestExecutionResponse(BaseModel):
 
 class FishnetResponseDataset(BaseModel):
     success: bool
-    message: List[Dataset]
+    message: Optional[List[Dataset]]
+    message: Optional[List[Permission]]
+    message: Optional[List[Execution]]
+    message: Optional[List[Dataset]]
+    message: Optional[List[Algorithm]]
+    message: Optional[List[Timeseries]]

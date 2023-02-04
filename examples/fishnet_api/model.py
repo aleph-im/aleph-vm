@@ -81,7 +81,7 @@ Index(Timeseries, 'owner')
 Index(Permission, ['reader', 'timeseriesID', 'status'])
 Index(Permission, 'id_hash')
 Index(Permission, 'status')
-Index(Dataset, "id_hash")
-
+Index(Execution, "datasetID")
+Index(Dataset, 'timeseriesIDs')
 # index to fetch execution by the status
 Index(Execution, 'status')

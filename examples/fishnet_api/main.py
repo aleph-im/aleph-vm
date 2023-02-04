@@ -31,18 +31,11 @@ aars = AARS(channel="FISHNET_TEST")
 
 async def re_index():
     logger.info("API re-indexing")
-    await asyncio.gather(
-        Timeseries.regenerate_indices(),
-        UserInfo.regenerate_indices(),
-        Dataset.regenerate_indices(),
-        Algorithm.regenerate_indices(),
-        Execution.regenerate_indices(),
-        Permission.regenerate_indices()
-    )
+    await asyncio.wait_for(AARS.sync_indices(), timeout=None)
     logger.info("API re-indexing done")
 
 
-@app.on_event("startup")
+@http_app.on_event("startup")
 async def startup():
     await re_index()
 
@@ -67,6 +60,22 @@ async def index():
     }
 
 
+@app.get("/indices")
+async def index():
+    ts = [list(index.hashmap.items()) for index in Timeseries.get_indices()]
+    ui = [list(index.hashmap.items()) for index in UserInfo.get_indices()]
+    ds = [list(index.hashmap.items()) for index in Dataset.get_indices()]
+    al = [list(index.hashmap.items()) for index in Algorithm.get_indices()]
+    ex = [list(index.hashmap.items()) for index in Execution.get_indices()]
+    pe = [list(index.hashmap.items()) for index in Permission.get_indices()]
+    return ts, ui, ds, al, ex, pe
+
+
+@app.get("/indices/reindex")
+async def index():
+    await re_index()
+
+
 @app.get("/datasets")
 async def datasets() -> List[Dataset]:
     return await Dataset.fetch_all()
@@ -82,9 +91,10 @@ async def get_algorithms() -> List[Algorithm]:
     return await Algorithm.fetch_all()
 
 
-# @app.get("/execution/{datasetId}")
-# async def get_algorithms(id: str):
-# return await Execution
+@app.get("/execution/{datasetId}")
+async def get_algorithm_by_dataset(id: str) -> List[Execution]:
+    await re_index()
+    return await Execution.query(datasetID=id)
 
 
 @app.get("/user/{address}/algorithms")
@@ -95,6 +105,11 @@ async def get_user_algorithms(address: str) -> List[Algorithm]:
 @app.get("/executions")
 async def get_executions() -> List[Execution]:
     return await Execution.fetch_all()
+
+
+@app.get("/executions/{dataset_ID}")
+async def get_executions_by_dataset(dataset_ID: str) -> List[Execution]:
+    return await Execution.query(datasetID=dataset_ID)
 
 
 @app.get("/user/{address}/executions")
@@ -117,6 +132,7 @@ async def get_possible_execution_count(execution_id: str) -> int:
 
     execution = await Execution.fetch(execution_id)
     # challenged accepted but after moving the house
+    return -1
 
 
 @app.put("/timeseries/upload")
@@ -276,10 +292,14 @@ async def request_execution(
 
 
 @app.put("/permissions/approve")
-async def approve_permissions(permission_hashes: List[str]):
+async def approve_permissions(permission_hashes: List[str]) -> FishnetResponseDataset:
     """
-    Approve a list of permissions by their item hashes.
+    Approve permission.
+    This EndPoint will approve a list of permissions by their item hashes
+    If an `id_hashes` is provided, it will change all the Permission status
+    to Granted.
     """
+
     ts_ids = []
     requests = []
     # TODO: Check signature to match with owner's
@@ -293,32 +313,35 @@ async def approve_permissions(permission_hashes: List[str]):
 
         # TODO: check if execution can be executed now
         ds_ids = []
-        dataset = await Dataset.fetch(ts_ids)
+        dataset = await Dataset.query(timeseriesIDs=ts_ids)
         if dataset:
             for data in dataset:
                 if data.id_hash in ds_ids:
                     ds_ids.append(data.id_hash)
 
-            executions = await Execution.fetch(ds_ids)
+            executions = await Execution.query(datasetID=ds_ids)
             if executions:
                 for execution in executions:
                     if ds_ids and execution.datasetID in ds_ids:
                         execution.status = ExecutionStatus.PENDING
-                        requests.append(rec.upsert())
-                await asyncio.gather(requests)
-                return {"Success": "Permissions Approved "}
+                        requests.append(execution.upsert())
+                await asyncio.gather(*requests)
+                return FishnetResponseDataset(success=True, message=permission_record)
             else:
-                raise HTTPException(status_code=404,detail="No Execution found ")
+                raise HTTPException(status_code=404, detail="No Execution found ")
         else:
-            raise HTTPException(status_code=404,detail="No Dataset found")
+            raise HTTPException(status_code=404, detail="No Dataset found")
     else:
-        raise HTTPException(status_code=404,detail="No Permission Found with this Hashes")
+        raise HTTPException(status_code=404, detail="No Permission Found with this Hashes")
 
 
 @app.put("/permissions/deny")
-async def deny_permissions(permission_hashes: List[str]):
+async def deny_permissions(permission_hashes: List[str]) -> FishnetResponseDataset:
     """
-    Deny a list of permissions by their item hashes.
+    Deny permission.
+    This EndPoint will approve a list of permissions by their item hashes
+    If an `id_hashes` is provided, it will change all the Permission status
+    to DENIED.
     """
     permission_record = await Permission.fetch(permission_hashes)
     if permission_record:
@@ -329,13 +352,13 @@ async def deny_permissions(permission_hashes: List[str]):
             permission.status = PermissionStatus.DENIED
             ts_ids.append(permission.timeseriesID)
             requests.append(permission.upsert())
-        dataset = await Dataset.fetch(ts_ids)
+        dataset = await Dataset.query(timeseriesIDs=ts_ids)
         ds_ids = []
         if dataset:
             for data in dataset:
                 ds_ids.append(data.id_hash)
             # Avoided fetching all executions
-            execution = await Execution.fetch(ds_ids)
+            execution = await Execution.query(datasetID=ds_ids)
             if execution:
                 for rec in execution:
                     # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
@@ -344,20 +367,20 @@ async def deny_permissions(permission_hashes: List[str]):
                         requests.append(rec.upsert())
                 # parellel processed
                 await asyncio.gather(*requests)
-                return "Denied all Permissions"
+                return FishnetResponseDataset(success=True, message=permission_record)
             else:
-                raise HTTPException(status_code=404,detail="No Execution found")
+                raise HTTPException(status_code=404, detail="No Execution found")
         else:
-            raise HTTPException(status_code=404,detail= "No Timeseries found")
+            raise HTTPException(status_code=404, detail="No Timeseries found")
     else:
-        raise HTTPException(status_code=404,detail="No Permission found with this Hashes")
+        raise HTTPException(status_code=404, detail="No Permission found with this Hashes")
 
 
 @app.put("/datasets/{dataset_id}/available/{available}")
 async def set_dataset_available(dataset_id: str, available: bool) -> FishnetResponseDataset:
     """
-    Set a dataset to be available or not. This will also update the status of all executions that are waiting for
-    permission on this dataset.
+    Set a dataset to be available or not. This will also update the status of all
+    executions that are waiting for permission on this dataset.
     """
     # Check signature to match with owner's
     # This signature will be implemented by Mike
@@ -377,8 +400,6 @@ async def set_dataset_available(dataset_id: str, available: bool) -> FishnetResp
             if ts_record.available != available:
                 ts_record.available = available
                 requests.append(ts_record.upsert())
-            else:
-                raise HTTPException(status_code=404, detail="Record is already Updated")
 
             # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
             # execution = await Execution.fetch(dataset_id)
@@ -391,7 +412,7 @@ async def set_dataset_available(dataset_id: str, available: bool) -> FishnetResp
 
             # executed all requests in parallel
             await asyncio.gather(*requests)
-            return FishnetResponseDataset(success=True, message=await Dataset.fetch(dataset_id))
+            return FishnetResponseDataset(success=True, message=resp)
             # else:
             #     return {"Execution": "No Execution found "}
         else:
