@@ -74,17 +74,15 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
             algorithm = (await Algorithm.fetch(execution.algorithmID))[0]
         except IndexError:
             logger.error(f"Algorithm {execution.algorithmID} not found")
-            return
-        finally:
             await set_failed(execution)
+            return
 
         try:
             exec(algorithm.code)
         except Exception as e:
             logger.error(f"Failed to parse algorithm code: {e}")
-            return
-        finally:
             await set_failed(execution)
+            return
 
         if "run" not in locals():
             logger.error("No run(df: DataFrame) function found")
@@ -95,9 +93,8 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
             dataset = (await Dataset.fetch(execution.datasetID))[0]
         except IndexError:
             logger.error(f"Dataset {execution.datasetID} not found")
-            return
-        finally:
             await set_failed(execution)
+            return
 
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
         if len(timeseries) != len(dataset.timeseriesIDs):
@@ -112,9 +109,8 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
             df = pd.concat([pd.Series([x[1] for x in ts.data], index=[x[0] for x in ts.data], name=ts.name) for ts in timeseries], axis=1)
         except Exception as e:
             logger.error(f"Failed to create dataframe: {e}")
-            return
-        finally:
             await set_failed(execution)
+            return
 
         try:
             assert "run" in locals()
