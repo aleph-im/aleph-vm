@@ -18,12 +18,12 @@ def test_execution():
         TimeseriesItem(
             name='test_execution_timeseries1',
             owner='executooor',
-            data=[(i, random.random()) for i in range(100)]
+            data=[(i, 1) for i in range(100)]
         ),
         TimeseriesItem(
             name='test_execution_timeseries2',
             owner='executooor',
-            data=[(i, random.random()*2) for i in range(100)]
+            data=[(i, 10) for i in range(100)]
         )]
     )
     req_body = req.dict()
@@ -49,7 +49,7 @@ def test_execution():
         owner='executooor',
         code='''
 def run(df: pd.DataFrame):
-    return df.sum(axis=1).to_dict()
+    return df.sum(axis=0)
 '''
     )
     response = client.put('/algorithms/upload', json=req.dict())

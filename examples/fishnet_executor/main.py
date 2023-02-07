@@ -108,7 +108,8 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
             logger.warning(f"Timeseries incomplete: {len(timeseries)} out of {len(dataset.timeseriesIDs)} found")
 
         try:
-            df = pd.concat([pd.DataFrame(ts.data, columns=["time", ts.name]) for ts in timeseries], axis=1)
+            # parse all timeseries as series and join them into a dataframe
+            df = pd.concat([pd.Series([x[1] for x in ts.data], index=[x[0] for x in ts.data], name=ts.name) for ts in timeseries], axis=1)
         except Exception as e:
             logger.error(f"Failed to create dataframe: {e}")
             return
@@ -123,7 +124,7 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
             await set_failed(execution)
             return
 
-        result_message = await Result.create(executionID=execution.id_hash, data=json.dumps(result))
+        result_message = await Result.create(executionID=execution.id_hash, data=str(result))
         execution.status = ExecutionStatus.SUCCESS
         execution.resultID = result_message.id_hash
         await execution.upsert()
