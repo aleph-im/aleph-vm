@@ -70,6 +70,11 @@ class Permission(Record):
     maxExecutionCount: Optional[int]
 
 
+class Result(Record):
+    executionID: str
+    data: str
+
+
 # indexes to fetch by owner
 Index(Dataset, 'owner')
 Index(Algorithm, 'owner')
