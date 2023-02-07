@@ -21,7 +21,7 @@ logger.debug("import pandas")
 import pandas as pd
 
 logger.debug("import project modules")
-from ..fishnet_api.model import *
+from fishnet_cod import *
 
 logger.debug("imports done")
 

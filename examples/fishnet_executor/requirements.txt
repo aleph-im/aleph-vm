@@ -1,7 +1,4 @@
-pydantic
-aiohttp
-aleph_client
+aleph-client
 aars
-pytest
-httpx
+fishnet-cod
 pandas

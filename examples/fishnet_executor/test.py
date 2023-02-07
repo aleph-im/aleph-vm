@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from ..fishnet_api.main import app
 from .main import handle_execution
-from ..fishnet_api.model import *
+from fishnet_cod import *
 from ..fishnet_api.requests import *
 
 

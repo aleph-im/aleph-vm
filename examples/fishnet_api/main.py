@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from os import listdir
-from typing import Union
 
 from aleph_message.models import PostMessage
 
@@ -19,7 +18,7 @@ logger.debug("import fastapi")
 from fastapi import FastAPI
 
 logger.debug("import project modules")
-from .model import *
+from fishnet_cod import *
 from .requests import *
 
 logger.debug("imports done")

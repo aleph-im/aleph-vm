@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 from .main import app
 from .requests import *
-from .model import *
+from fishnet_cod import *
 
 client = TestClient(app)
 
