@@ -51,7 +51,7 @@ class Execution(Record):
     datasetID: str
     owner: str
     status: ExecutionStatus = ExecutionStatus.REQUESTED
-    exitCode: Optional[int]
+    resultID: Optional[str]
 
 
 class PermissionStatus(str, Enum):

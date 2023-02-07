@@ -48,8 +48,6 @@ async def startup():
     await re_index()
 
 
-# TODO: Include OpenAPI from FastAPI and document endpoints
-
 @app.get("/")
 async def index():
     if os.path.exists("/opt/venv"):
@@ -96,6 +94,11 @@ async def get_executions() -> List[Execution]:
 @app.get("/user/{address}/executions")
 async def get_user_executions(address: str) -> List[Execution]:
     return await Execution.query(owner=address)
+
+
+@app.get("/user/{address}/results")
+async def get_user_executions(address: str) -> List[Result]:
+    return await Result.query(owner=address)
 
 
 @app.get("/executions/{execution_id}/possible_execution_count")
