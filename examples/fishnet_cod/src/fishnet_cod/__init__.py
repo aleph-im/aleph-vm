@@ -51,7 +51,7 @@ class Execution(Record):
     datasetID: str
     owner: str
     status: ExecutionStatus = ExecutionStatus.REQUESTED
-    exitCode: Optional[int]
+    resultID: Optional[str]
 
 
 class PermissionStatus(str, Enum):
@@ -62,12 +62,17 @@ class PermissionStatus(str, Enum):
 
 class Permission(Record):
     timeseriesID: str
-    algorithmID: str
+    algorithmID: Optional[str]
     owner: str
     reader: str
     status: PermissionStatus
     executionCount: int
     maxExecutionCount: Optional[int]
+
+
+class Result(Record):
+    executionID: str
+    data: str
 
 
 # indexes to fetch by owner

@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 logger.debug("import project modules")
-from .model import *
+from fishnet_cod import *
 from .requests import *
 
 logger.debug("imports done")
@@ -58,8 +58,6 @@ async def re_index():
 async def startup():
     await re_index()
 
-
-# TODO: Include OpenAPI from FastAPI and document endpoints
 
 @app.get("/")
 async def index():
@@ -107,6 +105,11 @@ async def get_executions() -> List[Execution]:
 @app.get("/user/{address}/executions")
 async def get_user_executions(address: str) -> List[Execution]:
     return await Execution.query(owner=address)
+
+
+@app.get("/user/{address}/results")
+async def get_user_executions(address: str) -> List[Result]:
+    return await Result.query(owner=address)
 
 
 @app.get("/executions/{execution_id}/possible_execution_count")
