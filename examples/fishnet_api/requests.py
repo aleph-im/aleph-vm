@@ -47,11 +47,4 @@ class RequestExecutionResponse(BaseModel):
     unavailableTimeseries: Optional[List[Timeseries]]
 
 
-class FishnetResponseDataset(BaseModel):
-    success: bool
-    message: Optional[List[Dataset]]
-    message: Optional[List[Permission]]
-    message: Optional[List[Execution]]
-    message: Optional[List[Dataset]]
-    message: Optional[List[Algorithm]]
-    message: Optional[List[Timeseries]]
+
