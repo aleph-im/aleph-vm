@@ -62,7 +62,7 @@ class PermissionStatus(str, Enum):
 
 class Permission(Record):
     timeseriesID: str
-    algorithmID: str
+    algorithmID: Optional[str]
     owner: str
     reader: str
     status: PermissionStatus
