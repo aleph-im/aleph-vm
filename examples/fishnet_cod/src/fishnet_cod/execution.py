@@ -8,6 +8,7 @@ async def run_execution(execution: Execution) -> Optional[Execution]:
         result = await Result.create(executionID=execution.id_hash, data=reason)
         execution.resultID = result.id_hash
         return await execution.upsert()
+
     assert isinstance(execution, Execution)
     if execution.status != ExecutionStatus.PENDING:
         return execution

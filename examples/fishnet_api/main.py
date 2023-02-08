@@ -60,10 +60,17 @@ async def index():
         opt_venv = []
     return {
         "vm_name": "fishnet_api",
-        "endpoints": ["/timeseries/upload",
-                      "/datasets", "/user/{address}/datasets", "/datasets/upload",
-                      "/algorithms", "/user/{address}/algorithms", "/algorithms/upload",
-                      "/executions", "/user/{address}/executions"],
+        "endpoints": [
+            "/timeseries/upload",
+            "/datasets",
+            "/user/{address}/datasets",
+            "/datasets/upload",
+            "/algorithms",
+            "/user/{address}/algorithms",
+            "/algorithms/upload",
+            "/executions",
+            "/user/{address}/executions",
+        ],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
         },
@@ -154,7 +161,11 @@ async def upload_timeseries(req: UploadTimeseriesRequest) -> List[Timeseries]:
     """
     ids_to_fetch = [ts.id_hash for ts in req.timeseries if ts.id_hash is not None]
     requests = []
-    old_time_series = {ts.id_hash: ts for ts in await Timeseries.fetch(ids_to_fetch)} if ids_to_fetch else {}
+    old_time_series = (
+        {ts.id_hash: ts for ts in await Timeseries.fetch(ids_to_fetch)}
+        if ids_to_fetch
+        else {}
+    )
     for ts in req.timeseries:
         if old_time_series.get(ts.id_hash) is None:
             requests.append(Timeseries.create(**dict(ts)))
@@ -179,10 +190,12 @@ async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
     if dataset.ownsAllTimeseries:
         # check if _really_ owns all timeseries
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
-        dataset.ownsAllTimeseries = all([ts.owner == dataset.owner for ts in timeseries])
+        dataset.ownsAllTimeseries = all(
+            [ts.owner == dataset.owner for ts in timeseries]
+        )
     if dataset.id_hash is not None:
         # update existing dataset
-        resp = (await Dataset.fetch(dataset.id_hash))
+        resp = await Dataset.fetch(dataset.id_hash)
         old_dataset = resp[0] if resp else None
         if old_dataset is not None:
             if old_dataset.owner != dataset.owner:
@@ -203,7 +216,7 @@ async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
     """
     if algorithm.id_hash is not None:
         # update existing algorithm
-        resp = (await Algorithm.fetch(algorithm.id_hash))
+        resp = await Algorithm.fetch(algorithm.id_hash)
         old_algorithm = resp[0] if resp else None
         if old_algorithm is not None:
             if old_algorithm.owner != algorithm.owner:
@@ -217,7 +230,7 @@ async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
 
 @app.post("/executions/request")
 async def request_execution(
-        execution: RequestExecutionRequest
+    execution: RequestExecutionRequest,
 ) -> RequestExecutionResponse:
     """
     This endpoint is used to request an execution.
@@ -242,8 +255,7 @@ async def request_execution(
     permissions = {
         permission.timeseriesID: permission
         for permission in await Permission.query(
-            timeseriesID=dataset.timeseriesIDs,
-            reader=execution.owner
+            timeseriesID=dataset.timeseriesIDs, reader=execution.owner
         )
     }
     requests = []
@@ -258,15 +270,17 @@ async def request_execution(
             continue
         if ts.id_hash not in permissions:
             # create permission request
-            requests.append(Permission.create(
-                timeseriesID=ts.id_hash,
-                algorithmID=execution.algorithmID,
-                owner=ts.owner,
-                reader=execution.owner,
-                status=PermissionStatus.REQUESTED,
-                executionCount=0,
-                maxExecutionCount=1,
-            ))
+            requests.append(
+                Permission.create(
+                    timeseriesID=ts.id_hash,
+                    algorithmID=execution.algorithmID,
+                    owner=ts.owner,
+                    reader=execution.owner,
+                    status=PermissionStatus.REQUESTED,
+                    executionCount=0,
+                    maxExecutionCount=1,
+                )
+            )
         else:
             # check if permission is valid
             permission = permissions[ts.id_hash]
@@ -284,14 +298,14 @@ async def request_execution(
         execution.status = ExecutionStatus.DENIED
         return RequestExecutionResponse(
             execution=await Execution.create(**execution.dict()),
-            unavailableTimeseries=unavailable_timeseries
+            unavailableTimeseries=unavailable_timeseries,
         )
     if requests:
         new_permission_requests = await asyncio.gather(*requests)
         execution.status = ExecutionStatus.REQUESTED
         return RequestExecutionResponse(
             execution=await Execution.create(**execution.dict()),
-            permissionRequests=new_permission_requests
+            permissionRequests=new_permission_requests,
         )
     else:
         execution.status = ExecutionStatus.PENDING
@@ -341,7 +355,9 @@ async def approve_permissions(permission_hashes: List[str]) -> FishnetResponseDa
         else:
             raise HTTPException(status_code=404, detail="No Dataset found")
     else:
-        raise HTTPException(status_code=404, detail="No Permission Found with this Hashes")
+        raise HTTPException(
+            status_code=404, detail="No Permission Found with this Hashes"
+        )
 
 
 @app.put("/permissions/deny")
@@ -371,7 +387,10 @@ async def deny_permissions(permission_hashes: List[str]) -> FishnetResponseDatas
             if execution:
                 for rec in execution:
                     # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
-                    if rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING:
+                    if (
+                        rec.datasetID in ds_ids
+                        and rec.status == ExecutionStatus.PENDING
+                    ):
                         rec.status = ExecutionStatus.DENIED
                         requests.append(rec.upsert())
                 # parellel processed
@@ -382,11 +401,15 @@ async def deny_permissions(permission_hashes: List[str]) -> FishnetResponseDatas
         else:
             raise HTTPException(status_code=404, detail="No Timeseries found")
     else:
-        raise HTTPException(status_code=404, detail="No Permission found with this Hashes")
+        raise HTTPException(
+            status_code=404, detail="No Permission found with this Hashes"
+        )
 
 
 @app.put("/datasets/{dataset_id}/available/{available}")
-async def set_dataset_available(dataset_id: str, available: bool) -> FishnetResponseDataset:
+async def set_dataset_available(
+    dataset_id: str, available: bool
+) -> FishnetResponseDataset:
     """
     Set a dataset to be available or not. This will also update the status of all
     executions that are waiting for permission on this dataset.
@@ -430,17 +453,32 @@ async def set_dataset_available(dataset_id: str, available: bool) -> FishnetResp
         raise HTTPException(status_code=404, detail="No Dataset found")
 
 
-filters = [{
-    "channel": aars.channel,
-    "type": "POST",
-    "post_type": ["Execution", "Permission", "Dataset", "Timeseries", "Algorithm", "amend"],
-}]
+filters = [
+    {
+        "channel": aars.channel,
+        "type": "POST",
+        "post_type": [
+            "Execution",
+            "Permission",
+            "Dataset",
+            "Timeseries",
+            "Algorithm",
+            "amend",
+        ],
+    }
+]
 
 
 @app.event(filters=filters)
 async def fishnet_event(event: PostMessage):
     print("fishnet_event", event)
-    if event.content.type in ["Execution", "Permission", "Dataset", "Timeseries", "Algorithm"]:
+    if event.content.type in [
+        "Execution",
+        "Permission",
+        "Dataset",
+        "Timeseries",
+        "Algorithm",
+    ]:
         cls: Record = globals()[event.content.type]
         record = await cls.from_post(event)
     else:  # amend
