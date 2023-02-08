@@ -33,30 +33,26 @@ aars_client = AARS(channel="FISHNET_TEST")
 
 @app.get("/")
 async def index():
-    return {
-        "status": "ok"
+    return {"status": "ok"}
+
+
+filters = [
+    {
+        "channel": aars_client.channel,
+        "type": "POST",
+        "post_type": ["Execution", "amend"],
     }
-
-
-filters = [{
-    "channel": aars_client.channel,
-    "type": "POST",
-    "post_type": ["Execution", "amend"],
-}]
-
-
-class FishnetContent(BaseModel):
-    type: str
-    ref: str
-
-
-class FishnetEvent(BaseModel):
-    content: FishnetContent
+]
 
 
 @app.event(filters=filters)
-async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[Execution]:
-    print("fishnet_event", event)
+async def handle_execution(event: PostMessage) -> Optional[Execution]:
+    async def set_failed(execution, reason):
+        execution.status = ExecutionStatus.FAILED
+        result = await Result.create(executionID=execution.id_hash, data=reason)
+        execution.resultID = result.id_hash
+        return await execution.upsert()
+
     if event.content.type in ["Execution"]:
         cls: Record = globals()[event.content.type]
         execution = await cls.from_post(event)
@@ -73,54 +69,61 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
         try:
             algorithm = (await Algorithm.fetch(execution.algorithmID))[0]
         except IndexError:
-            logger.error(f"Algorithm {execution.algorithmID} not found")
-            await set_failed(execution)
-            return
+            return await set_failed(
+                execution, f"Algorithm {execution.algorithmID} not found"
+            )
 
         try:
             exec(algorithm.code)
         except Exception as e:
-            logger.error(f"Failed to parse algorithm code: {e}")
-            await set_failed(execution)
-            return
+            return await set_failed(execution, f"Failed to parse algorithm code: {e}")
 
         if "run" not in locals():
-            logger.error("No run(df: DataFrame) function found")
-            await set_failed(execution)
-            return
+            return await set_failed(execution, "No run(df: DataFrame) function found")
 
         try:
             dataset = (await Dataset.fetch(execution.datasetID))[0]
         except IndexError:
-            logger.error(f"Dataset {execution.datasetID} not found")
-            await set_failed(execution)
-            return
+            return await set_failed(
+                execution, f"Dataset {execution.datasetID} not found"
+            )
 
         timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
         if len(timeseries) != len(dataset.timeseriesIDs):
             if len(timeseries) == 0:
-                logger.error(f"Timeseries for dataset {dataset.id_hash} not found")
-                await set_failed(execution)
-                return execution
-            logger.warning(f"Timeseries incomplete: {len(timeseries)} out of {len(dataset.timeseriesIDs)} found")
+                return await set_failed(
+                    execution, f"Timeseries for dataset {dataset.id_hash} not found"
+                )
+            return await set_failed(
+                execution,
+                f"Timeseries incomplete: {len(timeseries)} out of {len(dataset.timeseriesIDs)} found",
+            )
 
         try:
             # parse all timeseries as series and join them into a dataframe
-            df = pd.concat([pd.Series([x[1] for x in ts.data], index=[x[0] for x in ts.data], name=ts.name) for ts in timeseries], axis=1)
+            df = pd.concat(
+                [
+                    pd.Series(
+                        [x[1] for x in ts.data],
+                        index=[x[0] for x in ts.data],
+                        name=ts.name,
+                    )
+                    for ts in timeseries
+                ],
+                axis=1,
+            )
         except Exception as e:
-            logger.error(f"Failed to create dataframe: {e}")
-            await set_failed(execution)
-            return
+            return await set_failed(execution, f"Failed to create dataframe: {e}")
 
         try:
             assert "run" in locals()
             result = locals()["run"](df)
         except Exception as e:
-            logger.error(f"Failed to run algorithm: {e}")
-            await set_failed(execution)
-            return
+            return await set_failed(execution, f"Failed to run algorithm: {e}")
 
-        result_message = await Result.create(executionID=execution.id_hash, data=str(result))
+        result_message = await Result.create(
+            executionID=execution.id_hash, data=str(result)
+        )
         execution.status = ExecutionStatus.SUCCESS
         execution.resultID = result_message.id_hash
         await execution.upsert()
@@ -129,8 +132,3 @@ async def handle_execution(event: Union[PostMessage, FishnetEvent]) -> Optional[
     finally:
         del locals()["run"]
         return execution
-
-
-async def set_failed(execution):
-    execution.status = ExecutionStatus.FAILED
-    await execution.upsert()
