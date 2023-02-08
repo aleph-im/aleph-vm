@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fishnet-cod"
-version = "0.0.3"
+version = "0.0.7"
 authors = [
   { name="Mike Hukiewitz", email="mike.hukiewitz@robotter.ai" },
 ]
-description = "Core module for Fishnet compute-over-data (COD) network on Aleph.im"
+description = "Core module for Fishnet compute-over-data (CoD) network on Aleph.im"
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -20,7 +20,7 @@ classifiers = [
 [dependencies]
 pydantic = "^1.8.2"
 aleph-client = "^0.5.0"
-aars = "^0.2.4"
+aars = "^0.2.5"
 
 [project.urls]
 "Homepage" = "https://github.com/yourtrading-ai/fishnet-vm"

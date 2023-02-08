@@ -15,6 +15,9 @@ and executor VMs. The data model is used to store and query:
 - Executions
 - Results
 
+Also contains the executor code for the Fishnet Executor VM. Right now it supports Pandas, but in the future it will
+support other execution environments (e.g. PyTorch, Tensorflow).
+
 ## Roadmap
 
 - [x] Basic message model

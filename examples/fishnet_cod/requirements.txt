@@ -2,4 +2,5 @@ pydantic
 aiohttp
 aleph_client
 aars
+pandas
 fastapi
