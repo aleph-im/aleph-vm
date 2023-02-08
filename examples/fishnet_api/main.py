@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from os import listdir
-from typing import Union
 
 from aleph_message.models import PostMessage
 
@@ -17,6 +16,7 @@ from aars import AARS
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 logger.debug("import project modules")
 from .model import *
@@ -25,6 +25,17 @@ from .requests import *
 logger.debug("imports done")
 
 http_app = FastAPI()
+
+origins = ["*"]
+
+http_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app = AlephApp(http_app=http_app)
 cache = VmCache()
 aars = AARS(channel="FISHNET_TEST")
