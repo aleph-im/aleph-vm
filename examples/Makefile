@@ -4,13 +4,14 @@ clean:
 	rm example_fastapi.zip
 	rm data.tgz
 
-example_fastapi.zip:
-	zip -r example_fastapi.zip example_fastapi
+fishnet_executor:
+	zip -r fishnet_executor.zip fishnet_executor
+	aleph program fishet_executor.zip fishnet_executor:app
 
 data.tgz:
 	tar -cvzf data.tgz data
 
-example_pip.squashfs:
+fishnet_api.squashfs:
 	rm -fr /opt/python
-	pip3 install -t /opt/requirements -r example_pip/requirements.txt
+	pip3 install -t /opt/requirements -r fishnet_api/requirements.txt
 	mksquashfs /opt/requirements requirements.squashfs

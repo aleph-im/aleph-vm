@@ -16,14 +16,26 @@ from aars import AARS
 
 logger.debug("import fastapi")
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 logger.debug("import project modules")
-from .model import *
+from fishnet_cod import *
 from .requests import *
 
 logger.debug("imports done")
 
 http_app = FastAPI()
+
+origins = ["*"]
+
+http_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app = AlephApp(http_app=http_app)
 cache = VmCache()
 aars = AARS(channel="FISHNET_TEST")
@@ -39,8 +51,6 @@ async def re_index():
 async def startup():
     await re_index()
 
-
-# TODO: Include OpenAPI from FastAPI and document endpoints
 
 @app.get("/")
 async def index():
@@ -91,12 +101,6 @@ async def get_algorithms() -> List[Algorithm]:
     return await Algorithm.fetch_all()
 
 
-@app.get("/execution/{datasetId}")
-async def get_algorithm_by_dataset(id: str) -> List[Execution]:
-    await re_index()
-    return await Execution.query(datasetID=id)
-
-
 @app.get("/user/{address}/algorithms")
 async def get_user_algorithms(address: str) -> List[Algorithm]:
     return await Algorithm.query(owner=address)
@@ -115,6 +119,11 @@ async def get_executions_by_dataset(dataset_ID: str) -> List[Execution]:
 @app.get("/user/{address}/executions")
 async def get_user_executions(address: str) -> List[Execution]:
     return await Execution.query(owner=address)
+
+
+@app.get("/user/{address}/results")
+async def get_user_results(address: str) -> List[Result]:
+    return await Result.query(owner=address)
 
 
 @app.get("/executions/{execution_id}/possible_execution_count")
