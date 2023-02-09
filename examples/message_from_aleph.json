@@ -65,6 +65,14 @@
                 "size_mib": 5
             }
         ],
+        "containers": [
+            "docker.io/nextcloud:25",
+            "docker.io/postgres:13",
+            {
+                "item_hash": "7eb2eca2378ea8855336ed76c8b26219f1cb90234d04441de9cf8cb1c649d003",
+                "image": "myapp:latest"
+            }
+        ],
         "data": {
             "encoding": "zip",
             "mount": "/data",

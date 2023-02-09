@@ -235,6 +235,12 @@ def setup_code_executable(
     return process
 
 
+def setup_code_containers(
+
+) -> subprocess.Popen:
+    ...
+
+
 def setup_code(
     code: bytes, encoding: Encoding, entrypoint: str, interface: Interface
 ) -> Union[ASGIApplication, subprocess.Popen]:
