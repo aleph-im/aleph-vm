@@ -19,6 +19,7 @@ jobs:
       - run: |
           cd packaging && make all-podman-debian-11 && cd ..
           cd packaging && make all-podman-ubuntu-2004 && cd ..
+          cd packaging && make all-podman-ubuntu-2204 && cd ..
           ls packaging/target
           
       - uses: actions/upload-artifact@v2
@@ -31,6 +32,10 @@ jobs:
           name: aleph-vm.ubuntu-20.04.deb
           path: packaging/target/aleph-vm.ubuntu-20.04.deb
 
+      - uses: actions/upload-artifact@v2
+        with:
+          name: aleph-vm.ubuntu-22.04.deb
+          path: packaging/target/aleph-vm.ubuntu-22.04.deb
 
   build_rootfs:
     name: "Build runtime aleph-debian-11-python"
