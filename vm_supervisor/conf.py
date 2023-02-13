@@ -27,34 +27,19 @@ def etc_resolv_conf_dns_servers():
                 yield ip[0]
 
 
-def systemd_resolved_dns_servers(interface):
-    # Example output format from systemd-resolve --status {interface}:
-    # Link 2 (enp7s0)
-    #       Current Scopes: DNS
-    # DefaultRoute setting: yes
-    #        LLMNR setting: yes
-    # MulticastDNS setting: no
-    #   DNSOverTLS setting: no
-    #       DNSSEC setting: no
-    #     DNSSEC supported: no
-    #   Current DNS Server: 213.133.100.100
-    #          DNS Servers: 213.133.100.100
-    #                       213.133.98.98
-    #                       213.133.99.99
-    #                       2a01:4f8:0:1::add:9898
-    #                       2a01:4f8:0:1::add:1010
-    #                       2a01:4f8:0:1::add:9999
-    output = check_output(["/usr/bin/systemd-resolve", "--status", interface])
-    nameserver_line = False
-    for line in output.split(b"\n"):
-        if b"DNS Servers" in line:
-            nameserver_line = True
-            _, ip = line.decode().split(":", 1)
-            yield ip.strip()
-        elif nameserver_line:
-            ip = line.decode().strip()
-            if ip:
-                yield ip
+def resolvectl_dns_servers(interface):
+    """
+    On Ubuntu 22.04, DNS servers can be queries using `resolvectl dns`.
+     The command `systemd-resolve` used in Ubuntu 20.04 is not found.
+
+    Example output for `resolvectl dns -i eth0`:
+    Link 2 (eth0): 67.207.67.3 67.207.67.2
+
+    """
+    output: bytes = check_output(["/usr/bin/resolvectl", "dns", "-i", interface])
+    link, servers = output.split(b":")
+    for server in servers.split(" "):
+        yield server.decode().strip()
 
 
 class Settings(BaseSettings):
@@ -196,7 +181,7 @@ class Settings(BaseSettings):
 
             elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
                 self.DNS_NAMESERVERS = list(
-                    systemd_resolved_dns_servers(interface=self.NETWORK_INTERFACE)
+                    resolvectl_dns_servers(interface=self.NETWORK_INTERFACE)
                 )
             else:
                 assert "This should never happen"
