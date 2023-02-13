@@ -142,6 +142,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"Unknown setting '{key}'")
 
     def check(self):
+        assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
