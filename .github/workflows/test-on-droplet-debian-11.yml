@@ -6,7 +6,7 @@ jobs:
   run_debian_11:
     name: "Run in DigitalOcean Droplet with Debian 11"
     runs-on: ubuntu-latest
-    concurrency: droplet-aleph-vm
+    concurrency: droplet-aleph-vm-debian-11
 
     steps:
       - name: Checkout repository
@@ -38,7 +38,7 @@ jobs:
           --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
           --enable-ipv6 \
           --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
-          aleph-vm-ci
+          aleph-vm-ci-debian-11
 
       - name: Build Debian Package
         run: |
@@ -47,12 +47,12 @@ jobs:
 
       - name: Wait for the system to setup and boot
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
 
       - name: Install Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
@@ -67,7 +67,7 @@ jobs:
 
       - name: Test Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           
           sleep 3
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
@@ -76,5 +76,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f aleph-vm-ci
+          doctl compute droplet delete -f aleph-vm-ci-debian-11
 

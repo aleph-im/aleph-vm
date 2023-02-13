@@ -3,7 +3,7 @@ on:
   push
 
 jobs:
-  build_deb:
+  build_deb_debian_11:
     name: "Build Debian Package"
     runs-on: ubuntu-latest
 
@@ -18,8 +18,6 @@ jobs:
 
       - run: |
           cd packaging && make all-podman-debian-11 && cd ..
-          cd packaging && make all-podman-ubuntu-2004 && cd ..
-          cd packaging && make all-podman-ubuntu-2204 && cd ..
           ls packaging/target
           
       - uses: actions/upload-artifact@v2
@@ -27,10 +25,44 @@ jobs:
           name: aleph-vm.debian-11.deb
           path: packaging/target/aleph-vm.debian-11.deb
 
+  build_deb_ubuntu_20_04:
+    name: "Build Debian Package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Unshallow
+        run: |
+          git fetch --prune --unshallow
+          git describe --tags
+
+      - run: |
+          cd packaging && make all-podman-ubuntu-2004 && cd ..
+          ls packaging/target
+
       - uses: actions/upload-artifact@v2
         with:
           name: aleph-vm.ubuntu-20.04.deb
           path: packaging/target/aleph-vm.ubuntu-20.04.deb
+
+  build_deb_ubuntu_22_04:
+    name: "Build Debian Package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Unshallow
+        run: |
+          git fetch --prune --unshallow
+          git describe --tags
+
+      - run: |
+          cd packaging && make all-podman-ubuntu-2204 && cd ..
+          ls packaging/target
 
       - uses: actions/upload-artifact@v2
         with:
