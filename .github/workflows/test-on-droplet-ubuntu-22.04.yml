@@ -3,8 +3,8 @@ on:
   push
 
 jobs:
-  build_deb:
-    name: "Run in DigitalOcean Droplet"
+  run_ubuntu_22_04:
+    name: "Run in DigitalOcean Droplet with Ubuntu 22.04"
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm
 
@@ -32,7 +32,7 @@ jobs:
       - name: Create the Droplet
         run: |
           doctl compute droplet create \
-          --image debian-11-x64 \
+          --image ubuntu-22-04-x64 \
           --size c-2 \
           --region fra1 \
           --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
@@ -40,9 +40,9 @@ jobs:
           --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
           aleph-vm-ci
 
-      - name: Build Debian Package
+      - name: Build Ubuntu Package
         run: |
-          cd packaging && make all-podman-debian-11 && cd ..
+          cd packaging && make all-podman-ubuntu-2204 && cd ..
           ls packaging/target
 
       - name: Wait for the system to setup and boot
@@ -60,9 +60,10 @@ jobs:
           ssh root@${DROPLET_IPV4} "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
-          scp packaging/target/aleph-vm.debian-11.deb root@${DROPLET_IPV4}:/opt
-          ssh root@${DROPLET_IPV4} "apt install -y /opt/aleph-vm.debian-11.deb"
+          scp packaging/target/aleph-vm.ubuntu-22.04.deb root@${DROPLET_IPV4}:/opt
+          ssh root@${DROPLET_IPV4} "apt install -y /opt/aleph-vm.ubuntu-22.04.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_DNS_RESOLUTION=resolvectl >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
       - name: Test Aleph-VM on the Droplet
