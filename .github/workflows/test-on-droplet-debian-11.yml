@@ -55,13 +55,13 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
-          ssh root@${DROPLET_IPV4} "apt-get update"
-          ssh root@${DROPLET_IPV4} "apt-get upgrade -y"
-          ssh root@${DROPLET_IPV4} "apt-get install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
           scp packaging/target/aleph-vm.debian-11.deb root@${DROPLET_IPV4}:/opt
-          ssh root@${DROPLET_IPV4} "apt install -y /opt/aleph-vm.debian-11.deb"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/aleph-vm.debian-11.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
