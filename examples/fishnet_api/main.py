@@ -1,14 +1,14 @@
 import asyncio
 import logging
 import os
-from os import listdir
+from os import listdir, getenv
 
 from aleph_message.models import PostMessage
 
 logger = logging.getLogger(__name__)
 
 logger.debug("import aleph_client")
-from aleph_client.vm.cache import VmCache
+from aleph_client.vm.cache import VmCache, TestVmCache
 from aleph_client.vm.app import AlephApp
 
 logger.debug("import aars")
@@ -36,9 +36,12 @@ http_app.add_middleware(
     allow_headers=["*"],
 )
 
+if getenv("TEST_CACHE").lower() == "true":
+    cache = TestVmCache()
+else:
+    cache = VmCache()
 app = AlephApp(http_app=http_app)
-cache = VmCache()
-aars = AARS(channel="FISHNET_TEST")
+aars = AARS(channel="FISHNET_TEST", cache=cache)
 
 
 async def re_index():

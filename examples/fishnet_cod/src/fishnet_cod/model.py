@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 from aars import Record, Index
 
@@ -20,6 +20,22 @@ class Timeseries(Record):
     data: List[Tuple[int, float]]
 
 
+# Check coinmarketcap.com for the exact granularity/aggregation timeframes
+class Granularity(str, Enum):
+    DAY = "DAY"
+    WEEK = "WEEK"
+    MONTH = "MONTH"
+    THREE_MONTHS = "THREE_MONTHS"
+    YEAR = "YEAR"
+
+
+class View(Record):
+    startTime: int
+    endTime: int
+    granularity: Granularity
+    values: Dict[str, List[Tuple[int, float]]]  # timeseriesID -> data
+
+
 class Dataset(Record):
     name: str
     owner: str
@@ -27,6 +43,7 @@ class Dataset(Record):
     available: bool = True
     ownsAllTimeseries: bool
     timeseriesIDs: List[str]
+    views: Optional[List[str]]
 
 
 class Algorithm(Record):
