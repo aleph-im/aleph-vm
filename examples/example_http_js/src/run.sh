@@ -1,3 +1,3 @@
 #!/bin/sh
 cd /opt/code
-node /opt/code/server.js
+node /opt/code/server.js &

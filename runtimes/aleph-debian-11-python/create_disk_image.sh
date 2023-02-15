@@ -29,7 +29,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   cgroupfs-mount \
   nftables \
   \
-  iputils-ping curl
+  iputils-ping curl vim net-tools
 
 pip3 install 'fastapi~=0.71.0'
 
@@ -92,6 +92,8 @@ rm -fr ./rootfs/var/lib/apt/lists/
 # Custom init
 cp ./init0.sh ./rootfs/sbin/init
 cp ./init1.py ./rootfs/root/init1.py
+cp ./errorHandler.js ./rootfs/root/errorHandler.js
+cp -va ./error ./rootfs/root/error
 chmod +x ./rootfs/sbin/init
 chmod +x ./rootfs/root/init1.py
 
