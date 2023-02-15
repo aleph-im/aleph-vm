@@ -43,7 +43,6 @@
                 };
                 doCheck = false;
                 propagatedBuildInputs = [
-                  # Specify dependencies
                   pkgs.python3Packages.pydantic
                 ];
               }
