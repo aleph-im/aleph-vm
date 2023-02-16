@@ -52,5 +52,8 @@ log "Setup socat"
 socat UNIX-LISTEN:/tmp/socat-socket,fork,reuseaddr VSOCK-CONNECT:2:53 &
 log "Socat ready"
 
+# Enable the following to start Docker from init.
+#/usr/sbin/dockerd > /log_docker.txt 2>$1 &
+
 # Replace this script with the manager
 exec /root/init1.py

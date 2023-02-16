@@ -84,6 +84,7 @@ EOT
 mv /mnt/rootfs/sbin/init /mnt/rootfs/sbin/init.copy
 cp ./init0.sh /mnt/rootfs/sbin/init
 cp ./init1.py /mnt/rootfs/root/init1.py
+cp -va ./error /mnt/rootfs/root/error
 chmod +x /mnt/rootfs/sbin/init
 chmod +x /mnt/rootfs/root/init1.py
 
