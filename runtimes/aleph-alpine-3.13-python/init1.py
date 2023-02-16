@@ -326,13 +326,20 @@ async def make_request(session, scope):
 
 
 def show_loading():
-    f = open("/root/loading.html", "r")
-    body = {"body": f.read()}
-    headers = {
-        "headers": [[b'Content-Type', b'text/html'], [b'Connection', b'keep-alive'], [b'Keep-Alive', b'timeout=5'], [b'Transfer-Encoding', b'chunked']],
-        "status": 503,
-    }
-    return headers, body
+    with open("/root/loading.html", "r") as f:
+        body = {
+            "body": f.read()
+        }
+        headers = {
+            "headers": [
+                [b'Content-Type', b'text/html'],
+                [b'Connection', b'keep-alive'],
+                [b'Keep-Alive', b'timeout=5'],
+                [b'Transfer-Encoding', b'chunked']
+            ],
+            "status": 503,
+        }
+        return headers, body
 
 async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
     logger.debug("Calling localhost")
@@ -340,7 +347,6 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
     tries = 0
     headers = None
     body = None
-    errorHandler = False
 
     timeout = aiohttp.ClientTimeout(total=5)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -349,10 +355,7 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
                 tries += 1
                 headers, body = await make_request(session, scope)
             except aiohttp.ClientConnectorError:
-                if errorHandler == True:
-                    raise
                 if tries > 20:
-                    errorHandler = True
                     headers, body = show_loading()
                 await asyncio.sleep(0.05)
 

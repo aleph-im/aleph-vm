@@ -29,7 +29,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   cgroupfs-mount \
   nftables \
   \
-  iputils-ping curl vim net-tools
+  iputils-ping curl
 
 pip3 install 'fastapi~=0.71.0'
 
