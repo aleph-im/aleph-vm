@@ -325,8 +325,8 @@ async def make_request(session, scope):
     return headers, body
 
 
-def error_handling_request():
-    f = open("/root/error/index.html", "r")
+def show_loading():
+    f = open("/root/loading.html", "r")
     body = {"body": f.read()}
     headers = {
         "headers": [[b'Content-Type', b'text/html'], [b'Connection', b'keep-alive'], [b'Keep-Alive', b'timeout=5'], [b'Transfer-Encoding', b'chunked']],
@@ -353,7 +353,7 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
                     raise
                 if tries > 20:
                     errorHandler = True
-                    headers, body = error_handling_request()
+                    headers, body = show_loading()
                 await asyncio.sleep(0.05)
 
     output = ""  # Process stdout is not captured per request
