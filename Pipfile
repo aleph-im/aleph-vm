@@ -1,0 +1,17 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+psutil = "*"
+msgpack = "*"
+aleph-message = "*"
+aiodns = "*"
+aleph-sdk-python = "*"
+
+[dev-packages]
+types-psutil = "*"
+
+[requires]
+python_version = "3.10"
