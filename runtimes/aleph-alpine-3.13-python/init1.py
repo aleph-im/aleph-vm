@@ -329,7 +329,7 @@ def error_handling_request():
     f = open("/root/error/index.html", "r")
     body = {"body": f.read()}
     headers = {
-        "headers": [[b'Content-Type', b'text/html'], [b'Date', b'Thu, 16 Feb 2023 09:31:28 GMT'], [b'Connection', b'keep-alive'], [b'Keep-Alive', b'timeout=5'], [b'Transfer-Encoding', b'chunked']],
+        "headers": [[b'Content-Type', b'text/html'], [b'Connection', b'keep-alive'], [b'Keep-Alive', b'timeout=5'], [b'Transfer-Encoding', b'chunked']],
         "status": 503,
     }
     return headers, body
