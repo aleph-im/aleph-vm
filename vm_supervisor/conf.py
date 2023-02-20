@@ -67,8 +67,14 @@ class Settings(BaseSettings):
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
     NETWORK_INTERFACE = "eth0"
-    IPV4_ADDRESS_POOL = "172.16.0.0/12"
-    IPV4_NETWORK_SIZE = 24
+    IPV4_ADDRESS_POOL = Field(
+        default="172.16.0.0/12",
+        description="IPv4 address range used to provide networks to VMs.",
+    )
+    IPV4_NETWORK_PREFIX_LENGTH = Field(
+        default=24,
+        description="Individual VM network prefix length in bits",
+    )
     NFTABLES_CHAIN_PREFIX = "aleph"
 
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
@@ -153,6 +159,11 @@ class Settings(BaseSettings):
             assert exists(
                 f"/sys/class/net/{self.NETWORK_INTERFACE}"
             ), f"Network interface {self.NETWORK_INTERFACE} does not exist"
+
+            _, ipv4_pool_length = settings.IPV4_ADDRESS_POOL.split("/")
+            assert (
+                int(ipv4_pool_length) <= settings.IPV4_NETWORK_PREFIX_LENGTH
+            ), "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
 
         if self.FAKE_DATA_PROGRAM:
             assert isdir(
