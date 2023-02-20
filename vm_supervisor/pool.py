@@ -28,11 +28,15 @@ class VmPool:
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
-        self.network = Network(
-            vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
-            vm_network_size=settings.IPV4_NETWORK_SIZE,
-            external_interface=settings.NETWORK_INTERFACE,
-        ) if settings.ALLOW_VM_NETWORKING else None
+        self.network = (
+            Network(
+                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+                external_interface=settings.NETWORK_INTERFACE,
+            )
+            if settings.ALLOW_VM_NETWORKING
+            else None
+        )
 
     async def create_a_vm(
         self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
@@ -54,7 +58,7 @@ class VmPool:
         dedicated to the VM.
         """
         _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
-        available_bits = int(network_range) - settings.IPV4_NETWORK_SIZE
+        available_bits = int(network_range) - settings.IPV4_NETWORK_PREFIX_LENGTH
         self.counter += 1
         if self.counter < 2**available_bits:
             # In common cases, use the counter itself as the vm_id. This makes it
