@@ -55,6 +55,10 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-ubuntu-22-04 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
+          # Ubuntu droplets run upgrades at boot
+          sleep 15
+          until ! ssh root@${DROPLET_IPV4} "lslocks --json | grep /var/lib/dpkg/lock" > /dev/null; do sleep 1; echo "Waiting for dpkg lock..."; done
+          
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
