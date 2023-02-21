@@ -97,13 +97,28 @@ async def index():
 
 
 @app.get("/datasets")
-async def datasets() -> List[Dataset]:
+async def datasets(view_as: Optional[str], by: Optional[str]) -> List[Tuple[Dataset, Optional[PermissionStatus]]]:
+    """
+    Get all datasets.
+
+    :param view_as: address of the user to view the datasets as and give additional permission information
+    :param by: address of the dataset owner to filter by
+    """
+    # TODO:
+    # - for the Owner (by) parameter:
+    #     - fetch all datasets for the owner
+    # - for the Requestor (view_as) parameter:
+    #     - fetch all timeseries for each dataset,
+    #     - get all permissions for each timeseries & given requestor
+    #     - respond with permission for dataset as approved, if all permissions are approved
+    #     - respond with pending if at least one is still pending
+    #     - respond with denied if at lest one is denied
     return await Dataset.fetch_all()
 
-
-@app.get("/user/{address}/datasets")
-async def get_user_datasets(address: str) -> List[Dataset]:
-    return await Dataset.query(owner=address)
+# This is not necessary, as it will be replaced by GET /datasets?by={address}
+#@app.get("/user/{address}/datasets")
+#async def get_user_datasets(address: str) -> List[Dataset]:
+#    return await Dataset.query(owner=address)
 
 
 @app.get("/algorithms")
