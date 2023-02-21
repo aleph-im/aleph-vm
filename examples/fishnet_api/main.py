@@ -133,29 +133,6 @@ async def get_user_results(address: str) -> List[Result]:
     return await Result.query(owner=address)
 
 
-@app.get("/dataset/")
-async def get_requestor(requestor: str):
-    # for the Requestor parameter
-    # fetch all timeseries for each dataset
-    dataset_rec = await Dataset.fetch_all()
-    timeseries = dataset_rec[0].timeseriesIDs
-    # get all permissions for each timeseries & given requestor
-    permissions = await Permission.query(timeseriesID=timeseries, requestor=requestor)
-    permissions_status = []
-    for i in permissions:
-        permissions_status.append(i.status)
-    # respond with permission for dataset as approved,
-    # if all permissions are approved
-    if all(element == PermissionStatus.GRANTED for element in permissions_status):
-        return PermissionStatus.GRANTED
-    # respond with denied if at least one is still denied
-    elif PermissionStatus.DENIED in permissions_status:
-        return PermissionStatus.DENIED
-    # respond with pending if at least one is still pending
-    elif PermissionStatus.REQUESTED in permissions_status:
-        return PermissionStatus.REQUESTED
-
-
 @app.get("/executions/{execution_id}/possible_execution_count")
 async def get_possible_execution_count(execution_id: str) -> int:
     """
@@ -438,9 +415,6 @@ async def set_dataset_available(dataset_id: str, available: bool) -> List[Datase
         if rec.available != available:
             rec.available = available
             requests.append(rec.upsert())
-        else:
-            raise HTTPException(status_code=200, detail="Already updated")
-
     # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
     executions_records = await Execution.fetch(dataset_id)
     for rec in executions_records:
