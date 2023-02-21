@@ -64,10 +64,10 @@ class Permission(Record):
     timeseriesID: str
     algorithmID: Optional[str]
     owner: str
-    reader: str
     status: PermissionStatus
     executionCount: int
     maxExecutionCount: Optional[int]
+    requestor: str
 
 
 class Result(Record):
@@ -82,8 +82,8 @@ Index(Execution, "owner")
 Index(Permission, "owner")
 Index(Timeseries, "owner")
 
-# index to fetch permissions by timeseriesID and reader
-Index(Permission, ["reader", "timeseriesID", "status"])
+# index to fetch permissions by timeseriesID and requestor
+Index(Permission, ["requestor", "timeseriesID", "status"])
 Index(Permission, "id_hash")
 Index(Permission, "status")
 Index(Execution, "datasetID")
@@ -91,3 +91,5 @@ Index(Dataset, "timeseriesIDs")
 
 # index to fetch execution by the status
 Index(Execution, "status")
+Index(Permission, "timeseriesID")
+Index(Permission, ["timeseriesID", "requestor"])
