@@ -1,8 +1,8 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from fishnet_cod import Execution, Permission, Timeseries
+from fishnet_cod import Execution, Permission, Timeseries, Dataset, Algorithm
 
 
 class TimeseriesItem(BaseModel):
@@ -10,7 +10,7 @@ class TimeseriesItem(BaseModel):
     name: str
     owner: str
     desc: Optional[str]
-    data: List[List[float]]
+    data: List[Tuple[int, float]]
 
 
 class UploadTimeseriesRequest(BaseModel):
@@ -47,6 +47,4 @@ class RequestExecutionResponse(BaseModel):
     unavailableTimeseries: Optional[List[Timeseries]]
 
 
-class DenyPermissionsResponse(BaseModel):
-    success: bool
-    message: str
+
