@@ -97,7 +97,7 @@ async def index():
 
 
 @app.get("/datasets")
-async def datasets(view_as: Optional[str], by: Optional[str]) -> List[Tuple[Dataset, Optional[PermissionStatus]]]:
+async def datasets(view_as: Optional[str], by: Optional[str]) -> str:
     """
     Get all datasets.
 
@@ -107,18 +107,33 @@ async def datasets(view_as: Optional[str], by: Optional[str]) -> List[Tuple[Data
     # TODO:
     # - for the Owner (by) parameter:
     #     - fetch all datasets for the owner
+    ds_by_owner = await Dataset.where_eq(owner=by)
+    ts_by_owner = ds_by_owner[0].timeseriesIDs
     # - for the Requestor (view_as) parameter:
     #     - fetch all timeseries for each dataset,
-    #     - get all permissions for each timeseries & given requestor
-    #     - respond with permission for dataset as approved, if all permissions are approved
+
+    timeseries_records = await Timeseries.fetch(ts_by_owner)
+    timeseries_ids = timeseries_records[0].id_hash
+    #   - get all permissions for each timeseries & given requestor
+    permission_status = []
+    permission_records = await Permission.where_eq(timeseriesID=timeseries_ids, requestor=view_as)
+    for rec in permission_records:
+        permission_status.append(rec.status)
+    #   - respond with permission for dataset as approved, if all permissions are approved
+    if all(rec == PermissionStatus.GRANTED for rec in permission_status):
+        return "Dataset Available"
     #     - respond with pending if at least one is still pending
+    elif PermissionStatus.REQUESTED in permission_status:
+        return "Dataset Requested"
     #     - respond with denied if at lest one is denied
-    return await Dataset.fetch_all()
+    elif PermissionStatus.DENIED in permission_status:
+        return "Dataset Denied"
+
 
 # This is not necessary, as it will be replaced by GET /datasets?by={address}
 #@app.get("/user/{address}/datasets")
 #async def get_user_datasets(address: str) -> List[Dataset]:
-#    return await Dataset.query(owner=address)
+#    return await Dataset.save(owner=address)
 
 
 @app.get("/algorithms")
@@ -128,7 +143,7 @@ async def get_algorithms() -> List[Algorithm]:
 
 @app.get("/user/{address}/algorithms")
 async def get_user_algorithms(address: str) -> List[Algorithm]:
-    return await Algorithm.query(owner=address)
+    return await Algorithm.where_eq(owner=address)
 
 
 @app.get("/executions")
@@ -138,17 +153,17 @@ async def get_executions() -> List[Execution]:
 
 @app.get("/executions/{dataset_ID}")
 async def get_executions_by_dataset(dataset_ID: str) -> List[Execution]:
-    return await Execution.query(datasetID=dataset_ID)
+    return await Execution.where_eq(datasetID=dataset_ID)
 
 
 @app.get("/user/{address}/executions")
 async def get_user_executions(address: str) -> List[Execution]:
-    return await Execution.query(owner=address)
+    return await Execution.where_eq(owner=address)
 
 
 @app.get("/user/{address}/results")
 async def get_user_results(address: str) -> List[Result]:
-    return await Result.query(owner=address)
+    return await Result.where_eq(owner=address)
 
 
 @app.get("/executions/{execution_id}/possible_execution_count")
@@ -186,7 +201,7 @@ async def upload_timeseries(req: UploadTimeseriesRequest) -> List[Timeseries]:
     )
     for ts in req.timeseries:
         if old_time_series.get(ts.id_hash) is None:
-            requests.append(Timeseries.create(**dict(ts)))
+            requests.append(Timeseries(**dict(ts)).save())
             continue
         old_ts: Timeseries = old_time_series[ts.id_hash]
         if ts.owner != old_ts.owner:
@@ -194,7 +209,7 @@ async def upload_timeseries(req: UploadTimeseriesRequest) -> List[Timeseries]:
         old_ts.name = ts.name
         old_ts.data = ts.data
         old_ts.desc = ts.desc
-        requests.append(old_ts.upsert())
+        requests.append(old_ts.save())
     upserted_timeseries = await asyncio.gather(*requests)
     return [ts for ts in upserted_timeseries if not isinstance(ts, BaseException)]
 
@@ -222,8 +237,8 @@ async def upload_dataset(dataset: UploadDatasetRequest) -> Dataset:
             old_dataset.desc = dataset.desc
             old_dataset.timeseriesIDs = dataset.timeseriesIDs
             old_dataset.ownsAllTimeseries = dataset.ownsAllTimeseries
-            return await old_dataset.upsert()
-    return await Dataset.create(**dataset.dict())
+            return await old_dataset.save()
+    return await Dataset(**dataset.dict()).save()
 
 
 @app.put("/algorithms/upload")
@@ -242,8 +257,8 @@ async def upload_algorithm(algorithm: UploadAlgorithmRequest) -> Algorithm:
             old_algorithm.name = algorithm.name
             old_algorithm.desc = algorithm.desc
             old_algorithm.code = algorithm.code
-            return await old_algorithm.upsert()
-    return await Algorithm.create(**algorithm.dict())
+            return await old_algorithm.save()
+    return await Algorithm(**algorithm.dict()).save()
 
 
 @app.post("/executions/request")
@@ -264,13 +279,13 @@ async def request_execution(
     # allow execution if dataset owner == execution owner
     if dataset.owner == execution.owner and dataset.ownsAllTimeseries:
         execution.status = ExecutionStatus.PENDING
-        return RequestExecutionResponse(execution=await Execution.create(**execution.dict()))
+        return RequestExecutionResponse(execution=await Execution(**execution.dict()).save())
 
     # check if execution owner has permission to read all timeseries
     requested_timeseries = await Timeseries.fetch(dataset.timeseriesIDs)
     permissions = {
         permission.timeseriesID: permission
-        for permission in await Permission.query(timeseriesID=dataset.timeseriesIDs, requestor=execution.owner)
+        for permission in await Permission.where_eq(timeseriesID=dataset.timeseriesIDs, requestor=execution.owner)
     }
     requests = []
     unavailable_timeseries = []
@@ -285,7 +300,7 @@ async def request_execution(
         if ts.id_hash not in permissions:
             # create permission request
             requests.append(
-                Permission.create(
+                Permission(
                     timeseriesID=ts.id_hash,
                     algorithmID=execution.algorithmID,
                     owner=ts.owner,
@@ -293,7 +308,7 @@ async def request_execution(
                     status=PermissionStatus.REQUESTED,
                     executionCount=0,
                     maxExecutionCount=1,
-                )
+                ).save()
             )
         else:
             # check if permission is valid
@@ -307,24 +322,24 @@ async def request_execution(
                 permission.status = PermissionStatus.REQUESTED  # re-request permission
                 needs_update = True
             if needs_update:
-                requests.append(permission.upsert())
+                requests.append(permission.save())
     if unavailable_timeseries:
         execution.status = ExecutionStatus.DENIED
         return RequestExecutionResponse(
-            execution=await Execution.create(**execution.dict()),
+            execution=await Execution(**execution.dict()).save(),
             unavailableTimeseries=unavailable_timeseries,
         )
     if requests:
         new_permission_requests = await asyncio.gather(*requests)
         execution.status = ExecutionStatus.REQUESTED
         return RequestExecutionResponse(
-            execution=await Execution.create(**execution.dict()),
+            execution=await Execution(**execution.dict()).save(),
             permissionRequests=new_permission_requests,
         )
     else:
         execution.status = ExecutionStatus.PENDING
         return RequestExecutionResponse(
-            execution=await Execution.create(**execution.dict())
+            execution=await Execution(**execution.dict()).save()
         )
 
 
@@ -348,22 +363,22 @@ async def approve_permissions(permission_hashes: List[str]) -> List[Permission]:
     for rec in permission_records:
         rec.status = PermissionStatus.GRANTED
         ts_ids.append(rec.timeseriesID)
-        requests.append(rec.upsert())
+        requests.append(rec.save())
 
     # TODO: check if execution can be executed now
     ds_ids = []
-    dataset_records = await Dataset.query(timeseriesIDs=ts_ids)
+    dataset_records = await Dataset.where_eq(timeseriesIDs=ts_ids)
     if not dataset_records:
         raise HTTPException(status_code=404, detail="No Dataset found")
     for rec in dataset_records:
         if rec.id_hash in ds_ids:
             ds_ids.append(rec.id_hash)
 
-    executions_records = await Execution.query(datasetID=ds_ids)
+    executions_records = await Execution.where_eq(datasetID=ds_ids)
     for rec in executions_records:
         if ds_ids and rec.datasetID in ds_ids:
             rec.status = ExecutionStatus.PENDING
-            requests.append(rec.upsert())
+            requests.append(rec.save())
     await asyncio.gather(*requests)
     return permission_records
 
@@ -386,20 +401,20 @@ async def deny_permissions(permission_hashes: List[str]) -> List[Permission]:
         # deny permissions and update records
         rec.status = PermissionStatus.DENIED
         ts_ids.append(rec.timeseriesID)
-        requests.append(rec.upsert())
-    dataset_records = await Dataset.query(timeseriesIDs=ts_ids)
+        requests.append(rec.save())
+    dataset_records = await Dataset.where_eq(timeseriesIDs=ts_ids)
     ds_ids = []
     if not dataset_records:
         raise HTTPException(status_code=424, detail="No Timeseries found")
     for rec in dataset_records:
         ds_ids.append(rec.id_hash)
     # Avoided fetching all executions
-    executions_records = await Execution.query(datasetID=ds_ids)
+    executions_records = await Execution.where_eq(datasetID=ds_ids)
     for rec in executions_records:
         # get all executions that are waiting for this permission(status == PENDING) and update their status to DENIED
         if (rec.datasetID in ds_ids and rec.status == ExecutionStatus.PENDING):
             rec.status = ExecutionStatus.DENIED
-            requests.append(rec.upsert())
+            requests.append(rec.save())
     # parellel processed
     await asyncio.gather(*requests)
     return permission_records
@@ -421,7 +436,7 @@ async def set_dataset_available(dataset_id: str, available: bool) -> List[Datase
     dataset = resp[0]
     dataset.available = available
 
-    requests.append(dataset.upsert())
+    requests.append(dataset.save())
 
     # Get all timeseries in the dataset and set them to available or not
     ts_list = await Timeseries.fetch(dataset.timeseriesIDs)
@@ -432,13 +447,13 @@ async def set_dataset_available(dataset_id: str, available: bool) -> List[Datase
     for rec in ts_list:
         if rec.available != available:
             rec.available = available
-            requests.append(rec.upsert())
+            requests.append(rec.save())
     # Get all executions that are waiting for this dataset (status == PENDING) and update their status to DENIED
     executions_records = await Execution.fetch(dataset_id)
     for rec in executions_records:
         if rec.status == ExecutionStatus.PENDING:
             rec.status = ExecutionStatus.DENIED
-            requests.append(rec.upsert())
+            requests.append(rec.save())
 
     # executed all requests in parallel
     await asyncio.gather(*requests)
