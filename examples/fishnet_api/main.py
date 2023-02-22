@@ -36,7 +36,7 @@ http_app.add_middleware(
     allow_headers=["*"],
 )
 
-if getenv("TEST_CACHE").lower() == "true":
+if getenv("TEST_CACHE") is not None and getenv("TEST_CACHE").lower() == "true":
     cache = TestVmCache()
 else:
     cache = VmCache()

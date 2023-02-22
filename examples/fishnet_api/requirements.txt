@@ -1,4 +1,4 @@
-aleph-sdk-python~=0.6.0
+aleph-sdk-python
 aars~=0.3.3
 fishnet-cod~=0.1.0
 fastapi

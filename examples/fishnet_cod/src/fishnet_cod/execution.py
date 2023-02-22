@@ -1,5 +1,5 @@
 import pandas as pd
-from model import *
+from .model import *
 
 
 async def run_execution(execution: Execution) -> Optional[Execution]:
