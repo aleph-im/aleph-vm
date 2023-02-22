@@ -1,6 +1,6 @@
 pydantic
 aiohttp
-aleph_client
-aars
+aleph-sdk-python~=0.6.0
+aars~=0.3.3
 pandas
 fastapi

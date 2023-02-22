@@ -5,16 +5,16 @@ from model import *
 async def run_execution(execution: Execution) -> Optional[Execution]:
     async def set_failed(execution, reason):
         execution.status = ExecutionStatus.FAILED
-        result = await Result.create(executionID=execution.id_hash, data=reason)
+        result = await Result(executionID=execution.id_hash, data=reason).save()
         execution.resultID = result.id_hash
-        return await execution.upsert()
+        return await execution.save()
 
     assert isinstance(execution, Execution)
     if execution.status != ExecutionStatus.PENDING:
         return execution
 
     execution.status = ExecutionStatus.RUNNING
-    await execution.upsert()
+    await execution.save()
 
     try:
         try:
@@ -72,12 +72,12 @@ async def run_execution(execution: Execution) -> Optional[Execution]:
         except Exception as e:
             return await set_failed(execution, f"Failed to run algorithm: {e}")
 
-        result_message = await Result.create(
+        result_message = await Result(
             executionID=execution.id_hash, data=str(result)
-        )
+        ).save()
         execution.status = ExecutionStatus.SUCCESS
         execution.resultID = result_message.id_hash
-        await execution.upsert()
+        await execution.save()
     except Exception as e:
         return await set_failed(execution, f"Unexpected error occurred: {e}")
     finally:
