@@ -110,7 +110,7 @@ async def download_data(ref: str) -> Union[StreamingResponse, Response]:
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
-    media_type = msg["content"].get("mime_type", default="application/octet-stream")
+    media_type = msg["content"].get("mime_type", "application/octet-stream")
 
     data_hash = msg["content"]["item_hash"]
     if msg["content"]["item_type"] == "ipfs":
