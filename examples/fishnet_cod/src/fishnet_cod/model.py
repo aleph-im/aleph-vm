@@ -77,6 +77,13 @@ class PermissionStatus(str, Enum):
     DENIED = "DENIED"
 
 
+class DatasetPermissionStatus(str, Enum):
+    NOT_REQUESTED = "NOT REQUESTED"
+    REQUESTED = "REQUESTED"
+    GRANTED = "GRANTED"
+    DENIED = "DENIED"
+
+
 class Permission(Record):
     timeseriesID: str
     algorithmID: Optional[str]

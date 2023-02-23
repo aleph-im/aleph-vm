@@ -97,7 +97,7 @@ async def index():
 
 
 @app.get("/datasets")
-async def datasets(view_as: Optional[str], by: Optional[str]) -> str:
+async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int], page_size: Optional[int]) :
     """
     Get all datasets.
 
@@ -121,7 +121,7 @@ async def datasets(view_as: Optional[str], by: Optional[str]) -> str:
         permission_status.append(rec.status)
     #   - respond with permission for dataset as approved, if all permissions are approved
     if all(rec == PermissionStatus.GRANTED for rec in permission_status):
-        return "Dataset Available"
+        return "granted"
     #     - respond with pending if at least one is still pending
     elif PermissionStatus.REQUESTED in permission_status:
         return "Dataset Requested"
@@ -131,14 +131,14 @@ async def datasets(view_as: Optional[str], by: Optional[str]) -> str:
 
 
 # This is not necessary, as it will be replaced by GET /datasets?by={address}
-#@app.get("/user/{address}/datasets")
-#async def get_user_datasets(address: str) -> List[Dataset]:
+# @app.get("/user/{address}/datasets")
+# async def get_user_datasets(address: str) -> List[Dataset]:
 #    return await Dataset.save(owner=address)
 
 
 @app.get("/algorithms")
-async def get_algorithms() -> List[Algorithm]:
-    return await Algorithm.fetch_all()
+async def get_algorithms(page: Optional[int], page_size: Optional[int]) -> List[Algorithm]:
+    return await Algorithm.fetch_all(page=page, page_size=page_size)
 
 
 @app.get("/user/{address}/algorithms")
@@ -147,8 +147,8 @@ async def get_user_algorithms(address: str) -> List[Algorithm]:
 
 
 @app.get("/executions")
-async def get_executions() -> List[Execution]:
-    return await Execution.fetch_all()
+async def get_executions(page: Optional[int], page_size: Optional[int]) -> List[Execution]:
+    return await Execution.fetch_all(page=page, page_size=page_size)
 
 
 @app.get("/executions/{dataset_ID}")
