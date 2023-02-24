@@ -128,9 +128,6 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     #     - fetch all timeseries for each dataset,
     ts_ids_lst = list(ts_ids_unique)
 
-
-
-
     # This whole block should be executed for each fetched Dataset.Also, return the Dataset with it, not only the PermissionStatus.
     dataset_by_requestor = await Dataset.where_eq(timeseriesIDs=ts_ids_lst)
     #   - get all permissions for each timeseries & given requestor
