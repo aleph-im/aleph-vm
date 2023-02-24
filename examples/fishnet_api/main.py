@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 logger.debug("import project modules")
 from fishnet_cod import *
 from .requests import *
+import numpy as np
 
 logger.debug("imports done")
 
@@ -97,7 +98,8 @@ async def index():
 
 
 @app.get("/datasets")
-async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int], page_size: Optional[int]) :
+async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int], page_size: Optional[int]) -> List[
+    Tuple[Dataset, Optional[DatasetPermissionStatus]]]:
     """
     Get all datasets.
 
@@ -107,27 +109,47 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     # TODO:
     # - for the Owner (by) parameter:
     #     - fetch all datasets for the owner
+    if not by:
+        HTTPException(status_code=404, detail="No Owner found")
     ds_by_owner = await Dataset.where_eq(owner=by)
-    ts_by_owner = ds_by_owner[0].timeseriesIDs
+    ts_ids = []
+    for rec in ds_by_owner:
+        ts_ids.append(rec.timeseriesIDs)
+
+    # convert into numpy array
+    ts_ids_np = np.array(ts_ids)
+    # convert the 2d array into 1d
+    ts_ids_lists = np.hstack(ts_ids_np)
+    # remove the duplicate values from the numpy array
+    ts_ids_unique = np.unique(ts_ids_lists)
+
+    # converting the numpy array into python normal list for pythonic calculation
     # - for the Requestor (view_as) parameter:
     #     - fetch all timeseries for each dataset,
+    ts_ids_lst = list(ts_ids_unique)
 
-    timeseries_records = await Timeseries.fetch(ts_by_owner)
-    timeseries_ids = timeseries_records[0].id_hash
+
+
+
+    # This whole block should be executed for each fetched Dataset.Also, return the Dataset with it, not only the PermissionStatus.
+    dataset_by_requestor = await Dataset.where_eq(timeseriesIDs=ts_ids_lst)
     #   - get all permissions for each timeseries & given requestor
     permission_status = []
-    permission_records = await Permission.where_eq(timeseriesID=timeseries_ids, requestor=view_as)
-    for rec in permission_records:
-        permission_status.append(rec.status)
-    #   - respond with permission for dataset as approved, if all permissions are approved
-    if all(rec == PermissionStatus.GRANTED for rec in permission_status):
-        return "granted"
-    #     - respond with pending if at least one is still pending
-    elif PermissionStatus.REQUESTED in permission_status:
-        return "Dataset Requested"
-    #     - respond with denied if at lest one is denied
-    elif PermissionStatus.DENIED in permission_status:
-        return "Dataset Denied"
+    for rec in dataset_by_requestor:
+        permission_records = await Permission.where_eq(timeseriesID=rec.timeseriesIDs, requestor=view_as)
+        if not permission_records:
+            return [(rec, DatasetPermissionStatus.NOT_REQUESTED)]
+        for perm_rec in permission_records:
+            permission_status.append(perm_rec.status)
+        #   - respond with permission for dataset as approved, if all permissions are approved
+        if all(status == PermissionStatus.GRANTED for status in permission_status):
+            return [(rec, DatasetPermissionStatus.GRANTED)]
+            #     - respond with denied if at lest one is denied
+        elif PermissionStatus.DENIED in permission_status:
+            return [(rec, DatasetPermissionStatus.DENIED)]
+            #     - respond with pending if at least one is still pending
+        elif PermissionStatus.REQUESTED in permission_status:
+            return [(rec, DatasetPermissionStatus.REQUESTED)]
 
 
 # This is not necessary, as it will be replaced by GET /datasets?by={address}
