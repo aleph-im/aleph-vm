@@ -127,7 +127,8 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     #     - fetch all timeseries for each dataset,
     ts_ids_lst = list(ts_ids_unique)
 
-    # This whole block should be executed for each fetched Dataset.Also, return the Dataset with it, not only the PermissionStatus.
+    # This whole block should be executed for each fetched Dataset.
+    # Also, return the Dataset with it, not only the PermissionStatus.
 
     dataset_by_requestor = await Dataset.where_eq(timeseriesIDs=ts_ids_lst)
     #   - get all permissions for each timeseries & given requestor
@@ -137,23 +138,21 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
         #   - get all permissions for each timeseries & given requestor
         permission_records = await Permission.where_eq(timeseriesID=rec.timeseriesIDs, requestor=view_as)
         permission_status = []
+        # if there is no permission records its mean  dataset are not requested
         if not permission_records:
             returned_datasets.append((rec, DatasetPermissionStatus.NOT_REQUESTED))
-            return returned_datasets
         for perm_rec in permission_records:
             permission_status.append(perm_rec.status)
         #   - respond with permission for dataset as approved, if all permissions are approved
         if all(status == PermissionStatus.GRANTED for status in permission_status):
             returned_datasets.append((rec, DatasetPermissionStatus.GRANTED))
-            return returned_datasets
-            #     - respond with denied if at lest one is denied
+        #     - respond with denied if at least one is denied
         elif PermissionStatus.DENIED in permission_status:
             returned_datasets.append((rec, DatasetPermissionStatus.DENIED))
-            return returned_datasets
-            #     - respond with pending if at least one is still pending
+        #     - respond with pending if at least one is still pending
         elif PermissionStatus.REQUESTED in permission_status:
             returned_datasets.append((rec, DatasetPermissionStatus.REQUESTED))
-            return returned_datasets
+    return returned_datasets
 
 
 # This is not necessary, as it will be replaced by GET /datasets?by={address}
