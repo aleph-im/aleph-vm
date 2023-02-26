@@ -80,3 +80,9 @@ def test_execution_dataset():
     assert response.json()
     data = response.json()
     print("data", data)
+
+def test_dataset():
+    page = 1
+    page_size = 1
+    response = client.get('/datasets')
+

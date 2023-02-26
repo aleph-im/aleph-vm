@@ -109,9 +109,8 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     # TODO:
     # - for the Owner (by) parameter:
     #     - fetch all datasets for the owner
-    if not by:
-        HTTPException(status_code=404, detail="No Owner found")
-    ds_by_owner = await Dataset.where_eq(owner=by)
+
+    ds_by_owner = await Dataset.fetch_all(page=page,page_size=page_size)
     ts_ids = []
     for rec in ds_by_owner:
         ts_ids.append(rec.timeseriesIDs)
@@ -129,11 +128,26 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     ts_ids_lst = list(ts_ids_unique)
 
     # This whole block should be executed for each fetched Dataset.Also, return the Dataset with it, not only the PermissionStatus.
+
     dataset_by_requestor = await Dataset.where_eq(timeseriesIDs=ts_ids_lst)
     #   - get all permissions for each timeseries & given requestor
     permission_status = []
+    dataset_results = []
+
     for rec in dataset_by_requestor:
+        dataset_results.append(rec)
+
+    #All fetched Datasets and their according PermissionStatus.It is possible
+    #though, that multiple Datasets contain the same
+    #TimeseriesID,for example
+    #when Users mix and match timeseries from different
+    # Datasets to build their own Dataset
+
+
+    for rec in dataset_results:
+        #   - get all permissions for each timeseries & given requestor
         permission_records = await Permission.where_eq(timeseriesID=rec.timeseriesIDs, requestor=view_as)
+        permission_status = []
         if not permission_records:
             return [(rec, DatasetPermissionStatus.NOT_REQUESTED)]
         for perm_rec in permission_records:
