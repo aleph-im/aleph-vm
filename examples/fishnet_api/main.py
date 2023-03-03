@@ -171,6 +171,11 @@ async def in_permission_requests(userAddress: Optional[str]) -> List[Permission]
     permission_records = await Permission.where_eq(requestor=userAddress)
     return permission_records
 
+@app.get('/user/{userAddress}/permissions/outgoing')
+async def out_permission_requests(userAddress: Optional[str]) -> List[Permission]:
+    permission_records = await Permission.where_eq(requestor=userAddress)
+    return permission_records
+
 
 
 
