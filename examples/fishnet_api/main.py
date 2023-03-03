@@ -98,7 +98,7 @@ async def index():
 
 
 @app.get("/datasets")
-async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int], page_size: Optional[int]) -> List[
+async def datasets(view_as: Optional[str]=None, by: Optional[str]=None, page: Optional[int]=None, page_size: Optional[int]=None) -> List[
     Tuple[Dataset, Optional[DatasetPermissionStatus]]]:
     """
     Get all datasets.
@@ -110,9 +110,13 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
     # - for the Owner (by) parameter:
     #     - fetch all datasets for the owner
 
-    ds_by_owner = await Dataset.fetch_all(page=page, page_size=page_size)
+    if by:
+        datasets = await Dataset.where_eq(owner=by)
+    else:
+        datasets = await Dataset.fetch_all(page=page, page_size=page_size)
     ts_ids = []
-    for rec in ds_by_owner:
+
+    for rec in datasets:
         ts_ids.append(rec.timeseriesIDs)
 
     # convert into numpy array
@@ -152,6 +156,7 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
         #     - respond with pending if at least one is still pending
         elif PermissionStatus.REQUESTED in permission_status:
             returned_datasets.append((rec, DatasetPermissionStatus.REQUESTED))
+
     return returned_datasets
 
 
@@ -161,9 +166,46 @@ async def datasets(view_as: Optional[str], by: Optional[str], page: Optional[int
 #    return await Dataset.save(owner=address)
 
 
-@app.get("/algorithms")
-async def get_algorithms(page: Optional[int], page_size: Optional[int]) -> List[Algorithm]:
-    return await Algorithm.fetch_all(page=page, page_size=page_size)
+@app.get('/user/{userAddress}/permissions/incoming')
+async def in_permission_requests(userAddress: Optional[str]) -> List[Permission]:
+    permission_records = await Permission.where_eq(requestor=userAddress)
+    return permission_records
+
+
+
+
+
+@app.get("/query/algorithms")
+async def own_algorithms(name: Optional[str] = None, by: Optional[str] = None, page: Optional[int] = None,
+                         page_size: Optional[int] = None) -> List[Algorithm]:
+    '''
+  - query for own algos
+  - query other algos
+  - page, page_size and by
+  '''
+
+    if name:
+        algo_name = await Algorithm.where_eq(name=name)
+        if not algo_name:
+            raise HTTPException(status_code=404,detail='No Algorithms found')
+        return algo_name
+    elif by:
+        algo_owner = await Algorithm.where_eq(owner=by)
+        if not algo_owner:
+            raise HTTPException(status_code=404,detail='No Algorithm found')
+        return algo_owner
+    elif page or page_size:
+        return await Algorithm.fetch_all(page=page, page_size=page_size)
+    else:
+        raise HTTPException(status_code=404,detail='No value found')
+
+
+# @app.get('/execution?by={}&page={}')
+# async def get_execution(by=str):
+#     execution = await Execution.where_eq(owner=by)
+#     execution_revision_id = execution[0].revision_hashes
+#     for i in execution_revision_id:
+#         i
 
 
 @app.get("/user/{address}/algorithms")
@@ -172,7 +214,7 @@ async def get_user_algorithms(address: str) -> List[Algorithm]:
 
 
 @app.get("/executions")
-async def get_executions(page: Optional[int], page_size: Optional[int]) -> List[Execution]:
+async def get_executions(page: Optional[int]=None, page_size: Optional[int]=None) -> List[Execution]:
     return await Execution.fetch_all(page=page, page_size=page_size)
 
 

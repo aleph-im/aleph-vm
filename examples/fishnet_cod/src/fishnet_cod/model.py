@@ -102,6 +102,7 @@ class Result(Record):
 # indexes to fetch by owner
 Index(Dataset, "owner")
 Index(Algorithm, "owner")
+Index(Algorithm, "name")
 Index(Execution, "owner")
 Index(Permission, "owner")
 Index(Timeseries, "owner")
