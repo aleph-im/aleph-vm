@@ -1,5 +1,6 @@
 
 mkdir -p /opt/firecracker
+mkdir -p /opt/firecracker-release
 
 curl -o /opt/firecracker/vmlinux.bin "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
 
