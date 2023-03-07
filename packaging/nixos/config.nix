@@ -23,9 +23,17 @@ in
 
   # --
 
-  users.users.root = {
-    initialPassword = "toor";
+
+  users.users = {
+    root = {
+      initialPassword = "toor";
+    };
+    jailman = {
+      group = "jailman";
+      isSystemUser = true;
+    };
   };
+  users.groups.jailman.members = [ "jailman" ];
 
   services.openssh.enable = true;
 
