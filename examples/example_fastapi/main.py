@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import socket
+import subprocess
 import sys
 from datetime import datetime
 from os import listdir
@@ -22,6 +24,7 @@ from aleph_client.vm.app import AlephApp
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 logger.debug("imports done")
 
 http_app = FastAPI()
@@ -37,8 +40,18 @@ async def index():
         opt_venv = []
     return {
         "Example": "example_fastapi",
-        "endpoints": ["/environ", "/messages", "/internet", "/post_a_message",
-                      "/state/increment", "/wait-for/{delay}"],
+        "endpoints": [
+            "/environ",
+            "/messages",
+            "/dns",
+            "ip/address",
+            "/ip/4",
+            "/ip/6",
+            "/internet",
+            "/post_a_message",
+            "/state/increment",
+            "/wait-for/{delay}",
+        ],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
         },
@@ -60,10 +73,59 @@ async def read_aleph_messages():
     return {"Messages": data}
 
 
+@app.get("/dns")
+async def resolve_dns_hostname():
+    """Check if DNS resolution is working.
+    """
+    info_inet, info_inet6 = socket.getaddrinfo("example.org", 80, proto=socket.IPPROTO_TCP)
+    ipv4 = info_inet[4][0]
+    ipv6 = info_inet6[4][0]
+    return {
+        "ipv4": ipv4,
+        "ipv6": ipv6,
+    }
+
+
+@app.get("/ip/address")
+async def ip_address():
+    """Fetch the ip addresses of the virtual machine."""
+    output = subprocess.check_output(["ip", "addr"], shell=False)
+    return PlainTextResponse(content=output)
+
+
+@app.get("/ip/4")
+async def connect_ipv4():
+    """Connect to the Quad9 VPN provider using their IPv4 address.
+    The webserver on that address returns a 404 error, so we accept that response code.
+    """
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
+        async with session.get("https://9.9.9.9") as resp:
+            # We expect this endpoint to return a 404 error
+            if resp.status != 404:
+                resp.raise_for_status()
+            return {"result": True, "headers": resp.headers}
+
+
+@app.get("/ip/6")
+async def connect_ipv6():
+    """Connect to the Quad9 VPN provider using their IPv6 address.
+    The webserver on that address returns a 404 error, so we accept that response code.
+    """
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
+        async with session.get("https://[2620:fe::fe]") as resp:
+            # We expect this endpoint to return a 404 error
+            if resp.status != 404:
+                resp.raise_for_status()
+            return {"result": True, "headers": resp.headers}
+
+
 @app.get("/internet")
 async def read_internet():
-    """Read data from the public Internet using aiohttp."""
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
+    """Connect the aleph.im official website to check Internet connectivity."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
         async with session.get("https://aleph.im/") as resp:
             resp.raise_for_status()
             return {"result": resp.status, "headers": resp.headers}
