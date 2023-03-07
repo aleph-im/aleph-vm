@@ -54,6 +54,36 @@ async def check_messages(session: ClientSession) -> bool:
         return False
 
 
+async def check_dns(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/dns")
+        assert result["ipv4"]
+        assert result["ipv6"]
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_ipv4(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/ip/4")
+        assert result["result"] is True
+        assert "headers" in result
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_ipv6(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/ip/6")
+        assert result["result"] is True
+        assert "headers" in result
+        return True
+    except ClientResponseError:
+        return False
+
+
 async def check_internet(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/internet")
