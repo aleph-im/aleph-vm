@@ -94,7 +94,7 @@ in
   ];
 
   environment.sessionVariables = rec {
-    KERNEL_URL = "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin";
+    ALEPH_VM_SETUP = "git clone https://github.com/aleph-im/aleph-vm.git";
     LD_LIBRARY_PATH = "/root/aleph-vm";
 #    ALEPH_VM_FIRECRACKER_PATH = "firecracker";
   };
