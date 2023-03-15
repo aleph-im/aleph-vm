@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -OO
-
+import base64
 import logging
 
 logging.basicConfig(
@@ -451,7 +451,12 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_system(config: ConfigurationPayload):
-    setup_hostname(config.vm_hash)
+    # Linux host names are limited to 63 characters. We therefore use the base32 representation
+    # of the item_hash instead of its common base16 representation.
+    item_hash_binary: bytes = base64.b16decode(config.vm_hash.encode().upper())
+    hostname = base64.b32encode(item_hash_binary).decode().strip('=').lower()
+    setup_hostname(hostname)
+
     setup_variables(config.variables)
     setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)
