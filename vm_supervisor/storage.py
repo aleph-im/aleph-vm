@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import subprocess
 from os.path import isfile, join
 from pathlib import Path
 from shutil import make_archive
@@ -155,28 +156,60 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
+def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
+    path = Path(
+        join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+    )
+    if os.path.isfile(path):
+        return path
+    parent_path = await get_existing_file(volume.parent)
+    loop_base = subprocess.check_output(f"losetup --find --show --read-only {parent_path}")
+    root_size = subprocess.check_output(f"blockdev --getsz {parent_path}")
+    os.system(f"dd if=/dev/zero of={path} bs=1M count={volume.size_mib}")
+    volume_data_size = subprocess.check_output(f"blockdev --getsz {path}")
+    loop_user_data = subprocess.check_output(f"losetup --find --show {path}")
+    table_command = f"0 {root_size} linear {loop_base} 0\n{root_size} {volume_data_size} zero"
+    base_dev_name = f"/dev/mapper/{namespace}_{volume.name}_base"
+    os.system(f" {table_command} | dmsetup create {base_dev_name}")
+    table_command = f"0 {volume_data_size} snapshot {base_dev_name} {loop_user_data} P 8"
+    os.system(f" {table_command} | dmsetup create {volume.name}")
+    volume_dev_name = f"/dev/mapper/{namespace}_{volume.name}"
+    os.system(f"resize2fs {volume_dev_name}")
+    return Path(volume_dev_name)
+
+
+async def get_existing_file(ref: str) -> Path:
+    if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
+        return Path(settings.FAKE_DATA_VOLUME)
+
+    cache_path = Path(join(settings.DATA_CACHE, ref))
+    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    await download_file(url, cache_path)
+    return cache_path
+
+
 async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
-        if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
-            return Path(settings.FAKE_DATA_VOLUME)
-
-        cache_path = Path(join(settings.DATA_CACHE, ref))
-        url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
-        await download_file(url, cache_path)
-        return cache_path
+        return await get_existing_file(ref)
     elif isinstance(volume, PersistentVolume):
         if volume.persistence != VolumePersistence.host:
             raise NotImplementedError("Only 'host' persistence is supported")
         if not re.match(r"^[\w\-_/]+$", volume.name):
             raise ValueError(f"Invalid value for volume name: {volume.name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
-        volume_path = Path(
-            join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
-        )
-        await asyncio.get_event_loop().run_in_executor(
-            None, create_ext4, volume_path, volume.size_mib
-        )
-        return volume_path
+        if volume.parent:
+            device_path = await asyncio.get_event_loop().run_in_executor(
+                None, create_devmapper, volume, namespace
+            )
+            return device_path
+        else:
+            volume_path = Path(
+                join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+            )
+            await asyncio.get_event_loop().run_in_executor(
+                None, create_ext4, volume_path, volume.size_mib
+            )
+            return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")
