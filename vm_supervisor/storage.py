@@ -156,7 +156,7 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
+async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
     path = Path(
         join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
     )
@@ -199,9 +199,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             raise ValueError(f"Invalid value for volume name: {volume.name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
         if volume.parent:
-            device_path = await asyncio.get_event_loop().run_in_executor(
-                None, create_devmapper, volume, namespace
-            )
+            device_path = await create_devmapper(volume, namespace)
             return device_path
         else:
             volume_path = Path(
