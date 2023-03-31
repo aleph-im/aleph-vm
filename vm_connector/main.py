@@ -64,7 +64,7 @@ async def stream_url_chunks(url):
 
 
 @app.get("/download/message/{ref}")
-async def download_message(ref: str) -> Union[Dict, Response]:
+async def download_message(ref: str) -> Dict:
     """
     Fetch on Aleph and return a VM function message, after checking its validity.
     Used by the VM Supervisor run the code.
@@ -75,13 +75,15 @@ async def download_message(ref: str) -> Union[Dict, Response]:
 
     msg = await get_message(hash_=ref)
 
-    # TODO: Validate the validity of the message (signature, hashes)
+    # TODO: Validate the message (signature, hashes)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Hash not found")
 
-    return msg or Response(status_code=404, content="Hash not found")
+    return msg
 
 
 @app.get("/download/code/{ref}")
-async def download_code(ref: str) -> Union[StreamingResponse, Response]:
+async def download_code(ref: str):
     """
     Fetch on Aleph and return a VM code file, after checking its validity.
     Used by the VM Supervisor to download function source code.
@@ -93,7 +95,7 @@ async def download_code(ref: str) -> Union[StreamingResponse, Response]:
 
 
 @app.get("/download/data/{ref}")
-async def download_data(ref: str) -> Union[StreamingResponse, Response]:
+async def download_data(ref: str):
     """
     Fetch on Aleph and return a VM data file, after checking its validity.
     Used by the VM Supervisor to download state data.
@@ -119,7 +121,7 @@ async def download_data(ref: str) -> Union[StreamingResponse, Response]:
 
 
 @app.get("/download/runtime/{ref}")
-async def download_runtime(ref: str) -> Union[StreamingResponse, Response]:
+async def download_runtime(ref: str):
     """
     Fetch on Aleph and return a VM runtime, after checking its validity.
     Used by the VM Supervisor to download a runtime.
