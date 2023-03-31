@@ -70,7 +70,6 @@ async def download_message(ref: str) -> Union[Dict, Response]:
     Used by the VM Supervisor run the code.
 
     :param ref: item_hash of the code file
-    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
 
@@ -88,7 +87,6 @@ async def download_code(ref: str) -> Union[StreamingResponse, Response]:
     Used by the VM Supervisor to download function source code.
 
     :param ref: item_hash of the code file
-    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
     return await download_data(ref=ref)
@@ -101,7 +99,6 @@ async def download_data(ref: str) -> Union[StreamingResponse, Response]:
     Used by the VM Supervisor to download state data.
 
     :param ref: item_hash of the data
-    :param use_latest: should the last amend to the data be used
     :return: a file containing the data
     """
 
@@ -128,7 +125,6 @@ async def download_runtime(ref: str) -> Union[StreamingResponse, Response]:
     Used by the VM Supervisor to download a runtime.
 
     :param ref: item_hash of the runtime
-    :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
     return await download_data(ref=ref)
