@@ -11,13 +11,15 @@ import logging
 import os
 import re
 import sys
+import subprocess
+import stat
 from os.path import isfile, join
 from pathlib import Path
 from shutil import make_archive
 
 import aiohttp
-from aleph_message.models import ProgramMessage
-from aleph_message.models.program import (
+from aleph_message.models import ExecutableMessage, InstanceMessage, ProgramMessage, MessageType
+from aleph_message.models.executable import (
     Encoding,
     MachineVolume,
     ImmutableVolume,
@@ -77,7 +79,7 @@ async def get_latest_amend(item_hash: str) -> str:
             return result or item_hash
 
 
-async def get_message(ref: str) -> ProgramMessage:
+async def get_message(ref: str) -> ExecutableMessage:
     if settings.FAKE_DATA_PROGRAM:
         cache_path = settings.FAKE_DATA_MESSAGE
     else:
@@ -92,7 +94,9 @@ async def get_message(ref: str) -> ProgramMessage:
             msg["item_hash"] = hashlib.sha256(
                 msg["item_content"].encode("utf-8")
             ).hexdigest()
-        return ProgramMessage(**msg)
+        if msg["type"] == MessageType.program:
+            return ProgramMessage(**msg)
+        return InstanceMessage(**msg)
 
 
 async def get_code_path(ref: str) -> Path:
@@ -155,28 +159,94 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
+def check_device_exists(path: Path) -> bool:
+    try:
+        return stat.S_ISBLK(os.stat(path).st_mode)
+    except Exception:
+        return False
+
+
+async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
+    volume_dev_name = f"{namespace}_{volume.name}"
+    path_volume_dev_name = Path(f"/dev/mapper/{volume_dev_name}")
+    if check_device_exists(path_volume_dev_name):
+        return path_volume_dev_name
+    path = Path(
+        join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+    )
+    if not os.path.isfile(path):
+        os.system(f"dd if=/dev/zero of={path} bs=1M count={volume.size_mib}")
+        if settings.USE_JAILER:
+            os.system(f"chown jailman:jailman {path}")
+    try:
+        parent_path = await get_existing_file(volume.parent)
+        loop_base = subprocess.run(
+            ["losetup", "--find", "--show", "--read-only", parent_path],
+            check=True,
+            capture_output=True,
+            encoding="UTF-8").stdout.strip()
+        root_size = subprocess.run(
+            ["blockdev", "--getsz", parent_path],
+            check=True,
+            capture_output=True,
+            encoding="UTF-8").stdout.strip()
+        volume_data_size = subprocess.run(
+            ["blockdev", "--getsz", path],
+            check=True,
+            capture_output=True,
+            encoding="UTF-8").stdout.strip()
+        loop_user_data = subprocess.run(
+            ["losetup", "--find", "--show", path],
+            check=True,
+            capture_output=True,
+            encoding="UTF-8").stdout.strip()
+        table_command = f"0 {root_size} linear {loop_base} 0\n{root_size} {volume_data_size} zero"
+        base_dev_name = f"{namespace}_{volume.name}_base"
+        os.system(f" printf \"{table_command}\" | dmsetup create {base_dev_name}")
+        path_base_dev_name = f"/dev/mapper/{base_dev_name}"
+        table_command = f"0 {volume_data_size} snapshot {path_base_dev_name} {loop_user_data} P 8"
+        os.system(f" printf \"{table_command}\" | dmsetup create {volume_dev_name}")
+        os.system(f"resize2fs {path_volume_dev_name.__str__()}")
+        if settings.USE_JAILER:
+            os.system(f"chown jailman:jailman {path_base_dev_name}")
+            os.system(f"chown jailman:jailman {path_volume_dev_name}")
+        return path_volume_dev_name
+    except Exception:
+        raise
+
+
+async def get_existing_file(ref: str) -> Path:
+    # if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
+    #     return Path(settings.FAKE_DATA_VOLUME)
+
+    cache_path = Path(join(settings.DATA_CACHE, ref))
+    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    await download_file(url, cache_path)
+    return cache_path
+
+
 async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
-        if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
-            return Path(settings.FAKE_DATA_VOLUME)
-
-        cache_path = Path(join(settings.DATA_CACHE, ref))
-        url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
-        await download_file(url, cache_path)
-        return cache_path
+        return await get_existing_file(ref)
     elif isinstance(volume, PersistentVolume):
         if volume.persistence != VolumePersistence.host:
             raise NotImplementedError("Only 'host' persistence is supported")
         if not re.match(r"^[\w\-_/]+$", volume.name):
             raise ValueError(f"Invalid value for volume name: {volume.name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
-        volume_path = Path(
-            join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
-        )
-        await asyncio.get_event_loop().run_in_executor(
-            None, create_ext4, volume_path, volume.size_mib
-        )
-        return volume_path
+        if volume.parent:
+            device_path = await asyncio.get_event_loop().run_in_executor(
+                None, create_devmapper, volume, namespace
+            )
+            return device_path
+        else:
+            volume_path = Path(
+                join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+            )
+            await asyncio.get_event_loop().run_in_executor(
+                None, create_ext4, volume_path, volume.size_mib
+            )
+            return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")

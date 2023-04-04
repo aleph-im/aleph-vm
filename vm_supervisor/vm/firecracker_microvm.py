@@ -18,8 +18,7 @@ except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
 
-from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources, Encoding
+from aleph_message.models.executable import MachineResources, Encoding
 from firecracker.config import (
     BootSource,
     Drive,
@@ -31,7 +30,8 @@ from firecracker.config import (
 from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
-from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
+from ..models import ExecutableContent
+from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path, create_devmapper, check_device_exists
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -116,7 +116,7 @@ class RunCodePayload:
 
 class AlephFirecrackerResources:
 
-    message_content: ProgramContent
+    message_content: ExecutableContent
 
     kernel_image_path: Path
     code_path: Path
@@ -128,11 +128,12 @@ class AlephFirecrackerResources:
     data_path: Optional[Path]
     namespace: str
 
-    def __init__(self, message_content: ProgramContent, namespace: str):
+    def __init__(self, message_content: ExecutableContent, namespace: str):
         self.message_content = message_content
-        self.code_encoding = message_content.code.encoding
-        self.code_entrypoint = message_content.code.entrypoint
         self.namespace = namespace
+        if hasattr(message_content, "code"):
+            self.code_encoding = message_content.code.encoding
+            self.code_entrypoint = message_content.code.entrypoint
 
     def to_dict(self):
         return self.__dict__
@@ -143,6 +144,8 @@ class AlephFirecrackerResources:
         assert isfile(self.kernel_image_path)
 
     async def download_code(self):
+        if not hasattr(self.message_content, "code"):
+            return
         code_ref: str = self.message_content.code.ref
         try:
             self.code_path = await get_code_path(code_ref)
@@ -151,21 +154,26 @@ class AlephFirecrackerResources:
         assert isfile(self.code_path), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self):
-        runtime_ref: str = self.message_content.runtime.ref
-        try:
-            self.rootfs_path = await get_runtime_path(runtime_ref)
-        except ClientResponseError as error:
-            raise ResourceDownloadError(error)
-        assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
-
-    async def download_data(self):
-        if self.message_content.data:
-            data_ref: str = self.message_content.data.ref
+        if hasattr(self.message_content, "rootfs"):
+            self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
+            assert check_device_exists(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+        else:
+            runtime_ref: str = self.message_content.runtime.ref
             try:
-                self.data_path = await get_data_path(data_ref)
+                self.rootfs_path = await get_runtime_path(runtime_ref)
             except ClientResponseError as error:
                 raise ResourceDownloadError(error)
-            assert isfile(self.data_path)
+            assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+
+    async def download_data(self):
+        if hasattr(self.message_content, "data"):
+            if self.message_content.data:
+                data_ref: str = self.message_content.data.ref
+                try:
+                    self.data_path = await get_data_path(data_ref)
+                except ClientResponseError as error:
+                    raise ResourceDownloadError(error)
+                assert isfile(self.data_path)
         else:
             self.data_path = None
 
@@ -187,8 +195,8 @@ class AlephFirecrackerResources:
     async def download_all(self):
         await asyncio.gather(
             self.download_kernel(),
-            self.download_code(),
             self.download_runtime(),
+            self.download_code(),
             self.download_volumes(),
             self.download_data(),
         )
@@ -208,6 +216,7 @@ class AlephFirecrackerVM:
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
+    is_instance: bool
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
@@ -220,6 +229,7 @@ class AlephFirecrackerVM:
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
+        is_instance: bool = False,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -229,6 +239,7 @@ class AlephFirecrackerVM:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
+        self.is_instance = is_instance
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -279,14 +290,17 @@ class AlephFirecrackerVM:
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=Path(fvm.enable_rootfs(self.resources.rootfs_path)),
+                    path_on_host=Path(
+                        fvm.mount_rootfs(self.resources.rootfs_path) if self.is_instance
+                        else fvm.enable_rootfs(self.resources.rootfs_path)
+                    ),
                     is_root_device=True,
                     is_read_only=True,
                 ),
             ]
             + (
                 [fvm.enable_drive(self.resources.code_path)]
-                if self.resources.code_encoding == Encoding.squashfs
+                if hasattr(self.resources, "code_encoding") and self.resources.code_encoding == Encoding.squashfs
                 else []
             )
             + [

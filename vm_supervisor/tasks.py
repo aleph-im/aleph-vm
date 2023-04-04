@@ -11,7 +11,7 @@ from aiohttp import web
 from yarl import URL
 
 from aleph_message import Message
-from aleph_message.models import BaseMessage, ProgramMessage
+from aleph_message.models import BaseMessage, ProgramMessage, InstanceMessage
 from .conf import settings
 from .messages import load_updated_message
 from .models import VmHash
@@ -103,7 +103,7 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
             await dispatcher.publish(key=message.content.ref, value=message)
 
         # Register new VM to run on future messages:
-        if isinstance(message, ProgramMessage):
+        if isinstance(message, ProgramMessage) | isinstance(message, InstanceMessage):
             if message.content.on.message:
                 reactor.register(message)
         await reactor.trigger(message=message)

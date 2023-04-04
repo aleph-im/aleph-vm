@@ -2,10 +2,10 @@ import asyncio
 import logging
 from typing import Dict, Optional, Iterable
 
-from aleph_message.models import ProgramContent, ProgramMessage
+from aleph_message.models import ExecutableMessage
 
 from .conf import settings
-from .models import VmHash, VmExecution
+from .models import VmHash, VmExecution, ExecutableContent
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +21,14 @@ class VmPool:
 
     counter: int  # Used to provide distinct ids to network interfaces
     executions: Dict[VmHash, VmExecution]
-    message_cache: Dict[str, ProgramMessage] = {}
+    message_cache: Dict[str, ExecutableMessage] = {}
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
 
     async def create_a_vm(
-        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+        self, vm_hash: VmHash, program: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
         execution = VmExecution(vm_hash=vm_hash, program=program, original=original)

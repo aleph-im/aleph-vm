@@ -3,6 +3,7 @@ import json
 import logging
 import os.path
 import string
+import subprocess
 from asyncio import Task
 from asyncio.base_events import Server
 from os import getuid
@@ -13,11 +14,13 @@ from typing import Optional, Tuple, List
 
 from .config import FirecrackerConfig
 from .config import Drive
+from vm_supervisor.storage import check_device_exists
 
 logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
 JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
+DEVICE_BASE_DIRECTORY = "/dev/aleph-mapper"
 
 
 class MicroVMFailedInit(Exception):
@@ -144,6 +147,7 @@ class MicroVM:
         system(f"chown jailman:jailman {self.jailer_path}/tmp/")
         #
         system(f"mkdir -p {self.jailer_path}/opt")
+        system(f"mkdir -p {self.jailer_path}/dev/mapper")
 
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
@@ -274,6 +278,27 @@ class MicroVM:
             rootfs_filename = Path(path_on_host).name
             jailer_path_on_host = f"/opt/{rootfs_filename}"
             os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+            return jailer_path_on_host
+        else:
+            return path_on_host
+
+    def mount_rootfs(self, path_on_host: str) -> str:
+        """Mount a rootfs to the VM.
+        """
+        if self.use_jailer:
+            device_vm_path = f"{DEVICE_BASE_DIRECTORY}/{self.vm_id}"
+            subprocess.run(["mkdir", "-p", device_vm_path],
+                           check=True,
+                           capture_output=True)
+            rootfs_filename = Path(path_on_host).name
+            path_to_mount = f"{device_vm_path}/{rootfs_filename}"
+            os.symlink(path_on_host, path_to_mount)
+            subprocess.run(
+                ["mount", "--rbind", device_vm_path, f"{self.jailer_path}/dev/"],
+                check=True,
+                capture_output=True)
+            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
+            jailer_path_on_host = f"/dev/mapper/{rootfs_filename}"
             return jailer_path_on_host
         else:
             return path_on_host

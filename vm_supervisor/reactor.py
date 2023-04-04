@@ -1,8 +1,8 @@
 import logging
 from typing import List, Coroutine
 
-from aleph_message.models import Message, ProgramMessage
-from aleph_message.models.program import Subscription
+from aleph_message.models import Message, ExecutableMessage
+from aleph_message.models.executable import Subscription
 
 from .pubsub import PubSub
 from .run import run_code_on_event
@@ -25,7 +25,7 @@ def is_equal_or_includes(value, compare_to) -> bool:
         raise ValueError("Unsupported value")
 
 
-def subscription_matches(subscription: Subscription, message: ProgramMessage) -> bool:
+def subscription_matches(subscription: Subscription, message: ExecutableMessage) -> bool:
     if not subscription:
         # Require at least one value to match
         return False
@@ -38,7 +38,7 @@ def subscription_matches(subscription: Subscription, message: ProgramMessage) ->
 class Reactor:
 
     pubsub: PubSub
-    listeners: List[ProgramMessage]
+    listeners: List[ExecutableMessage]
 
     def __init__(self, pubsub: PubSub):
         self.pubsub = pubsub
@@ -67,7 +67,7 @@ class Reactor:
         for coroutine in coroutines:
             create_task_log_exceptions(coroutine)
 
-    def register(self, message: ProgramMessage):
+    def register(self, message: ExecutableMessage):
         if message.content.on.message:
             self.listeners.append(message)
         else:

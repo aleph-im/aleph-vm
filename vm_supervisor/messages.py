@@ -4,13 +4,13 @@ from typing import Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPServiceUnavailable, HTTPNotFound
-from aleph_message.models import ProgramMessage
+from aleph_message.models import ExecutableMessage, MessageType
 
 from .models import VmHash
 from .storage import get_message, get_latest_amend
 
 
-async def try_get_message(ref: str) -> ProgramMessage:
+async def try_get_message(ref: str) -> ExecutableMessage:
     """Get the message or raise an aiohttp HTTP error"""
     try:
         return await get_message(ref)
@@ -49,17 +49,23 @@ async def update_with_latest_ref(obj):
         return obj
 
 
-async def update_message(message: ProgramMessage):
-    # Load amends
-    await asyncio.gather(
-        update_with_latest_ref(message.content.runtime),
-        update_with_latest_ref(message.content.code),
-        update_with_latest_ref(message.content.data),
-        *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
-    )
+async def update_message(message: ExecutableMessage):
+    if message.type == MessageType.program :
+        # Load amends
+        await asyncio.gather(
+            update_with_latest_ref(message.content.runtime),
+            update_with_latest_ref(message.content.code),
+            update_with_latest_ref(message.content.data),
+            *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
+        )
+    else:
+        await asyncio.gather(
+            update_with_latest_ref(message.content.rootfs.parent),
+            *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
+        )
 
 
-async def load_updated_message(ref: VmHash) -> Tuple[ProgramMessage, ProgramMessage]:
+async def load_updated_message(ref: VmHash) -> Tuple[ExecutableMessage, ExecutableMessage]:
     original_message = await try_get_message(ref)
     message = copy.deepcopy(original_message)
     await update_message(message)

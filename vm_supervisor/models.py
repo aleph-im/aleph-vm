@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NewType, Optional, Dict
 
-from aleph_message.models import ProgramContent
+from aleph_message.models import ExecutableContent
+from aleph_message.models.executable import MachineType
 
 from .conf import settings
 from .metrics import save_record, save_execution_data, ExecutionRecord
@@ -19,7 +20,6 @@ from .vm.firecracker_microvm import AlephFirecrackerResources
 logger = logging.getLogger(__name__)
 
 VmHash = NewType("VmHash", str)
-
 
 @dataclass
 class VmExecutionTimes:
@@ -44,8 +44,8 @@ class VmExecution:
 
     uuid: uuid.UUID  # Unique identifier of this execution
     vm_hash: VmHash
-    original: ProgramContent
-    program: ProgramContent
+    original: ExecutableContent
+    program: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
     vm: Optional[AlephFirecrackerVM] = None
 
@@ -58,6 +58,7 @@ class VmExecution:
     update_task: Optional[asyncio.Task] = None
 
     persistent: bool = False
+    is_instance: bool = False
 
     @property
     def is_running(self):
@@ -72,7 +73,7 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+        self, vm_hash: VmHash, program: ExecutableContent, original: ExecutableContent
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -82,6 +83,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.is_instance = self.program.type == MachineType.vm_instance
 
     def to_dict(self) -> Dict:
         return {
@@ -110,6 +112,7 @@ class VmExecution:
             resources=self.resources,
             enable_networking=self.program.environment.internet,
             hardware_resources=self.program.resources,
+            is_instance=self.is_instance,
         )
         try:
             await vm.setup()
