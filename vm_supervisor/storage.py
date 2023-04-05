@@ -144,6 +144,8 @@ async def get_runtime_path(ref: str) -> Path:
     cache_path = Path(join(settings.RUNTIME_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
     await download_file(url, cache_path)
+    if settings.USE_JAILER:
+        os.system(f"chown jailman:jailman {cache_path}")
     return cache_path
 
 
@@ -179,7 +181,7 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
         if settings.USE_JAILER:
             os.system(f"chown jailman:jailman {path}")
     try:
-        parent_path = await get_existing_file(volume.parent)
+        parent_path = await get_runtime_path(volume.parent)
         loop_base = subprocess.run(
             ["losetup", "--find", "--show", "--read-only", parent_path],
             check=True,
@@ -216,12 +218,14 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
 
 
 async def get_existing_file(ref: str) -> Path:
-    # if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
-    #     return Path(settings.FAKE_DATA_VOLUME)
+    if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
+        return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(join(settings.DATA_CACHE, ref))
     url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
     await download_file(url, cache_path)
+    if settings.USE_JAILER:
+        os.system(f"chown jailman:jailman {cache_path}")
     return cache_path
 
 

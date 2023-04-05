@@ -74,6 +74,7 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
+    mounted_fs: Optional[str] = None
 
     _unix_socket: Server
 
@@ -148,6 +149,7 @@ class MicroVM:
         #
         system(f"mkdir -p {self.jailer_path}/opt")
         system(f"mkdir -p {self.jailer_path}/dev/mapper")
+        system(f"mkdir -p {self.jailer_path}/dev/aleph-mapper")
 
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
@@ -285,20 +287,27 @@ class MicroVM:
     def mount_rootfs(self, path_on_host: str) -> str:
         """Mount a rootfs to the VM.
         """
+        self.mounted_fs = path_on_host
         if self.use_jailer:
-            device_vm_path = f"{DEVICE_BASE_DIRECTORY}/{self.vm_id}"
-            subprocess.run(["mkdir", "-p", device_vm_path],
-                           check=True,
-                           capture_output=True)
             rootfs_filename = Path(path_on_host).name
-            path_to_mount = f"{device_vm_path}/{rootfs_filename}"
-            os.symlink(path_on_host, path_to_mount)
-            subprocess.run(
-                ["mount", "--rbind", device_vm_path, f"{self.jailer_path}/dev/"],
-                check=True,
-                capture_output=True)
-            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
-            jailer_path_on_host = f"/dev/mapper/{rootfs_filename}"
+            jailer_path_on_host = f"{DEVICE_BASE_DIRECTORY}/{rootfs_filename}"
+            if not check_device_exists(Path(f"{self.jailer_path}/{jailer_path_on_host}")):
+                device_vm_path = f"{DEVICE_BASE_DIRECTORY}/{self.vm_id}"
+                subprocess.run(["mkdir", "-p", device_vm_path],
+                               check=True,
+                               capture_output=True)
+                path_to_mount = f"{device_vm_path}/{rootfs_filename}"
+                os.symlink(path_on_host, path_to_mount)
+                os.system(f"cp -vap /dev/dm* {self.jailer_path}/dev/")
+                subprocess.run(
+                    ["mount", "--bind", f"/dev/mapper", f"{self.jailer_path}/dev/mapper"],
+                    check=True,
+                    capture_output=True)
+                subprocess.run(
+                    ["mount", "--rbind", device_vm_path, f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}"],
+                    check=True,
+                    capture_output=True)
+                os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
             return jailer_path_on_host
         else:
             return path_on_host
@@ -452,7 +461,7 @@ class MicroVM:
             await asyncio.wait_for(self.shutdown(), timeout=5)
         except asyncio.TimeoutError:
             logger.exception(f"Timeout during VM shutdown vm={self.vm_id}")
-        logger.debug("Waiting for one second for the process to shudown")
+        logger.debug("Waiting for one second for the process to shutdown")
         await asyncio.sleep(1)
         await self.stop()
 
@@ -477,6 +486,17 @@ class MicroVM:
             system(
                 f"iptables -D FORWARD -i {self.network_tap} -o {self.network_interface} -j ACCEPT"
             )
+
+        if self.mounted_fs:
+            logger.debug("Waiting for one second for the VM to shutdown")
+            await asyncio.sleep(1)
+            root_fs = Path(self.mounted_fs).name
+            os.system(f"dmsetup remove {root_fs} {root_fs}_base")
+            if self.use_jailer:
+                os.system(f"umount {self.jailer_path}/dev/mapper")
+                os.system(f"umount {self.jailer_path}/dev/aleph-mapper")
+                os.system(f"rm -rf {self.jailer_path}/dev")
+                os.system(f"rm -rf {DEVICE_BASE_DIRECTORY}/{self.vm_id}")
 
         if self._unix_socket:
             logger.debug("Closing unix socket")

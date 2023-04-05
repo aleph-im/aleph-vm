@@ -83,12 +83,12 @@ class HostVolume:
 
 @dataclass
 class ConfigurationPayload:
-    code: bytes
-    encoding: Encoding
-    entrypoint: str
     input_data: bytes
     interface: Interface
     vm_hash: str
+    code: Optional[bytes] = None
+    encoding: Optional[Encoding] = None
+    entrypoint: Optional[str] = None
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
@@ -119,9 +119,9 @@ class AlephFirecrackerResources:
     message_content: ExecutableContent
 
     kernel_image_path: Path
-    code_path: Path
-    code_encoding: Encoding
-    code_entrypoint: str
+    code_path: Optional[Path]
+    code_encoding: Optional[Encoding]
+    code_entrypoint: Optional[str]
     rootfs_path: Path
     volumes: List[HostVolume]
     volume_paths: Dict[str, Path]
@@ -134,6 +134,10 @@ class AlephFirecrackerResources:
         if hasattr(message_content, "code"):
             self.code_encoding = message_content.code.encoding
             self.code_entrypoint = message_content.code.entrypoint
+        else:
+            self.code_path = None
+            self.code_encoding = None
+            self.code_entrypoint = None
 
     def to_dict(self):
         return self.__dict__
@@ -361,7 +365,7 @@ class AlephFirecrackerVM:
 
         interface = (
             Interface.asgi
-            if ":" in self.resources.code_entrypoint
+            if self.resources.code_entrypoint and ":" in self.resources.code_entrypoint
             else Interface.executable
         )
 
@@ -386,7 +390,7 @@ class AlephFirecrackerVM:
                     f"Program file too large to pass as an inline zip"
                 )
 
-            code: bytes = load_file_content(self.resources.code_path)
+            code: Optional[bytes] = load_file_content(self.resources.code_path) if self.resources.code_path else None
             volumes = [
                 Volume(
                     mount=volume.mount,
