@@ -289,7 +289,7 @@ class AlephFirecrackerVM:
                 kernel_image_path=Path(
                     fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
-                boot_args=BootSource.args(enable_console=self.enable_console),
+                boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
             ),
             drives=[
                 Drive(
@@ -299,7 +299,7 @@ class AlephFirecrackerVM:
                         else fvm.enable_rootfs(self.resources.rootfs_path)
                     ),
                     is_root_device=True,
-                    is_read_only=True,
+                    is_read_only=not self.is_instance,
                 ),
             ]
             + (
