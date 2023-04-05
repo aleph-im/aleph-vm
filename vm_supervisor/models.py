@@ -186,16 +186,27 @@ class VmExecution:
             )
 
     async def watch_for_updates(self, pubsub: PubSub):
-        await pubsub.msubscribe(
-            self.original.code.ref,
-            self.original.runtime.ref,
-            self.original.data.ref if self.original.data else None,
-            *(
-                volume.ref
-                for volume in (self.original.volumes or [])
-                if hasattr(volume, "ref")
-            ),
-        )
+        if self.is_instance:
+            await pubsub.msubscribe(
+                self.original.rootfs.ref,
+                self.original.data.ref if self.original.data else None,
+                *(
+                    volume.ref
+                    for volume in (self.original.volumes or [])
+                    if hasattr(volume, "ref")
+                ),
+            )
+        else:
+            await pubsub.msubscribe(
+                self.original.code.ref,
+                self.original.runtime.ref,
+                self.original.data.ref if self.original.data else None,
+                *(
+                    volume.ref
+                    for volume in (self.original.volumes or [])
+                    if hasattr(volume, "ref")
+                ),
+            )
         logger.debug("Update received, stopping VM...")
         await self.stop()
 
