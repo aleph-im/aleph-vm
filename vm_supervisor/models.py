@@ -189,7 +189,7 @@ class VmExecution:
         if self.is_instance:
             await pubsub.msubscribe(
                 self.original.rootfs.parent,
-                self.original.data.ref if self.original.data else None,
+                self.original.data.ref if hasattr(self.original, "data") and self.original.data else None,
                 *(
                     volume.ref
                     for volume in (self.original.volumes or [])
