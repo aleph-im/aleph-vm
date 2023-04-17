@@ -219,11 +219,6 @@ def change_dir(directory: Path):
 
 
 def run_db_migrations():
-    # from vm_supervisor.conf import make_db_url
-    # print(make_db_url())
-    # alembic.config.main(argv=["--config", "vm_supervisor/alembic.ini", "upgrade", "head"])
-    # logging.basicConfig(level=logging.DEBUG)
-
     project_dir = Path(__file__).parent
 
     db_url = make_db_url()
