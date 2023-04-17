@@ -1,8 +1,11 @@
 import argparse
 import asyncio
+import contextlib
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 from statistics import mean
 from typing import Callable, Dict, List, Tuple
 
@@ -13,12 +16,13 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from . import metrics, supervisor
-from .conf import settings
+from . import supervisor, metrics
+from .conf import settings, make_db_url
 from .models import VmHash
 from .pubsub import PubSub
 from .run import run_code_on_request, run_code_on_event
 import alembic.config
+import alembic.command
 
 logger = logging.getLogger(__name__)
 
@@ -204,10 +208,31 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
+@contextlib.contextmanager
+def change_dir(directory: Path):
+    current_directory = Path.cwd()
+    try:
+        os.chdir(directory)
+        yield
+    finally:
+        os.chdir(current_directory)
+
+
 def run_db_migrations():
-    from vm_supervisor.conf import make_db_url
-    print(make_db_url())
-    alembic.config.main(argv=["--config", "vm_supervisor/alembic.ini", "upgrade", "head"])
+    # from vm_supervisor.conf import make_db_url
+    # print(make_db_url())
+    # alembic.config.main(argv=["--config", "vm_supervisor/alembic.ini", "upgrade", "head"])
+    # logging.basicConfig(level=logging.DEBUG)
+
+    project_dir = Path(__file__).parent
+
+    db_url = make_db_url()
+    alembic_cfg = alembic.config.Config("alembic.ini")
+    alembic_cfg.attributes["configure_logger"] = False
+    logging.getLogger("alembic").setLevel(logging.CRITICAL)
+
+    with change_dir(project_dir):
+        alembic.command.upgrade(alembic_cfg, "head", tag=db_url)
 
 
 def main():
