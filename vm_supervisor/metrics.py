@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from vm_supervisor.conf import make_db_url, settings
+from .conf import make_db_url, settings
 
 Session: sessionmaker
 
