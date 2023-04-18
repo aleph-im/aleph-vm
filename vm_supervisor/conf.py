@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
-    ALLOW_VM_NETWORKING = True
+    ALLOW_VM_NETWORKING = False
     NETWORK_INTERFACE = "eth0"
     IPV4_ADDRESS_POOL = Field(
         default="172.16.0.0/12",
