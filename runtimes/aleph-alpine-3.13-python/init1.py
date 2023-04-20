@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
+from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable, Literal
 
 import aiohttp
 import msgpack
@@ -164,7 +164,39 @@ def setup_volumes(volumes: List[Volume]):
     system("mount")
 
 
-def setup_code_asgi(
+async def wait_for_lifespan_event_completion(application: ASGIApplication,
+                                             event: Union[Literal['startup', 'shutdown']]):
+    """
+    Send the startup lifespan signal to the ASGI app.
+    Specification: https://asgi.readthedocs.io/en/latest/specs/lifespan.html
+    """
+
+    lifespan_completion = asyncio.Event()
+
+    async def receive():
+        return {
+            'type': f'lifespan.{event}',
+        }
+
+    async def send(response: Dict):
+        response_type = response.get('type')
+        if response_type == f'lifespan.{event}.complete':
+            lifespan_completion.set()
+            return
+        else:
+            logger.warning(f"Unexpected response to {event}: {response_type}")
+
+    while not lifespan_completion.is_set():
+        await application(
+            scope={
+                'type': 'lifespan',
+            },
+            receive=receive,
+            send=send,
+        )
+
+
+async def setup_code_asgi(
     code: bytes, encoding: Encoding, entrypoint: str
 ) -> ASGIApplication:
     # Allow importing packages from /opt/packages
@@ -200,6 +232,8 @@ def setup_code_asgi(
         app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
+
+    await wait_for_lifespan_event_completion(application=app, event='startup')
     return app
 
 
@@ -235,12 +269,12 @@ def setup_code_executable(
     return process
 
 
-def setup_code(
+async def setup_code(
     code: bytes, encoding: Encoding, entrypoint: str, interface: Interface
 ) -> Union[ASGIApplication, subprocess.Popen]:
 
     if interface == Interface.asgi:
-        return setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
+        return await setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
     elif interface == Interface.executable:
         return setup_code_executable(
             code=code, encoding=encoding, entrypoint=entrypoint
@@ -364,7 +398,10 @@ async def process_instruction(
             logger.debug("Application terminated")
             # application.communicate()
         else:
-            # Close the cached session in aleph_client:
+            assert isinstance(application, ASGIApplication)
+            await wait_for_lifespan_event_completion(application=application, event='shutdown')
+
+            # Close the cached session in aleph_client: TODO: remove this, use SDK
             from aleph_client.asynchronous import get_fallback_session
 
             session: aiohttp.ClientSession = get_fallback_session()
@@ -480,7 +517,7 @@ async def main():
     setup_system(config)
 
     try:
-        app: Union[ASGIApplication, subprocess.Popen] = setup_code(
+        app: Union[ASGIApplication, subprocess.Popen] = await setup_code(
             config.code, config.encoding, config.entrypoint, config.interface
         )
         client.send(msgpack.dumps({"success": True}))

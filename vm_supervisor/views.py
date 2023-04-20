@@ -141,6 +141,7 @@ async def status_check_fastapi(request: web.Request):
     async with aiohttp.ClientSession() as session:
         result = {
             "index": await status.check_index(session),
+            "lifespan": await status.check_lifespan(session),
             "environ": await status.check_environ(session),
             "messages": await status.check_messages(session),
             "dns": await status.check_dns(session),
