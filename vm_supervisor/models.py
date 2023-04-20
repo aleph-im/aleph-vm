@@ -122,10 +122,7 @@ class VmExecution:
             await vm.start()
             await vm.configure()
             await vm.start_guest_api()
-            # run ASGI startup
-            result_raw: bytes = await self.run_code({"type": "lifespan.startup"})
-            result = msgpack.loads(result_raw, raw=False)
-            assert result["type"] == "lifespan.startup.complete"
+            await self.run_code({"type": "lifespan.startup"})
             self.times.started_at = datetime.now()
             self.ready_event.set()
             return vm
@@ -179,18 +176,13 @@ class VmExecution:
             logger.debug(f"VM={self.vm.vm_id} already stopped")
             return
         await self.all_runs_complete()
-        # run ASGI shutdown
-        try:
-            result_raw: bytes = await self.run_code({"type": "lifespan.shutdown"})
-            result = msgpack.loads(result_raw, raw=False)
-            assert result["type"] == "lifespan.shutdown.complete"
-        finally:
-            self.times.stopping_at = datetime.now()
-            await self.record_usage()
-            await self.vm.teardown()
-            self.times.stopped_at = datetime.now()
-            self.cancel_expiration()
-            self.cancel_update()
+        await self.run_code({"type": "lifespan.shutdown"})
+        self.times.stopping_at = datetime.now()
+        await self.record_usage()
+        await self.vm.teardown()
+        self.times.stopped_at = datetime.now()
+        self.cancel_expiration()
+        self.cancel_update()
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
