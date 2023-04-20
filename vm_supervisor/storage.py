@@ -177,6 +177,7 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
         join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
     )
     if not os.path.isfile(path):
+        logger.debug(f"Creating {volume.size_mib}MB volume")
         os.system(f"dd if=/dev/zero of={path} bs=1M count={volume.size_mib}")
         if settings.USE_JAILER:
             os.system(f"chown jailman:jailman {path}")
@@ -208,6 +209,7 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
         path_base_dev_name = f"/dev/mapper/{base_dev_name}"
         table_command = f"0 {volume_data_size} snapshot {path_base_dev_name} {loop_user_data} P 8"
         os.system(f" printf \"{table_command}\" | dmsetup create {volume_dev_name}")
+        os.system(f"e2fsck -fy {path_volume_dev_name.__str__()}")
         os.system(f"resize2fs {path_volume_dev_name.__str__()}")
         if settings.USE_JAILER:
             os.system(f"chown jailman:jailman {path_base_dev_name}")

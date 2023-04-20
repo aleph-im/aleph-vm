@@ -41,4 +41,4 @@ A new instance message example has been added in **_examples/instance_message_fr
 
 Now the Dev-mapper device works well, Firecracker loads it in write state, but we need to fix 2 things:
 - Route the requests from the CRN to the Firecracker VM on any port, not only using the 8080.
-- Use the entire hard disk inside VM, because now only detects the size of the rootfs.
+~~- Use the entire hard disk inside VM, because now only detects the size of the rootfs.~~(Fixed)
