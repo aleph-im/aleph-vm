@@ -27,7 +27,7 @@ KERNEL="/home/olivier/git/aleph/aleph-vm/kernels/linux-5.12.10/arch/x86_64/boot/
 #   -netdev tap,id=tap0,script=no,downscript=no \
 #   -device virtio-net-device,netdev=tap0
 
-qemu-system-x86_64 \
+/usr/local/bin/qemu-system-x86_64 \
   -drive format=qcow2,file=/home/olivier/Downloads/debian-11-nocloud-amd64-20230124-1270.qcow2 \
   -enable-kvm \
   -m 2048 \

@@ -102,7 +102,7 @@ class VmExecution:
         self.resources = resources
 
     async def create(
-        self, vm_id: int, tap_interface: TapInterface
+        self, vm_id: int, tap_interface: Optional[TapInterface]
     ) -> AlephFirecrackerVM:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")

@@ -82,7 +82,8 @@ class Settings(BaseSettings):
 
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
     JAILER_PATH = "/opt/firecracker/jailer"
-    LINUX_PATH = "/opt/firecracker/vmlinux.bin"
+    # LINUX_PATH = "/opt/firecracker/vmlinux.bin"
+    LINUX_PATH = "/home/odesenfans/git/aleph/aleph-vm/kernels/linux-5.10.124/vmlinux"
     INIT_TIMEOUT: float = 20.0
 
     CONNECTOR_URL = Url("http://localhost:4021")

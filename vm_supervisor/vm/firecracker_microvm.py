@@ -322,7 +322,8 @@ class AlephFirecrackerVM:
         except Exception:
             await fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
+            if self.tap_interface:
+                await self.tap_interface.delete()
             raise
 
     async def start(self):
@@ -391,12 +392,16 @@ class AlephFirecrackerVM:
 
         # The ip and route should not contain the network mask in order to maintain
         # compatibility with the existing runtimes.
-        ip = self.tap_interface.guest_ip.with_prefixlen.split('/', 1)[0]
-        route = str(self.tap_interface.host_ip).split('/', 1)[0]
+        if self.tap_interface:
+            ip = self.tap_interface.guest_ip.with_prefixlen.split('/', 1)[0]
+            route = str(self.tap_interface.host_ip).split('/', 1)[0]
+        else:
+            ip = None
+            route = None
 
         config = ConfigurationPayload(
-            ip=ip if self.enable_networking else None,
-            route=route if self.enable_networking else None,
+            ip=ip,
+            route=route,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
@@ -440,7 +445,8 @@ class AlephFirecrackerVM:
         if self.fvm:
             await self.fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
+            if self.tap_interface:
+                await self.tap_interface.delete()
         await self.stop_guest_api()
 
     async def run_code(
