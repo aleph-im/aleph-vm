@@ -32,6 +32,14 @@ http_app = FastAPI()
 app = AlephApp(http_app=http_app)
 cache = VmCache()
 
+startup_lifespan_executed: bool = False
+
+
+@app.on_event("startup")
+async def startup_event():
+    global startup_lifespan_executed
+    startup_lifespan_executed = True
+
 
 @app.get("/")
 async def index():
@@ -57,6 +65,14 @@ async def index():
             "/opt/venv": opt_venv,
         },
     }
+
+
+@app.get("/lifespan")
+async def check_lifespan():
+    """
+    Check that ASGI lifespan startup signal has been received
+    """
+    return {"Lifetime": startup_lifespan_executed}
 
 
 @app.get("/environ")

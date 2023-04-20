@@ -203,6 +203,7 @@ async def benchmark(runs: int):
     settings.REUSE_TIMEOUT = 0.1
     for path in (
         "/",
+        "/lifespan",
         "/environ",
         "/messages",
         "/internet",
