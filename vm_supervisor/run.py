@@ -86,6 +86,7 @@ async def run_code_on_request(
 
     if not execution:
         execution = await create_vm_execution(vm_hash=vm_hash)
+        # TODO: Or should we send ASGI lifespan events here?
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -93,6 +94,7 @@ async def run_code_on_request(
 
     try:
         await execution.becomes_ready()
+        # TODO: Not here, because it might have already been started.
         result_raw: bytes = await execution.run_code(scope=scope)
 
         if result_raw == b"":

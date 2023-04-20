@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NewType, Optional, Dict
 
+import msgpack
 from aleph_message.models import ProgramContent
 
 from .conf import settings
@@ -104,6 +105,7 @@ class VmExecution:
     async def create(
         self, vm_id: int, tap_interface: TapInterface
     ) -> AlephFirecrackerVM:
+        """Create a new VM instance."""
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
@@ -120,6 +122,10 @@ class VmExecution:
             await vm.start()
             await vm.configure()
             await vm.start_guest_api()
+            # run ASGI startup
+            result_raw: bytes = await self.run_code({"type": "lifespan.startup"})
+            result = msgpack.loads(result_raw, raw=False)
+            assert result["type"] == "lifespan.startup.complete"
             self.times.started_at = datetime.now()
             self.ready_event.set()
             return vm
@@ -173,12 +179,18 @@ class VmExecution:
             logger.debug(f"VM={self.vm.vm_id} already stopped")
             return
         await self.all_runs_complete()
-        self.times.stopping_at = datetime.now()
-        await self.record_usage()
-        await self.vm.teardown()
-        self.times.stopped_at = datetime.now()
-        self.cancel_expiration()
-        self.cancel_update()
+        # run ASGI shutdown
+        try:
+            result_raw: bytes = await self.run_code({"type": "lifespan.shutdown"})
+            result = msgpack.loads(result_raw, raw=False)
+            assert result["type"] == "lifespan.shutdown.complete"
+        finally:
+            self.times.stopping_at = datetime.now()
+            await self.record_usage()
+            await self.vm.teardown()
+            self.times.stopped_at = datetime.now()
+            self.cancel_expiration()
+            self.cancel_update()
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:

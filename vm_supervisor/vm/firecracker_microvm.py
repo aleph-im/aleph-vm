@@ -469,6 +469,7 @@ class AlephFirecrackerVM:
         except ConnectionRefusedError:
             raise VmInitNotConnected("MicroVM may have crashed")
         try:
+            # TODO: Move this timeout to a higher level to enforce timeouts on lifespan events?
             return await asyncio.wait_for(
                 communicate(reader, writer, scope),
                 timeout=self.hardware_resources.seconds,
