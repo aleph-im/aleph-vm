@@ -1,5 +1,5 @@
 Package: aleph-vm
-Version: 0.2.5-26-g358c9ef
+Version: 0.1.8
 Architecture: all
 Maintainer: Aleph.im
 Description: Aleph.im VM execution engine
