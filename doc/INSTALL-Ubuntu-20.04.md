@@ -20,7 +20,7 @@ In order to run an official Aleph.im Compute Resource Node (CRN), you will also 
 
 You will need a public domain name with access to add TXT and wildcard records.
 
-> 🛈 This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
+> 💡 This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
 
 ## 2. Installation
 
@@ -45,6 +45,8 @@ Reboot if required (new kernel, ...).
 
 ### Configuration
 
+#### Hostname
+
 Update the configuration in `/etc/aleph-vm/supervisor.env` using your favourite editor.
 
 You will want to insert your domain name in the form of:
@@ -52,13 +54,15 @@ You will want to insert your domain name in the form of:
 ALEPH_VM_DOMAIN_NAME=vm.example.org
 ```
 
+#### Network configuration
+
 Ubuntu 20.04 by default uses [systemd-resolved](https://manpages.ubuntu.com/manpages/focal/man8/systemd-resolved.service.8.html)
 for DNS resolution. The following setting configures the VM Supervisor to use it instead of reading the default `/etc/resolv.conf`.
 ```
 ALEPH_VM_DNS_RESOLUTION=resolvectl
 ```
 
-> 🛈 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
+> 💡 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
 
 On some systems, the default network interface is not `eth0` and you will want to configure the default interface
 by adding:
@@ -66,6 +70,19 @@ by adding:
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
 ```
 (don't forget to replace `enp0s1` with the name of your default network interface).
+
+#### Volumes and partitions
+
+Two directories are used to store data from the network:
+- `/var/lib/aleph/vm` contains all the execution and persistent data.
+- `/var/cache/aleph/vm` contains data downloaded from the network.
+
+These two directories must be stored on the same partition.
+That partition must meet the minimum requirements specified for a CRN.
+
+> 💡 This is required due to the software using hard links to optimize performance and disk usage.
+
+#### Applying changes
 
 Finally, restart the service:
 ```shell
