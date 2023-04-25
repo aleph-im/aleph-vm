@@ -31,4 +31,4 @@ def get_version() -> Optional[str]:
 
 
 # The version number is hardcoded in the following line when packaging the software
-__version__ = '0.2.5-26-g358c9ef'
+__version__ = get_version() or "version-unavailable"
