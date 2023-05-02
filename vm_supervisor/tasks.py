@@ -45,8 +45,6 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        # Patch data format to match HTTP GET format
-                        data["_id"] = {"$oid": data["_id"]}
                     except json.JSONDecodeError:
                         logger.error(
                             f"Invalid JSON from websocket subscription {msg.data}",
