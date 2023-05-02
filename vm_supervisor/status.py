@@ -58,7 +58,8 @@ async def check_internet(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/internet")
         assert result["result"] == 200
-        assert "Server" in result["headers"]
+        # Absent from IPFS Kubo server
+        # assert "Server" in result["headers"]
         return True
     except ClientResponseError:
         return False
