@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -43,6 +44,17 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
     link, servers = output.split(":", maxsplit=1)
     for server in servers.split():
         yield server.strip()
+
+
+def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
+    """
+    Use resolvectl to list available IPv4 DNS servers.
+    VMs only support IPv4 networking for now, we must exclude IPv6 DNS from their config.
+    """
+    for server in resolvectl_dns_servers(interface):
+        ip_addr = ipaddress.ip_address(server)
+        if isinstance(ip_addr, ipaddress.IPv4Address):
+            yield server
 
 
 class Settings(BaseSettings):
@@ -196,7 +208,7 @@ class Settings(BaseSettings):
 
             elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
                 self.DNS_NAMESERVERS = list(
-                    resolvectl_dns_servers(interface=self.NETWORK_INTERFACE)
+                    resolvectl_dns_servers_ipv4(interface=self.NETWORK_INTERFACE)
                 )
             else:
                 assert "This should never happen"
