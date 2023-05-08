@@ -19,8 +19,10 @@ qemu-system-x86_64 \
 	-serial mon:stdio \
 	-no-reboot \
 	-device vhost-vsock-pci,guest-cid=${VMN} \
-	-drive id=root,file=${ROOTFS},format=raw \
-	-drive id=code,file=${CODE_VOLUME},format=raw \
-	-drive id=venv,file=${VENV_VOLUME},format=raw \
+	-drive id=root,file=${ROOTFS},format=raw,if=virtio \
+	-drive id=code,file=${CODE_VOLUME},format=raw,if=virtio \
+	-drive id=venv,file=${VENV_VOLUME},format=raw,if=virtio \
 	-kernel ${KERNEL} \
-	-append "console=ttyS0 root=/dev/sda"
+	-append "console=ttyS0 root=/dev/vda" \
+  -machine pit=off,pic=off
+#  -machine pit=off,pic=off,isa-serial=off,rtc=off
