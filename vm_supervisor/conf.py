@@ -5,7 +5,8 @@ from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any
+from typing import NewType, Optional, List
+from os import environ
 
 from pydantic import BaseSettings, Field
 
@@ -110,20 +111,25 @@ class Settings(BaseSettings):
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
-        abspath(join(__file__, "../../examples/example_fastapi"))
+        environ.get("BENCHMARK_FAKE_DATA_PROGRAM")
+        or abspath(join(__file__, "../../examples/example_fastapi"))
     )
 
     FAKE_DATA_MESSAGE = Path(
-        abspath(join(__file__, "../../examples/message_from_aleph.json"))
+        environ.get("FAKE_DATA_MESSAGE")
+        or abspath(join(__file__, "../../examples/message_from_aleph.json"))
     )
     FAKE_DATA_DATA: Optional[Path] = Path(
-        abspath(join(__file__, "../../examples/data/"))
+        environ.get("FAKE_DATA_DATA")
+        or abspath(join(__file__, "../../examples/data/"))
     )
     FAKE_DATA_RUNTIME = Path(
-        abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
+        environ.get("FAKE_DATA_RUNTIME")
+        or abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs"))
     )
     FAKE_DATA_VOLUME: Optional[Path] = Path(
-        abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+        environ.get("FAKE_DATA_VOLUME")
+        or abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
     )
 
     CHECK_FASTAPI_VM_ID = (
@@ -174,9 +180,15 @@ class Settings(BaseSettings):
             assert isfile(
                 self.FAKE_DATA_RUNTIME
             ), "Local runtime .squashfs build is missing"
-            assert isfile(
-                self.FAKE_DATA_VOLUME
-            ), "Local data volume .squashfs is missing"
+            if "," in str(self.FAKE_DATA_VOLUME): # allow multiple volumes with format "host_path:mountpoint,host_path:mountpoint"
+                for volume_bind in str(self.FAKE_DATA_VOLUME).split(","):
+                    assert isfile(
+                        volume_bind.split(":")[0]
+                    ), f"Local data volume {volume_bind.split(':')[0]} is missing"
+            else:
+                assert isfile(
+                    self.FAKE_DATA_VOLUME
+                ), f"Local data volume {volume_bind.split(':')[0]} is missing"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)

@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -OO
 
 import logging
+from time import sleep
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -10,33 +11,28 @@ logger = logging.getLogger(__name__)
 
 logger.debug("Imports starting")
 
-# import ctypes
-# import asyncio
-# import os
-# import socket
-# from enum import Enum
-# import subprocess
-# import sys
-# import traceback
-# from contextlib import redirect_stdout
-# from dataclasses import dataclass, field
-# from io import StringIO
-# from os import system
-# from shutil import make_archive
-# from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
+import ctypes
+import asyncio
+import os
+import socket
+from enum import Enum
+import subprocess
+import sys
+import traceback
+from contextlib import redirect_stdout
+from dataclasses import dataclass, field
+from io import StringIO
+from os import system
 
-from aiohttp import (
-    ClientTimeout,
-    ClientConnectorError,
-    ClientSession
-)
+from shutil import make_archive
+from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
 
+import aiohttp
 import msgpack
 
 logger.debug("Imports finished")
 
-ASGIApplication = NewType("ASGIApplication", Any)
-
+ASGIApplication = NewType("AsgiApplication", Any)
 
 class Encoding(str, Enum):
     plain = "plain"
@@ -108,6 +104,7 @@ def setup_variables(variables: Optional[Dict[str, str]]):
     if variables is None:
         return
     for key, value in variables.items():
+        print(key)
         os.environ[key] = value
 
 
@@ -125,20 +122,16 @@ def setup_network(
         return
 
     logger.debug("Setting up networking")
+    logger.debug("IP ADDR:" + ip)
     system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
-    if "/" in ip:
-        # Forward compatibility with future supervisors that pass the mask with the IP.
-        system(f"ip addr add {ip} dev eth0")
-    else:
-        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
-        system(f"ip addr add {ip}/24 dev eth0")
+    system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
     if route:
         system(f"ip route add default via {route} dev eth0")
-        logger.debug(f"IP and route set: {ip} via {route}")
+        logger.debug("IP and route set")
     else:
         logger.warning("IP set with no network route")
 
@@ -166,9 +159,6 @@ def setup_volumes(volumes: List[Volume]):
         else:
             system(f"mount -o rw /dev/{volume.device} {volume.mount}")
 
-    system("mount")
-
-
 def setup_code_asgi(
     code: bytes, encoding: Encoding, entrypoint: str
 ) -> ASGIApplication:
@@ -176,7 +166,6 @@ def setup_code_asgi(
     sys.path.append("/opt/packages")
 
     logger.debug("Extracting code")
-    app: ASGIApplication
     if encoding == Encoding.squashfs:
         sys.path.append("/opt/code")
         module_name, app_name = entrypoint.split(":", 1)
@@ -184,7 +173,7 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app = getattr(module, app_name)
+        app: ASGIApplication = getattr(module, app_name)
     elif encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         if not os.path.exists("/opt/archive.zip"):
@@ -197,12 +186,12 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app = getattr(module, app_name)
+        app: ASGIApplication = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint
         locals: Dict[str, Any] = {}
         exec(code, globals(), locals)
-        app = locals[entrypoint]
+        app: ASGIApplication = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
     return app
@@ -243,6 +232,10 @@ def setup_code_executable(
 def setup_code(
     code: bytes, encoding: Encoding, entrypoint: str, interface: Interface
 ) -> Union[ASGIApplication, subprocess.Popen]:
+
+    logger.debug("\n\n\nCODE")
+    logger.debug(interface)
+    logger.debug(code.decode() + "\n\n\n")
 
     if interface == Interface.asgi:
         return setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
@@ -337,13 +330,13 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
     headers = None
     body = None
 
-    timeout = ClientTimeout(total=5)
-    async with ClientSession(timeout=timeout) as session:
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         while not body:
             try:
                 tries += 1
                 headers, body = await make_request(session, scope)
-            except ClientConnectorError:
+            except aiohttp.ClientConnectorError:
                 if tries > 20:
                     raise
                 await asyncio.sleep(0.05)
@@ -372,7 +365,7 @@ async def process_instruction(
             # Close the cached session in aleph_client:
             from aleph_client.asynchronous import get_fallback_session
 
-            session: ClientSession = get_fallback_session()
+            session: aiohttp.ClientSession = get_fallback_session()
             await session.close()
             logger.debug("Aiohttp cached session closed")
         yield b"STOP\n"
@@ -455,10 +448,44 @@ def receive_config(client) -> ConfigurationPayload:
     return load_configuration(data)
 
 
+def setup_docker():
+    logger.debug("Setting up docker")
+    docker_mountpoint = os.environ.get("DOCKER_MOUNTPOINT")
+    os.makedirs("/docker", exist_ok=True)
+    system("bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /docker")
+    os.makedirs("/docker/persist/layers/work", exist_ok=True)
+    os.makedirs("/docker/persist/metadata/work", exist_ok=True)
+    os.makedirs("/docker/persist/layers/upper", exist_ok=True)
+    os.makedirs("/docker/persist/metadata/upper", exist_ok=True)
+    # docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
+    system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint}/layers,upperdir=/docker/persist/layers/upper,workdir=/docker/persist/layers/work -t overlay "overlayfs:/docker/persist/layers/upper" /var/lib/docker/vfs')
+    system(f'/bin/mount -o noatime,lowerdir={docker_mountpoint}/metadata,upperdir=/docker/persist/metadata/upper,workdir=/docker/persist/metadata/work -t overlay "overlayfs:/docker/persist/metadata/upper" /var/lib/docker/image/vfs')
+    print("Before daemon:\n")
+    os.system("stat -f /var/lib/docker/image/vfs/repositories.json")
+    os.system("cat /var/lib/docker/image/vfs/repositories.json")
+    print("here")
+    # docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
+    print("there")
+    os.system("docker info")
+    docker_daemon = subprocess.Popen(["/usr/sbin/dockerd", "--storage-driver=vfs"], stderr=subprocess.PIPE, encoding='utf-8')
+    # os.system("/usr/sbin/dockerd --storage-driver=vfs")
+    while os.system("docker ps > /dev/null 2>&1") != 0:
+        # print("yulu")
+        # stderr = docker_daemon.communicate()
+        # print("stderr: " + stderr)
+        continue
+    print("After daemon:\n")
+    os.system("stat -f /var/lib/docker/image/vfs/repositories.json")
+    os.system("cat /var/lib/docker/image/vfs/repositories.json")
+    system("mount")
+
+
 def setup_system(config: ConfigurationPayload):
     setup_hostname(config.vm_hash)
     setup_variables(config.variables)
     setup_volumes(config.volumes)
+    setup_docker()
+    print("dameon ready")
     setup_network(config.ip, config.route, config.dns_servers)
     setup_input_data(config.input_data)
     logger.debug("Setup finished")
@@ -478,7 +505,6 @@ async def main():
     logger.debug("Receiving setup...")
     config = receive_config(client)
     setup_system(config)
-
     try:
         app: Union[ASGIApplication, subprocess.Popen] = setup_code(
             config.code, config.encoding, config.entrypoint, config.interface

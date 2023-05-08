@@ -1,6 +1,6 @@
 #!/bin/sh
 
-rm ./rootfs.squashfs
+rm -f ./rootfs.squashfs
 
 set -euf
 
@@ -17,20 +17,19 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
   socat libsecp256k1-0 \
-  python3-aiohttp python3-msgpack \
+  \
+  python3-msgpack \
   python3-setuptools \
   python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip \
-  nodejs npm \
-  build-essential python3-dev \
-  \
-  docker.io \
+  curl\
+  docker.io\
   cgroupfs-mount \
-  nftables \
-  \
-  iputils-ping curl
-
+  build-essential python3-dev
 pip3 install 'fastapi~=0.71.0'
+pip3 install aiohttp
+
+
 
 echo "Pip installing aleph-client"
 pip3 install 'aleph-client>=0.4.6' 'coincurve==15.0.0'
@@ -42,9 +41,24 @@ echo "root:toor" | /usr/sbin/chpasswd
 
 mkdir -p /overlay
 
+mkdir -p /var/lib/docker
+cd /var/lib/docker
+mkdir -m  710 vfs
+mkdir -m 700 image
+mkdir -m 700 image/vfs
+mkdir -m 700 plugins
+mkdir -m 700 swarm
+cmkdir -m 750 network
+mkdir -m 700 trust
+mkdir -m 701 volumes
+mkdir -m 711 buildkit
+mkdir -m 710 containers
+
 # Set up a login terminal on the serial console (ttyS0):
 ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
+
+update-alternatives --set iptables /usr/sbin/iptables-legacy
 EOT
 
 echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
@@ -89,6 +103,7 @@ rm -fr ./rootfs/usr/share/man
 rm -fr ./rootfs/var/lib/apt/lists/
 
 # Custom init
+rm -f ./rootfs/sbin/init
 cp ./init0.sh ./rootfs/sbin/init
 cp ./init1.py ./rootfs/root/init1.py
 chmod +x ./rootfs/sbin/init
