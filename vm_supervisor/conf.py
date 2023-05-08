@@ -5,7 +5,7 @@ from enum import Enum
 from os.path import isfile, join, exists, abspath, isdir
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any
+from typing import NewType, Optional, List, Dict, Any, Iterable
 
 from pydantic import BaseSettings, Field
 
@@ -27,14 +27,16 @@ def etc_resolv_conf_dns_servers():
                 yield ip[0]
 
 
-def resolvectl_dns_servers(interface):
+def resolvectl_dns_servers(interface: str) -> Iterable[str]:
     """
-    On Ubuntu 22.04, DNS servers can be queries using `resolvectl dns`.
-     The command `systemd-resolve` used in Ubuntu 20.04 is not found.
+    Use resolvectl to list available DNS servers (IPv4 and IPv6).
+
+    Note: we used to use systemd-resolve for Ubuntu 20.04 and Debian.
+    This command is not available anymore on Ubuntu 22.04 and is actually a symlink
+    to resolvectl.
 
     Example output for `resolvectl dns -i eth0`:
-    Link 2 (eth0): 67.207.67.3 67.207.67.2
-
+    Link 2 (eth0): 67.207.67.3 67.207.67.2 2a02:2788:fff0:5::140
     """
     output: bytes = check_output(["/usr/bin/resolvectl", "dns", "-i", interface])
     link, servers = output.split(b":")
