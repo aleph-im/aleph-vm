@@ -38,10 +38,10 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
     Example output for `resolvectl dns -i eth0`:
     Link 2 (eth0): 67.207.67.3 67.207.67.2 2a02:2788:fff0:5::140
     """
-    output: bytes = check_output(["/usr/bin/resolvectl", "dns", "-i", interface])
-    link, servers = output.split(b":")
-    for server in servers.split(b" "):
-        yield server.decode().strip()
+    output = check_output(["/usr/bin/resolvectl", "dns", "-i", interface], text=True)
+    link, servers = output.split(":")
+    for server in servers.split(" "):
+        yield server.strip()
 
 
 class Settings(BaseSettings):
