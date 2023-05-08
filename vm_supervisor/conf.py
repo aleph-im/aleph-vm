@@ -41,7 +41,7 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
     output = check_output(["/usr/bin/resolvectl", "dns", "-i", interface], text=True)
     # Split on the first colon only to support IPv6 addresses.
     link, servers = output.split(":", maxsplit=1)
-    for server in servers.split(" "):
+    for server in servers.split():
         yield server.strip()
 
 
