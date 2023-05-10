@@ -175,7 +175,7 @@ async def status_check_version(request: web.Request):
 
 def authenticate_api_request(request: web.Request) -> bool:
     """Authenticate an API request to update the VM allocations."""
-    signature: bytes = request.headers.get("X-Auth-Signature", '').encode()
+    signature: bytes = request.headers.get("X-Auth-Signature", "").encode()
 
     if not signature:
         raise web.HTTPUnauthorized(text="Authentication token is missing")

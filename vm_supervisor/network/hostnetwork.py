@@ -38,7 +38,9 @@ class Network:
             with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
                 f.write(str(self.ipv4_forward_state_before_setup))
 
-    def __init__(self, vm_address_pool_range: str, vm_network_size: int, external_interface: str) -> None:
+    def __init__(
+        self, vm_address_pool_range: str, vm_network_size: int, external_interface: str
+    ) -> None:
         """Sets up the Network class with some information it needs so future function calls work as expected"""
         self.address_pool = IPv4NetworkWithInterfaces(vm_address_pool_range)
         if not self.address_pool.is_private:
@@ -55,8 +57,7 @@ class Network:
         self.reset_ipv4_forwarding_state()
 
     async def create_tap(self, vm_id: int) -> TapInterface:
-        """ Create TAP interface to be used by VM
-        """
+        """Create TAP interface to be used by VM"""
         interface = TapInterface(f"vmtap{vm_id}", self.get_network_for_tap(vm_id))
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)

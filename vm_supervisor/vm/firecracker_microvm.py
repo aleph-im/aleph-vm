@@ -391,8 +391,8 @@ class AlephFirecrackerVM:
 
         # The ip and route should not contain the network mask in order to maintain
         # compatibility with the existing runtimes.
-        ip = self.tap_interface.guest_ip.with_prefixlen.split('/', 1)[0]
-        route = str(self.tap_interface.host_ip).split('/', 1)[0]
+        ip = self.tap_interface.guest_ip.with_prefixlen.split("/", 1)[0]
+        route = str(self.tap_interface.host_ip).split("/", 1)[0]
 
         config = ConfigurationPayload(
             ip=ip if self.enable_networking else None,

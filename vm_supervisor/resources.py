@@ -105,7 +105,8 @@ async def about_system_usage(request: web.Request):
             available_kB=psutil.virtual_memory().available / 1000,
         ),
         disk=DiskUsage(
-            total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
+            total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total
+            // 1000,
             available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free
             // 1000,
         ),
