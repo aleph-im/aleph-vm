@@ -19,8 +19,8 @@ import aiohttp
 from aleph_message.models import ProgramMessage
 from aleph_message.models.program import (
     Encoding,
-    MachineVolume,
     ImmutableVolume,
+    MachineVolume,
     PersistentVolume,
     VolumePersistence,
 )
