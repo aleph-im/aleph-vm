@@ -3,9 +3,9 @@ Used to check that the example_fastapi program works as expected
 in a deployed supervisor.
 """
 import logging
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from aiohttp import ClientSession, ClientResponseError
+from aiohttp import ClientResponseError, ClientSession
 
 from .conf import settings
 

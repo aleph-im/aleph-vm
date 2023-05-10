@@ -1,4 +1,4 @@
-from ipaddress import IPv4Network, IPv4Interface
+from ipaddress import IPv4Interface, IPv4Network
 from typing import Iterable
 
 

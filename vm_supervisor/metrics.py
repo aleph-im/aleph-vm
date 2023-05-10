@@ -4,8 +4,7 @@ from os.path import join
 from typing import Iterable, Optional
 from uuid import UUID
 
-from sqlalchemy import Column, Integer, String, Float, DateTime
-from sqlalchemy import create_engine
+from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker

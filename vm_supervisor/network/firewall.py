@@ -1,9 +1,9 @@
 import json
-from typing import Dict, List
 import logging
+from functools import lru_cache
+from typing import Dict, List
 
 from nftables import Nftables
-from functools import lru_cache
 
 from ..conf import settings
 from .interfaces import TapInterface

@@ -9,18 +9,19 @@ import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
-from packaging.version import Version, InvalidVersion
 from pydantic import ValidationError
 
+from packaging.version import InvalidVersion, Version
+
 from . import status
-from .version import __version__
 from .conf import settings
 from .metrics import get_execution_records
 from .models import VmHash
 from .pubsub import PubSub
 from .resources import Allocation
-from .run import run_code_on_request, pool, start_persistent_vm
-from .utils import b32_to_b16, get_ref_from_dns, dumps_for_json
+from .run import pool, run_code_on_request, start_persistent_vm
+from .utils import b32_to_b16, dumps_for_json, get_ref_from_dns
+from .version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,7 @@ async def status_check_version(request: web.Request):
 
 def authenticate_api_request(request: web.Request) -> bool:
     """Authenticate an API request to update the VM allocations."""
-    signature: bytes = request.headers.get("X-Auth-Signature", '').encode()
+    signature: bytes = request.headers.get("X-Auth-Signature", "").encode()
 
     if not signature:
         raise web.HTTPUnauthorized(text="Authentication token is missing")

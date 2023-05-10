@@ -3,11 +3,11 @@ import copy
 from typing import Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
-from aiohttp.web_exceptions import HTTPServiceUnavailable, HTTPNotFound
+from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph_message.models import ProgramMessage
 
 from .models import VmHash
-from .storage import get_message, get_latest_amend
+from .storage import get_latest_amend, get_message
 
 
 async def try_get_message(ref: str) -> ProgramMessage:
