@@ -5,17 +5,17 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NewType, Optional, Dict
+from typing import Dict, NewType, Optional
 
 from aleph_message.models import ProgramContent
 
 from .conf import settings
-from .metrics import save_record, save_execution_data, ExecutionRecord
+from .metrics import ExecutionRecord, save_execution_data, save_record
+from .network.interfaces import TapInterface
 from .pubsub import PubSub
-from .utils import dumps_for_json, create_task_log_exceptions
+from .utils import create_task_log_exceptions, dumps_for_json
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
-from .network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
 

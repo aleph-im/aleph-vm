@@ -3,10 +3,10 @@ import logging
 import os
 import re
 from enum import Enum
-from os.path import isfile, join, exists, abspath, isdir
+from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any, Iterable
+from typing import Any, Dict, Iterable, List, NewType, Optional
 
 from pydantic import BaseSettings, Field
 

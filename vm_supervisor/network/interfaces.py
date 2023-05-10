@@ -1,7 +1,7 @@
 import asyncio
+import logging
 from ipaddress import IPv4Interface
 from subprocess import run
-import logging
 
 from .ipaddresses import IPv4NetworkWithInterfaces
 
@@ -12,9 +12,7 @@ class TapInterface:
     device_name: str
     ip_network: IPv4NetworkWithInterfaces
 
-    def __init__(
-        self, device_name: str, ip_network: IPv4NetworkWithInterfaces
-    ):
+    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
 
