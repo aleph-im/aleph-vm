@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y upgrade
-          sudo apt-get install -y libsecp256k1-dev
+          sudo apt-get install -y libsecp256k1-dev build-essential python3-dev
           pip install --upgrade pip
           pip install black isort
           pip install -r packaging/requirements-ubuntu-20.04.txt
