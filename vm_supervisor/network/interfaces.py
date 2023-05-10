@@ -1,7 +1,7 @@
 import asyncio
+import logging
 from ipaddress import IPv4Interface
 from subprocess import run
-import logging
 
 from .ipaddresses import IPv4NetworkWithInterfaces
 

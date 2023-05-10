@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Set, Optional
-from typing import Tuple
+from typing import Optional, Set, Tuple
 
 import cpuinfo
 import psutil

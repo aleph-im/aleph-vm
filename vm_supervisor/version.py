@@ -1,5 +1,5 @@
 import logging
-from subprocess import check_output, CalledProcessError
+from subprocess import CalledProcessError, check_output
 from typing import Optional
 
 logger = logging.getLogger(__name__)

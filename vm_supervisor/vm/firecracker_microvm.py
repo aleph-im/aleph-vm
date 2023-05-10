@@ -6,9 +6,9 @@ import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from multiprocessing import Process, set_start_method
-from os.path import isfile, exists
-from typing import Optional, Dict, List
+from os.path import exists, isfile
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import msgpack
 
@@ -17,23 +17,24 @@ try:
 except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
-
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import MachineResources, Encoding
+from aleph_message.models.program import Encoding, MachineResources
+
 from firecracker.config import (
     BootSource,
     Drive,
-    MachineConfig,
     FirecrackerConfig,
-    Vsock,
+    MachineConfig,
     NetworkInterface,
+    Vsock,
 )
 from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
+
 from ..conf import settings
-from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path
-from ..network.interfaces import TapInterface
 from ..network.firewall import teardown_nftables_for_vm
+from ..network.interfaces import TapInterface
+from ..storage import get_code_path, get_data_path, get_runtime_path, get_volume_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")

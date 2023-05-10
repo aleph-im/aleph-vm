@@ -1,6 +1,6 @@
 import logging
 
-from .firewall import initialize_nftables, teardown_nftables, setup_nftables_for_vm
+from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
 

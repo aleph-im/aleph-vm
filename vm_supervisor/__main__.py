@@ -4,20 +4,20 @@ import logging
 import sys
 import time
 from statistics import mean
-from typing import List, Tuple, Dict, Callable
+from typing import Callable, Dict, List, Tuple
 
-from aiohttp.web import Response, Request
+from aiohttp.web import Request, Response
 
 try:
     import sentry_sdk
 except ImportError:
     sentry_sdk = None
 
-from .pubsub import PubSub
-from . import supervisor, metrics
+from . import metrics, supervisor
 from .conf import settings
 from .models import VmHash
-from .run import run_code_on_request, run_code_on_event
+from .pubsub import PubSub
+from .run import run_code_on_event, run_code_on_request
 
 logger = logging.getLogger(__name__)
 

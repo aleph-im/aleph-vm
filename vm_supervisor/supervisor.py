@@ -18,13 +18,13 @@ from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .version import __version__
 from .views import (
-    run_code_from_path,
-    run_code_from_hostname,
-    about_login,
-    about_executions,
     about_config,
-    status_check_fastapi,
     about_execution_records,
+    about_executions,
+    about_login,
+    run_code_from_hostname,
+    run_code_from_path,
+    status_check_fastapi,
     status_check_version,
     update_allocations,
 )
