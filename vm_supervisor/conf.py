@@ -236,5 +236,9 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 
+def make_db_url():
+    return f"sqlite:///{settings.EXECUTION_DATABASE}"
+
+
 # Settings singleton
 settings = Settings()

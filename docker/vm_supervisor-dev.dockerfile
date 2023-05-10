@@ -4,8 +4,8 @@ FROM debian:bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl squashfs-tools git \
-    python3 python3-aiohttp python3-msgpack python3-pip python3-aiodns python3-aioredis python3-nftables \
-    python3-psutil python3-setproctitle python3-sqlalchemy python3-packaging python3-cpuinfo \
+    python3 python3-aiohttp python3-alembic python3-msgpack python3-pip python3-aiodns python3-aioredis\
+    python3-nftables python3-psutil python3-setproctitle python3-sqlalchemy python3-packaging python3-cpuinfo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd jailman
