@@ -19,8 +19,8 @@ jobs:
       - run: |
           cd packaging && make all-podman-debian-11 && cd ..
           ls packaging/target
-          
-      - uses: actions/upload-artifact@v2
+
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-vm.debian-11.deb
           path: packaging/target/aleph-vm.debian-11.deb
@@ -42,7 +42,7 @@ jobs:
           cd packaging && make all-podman-ubuntu-2004 && cd ..
           ls packaging/target
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-vm.ubuntu-20.04.deb
           path: packaging/target/aleph-vm.ubuntu-20.04.deb
@@ -64,7 +64,7 @@ jobs:
           cd packaging && make all-podman-ubuntu-2204 && cd ..
           ls packaging/target
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-vm.ubuntu-22.04.deb
           path: packaging/target/aleph-vm.ubuntu-22.04.deb
@@ -85,7 +85,7 @@ jobs:
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-debian-11-python.squashfs
           path: runtimes/aleph-debian-11-python/rootfs.squashfs
@@ -103,7 +103,7 @@ jobs:
           docker build -t aleph-vm-build-squashfs -f examples/volumes/Dockerfile examples/volumes
           docker run --rm -v "$(pwd)":/mnt aleph-vm-build-squashfs
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: example-volume-venv.squashfs
           path: volume-venv.squashfs
