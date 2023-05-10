@@ -4,10 +4,9 @@ from typing import Dict, Iterable, Optional
 
 from aleph_message.models import ProgramContent, ProgramMessage
 
-from vm_supervisor.network.hostnetwork import Network
-
 from .conf import settings
 from .models import VmExecution, VmHash
+from .network.hostnetwork import Network
 
 logger = logging.getLogger(__name__)
 

@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import json
 import logging
+import os
 from base64 import b16encode, b32decode
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
+from pathlib import Path
 from typing import Any, Coroutine, Optional
 
 import aiodns
@@ -52,3 +55,19 @@ async def run_and_log_exception(coro: Coroutine):
 def create_task_log_exceptions(coro: Coroutine, *, name=None):
     """Ensure that exceptions running in coroutines are logged."""
     return asyncio.create_task(run_and_log_exception(coro), name=name)
+
+
+@contextlib.contextmanager
+def run_in_directory(directory: Path):
+    """This context manager executes path in the specified directory.
+
+    Usage:
+    >>> with run_in_directory(path):
+    >>>     print(os.getcwd())
+    """
+    current_directory = Path.cwd()
+    try:
+        os.chdir(directory)
+        yield
+    finally:
+        os.chdir(current_directory)
