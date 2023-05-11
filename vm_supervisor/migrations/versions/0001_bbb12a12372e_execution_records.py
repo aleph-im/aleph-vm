@@ -5,9 +5,8 @@ Revises:
 Create Date: 2022-09-28 18:52:16.431200
 
 """
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
 from sqlalchemy import create_engine
@@ -19,13 +18,6 @@ revision = "bbb12a12372e"
 down_revision = None
 branch_labels = None
 depends_on = None
-
-
-def table_exists(table: str):
-    engine = create_engine(make_db_url())
-    inspector = reflection.Inspector.from_engine(engine)
-    tables = inspector.get_table_names()
-    return table in tables
 
 
 def upgrade() -> None:
