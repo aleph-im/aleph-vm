@@ -56,16 +56,16 @@ jobs:
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
           # Ubuntu droplets run upgrades at boot
-          sleep 15
+          sleep 30
           until ! ssh root@${DROPLET_IPV4} "lslocks --json | grep /var/lib/dpkg/lock" > /dev/null; do sleep 1; echo "Waiting for dpkg lock..."; done
           
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
           scp packaging/target/aleph-vm.ubuntu-22.04.deb root@${DROPLET_IPV4}:/opt
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt -o DPkg::Lock::Timeout=60 install -y /opt/aleph-vm.ubuntu-22.04.deb"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/aleph-vm.ubuntu-22.04.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_DNS_RESOLUTION=resolvectl >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
