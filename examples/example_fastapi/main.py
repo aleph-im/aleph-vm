@@ -16,11 +16,11 @@ logger.debug("import aiohttp")
 import aiohttp
 
 logger.debug("import aleph_client")
-from aleph_client.asynchronous import create_post, get_messages
-from aleph_client.chains.remote import RemoteAccount
-from aleph_client.types import StorageEnum
-from aleph_client.vm.app import AlephApp
-from aleph_client.vm.cache import VmCache
+from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
+from aleph.sdk.chains.remote import RemoteAccount
+from aleph.sdk.types import StorageEnum
+from aleph.sdk.vm.app import AlephApp
+from aleph.sdk.vm.cache import VmCache
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
@@ -68,9 +68,10 @@ async def environ() -> Dict[str, str]:
 @app.get("/messages")
 async def read_aleph_messages():
     """Read data from Aleph using the Aleph Client library."""
-    data = await get_messages(
-        hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"]
-    )
+    async with AlephClient() as client:
+        data = await client.get_messages(
+            hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"]
+        )
     return {"Messages": data}
 
 
@@ -153,15 +154,17 @@ async def post_a_message():
         "answer": 42,
         "something": "interesting",
     }
-    response = await create_post(
+    async with AuthenticatedAlephClient(
         account=account,
-        post_content=content,
-        post_type="test",
-        ref=None,
-        channel="TEST",
-        inline=True,
-        storage_engine=StorageEnum.storage,
-    )
+    ) as client:
+        response = await client.create_post(
+            post_content=content,
+            post_type="test",
+            ref=None,
+            channel="TEST",
+            inline=True,
+            storage_engine=StorageEnum.storage,
+        )
     return {
         "response": response,
     }
