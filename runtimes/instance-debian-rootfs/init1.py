@@ -412,13 +412,6 @@ async def process_instruction(
         else:
             assert isinstance(application, ASGIApplication)
             await wait_for_lifespan_event_completion(application=application, event='shutdown')
-
-            # Close the cached session in aleph_client: TODO: remove this, use SDK
-            from aleph_client.asynchronous import get_fallback_session
-
-            session: aiohttp.ClientSession = get_fallback_session()
-            await session.close()
-            logger.debug("Aiohttp cached session closed")
         yield b"STOP\n"
         logger.debug("Supervisor informed of halt")
         raise ShutdownException
