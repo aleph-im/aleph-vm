@@ -64,44 +64,43 @@ async def stream_url_chunks(url):
 
 
 @app.get("/download/message/{ref}")
-async def download_message(ref: str) -> Union[Dict, Response]:
+async def download_message(ref: str) -> Dict:
     """
     Fetch on Aleph and return a VM function message, after checking its validity.
     Used by the VM Supervisor run the code.
 
     :param ref: item_hash of the code file
-    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
 
     msg = await get_message(hash_=ref)
 
-    # TODO: Validate the validity of the message (signature, hashes)
+    # TODO: Validate the message (signature, hashes)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Hash not found")
 
-    return msg or Response(status_code=404, content="Hash not found")
+    return msg
 
 
 @app.get("/download/code/{ref}")
-async def download_code(ref: str) -> Union[StreamingResponse, Response]:
+async def download_code(ref: str):
     """
     Fetch on Aleph and return a VM code file, after checking its validity.
     Used by the VM Supervisor to download function source code.
 
     :param ref: item_hash of the code file
-    :param use_latest: should the last amend to the code be used
     :return: a file containing the code file
     """
     return await download_data(ref=ref)
 
 
 @app.get("/download/data/{ref}")
-async def download_data(ref: str) -> Union[StreamingResponse, Response]:
+async def download_data(ref: str):
     """
     Fetch on Aleph and return a VM data file, after checking its validity.
     Used by the VM Supervisor to download state data.
 
     :param ref: item_hash of the data
-    :param use_latest: should the last amend to the data be used
     :return: a file containing the data
     """
 
@@ -110,7 +109,7 @@ async def download_data(ref: str) -> Union[StreamingResponse, Response]:
     if not msg:
         return Response(status_code=404, content="Hash not found")
 
-    media_type = msg["content"].get("mime_type", default="application/octet-stream")
+    media_type = msg["content"].get("mime_type", "application/octet-stream")
 
     data_hash = msg["content"]["item_hash"]
     if msg["content"]["item_type"] == "ipfs":
@@ -122,13 +121,12 @@ async def download_data(ref: str) -> Union[StreamingResponse, Response]:
 
 
 @app.get("/download/runtime/{ref}")
-async def download_runtime(ref: str) -> Union[StreamingResponse, Response]:
+async def download_runtime(ref: str):
     """
     Fetch on Aleph and return a VM runtime, after checking its validity.
     Used by the VM Supervisor to download a runtime.
 
     :param ref: item_hash of the runtime
-    :param use_latest: should the last amend to the runtime be used
     :return: a file containing the runtime
     """
     return await download_data(ref=ref)

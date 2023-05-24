@@ -16,7 +16,7 @@ debian-package-code:
 	cp ../examples/message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.2.2'
+	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.3.0'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux
@@ -78,6 +78,17 @@ all-podman-ubuntu-2004: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-20.04.deb
 
+all-podman-ubuntu-2204: version
+	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2204:latest -f ./packaging/ubuntu-22.04.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging-ubuntu-2204:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.ubuntu-22.04.deb
+
 # extract Python requirements from Debian 11 container
 requirements-debian-11: all-podman-debian-11
 	podman run --rm -ti \
@@ -88,13 +99,22 @@ requirements-debian-11: all-podman-debian-11
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-11.txt"
 
 # extract Python requirements from Ubuntu 20.04 container
-requirements-ubuntu-2004: all-podman-ubuntu-2004
+requirements-ubuntu-20.04: all-podman-ubuntu-2004
 	podman run --rm -ti \
 		-v ./target/aleph-vm.ubuntu-20.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
 		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
 		-v ./requirements-ubuntu-20.04.txt:/mnt/requirements-ubuntu-20.04.txt \
 		ubuntu:focal \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-20.04.txt"
+
+# extract Python requirements from Ubuntu 22.04 container
+requirements-ubuntu-22.04: all-podman-ubuntu-2204
+	podman run --rm -ti \
+		-v ./target/aleph-vm.ubuntu-22.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-ubuntu-22.04.txt:/mnt/requirements-ubuntu-22.04.txt \
+		ubuntu:jammy \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-22.04.txt"
 
 # run on host in order to sign with GPG
 repository-bullseye:

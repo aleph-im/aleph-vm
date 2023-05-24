@@ -20,7 +20,7 @@ In order to run an official Aleph.im Compute Resource Node (CRN), you will also 
 
 You will need a public domain name with access to add TXT and wildcard records.
 
-> 🛈 This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
+> 💡 This documentation will use the invalid `vm.example.org` domain name. Replace it when needed.
 
 ## 2. Installation
 
@@ -37,7 +37,7 @@ docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector al
 Then install the [VM-Supervisor](../vm_supervisor/README.md) using the official Debian package.
 The procedure is similar for updates.
 ```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.2.4/aleph-vm.debian-11.deb
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.2.5/aleph-vm.debian-11.deb
 apt install /opt/aleph-vm.debian-11.deb
 ```
 
@@ -47,10 +47,14 @@ Reboot if required (new kernel, ...).
 
 Update the configuration in `/etc/aleph-vm/supervisor.env` using your favourite editor.
 
+#### Hostname
+
 You will want to insert your domain name in the form of:
 ```
 ALEPH_VM_DOMAIN_NAME=vm.example.org
 ```
+
+#### Network configuration
 
 On some systems, the default network interface is not `eth0` and you will want to configure the default interface
 by adding:
@@ -66,7 +70,20 @@ instead, uncomment and add the following setting:
 #ALEPH_VM_DNS_RESOLUTION=resolvctl
 ```
 
-> 🛈 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
+> 💡 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
+
+#### Volumes and partitions
+
+Two directories are used to store data from the network:
+- `/var/lib/aleph/vm` contains all the execution and persistent data.
+- `/var/cache/aleph/vm` contains data downloaded from the network.
+
+These two directories must be stored on the same partition.
+That partition must meet the minimum requirements specified for a CRN.
+
+> 💡 This is required due to the software using hard links to optimize performance and disk usage.
+
+#### Applying changes
 
 Finally, restart the service:
 ```shell

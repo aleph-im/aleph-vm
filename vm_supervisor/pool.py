@@ -1,11 +1,13 @@
 import asyncio
 import logging
-from typing import Dict, Optional, Iterable
+from typing import Dict, Iterable, Optional
 
 from aleph_message.models import ExecutableMessage
 
+from vm_supervisor.network.hostnetwork import Network
+
 from .conf import settings
-from .models import VmHash, VmExecution, ExecutableContent
+from .models import VmExecution, VmHash, ExecutableContent
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +24,20 @@ class VmPool:
     counter: int  # Used to provide distinct ids to network interfaces
     executions: Dict[VmHash, VmExecution]
     message_cache: Dict[str, ExecutableMessage] = {}
+    network: Optional[Network]
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.network = (
+            Network(
+                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+                external_interface=settings.NETWORK_INTERFACE,
+            )
+            if settings.ALLOW_VM_NETWORKING
+            else None
+        )
 
     async def create_a_vm(
         self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
@@ -35,7 +47,9 @@ class VmPool:
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
-        await execution.create(vm_id=vm_id)
+
+        tap_interface = await self.network.create_tap(vm_id)
+        await execution.create(vm_id=vm_id, tap_interface=tap_interface)
         return execution
 
     def get_unique_vm_id(self) -> int:
@@ -44,8 +58,10 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
+        _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
+        available_bits = int(network_range) - settings.IPV4_NETWORK_PREFIX_LENGTH
         self.counter += 1
-        if self.counter < 255**2:
+        if self.counter < 2**available_bits:
             # In common cases, use the counter itself as the vm_id. This makes it
             # easier to debug.
             return self.counter

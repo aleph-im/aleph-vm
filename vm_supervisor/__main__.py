@@ -1,23 +1,28 @@
 import argparse
 import asyncio
+import contextlib
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 from statistics import mean
-from typing import List, Tuple, Dict, Callable
+from typing import Callable, Dict, List, Tuple
 
-from aiohttp.web import Response, Request
+from aiohttp.web import Request, Response
 
 try:
     import sentry_sdk
 except ImportError:
     sentry_sdk = None
 
-from .pubsub import PubSub
 from . import supervisor, metrics
-from .conf import settings
+from .conf import settings, make_db_url
 from .models import VmHash
+from .pubsub import PubSub
 from .run import run_code_on_request, run_code_on_event
+import alembic.config
+import alembic.command
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,28 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
+@contextlib.contextmanager
+def change_dir(directory: Path):
+    current_directory = Path.cwd()
+    try:
+        os.chdir(directory)
+        yield
+    finally:
+        os.chdir(current_directory)
+
+
+def run_db_migrations():
+    project_dir = Path(__file__).parent
+
+    db_url = make_db_url()
+    alembic_cfg = alembic.config.Config("alembic.ini")
+    alembic_cfg.attributes["configure_logger"] = False
+    logging.getLogger("alembic").setLevel(logging.CRITICAL)
+
+    with change_dir(project_dir):
+        alembic.command.upgrade(alembic_cfg, "head", tag=db_url)
+
+
 def main():
     args = parse_args(sys.argv[1:])
 
@@ -249,13 +276,12 @@ def main():
 
     settings.check()
 
-    loop = asyncio.get_event_loop()
-
-    if args.debug_asyncio:
-        loop.set_debug(True)
+    logger.debug("Initialising the DB...")
+    run_db_migrations()
+    logger.debug("DB up to date.")
 
     if args.benchmark > 0:
-        loop.run_until_complete(benchmark(runs=args.benchmark))
+        asyncio.run(benchmark(runs=args.benchmark), debug=args.debug_asyncio)
         print("Finished")
     elif args.do_not_run:
         logger.info("Option --do-not-run, exiting")

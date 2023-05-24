@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Set, Optional
-from typing import Tuple
+from typing import Optional, Set, Tuple
 
 import cpuinfo
 import psutil
@@ -105,8 +104,9 @@ async def about_system_usage(request: web.Request):
             available_kB=psutil.virtual_memory().available / 1000,
         ),
         disk=DiskUsage(
-            total_kB=psutil.disk_usage(settings.PERSISTENT_VOLUMES_DIR).total // 1000,
-            available_kB=psutil.disk_usage(settings.PERSISTENT_VOLUMES_DIR).free
+            total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total
+            // 1000,
+            available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free
             // 1000,
         ),
         period=UsagePeriod(

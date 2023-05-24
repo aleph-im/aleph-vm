@@ -5,15 +5,16 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NewType, Optional, Dict
+from typing import Dict, NewType, Optional
 
 from aleph_message.models import ExecutableContent
 from aleph_message.models.execution.base import MachineType
 
 from .conf import settings
-from .metrics import save_record, save_execution_data, ExecutionRecord
+from .metrics import ExecutionRecord, save_execution_data, save_record
+from .network.interfaces import TapInterface
 from .pubsub import PubSub
-from .utils import dumps_for_json, create_task_log_exceptions
+from .utils import create_task_log_exceptions, dumps_for_json
 from .vm import AlephFirecrackerVM
 from .vm.firecracker_microvm import AlephFirecrackerResources
 
@@ -102,7 +103,9 @@ class VmExecution:
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
-    async def create(self, vm_id: int) -> AlephFirecrackerVM:
+    async def create(
+        self, vm_id: int, tap_interface: TapInterface
+    ) -> AlephFirecrackerVM:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
@@ -112,6 +115,7 @@ class VmExecution:
             resources=self.resources,
             enable_networking=self.message.environment.internet,
             hardware_resources=self.message.resources,
+            tap_interface=tap_interface,
             is_instance=self.is_instance,
         )
         try:
@@ -129,7 +133,7 @@ class VmExecution:
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
         if self.persistent:
             logger.debug("VM marked as long running. Ignoring timeout.")
-            return
+            return None
 
         if self.expire_task:
             logger.debug("VM already has a timeout. Extending it.")
@@ -243,7 +247,7 @@ class VmExecution:
                     io_write_bytes=pid_info["process"]["io_counters"][3],
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.fvm.network_tap,
+                    network_tap=self.vm.tap_interface.device_name,
                 )
             )
         else:
@@ -265,11 +269,10 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.fvm.network_tap,
                 )
             )
 
-    async def run_code(self, scope: dict = None) -> bytes:
+    async def run_code(self, scope: Optional[dict] = None) -> bytes:
         if not self.vm:
             raise ValueError("The VM has not been created yet")
         self.concurrent_runs += 1

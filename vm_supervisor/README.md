@@ -57,7 +57,7 @@ when running the VM Supervisor.
 ```shell
 apt update
 apt install -y git python3 python3-aiohttp python3-msgpack python3-aiodns python3-sqlalchemy python3-setproctitle redis python3-aioredis \
- python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap
+ python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-nftables python3-jsonschema
 useradd jailman
 ```
 
@@ -65,7 +65,7 @@ useradd jailman
 from the [Firecracker project releases](https://github.com/firecracker-microvm/firecracker/releases):
 ```shell
 mkdir /opt/firecracker
-curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.0.0/firecracker-v1.0.0-x86_64.tgz | tar -xz --directory /opt/firecracker
+curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.1.1/firecracker-v1.1.1-x86_64.tgz | tar -xz --directory /opt/firecracker
 
 # Link binaries on version-agnostic paths:
 ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker

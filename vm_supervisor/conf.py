@@ -1,11 +1,12 @@
+import ipaddress
 import logging
 import os
 import re
 from enum import Enum
-from os.path import isfile, join, exists, abspath, isdir
+from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import check_output
-from typing import NewType, Optional, List, Dict, Any
+from typing import Any, Dict, Iterable, List, NewType, Optional
 
 from pydantic import BaseSettings, Field
 
@@ -27,34 +28,33 @@ def etc_resolv_conf_dns_servers():
                 yield ip[0]
 
 
-def systemd_resolved_dns_servers(interface):
-    # Example output format from systemd-resolve --status {interface}:
-    # Link 2 (enp7s0)
-    #       Current Scopes: DNS
-    # DefaultRoute setting: yes
-    #        LLMNR setting: yes
-    # MulticastDNS setting: no
-    #   DNSOverTLS setting: no
-    #       DNSSEC setting: no
-    #     DNSSEC supported: no
-    #   Current DNS Server: 213.133.100.100
-    #          DNS Servers: 213.133.100.100
-    #                       213.133.98.98
-    #                       213.133.99.99
-    #                       2a01:4f8:0:1::add:9898
-    #                       2a01:4f8:0:1::add:1010
-    #                       2a01:4f8:0:1::add:9999
-    output = check_output(["/usr/bin/systemd-resolve", "--status", interface])
-    nameserver_line = False
-    for line in output.split(b"\n"):
-        if b"DNS Servers" in line:
-            nameserver_line = True
-            _, ip = line.decode().split(":", 1)
-            yield ip.strip()
-        elif nameserver_line:
-            ip = line.decode().strip()
-            if ip:
-                yield ip
+def resolvectl_dns_servers(interface: str) -> Iterable[str]:
+    """
+    Use resolvectl to list available DNS servers (IPv4 and IPv6).
+
+    Note: we used to use systemd-resolve for Ubuntu 20.04 and Debian.
+    This command is not available anymore on Ubuntu 22.04 and is actually a symlink
+    to resolvectl.
+
+    Example output for `resolvectl dns -i eth0`:
+    Link 2 (eth0): 67.207.67.3 67.207.67.2 2a02:2788:fff0:5::140
+    """
+    output = check_output(["/usr/bin/resolvectl", "dns", "-i", interface], text=True)
+    # Split on the first colon only to support IPv6 addresses.
+    link, servers = output.split(":", maxsplit=1)
+    for server in servers.split():
+        yield server.strip()
+
+
+def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
+    """
+    Use resolvectl to list available IPv4 DNS servers.
+    VMs only support IPv4 networking for now, we must exclude IPv6 DNS from their config.
+    """
+    for server in resolvectl_dns_servers(interface):
+        ip_addr = ipaddress.ip_address(server)
+        if isinstance(ip_addr, ipaddress.IPv4Address):
+            yield server
 
 
 class Settings(BaseSettings):
@@ -72,17 +72,29 @@ class Settings(BaseSettings):
     REUSE_TIMEOUT: float = 60 * 60.0
     WATCH_FOR_MESSAGES = True
     WATCH_FOR_UPDATES = True
-    NETWORK_INTERFACE = "eth0"
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
-    DNS_NAMESERVERS: Optional[List[str]] = None
 
     API_SERVER = "https://official.aleph.cloud"
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
     DEBUG_ASYNCIO = False
+
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
+    NETWORK_INTERFACE = "eth0"
+    IPV4_ADDRESS_POOL = Field(
+        default="172.16.0.0/12",
+        description="IPv4 address range used to provide networks to VMs.",
+    )
+    IPV4_NETWORK_PREFIX_LENGTH = Field(
+        default=24,
+        description="Individual VM network prefix length in bits",
+    )
+    NFTABLES_CHAIN_PREFIX = "aleph"
+
+    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
+    DNS_NAMESERVERS: Optional[List[str]] = None
+
     FIRECRACKER_PATH = "/opt/firecracker/firecracker"
     JAILER_PATH = "/opt/firecracker/jailer"
     LINUX_PATH = "/opt/firecracker/vmlinux.bin"
@@ -151,6 +163,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"Unknown setting '{key}'")
 
     def check(self):
+        assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
@@ -161,6 +174,11 @@ class Settings(BaseSettings):
             assert exists(
                 f"/sys/class/net/{self.NETWORK_INTERFACE}"
             ), f"Network interface {self.NETWORK_INTERFACE} does not exist"
+
+            _, ipv4_pool_length = settings.IPV4_ADDRESS_POOL.split("/")
+            assert (
+                int(ipv4_pool_length) <= settings.IPV4_NETWORK_PREFIX_LENGTH
+            ), "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
 
         if self.FAKE_DATA_PROGRAM:
             assert isdir(
@@ -180,6 +198,9 @@ class Settings(BaseSettings):
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
         os.makedirs(self.DATA_CACHE, exist_ok=True)
+        os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
+        os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
+        os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
 
         if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
             if self.DNS_RESOLUTION == DnsResolver.resolv_conf:
@@ -187,7 +208,7 @@ class Settings(BaseSettings):
 
             elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
                 self.DNS_NAMESERVERS = list(
-                    systemd_resolved_dns_servers(interface=self.NETWORK_INTERFACE)
+                    resolvectl_dns_servers_ipv4(interface=self.NETWORK_INTERFACE)
                 )
             else:
                 assert "This should never happen"
@@ -213,6 +234,10 @@ class Settings(BaseSettings):
         env_prefix = "ALEPH_VM_"
         case_sensitive = False
         env_file = ".env"
+
+
+def make_db_url():
+    return f"sqlite:///{settings.EXECUTION_DATABASE}"
 
 
 # Settings singleton

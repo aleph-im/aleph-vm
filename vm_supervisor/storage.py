@@ -12,7 +12,6 @@ import os
 import re
 import sys
 import subprocess
-import stat
 from os.path import isfile, join
 from pathlib import Path
 from shutil import make_archive

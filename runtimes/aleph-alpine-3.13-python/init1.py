@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -OO
-
+import base64
 import logging
 
 logging.basicConfig(
@@ -30,7 +30,7 @@ import msgpack
 
 logger.debug("Imports finished")
 
-ASGIApplication = NewType("AsgiApplication", Any)
+ASGIApplication = NewType("ASGIApplication", Any)
 
 
 class Encoding(str, Enum):
@@ -123,12 +123,17 @@ def setup_network(
     system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
-    system(f"ip addr add {ip}/24 dev eth0")
+    if "/" in ip:
+        # Forward compatibility with future supervisors that pass the mask with the IP.
+        system(f"ip addr add {ip} dev eth0")
+    else:
+        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
+        system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
     if route:
         system(f"ip route add default via {route} dev eth0")
-        logger.debug("IP and route set")
+        logger.debug(f"IP and route set: {ip} via {route}")
     else:
         logger.warning("IP set with no network route")
 
@@ -166,6 +171,7 @@ def setup_code_asgi(
     sys.path.append("/opt/packages")
 
     logger.debug("Extracting code")
+    app: ASGIApplication
     if encoding == Encoding.squashfs:
         sys.path.append("/opt/code")
         module_name, app_name = entrypoint.split(":", 1)
@@ -173,7 +179,7 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app: ASGIApplication = getattr(module, app_name)
+        app = getattr(module, app_name)
     elif encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         if not os.path.exists("/opt/archive.zip"):
@@ -186,12 +192,12 @@ def setup_code_asgi(
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
-        app: ASGIApplication = getattr(module, app_name)
+        app = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint
         locals: Dict[str, Any] = {}
         exec(code, globals(), locals)
-        app: ASGIApplication = locals[entrypoint]
+        app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
     return app
@@ -449,7 +455,12 @@ def receive_config(client) -> ConfigurationPayload:
 
 
 def setup_system(config: ConfigurationPayload):
-    setup_hostname(config.vm_hash)
+    # Linux host names are limited to 63 characters. We therefore use the base32 representation
+    # of the item_hash instead of its common base16 representation.
+    item_hash_binary: bytes = base64.b16decode(config.vm_hash.encode().upper())
+    hostname = base64.b32encode(item_hash_binary).decode().strip('=').lower()
+    setup_hostname(hostname)
+
     setup_variables(config.variables)
     setup_volumes(config.volumes)
     setup_network(config.ip, config.route, config.dns_servers)

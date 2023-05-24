@@ -3,9 +3,9 @@ Used to check that the example_fastapi program works as expected
 in a deployed supervisor.
 """
 import logging
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from aiohttp import ClientSession, ClientResponseError
+from aiohttp import ClientResponseError, ClientSession
 
 from .conf import settings
 
@@ -49,6 +49,36 @@ async def check_messages(session: ClientSession) -> bool:
         assert "Messages" in result
         assert "messages" in result["Messages"]
         assert "item_hash" in result["Messages"]["messages"][0]
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_dns(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/dns")
+        assert result["ipv4"]
+        assert result["ipv6"]
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_ipv4(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/ip/4")
+        assert result["result"] is True
+        assert "headers" in result
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_ipv6(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/ip/6")
+        assert result["result"] is True
+        assert "headers" in result
         return True
     except ClientResponseError:
         return False

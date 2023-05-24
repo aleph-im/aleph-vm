@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import socket
+import subprocess
 import sys
 from datetime import datetime
 from os import listdir
@@ -14,14 +16,16 @@ logger.debug("import aiohttp")
 import aiohttp
 
 logger.debug("import aleph_client")
-from aleph_client.types import StorageEnum
-from aleph_client.asynchronous import get_messages, create_post
+from aleph_client.asynchronous import create_post, get_messages
 from aleph_client.chains.remote import RemoteAccount
-from aleph_client.vm.cache import VmCache
+from aleph_client.types import StorageEnum
 from aleph_client.vm.app import AlephApp
+from aleph_client.vm.cache import VmCache
 
 logger.debug("import fastapi")
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+
 logger.debug("imports done")
 
 http_app = FastAPI()
@@ -37,8 +41,18 @@ async def index():
         opt_venv = []
     return {
         "Example": "example_fastapi",
-        "endpoints": ["/environ", "/messages", "/internet", "/post_a_message",
-                      "/state/increment", "/wait-for/{delay}"],
+        "endpoints": [
+            "/environ",
+            "/messages",
+            "/dns",
+            "ip/address",
+            "/ip/4",
+            "/ip/6",
+            "/internet",
+            "/post_a_message",
+            "/state/increment",
+            "/wait-for/{delay}",
+        ],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
         },
@@ -60,10 +74,66 @@ async def read_aleph_messages():
     return {"Messages": data}
 
 
+@app.get("/dns")
+async def resolve_dns_hostname():
+    """Check if DNS resolution is working."""
+    info_inet, info_inet6 = socket.getaddrinfo(
+        "example.org", 80, proto=socket.IPPROTO_TCP
+    )
+    ipv4 = info_inet[4][0]
+    ipv6 = info_inet6[4][0]
+    return {
+        "ipv4": ipv4,
+        "ipv6": ipv6,
+    }
+
+
+@app.get("/ip/address")
+async def ip_address():
+    """Fetch the ip addresses of the virtual machine."""
+    output = subprocess.check_output(["ip", "addr"], shell=False)
+    return PlainTextResponse(content=output)
+
+
+@app.get("/ip/4")
+async def connect_ipv4():
+    """Connect to the Quad9 VPN provider using their IPv4 address.
+    The webserver on that address returns a 404 error, so we accept that response code.
+    """
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(), timeout=timeout
+    ) as session:
+        async with session.get("https://9.9.9.9") as resp:
+            # We expect this endpoint to return a 404 error
+            if resp.status != 404:
+                resp.raise_for_status()
+            return {"result": True, "headers": resp.headers}
+
+
+@app.get("/ip/6")
+async def connect_ipv6():
+    """Connect to the Quad9 VPN provider using their IPv6 address.
+    The webserver on that address returns a 404 error, so we accept that response code.
+    """
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(), timeout=timeout
+    ) as session:
+        async with session.get("https://[2620:fe::fe]") as resp:
+            # We expect this endpoint to return a 404 error
+            if resp.status != 404:
+                resp.raise_for_status()
+            return {"result": True, "headers": resp.headers}
+
+
 @app.get("/internet")
 async def read_internet():
-    """Read data from the public Internet using aiohttp."""
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
+    """Connect the aleph.im official website to check Internet connectivity."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(), timeout=timeout
+    ) as session:
         async with session.get("https://aleph.im/") as resp:
             resp.raise_for_status()
             return {"result": resp.status, "headers": resp.headers}
@@ -74,7 +144,8 @@ async def post_a_message():
     """Post a message on the Aleph network"""
 
     account = await RemoteAccount.from_crypto_host(
-        host="http://localhost", unix_socket="/tmp/socat-socket")
+        host="http://localhost", unix_socket="/tmp/socat-socket"
+    )
 
     content = {
         "date": datetime.utcnow().isoformat(),
@@ -114,10 +185,12 @@ async def remove_from_cache(key: str):
     result = await cache.delete(key)
     return result == 1
 
+
 @app.get("/cache/keys")
-async def keys_from_cache(pattern: str = '*'):
+async def keys_from_cache(pattern: str = "*"):
     """List keys from the VM cache"""
     return await cache.keys(pattern)
+
 
 @app.get("/state/increment")
 async def increment():
@@ -128,7 +201,7 @@ async def increment():
         data["counter"] += 1
     except FileNotFoundError:
         data = {"counter": 0}
-    with open(path, 'w') as fd:
+    with open(path, "w") as fd:
         json.dump(data, fd)
     return data
 
@@ -149,26 +222,31 @@ class CustomError(Exception):
 
 @app.get("/raise")
 def raise_error():
+    """Raises an error to check that the init handles it properly without crashing"""
     raise CustomError("Whoops")
 
 
 @app.get("/crash")
 def crash():
+    """Crash the entire VM in order to check that the supervisor can handle it"""
     sys.exit(1)
 
 
-filters = [{
-    # "sender": "0xB31B787AdA86c6067701d4C0A250c89C7f1f29A5",
-    "channel": "TEST"
-}]
+filters = [
+    {
+        # "sender": "0xB31B787AdA86c6067701d4C0A250c89C7f1f29A5",
+        "channel": "TEST"
+    }
+]
+
 
 @app.event(filters=filters)
 async def aleph_event(event):
     print("aleph_event", event)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
-        async with session.get("https://official.aleph.cloud/api/v0/info/public.json") as resp:
-            print('RESP', resp)
+        async with session.get(
+            "https://official.aleph.cloud/api/v0/info/public.json"
+        ) as resp:
+            print("RESP", resp)
             resp.raise_for_status()
-    return {
-        "result": "Good"
-    }
+    return {"result": "Good"}

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 import msgpack
 from aiohttp import web
@@ -8,15 +8,16 @@ from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
 from msgpack import UnpackValueError
 
 from firecracker.microvm import MicroVMFailedInit
+
 from .conf import settings
 from .messages import load_updated_message
-from .models import VmHash, VmExecution
+from .models import VmExecution, VmHash
 from .pool import VmPool
 from .pubsub import PubSub
 from .vm.firecracker_microvm import (
+    FileTooLargeError,
     ResourceDownloadError,
     VmSetupError,
-    FileTooLargeError,
 )
 
 logger = logging.getLogger(__name__)

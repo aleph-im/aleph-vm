@@ -1,5 +1,5 @@
 import logging
-from typing import List, Coroutine
+from typing import Coroutine, List
 
 from aleph_message.models import AlephMessage, ExecutableMessage
 from aleph_message.models.execution.environment import Subscription

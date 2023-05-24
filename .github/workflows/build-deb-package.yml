@@ -3,13 +3,13 @@ on:
   push
 
 jobs:
-  build_deb:
+  build_deb_debian_11:
     name: "Build Debian Package"
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Unshallow
         run: |
@@ -18,19 +18,56 @@ jobs:
 
       - run: |
           cd packaging && make all-podman-debian-11 && cd ..
-          cd packaging && make all-podman-ubuntu-2004 && cd ..
           ls packaging/target
-          
-      - uses: actions/upload-artifact@v2
+
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-vm.debian-11.deb
           path: packaging/target/aleph-vm.debian-11.deb
 
-      - uses: actions/upload-artifact@v2
+  build_deb_ubuntu_20_04:
+    name: "Build Debian Package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Unshallow
+        run: |
+          git fetch --prune --unshallow
+          git describe --tags
+
+      - run: |
+          cd packaging && make all-podman-ubuntu-2004 && cd ..
+          ls packaging/target
+
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-vm.ubuntu-20.04.deb
           path: packaging/target/aleph-vm.ubuntu-20.04.deb
 
+  build_deb_ubuntu_22_04:
+    name: "Build Debian Package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Unshallow
+        run: |
+          git fetch --prune --unshallow
+          git describe --tags
+
+      - run: |
+          cd packaging && make all-podman-ubuntu-2204 && cd ..
+          ls packaging/target
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: aleph-vm.ubuntu-22.04.deb
+          path: packaging/target/aleph-vm.ubuntu-22.04.deb
 
   build_rootfs:
     name: "Build runtime aleph-debian-11-python"
@@ -38,14 +75,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
+
+      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
+        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
       - run: |
           sudo apt update
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: aleph-debian-11-python.squashfs
           path: runtimes/aleph-debian-11-python/rootfs.squashfs
@@ -57,13 +97,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - run: |
           docker build -t aleph-vm-build-squashfs -f examples/volumes/Dockerfile examples/volumes
           docker run --rm -v "$(pwd)":/mnt aleph-vm-build-squashfs
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: example-volume-venv.squashfs
           path: volume-venv.squashfs
