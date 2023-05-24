@@ -6,7 +6,7 @@ from typing import Tuple
 import cpuinfo
 import psutil
 from aiohttp import web
-from aleph_message.models.executable import CpuProperties
+from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel
 
 from .conf import settings

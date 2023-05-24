@@ -41,9 +41,11 @@
             "seconds": 30
         },
         "rootfs": {
-            "parent": "549ec451d9b099cad112d4aaa2c00ac40fb6729a92ff252ff22eef0b5c3cb613",
+            "parent": {
+                "ref": "549ec451d9b099cad112d4aaa2c00ac40fb6729a92ff252ff22eef0b5c3cb613",
+                "use_latest": true
+            },
             "persistence": "host",
-            "name": "test-rootfs",
             "size_mib": 20000
         },
         "cloud_config": {

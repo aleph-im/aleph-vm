@@ -50,7 +50,7 @@ async def update_with_latest_ref(obj):
 
 
 async def update_message(message: ExecutableMessage):
-    if message.type == MessageType.program :
+    if message.type == MessageType.program:
         # Load amends
         await asyncio.gather(
             update_with_latest_ref(message.content.runtime),

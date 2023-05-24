@@ -10,8 +10,7 @@ import pydantic
 from aiohttp import web
 from yarl import URL
 
-from aleph_message import Message
-from aleph_message.models import BaseMessage, ProgramMessage, InstanceMessage
+from aleph_message.models import AlephMessage, ProgramMessage, InstanceMessage
 from .conf import settings
 from .messages import load_updated_message
 from .models import VmHash
@@ -36,7 +35,7 @@ async def retry_generator(
         retry_delay = max(retry_delay * 2, max_seconds)
 
 
-async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
+async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
     logger.debug("subscribe_via_ws()")
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(url) as ws:
@@ -65,7 +64,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                         continue
 
                     try:
-                        yield Message(**data)
+                        yield AlephMessage(**data)
                     except pydantic.error_wrappers.ValidationError as error:
                         logger.error(
                             f"Invalid Aleph message: \n  {error.json()}\n  {error.raw_errors}",

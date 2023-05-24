@@ -19,13 +19,14 @@ from shutil import make_archive
 
 import aiohttp
 from aleph_message.models import ExecutableMessage, InstanceMessage, ProgramMessage, MessageType
-from aleph_message.models.executable import (
-    Encoding,
+from aleph_message.models.execution.volume import (
     MachineVolume,
     ImmutableVolume,
     PersistentVolume,
     VolumePersistence,
 )
+from aleph_message.models.execution.program import Encoding
+from aleph_message.models.execution.instance import RootfsVolume
 
 from .conf import settings
 
@@ -168,13 +169,14 @@ def check_device_exists(path: Path) -> bool:
         return False
 
 
-async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
-    volume_dev_name = f"{namespace}_{volume.name}"
+async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
+    volume_name = volume.name if isinstance(volume, RootfsVolume) else "rootfs"
+    volume_dev_name = f"{namespace}_{volume_name}"
     path_volume_dev_name = Path(f"/dev/mapper/{volume_dev_name}")
     if check_device_exists(path_volume_dev_name):
         return path_volume_dev_name
     path = Path(
-        join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+        join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume_name}.ext4")
     )
     if not os.path.isfile(path):
         logger.debug(f"Creating {volume.size_mib}MB volume")
@@ -182,7 +184,7 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
         if settings.USE_JAILER:
             os.system(f"chown jailman:jailman {path}")
     try:
-        parent_path = await get_runtime_path(volume.parent)
+        parent_path = await get_runtime_path(volume.parent.ref)
         loop_base = subprocess.run(
             ["losetup", "--find", "--show", "--read-only", parent_path],
             check=True,
@@ -204,7 +206,7 @@ async def create_devmapper(volume: PersistentVolume, namespace: str) -> Path:
             capture_output=True,
             encoding="UTF-8").stdout.strip()
         table_command = f"0 {root_size} linear {loop_base} 0\n{root_size} {volume_data_size} zero"
-        base_dev_name = f"{namespace}_{volume.name}_base"
+        base_dev_name = f"{namespace}_{volume_name}_base"
         os.system(f" printf \"{table_command}\" | dmsetup create {base_dev_name}")
         path_base_dev_name = f"/dev/mapper/{base_dev_name}"
         table_command = f"0 {volume_data_size} snapshot {path_base_dev_name} {loop_user_data} P 8"
@@ -235,11 +237,12 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         return await get_existing_file(ref)
-    elif isinstance(volume, PersistentVolume):
+    elif isinstance(volume, PersistentVolume) | isinstance(volume, RootfsVolume):
+        volume_name = volume.name if isinstance(volume, RootfsVolume) else "rootfs"
         if volume.persistence != VolumePersistence.host:
             raise NotImplementedError("Only 'host' persistence is supported")
-        if not re.match(r"^[\w\-_/]+$", volume.name):
-            raise ValueError(f"Invalid value for volume name: {volume.name}")
+        if not re.match(r"^[\w\-_/]+$", volume_name):
+            raise ValueError(f"Invalid value for volume name: {volume_name}")
         os.makedirs(join(settings.PERSISTENT_VOLUMES_DIR, namespace), exist_ok=True)
         if volume.parent:
             device_path = await asyncio.get_event_loop().run_in_executor(
@@ -248,7 +251,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             return device_path
         else:
             volume_path = Path(
-                join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume.name}.ext4")
+                join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume_name}.ext4")
             )
             await asyncio.get_event_loop().run_in_executor(
                 None, create_ext4, volume_path, volume.size_mib

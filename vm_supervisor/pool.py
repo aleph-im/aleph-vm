@@ -28,10 +28,10 @@ class VmPool:
         self.executions = {}
 
     async def create_a_vm(
-        self, vm_hash: VmHash, program: ExecutableContent, original: ExecutableContent
+        self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        execution = VmExecution(vm_hash=vm_hash, program=program, original=original)
+        execution = VmExecution(vm_hash=vm_hash, message=message, original=original)
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()

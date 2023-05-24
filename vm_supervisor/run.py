@@ -51,7 +51,7 @@ async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
     try:
         execution = await pool.create_a_vm(
             vm_hash=vm_hash,
-            program=message.content,
+            message=message.content,
             original=original_message.content,
         )
     except ResourceDownloadError as error:
@@ -63,7 +63,7 @@ async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
     except VmSetupError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during program initialisation")
+        raise HTTPInternalServerError(reason="Error during vm initialisation")
     except MicroVMFailedInit as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
@@ -144,7 +144,7 @@ async def run_code_on_request(
         headers.update(
             {
                 "Aleph-Program-ItemHash": execution.vm_hash,
-                "Aleph-Program-Code-Ref": execution.program.code.ref,
+                "Aleph-Program-Code-Ref": execution.message.code.ref,
                 # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
             }
         )
