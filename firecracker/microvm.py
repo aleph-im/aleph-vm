@@ -14,7 +14,6 @@ from typing import Optional, Tuple, List
 
 from .config import FirecrackerConfig
 from .config import Drive
-from vm_supervisor.storage import check_device_exists
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +63,8 @@ async def setfacl():
 class MicroVM:
     vm_id: int
     use_jailer: bool
-    firecracker_bin_path: str
-    jailer_bin_path: Optional[str]
+    firecracker_bin_path: Path
+    jailer_bin_path: Optional[Path]
     proc: Optional[asyncio.subprocess.Process] = None
     network_tap: Optional[str] = None
     network_interface: Optional[str] = None
@@ -74,7 +73,7 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
-    mounted_fs: Optional[str] = None
+    mounted_fs: Optional[Path] = None
 
     _unix_socket: Server
 
@@ -112,9 +111,9 @@ class MicroVM:
     def __init__(
         self,
         vm_id: int,
-        firecracker_bin_path: str,
+        firecracker_bin_path: Path,
         use_jailer: bool = True,
-        jailer_bin_path: Optional[str] = None,
+        jailer_bin_path: Optional[Path] = None,
         init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
@@ -259,19 +258,19 @@ class MicroVM:
         )
         return self.proc
 
-    def enable_kernel(self, kernel_image_path: str) -> str:
+    def enable_kernel(self, kernel_image_path: Path) -> Path:
         """Make a kernel available to the VM.
 
         Creates a symlink to the kernel file if jailer is in use.
         """
         if self.use_jailer:
-            kernel_filename = Path(kernel_image_path).name
+            kernel_filename = kernel_image_path.name
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
             os.link(kernel_image_path, f"{self.jailer_path}{jailer_kernel_image_path}")
             kernel_image_path = jailer_kernel_image_path
         return kernel_image_path
 
-    def enable_rootfs(self, path_on_host: str) -> str:
+    def enable_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
         Creates a symlink to the rootfs file if jailer is in use.
@@ -280,18 +279,18 @@ class MicroVM:
             rootfs_filename = Path(path_on_host).name
             jailer_path_on_host = f"/opt/{rootfs_filename}"
             os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
-            return jailer_path_on_host
+            return Path(jailer_path_on_host)
         else:
             return path_on_host
 
-    def mount_rootfs(self, path_on_host: str) -> str:
+    def mount_rootfs(self, path_on_host: Path) -> Path:
         """Mount a rootfs to the VM.
         """
         self.mounted_fs = path_on_host
         if self.use_jailer:
             rootfs_filename = Path(path_on_host).name
-            jailer_path_on_host = f"{DEVICE_BASE_DIRECTORY}/{rootfs_filename}"
-            if not check_device_exists(Path(f"{self.jailer_path}/{jailer_path_on_host}")):
+            jailer_path_on_host = Path(f"{DEVICE_BASE_DIRECTORY}/{rootfs_filename}")
+            if not (self.jailer_path / jailer_path_on_host).is_block_device():
                 device_vm_path = f"{DEVICE_BASE_DIRECTORY}/{self.vm_id}"
                 subprocess.run(["mkdir", "-p", device_vm_path],
                                check=True,
@@ -316,7 +315,7 @@ class MicroVM:
     def compute_device_name(index: int) -> str:
         return f"vd{string.ascii_lowercase[index + 1]}"
 
-    def enable_drive(self, drive_path: str, read_only: bool = True) -> Drive:
+    def enable_drive(self, drive_path: Path, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
         Creates a symlink to the volume file if jailer is in use.
@@ -324,14 +323,14 @@ class MicroVM:
         index = len(self.drives)
         device_name = self.compute_device_name(index)
         if self.use_jailer:
-            drive_filename = Path(drive_path).name
+            drive_filename = drive_path.name
             jailer_path_on_host = f"/opt/{drive_filename}"
             os.link(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
             drive_path = jailer_path_on_host
 
         drive = Drive(
             drive_id=device_name,
-            path_on_host=Path(drive_path),
+            path_on_host=drive_path,
             is_root_device=False,
             is_read_only=read_only,
         )
@@ -490,7 +489,7 @@ class MicroVM:
         if self.mounted_fs:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
-            root_fs = Path(self.mounted_fs).name
+            root_fs = self.mounted_fs.name
             os.system(f"dmsetup remove {root_fs} {root_fs}_base")
             if self.use_jailer:
                 os.system(f"umount {self.jailer_path}/dev/mapper")

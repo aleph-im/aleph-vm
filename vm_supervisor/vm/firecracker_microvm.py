@@ -32,7 +32,7 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 from ..conf import settings
 from ..models import ExecutableContent
-from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path, create_devmapper, check_device_exists
+from ..storage import get_code_path, get_runtime_path, get_data_path, get_volume_path, create_devmapper
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -161,7 +161,7 @@ class AlephFirecrackerResources:
     async def download_runtime(self):
         if hasattr(self.message_content, "rootfs"):
             self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
-            assert check_device_exists(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+            assert self.rootfs_path.is_block_device(), f"Runtime not found on {self.rootfs_path}"
         else:
             runtime_ref: str = self.message_content.runtime.ref
             try:
@@ -295,10 +295,9 @@ class AlephFirecrackerVM:
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=Path(
-                        fvm.mount_rootfs(self.resources.rootfs_path) if self.is_instance
-                        else fvm.enable_rootfs(self.resources.rootfs_path)
-                    ),
+                    path_on_host=fvm.mount_rootfs(self.resources.rootfs_path) if self.is_instance
+                    else fvm.enable_rootfs(self.resources.rootfs_path)
+                    ,
                     is_root_device=True,
                     is_read_only=not self.is_instance,
                 ),

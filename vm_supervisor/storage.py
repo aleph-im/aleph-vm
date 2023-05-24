@@ -162,18 +162,11 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-def check_device_exists(path: Path) -> bool:
-    try:
-        return stat.S_ISBLK(os.stat(path).st_mode)
-    except Exception:
-        return False
-
-
 async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
-    volume_name = volume.name if isinstance(volume, RootfsVolume) else "rootfs"
+    volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     volume_dev_name = f"{namespace}_{volume_name}"
     path_volume_dev_name = Path(f"/dev/mapper/{volume_dev_name}")
-    if check_device_exists(path_volume_dev_name):
+    if path_volume_dev_name.is_block_device():
         return path_volume_dev_name
     path = Path(
         join(settings.PERSISTENT_VOLUMES_DIR, namespace, f"{volume_name}.ext4")

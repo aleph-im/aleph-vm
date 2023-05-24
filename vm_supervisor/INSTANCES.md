@@ -1,7 +1,7 @@
 
 # Instance Messages
 
-I have added support to Instance message in the aleph-message repository, in this PR:
+Support of Instance message in the aleph-message repository was added in this PR:
 https://github.com/aleph-im/aleph-message/pull/48
 
 ## Changes added
