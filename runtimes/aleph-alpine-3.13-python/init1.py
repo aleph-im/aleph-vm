@@ -137,8 +137,9 @@ def setup_network(
         system("ip link set eth0 up")
 
         if route:
-            system(f"ip route add default via {route} dev eth0")
-            logger.debug(f"IP and route set: {ip} via {route}")
+            route_ip = route.split("/", 1)[0]
+            system(f"ip route add default via {route_ip} dev eth0")
+            logger.debug(f"IP and route set: {ip} via {route_ip}")
         else:
             logger.warning("IPv4 set with no network route")
 
