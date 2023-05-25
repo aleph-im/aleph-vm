@@ -131,7 +131,7 @@ async def benchmark(runs: int):
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
 
-    ref = VmHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
+    ref = VmHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
     FakeRequest: Request
