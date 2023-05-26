@@ -4,6 +4,7 @@ from ipaddress import IPv4Interface
 from subprocess import run
 
 from .ipaddresses import IPv4NetworkWithInterfaces
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,11 @@ class TapInterface:
     async def create(self):
         logger.debug("Create network interface")
 
-        run(["/usr/bin/ip", "tuntap", "add", self.device_name, "mode", "tap"])
+        ip_command = shutil.which("ip")
+        run([ip_command, "tuntap", "add", self.device_name, "mode", "tap"])
         run(
             [
-                "/usr/bin/ip",
+                ip_command,
                 "addr",
                 "add",
                 str(self.host_ip.with_prefixlen),
@@ -38,7 +40,7 @@ class TapInterface:
                 self.device_name,
             ]
         )
-        run(["/usr/bin/ip", "link", "set", self.device_name, "up"])
+        run([ip_command, "link", "set", self.device_name, "up"])
         logger.debug(f"Network interface created: {self.device_name}")
 
     async def delete(self) -> None:
