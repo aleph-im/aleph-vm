@@ -15,7 +15,7 @@ mount rootfs.ext4 /mnt/vm
 
 rm -rf ./docker-image
 docker buildx build -t docker-image --output type=local,dest=./docker-image .
-cp -vap ./docker/. ./rootfs/
+cp -vap ./docker-image/. ./rootfs/
 
 chroot ./rootfs /bin/sh <<EOT
 

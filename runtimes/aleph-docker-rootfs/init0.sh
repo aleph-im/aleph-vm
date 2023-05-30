@@ -26,6 +26,7 @@ lsblk
 # TODO: Move in init1
 mkdir -p /run/sshd
 /usr/sbin/sshd &
+service nginx start
 log "SSH UP"
 
 log "Setup socat"

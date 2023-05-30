@@ -284,7 +284,7 @@ class MicroVM:
             device_vm_path = Path(DEVICE_BASE_DIRECTORY) / str(self.vm_id)
             device_vm_path.mkdir(exist_ok=True, parents=True)
             path_to_mount = device_vm_path / rootfs_filename
-            path_on_host.symlink_to(path_to_mount)
+            path_to_mount.symlink_to(path_on_host)
             # Copy all the /dev/dm-* special block files to make the mapping work on Jailer
             os.system(f"cp -vap /dev/dm* {self.jailer_path}/dev/")
             # Mount as bind the /dev/mapper folder because if we change it as hardlinks it doesn't work

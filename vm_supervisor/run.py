@@ -145,7 +145,7 @@ async def run_code_on_request(
         headers.update(
             {
                 "Aleph-Program-ItemHash": execution.vm_hash,
-                "Aleph-Program-Code-Ref": execution.message.code.ref,
+                "Aleph-Program-Code-Ref": execution.message.code.ref if not execution.is_instance else None,
                 # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
             }
         )
