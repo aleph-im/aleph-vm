@@ -148,7 +148,7 @@ class AlephFirecrackerResources:
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
-        self.kernel_image_path = settings.LINUX_PATH
+        self.kernel_image_path = Path(settings.LINUX_PATH)
         assert isfile(self.kernel_image_path)
 
     async def download_code(self):
