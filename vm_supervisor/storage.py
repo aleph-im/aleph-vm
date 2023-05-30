@@ -15,6 +15,7 @@ import subprocess
 from os.path import isfile, join
 from pathlib import Path
 from shutil import make_archive
+from typing import Union
 
 import aiohttp
 from aleph_message.models import ExecutableMessage, InstanceMessage, ProgramMessage, MessageType
@@ -161,7 +162,7 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
+async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2"""
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
