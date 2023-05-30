@@ -100,7 +100,7 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
             await dispatcher.publish(key=message.content.ref, value=message)
 
         # Register new VM to run on future messages:
-        if isinstance(message, ProgramMessage) | isinstance(message, InstanceMessage):
+        if isinstance(message, ProgramMessage):
             if message.content.on.message:
                 reactor.register(message)
         await reactor.trigger(message=message)
@@ -116,8 +116,9 @@ async def start_watch_for_messages_task(app: web.Application):
     sample_message, _ = await load_updated_message(
         ref=VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
     )
-    assert sample_message.content.on.message, sample_message
-    reactor.register(sample_message)
+    if isinstance(sample_message, ProgramMessage):
+        assert sample_message.content.on.message, sample_message
+        reactor.register(sample_message)
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor

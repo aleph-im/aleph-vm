@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, NewType, Optional
 
-from aleph_message.models import ExecutableContent
+from aleph_message.models import ExecutableContent, InstanceContent
 from aleph_message.models.execution.base import MachineType
 
 from .conf import settings
@@ -84,7 +84,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
-        self.is_instance = self.message.type == MachineType.vm_instance
+        self.is_instance = isinstance(self.message, InstanceContent)
 
     def to_dict(self) -> Dict:
         return {

@@ -361,7 +361,7 @@ class AlephFirecrackerVM:
         """Configure the VM by sending configuration info to it's init"""
 
         if (
-            self.resources.data_path
+            hasattr(self.resources, "data_path") and self.resources.data_path
             and os.path.getsize(self.resources.data_path)
             > settings.MAX_DATA_ARCHIVE_SIZE
         ):
@@ -388,7 +388,7 @@ class AlephFirecrackerVM:
             ]
         else:
             if (
-                self.resources.data_path
+                hasattr(self.resources, "data_path") and self.resources.data_path
                 and os.path.getsize(self.resources.code_path)
                 > settings.MAX_PROGRAM_ARCHIVE_SIZE
             ):
