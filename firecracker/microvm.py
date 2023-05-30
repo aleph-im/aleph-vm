@@ -275,29 +275,33 @@ class MicroVM:
         """Mount a rootfs to the VM.
         """
         self.mounted_fs = path_on_host
-        if self.use_jailer:
-            rootfs_filename = Path(path_on_host).name
-            jailer_path_on_host = Path(f"{DEVICE_BASE_DIRECTORY}/{rootfs_filename}")
-            if not (self.jailer_path / jailer_path_on_host).is_block_device():
-                device_vm_path = f"{DEVICE_BASE_DIRECTORY}/{self.vm_id}"
-                subprocess.run(["mkdir", "-p", device_vm_path],
-                               check=True,
-                               capture_output=True)
-                path_to_mount = f"{device_vm_path}/{rootfs_filename}"
-                os.symlink(path_on_host, path_to_mount)
-                os.system(f"cp -vap /dev/dm* {self.jailer_path}/dev/")
-                subprocess.run(
-                    ["mount", "--bind", f"/dev/mapper", f"{self.jailer_path}/dev/mapper"],
-                    check=True,
-                    capture_output=True)
-                subprocess.run(
-                    ["mount", "--rbind", device_vm_path, f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}"],
-                    check=True,
-                    capture_output=True)
-                os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
-            return jailer_path_on_host
-        else:
+        if not self.use_jailer:
             return path_on_host
+
+        rootfs_filename = Path(path_on_host).name
+        jailer_path_on_host = Path(DEVICE_BASE_DIRECTORY) / rootfs_filename
+        if not (self.jailer_path / jailer_path_on_host).is_block_device():
+            device_vm_path = Path(DEVICE_BASE_DIRECTORY) / str(self.vm_id)
+            device_vm_path.mkdir(exist_ok=True, parents=True)
+            path_to_mount = device_vm_path / rootfs_filename
+            path_on_host.symlink_to(path_to_mount)
+            # Copy all the /dev/dm-* special block files to make the mapping work on Jailer
+            os.system(f"cp -vap /dev/dm* {self.jailer_path}/dev/")
+            # Mount as bind the /dev/mapper folder because if we change it as hardlinks it doesn't work
+            subprocess.run(
+                ["mount", "--bind", "/dev/mapper", f"{self.jailer_path}/dev/mapper"],
+                check=True,
+                capture_output=True)
+            # Mount and rbind (recursively bind) /dev/aleph-mapper folder to the Jailer path, but only for the target
+            # VM devices
+            subprocess.run(
+                ["mount", "--rbind", device_vm_path, f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}"],
+                check=True,
+                capture_output=True)
+            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
+
+        return jailer_path_on_host
+
 
     @staticmethod
     def compute_device_name(index: int) -> str:
