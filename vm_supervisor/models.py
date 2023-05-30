@@ -190,17 +190,7 @@ class VmExecution:
             )
 
     async def watch_for_updates(self, pubsub: PubSub):
-        if self.is_instance:
-            await pubsub.msubscribe(
-                self.original.rootfs.parent,
-                self.original.data.ref if hasattr(self.original, "data") and self.original.data else None,
-                *(
-                    volume.ref
-                    for volume in (self.original.volumes or [])
-                    if hasattr(volume, "ref")
-                ),
-            )
-        else:
+        if not self.is_instance:
             await pubsub.msubscribe(
                 self.original.code.ref,
                 self.original.runtime.ref,
