@@ -208,7 +208,8 @@ async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namesp
     base_volume_name = f"{namespace}_{volume_name}_base"
     os.system(f"printf \"{table_command}\" | dmsetup create {base_volume_name}")
     path_base_device_name = Path("/dev/mapper") / base_volume_name
-    # Creates the final mapped device using it as a snapshot of the base disk image
+    # Creates the final mapped device using it as a snapshot of the base disk image. Also, we set the chunk_size to 8
+    # because works, but we need to check how it works deeply.
     table_command = f"0 {extended_block_size} snapshot {path_base_device_name} {extended_loop_device} P 8"
     os.system(f"printf \"{table_command}\" | dmsetup create {mapped_volume_name}")
     # Check and fix the errors on final volume to make the resize command work. For some reason if we don't do it
