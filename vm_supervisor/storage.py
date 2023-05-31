@@ -20,6 +20,7 @@ from typing import Union
 import aiohttp
 from aleph_message.models import ExecutableMessage, InstanceMessage, ProgramMessage, MessageType
 from aleph_message.models.execution.volume import (
+    ImmutableVolume,
     MachineVolume,
     ImmutableVolume,
     PersistentVolume,
@@ -97,8 +98,8 @@ async def get_message(ref: str) -> ExecutableMessage:
                 msg["item_content"].encode("utf-8")
             ).hexdigest()
         if msg["type"] == MessageType.program:
-            return ProgramMessage(**msg)
-        return InstanceMessage(**msg)
+            return ProgramMessage.parse_obj(**msg)
+        return InstanceMessage.parse_obj(**msg)
 
 
 async def get_code_path(ref: str) -> Path:
