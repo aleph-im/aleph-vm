@@ -37,34 +37,35 @@ async def download_file(url: str, local_path: Path) -> None:
     # TODO: Limit max size of download to the message specification
     if isfile(local_path):
         logger.debug(f"File already exists: {local_path}")
-    else:
-        tmp_path = f"{local_path}.part"
-        logger.debug(f"Downloading {url} -> {tmp_path}")
-        async with aiohttp.ClientSession() as session:
-            resp = await session.get(url)
-            resp.raise_for_status()
-            try:
-                with open(tmp_path, "wb") as cache_file:
-                    counter = 0
-                    while True:
-                        chunk = await resp.content.read(65536)
-                        if not chunk:
-                            break
-                        cache_file.write(chunk)
-                        counter += 1
-                        if not (counter % 20):
-                            sys.stdout.write(".")
-                            sys.stdout.flush()
+        return
 
-                os.rename(tmp_path, local_path)
-                logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
-            except Exception:
-                # Ensure no partial file is left
-                try:
-                    os.remove(tmp_path)
-                except FileNotFoundError:
-                    pass
-                raise
+    tmp_path = f"{local_path}.part"
+    logger.debug(f"Downloading {url} -> {tmp_path}")
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(url)
+        resp.raise_for_status()
+        try:
+            with open(tmp_path, "wb") as cache_file:
+                counter = 0
+                while True:
+                    chunk = await resp.content.read(65536)
+                    if not chunk:
+                        break
+                    cache_file.write(chunk)
+                    counter += 1
+                    if not (counter % 20):
+                        sys.stdout.write(".")
+                        sys.stdout.flush()
+
+            os.rename(tmp_path, local_path)
+            logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
+        except Exception:
+            # Ensure no partial file is left
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
 
 async def get_latest_amend(item_hash: str) -> str:
@@ -200,7 +201,13 @@ def get_block_size(device_path: Path) -> str:
 
 
 def create_mapped_device(device_name: str, table_command: str) -> None:
-    os.system(f"printf \"{table_command}\" | dmsetup create {device_name}")
+    subprocess.run(f"dmsetup create {device_name}",
+                   input=table_command,
+                   text=True,
+                   shell=True,
+                   check=True,
+                   stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE)
 
 
 def e2fs_check_and_resize(device_path: Path) -> None:
@@ -257,7 +264,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         return await get_existing_file(ref)
-    elif isinstance(volume, PersistentVolume) | isinstance(volume, RootfsVolume):
+    elif isinstance(volume, PersistentVolume) or isinstance(volume, RootfsVolume):
         volume_name = volume.name if isinstance(volume, RootfsVolume) else "rootfs"
         if volume.persistence != VolumePersistence.host:
             raise NotImplementedError("Only 'host' persistence is supported")
