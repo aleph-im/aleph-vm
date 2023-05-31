@@ -8,7 +8,7 @@ from typing import AsyncIterable, TypeVar
 import aiohttp
 import pydantic
 from aiohttp import web
-from aleph_message import Message
+from aleph_message import parse_message
 from aleph_message.models import BaseMessage, ProgramMessage
 from yarl import URL
 
@@ -63,7 +63,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[BaseMessage]:
                         continue
 
                     try:
-                        yield Message(**data)
+                        yield parse_message(data)
                     except pydantic.error_wrappers.ValidationError as error:
                         logger.error(
                             f"Invalid Aleph message: \n  {error.json()}\n  {error.raw_errors}",

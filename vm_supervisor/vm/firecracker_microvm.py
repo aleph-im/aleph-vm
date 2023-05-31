@@ -18,7 +18,8 @@ except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
 from aleph_message.models import ProgramContent
-from aleph_message.models.program import Encoding, MachineResources
+from aleph_message.models.execution.base import Encoding
+from aleph_message.models.execution.environment import MachineResources
 
 from firecracker.config import (
     BootSource,

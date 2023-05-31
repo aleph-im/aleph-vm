@@ -1,8 +1,8 @@
 import logging
 from typing import Coroutine, List
 
-from aleph_message.models import Message, ProgramMessage
-from aleph_message.models.program import Subscription
+from aleph_message.models import ProgramMessage, AlephMessage
+from aleph_message.models.execution.environment import Subscription
 
 from .pubsub import PubSub
 from .run import run_code_on_event
@@ -44,7 +44,7 @@ class Reactor:
         self.pubsub = pubsub
         self.listeners = []
 
-    async def trigger(self, message: Message):
+    async def trigger(self, message: AlephMessage):
         coroutines: List[Coroutine] = []
 
         for listener in self.listeners:
