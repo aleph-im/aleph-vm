@@ -162,6 +162,45 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
+async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+    volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
+    path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.ext4"
+    if not path.is_file():
+        logger.debug(f"Creating {volume.size_mib}MB volume")
+        os.system(f"dd if=/dev/zero of={path} bs=1M count={volume.size_mib}")
+        if settings.USE_JAILER:
+            os.system(f"chown jailman:jailman {path}")
+    return path
+
+
+async def create_loopback_device(path: Path, read_only: bool = False) -> str:
+    find_flag = "--read-only" if read_only else ""
+    loop_device = subprocess.run(
+        ["losetup", "--find", "--show", find_flag, path],
+        check=True,
+        capture_output=True,
+        encoding="UTF-8").stdout.strip()
+    return loop_device
+
+
+def get_block_size(device_path: Path) -> str:
+    block_size = subprocess.run(
+        ["blockdev", "--getsz", device_path],
+        check=True,
+        capture_output=True,
+        encoding="UTF-8").stdout.strip()
+    return block_size
+
+
+def create_mapped_device(device_name: str, table_command: str) -> None:
+    os.system(f"printf \"{table_command}\" | dmsetup create {device_name}")
+
+
+def e2fs_check_and_resize(device_path: Path) -> None:
+    os.system(f"e2fsck -fy {device_path}")
+    os.system(f"resize2fs {device_path}")
+
+
 async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2"""
@@ -170,52 +209,25 @@ async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namesp
     path_mapped_volume_name = Path("/dev/mapper") / mapped_volume_name
 
     if path_mapped_volume_name.is_block_device():
-        # If the target block device is already set return it
         return path_mapped_volume_name
 
-    path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.ext4"
-    if not path.is_file():
-        # If the target file don´t exists, create it
-        logger.debug(f"Creating {volume.size_mib}MB volume")
-        os.system(f"dd if=/dev/zero of={path} bs=1M count={volume.size_mib}")
-        if settings.USE_JAILER:
-            os.system(f"chown jailman:jailman {path}")
-
+    volume_path = await create_volume_file(volume, namespace)
     parent_path = await get_runtime_path(volume.parent.ref)
-    # Create two loopback devices one as a base and the second one as an extended volume
-    base_loop_device = subprocess.run(
-        ["losetup", "--find", "--show", "--read-only", parent_path],
-        check=True,
-        capture_output=True,
-        encoding="UTF-8").stdout.strip()
-    base_block_size = subprocess.run(
-        ["blockdev", "--getsz", parent_path],
-        check=True,
-        capture_output=True,
-        encoding="UTF-8").stdout.strip()
-    extended_loop_device = subprocess.run(
-        ["losetup", "--find", "--show", path],
-        check=True,
-        capture_output=True,
-        encoding="UTF-8").stdout.strip()
-    extended_block_size = subprocess.run(
-        ["blockdev", "--getsz", path],
-        check=True,
-        capture_output=True,
-        encoding="UTF-8").stdout.strip()
-    # Creates the first mapped device using the base disk image
-    table_command = f"0 {base_block_size} linear {base_loop_device} 0\n{base_block_size} {extended_block_size} zero"
+
+    base_loop_device = await create_loopback_device(parent_path, read_only=True)
+    base_block_size = get_block_size(parent_path)
+    extended_loop_device = await create_loopback_device(volume_path)
+    extended_block_size = get_block_size(volume_path)
+
+    base_table_command = f"0 {base_block_size} linear {base_loop_device} 0\n{base_block_size} {extended_block_size} zero"
     base_volume_name = f"{namespace}_{volume_name}_base"
-    os.system(f"printf \"{table_command}\" | dmsetup create {base_volume_name}")
+    create_mapped_device(base_volume_name, base_table_command)
     path_base_device_name = Path("/dev/mapper") / base_volume_name
-    # Creates the final mapped device using it as a snapshot of the base disk image. Also, we set the chunk_size to 8
-    # because works, but we need to check how it works deeply.
-    table_command = f"0 {extended_block_size} snapshot {path_base_device_name} {extended_loop_device} P 8"
-    os.system(f"printf \"{table_command}\" | dmsetup create {mapped_volume_name}")
-    # Check and fix the errors on final volume to make the resize command work. For some reason if we don't do it
-    # the resize command doesn't run.
-    os.system(f"e2fsck -fy {path_mapped_volume_name}")
-    os.system(f"resize2fs {path_mapped_volume_name}")
+
+    snapshot_table_command = f"0 {extended_block_size} snapshot {path_base_device_name} {extended_loop_device} P 8"
+    create_mapped_device(mapped_volume_name, snapshot_table_command)
+
+    e2fs_check_and_resize(path_mapped_volume_name)
     if settings.USE_JAILER:
         os.system(f"chown jailman:jailman {path_base_device_name}")
         os.system(f"chown jailman:jailman {path_mapped_volume_name}")
