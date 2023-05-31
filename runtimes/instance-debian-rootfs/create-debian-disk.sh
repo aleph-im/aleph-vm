@@ -2,8 +2,6 @@
 
 umount /mnt/vm
 rm ./rootfs.ext4
-rm -fr ./rootfs
-mkdir -p ./rootfs
 mkdir -p /mnt/vm
 
 set -euf
@@ -21,3 +19,6 @@ docker buildx build -t docker-image --output type=local,dest=./docker-image .
 echo "Copying Docker image content to final rootfs file"
 cp -vap ./docker-image/. /mnt/vm
 umount /mnt/vm
+
+echo "Cleaning Docker generated files"
+rm -rf ./docker-image
