@@ -17,8 +17,10 @@ from shutil import make_archive
 
 import aiohttp
 from aleph_message.models import ProgramMessage
-from aleph_message.models.program import (
+from aleph_message.models.execution.base import (
     Encoding,
+)
+from aleph_message.models.execution.volume import (
     ImmutableVolume,
     MachineVolume,
     PersistentVolume,
@@ -92,7 +94,7 @@ async def get_message(ref: str) -> ProgramMessage:
             msg["item_hash"] = hashlib.sha256(
                 msg["item_content"].encode("utf-8")
             ).hexdigest()
-        return ProgramMessage(**msg)
+        return ProgramMessage.parse_obj(msg)
 
 
 async def get_code_path(ref: str) -> Path:
