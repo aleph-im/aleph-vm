@@ -1,10 +1,4 @@
 { modulesPath, pkgs, config,... }:
-let
-  unstable = import
-    (builtins.fetchTarball https://github.com/nixos/nixpkgs/tarball/86c356958133f544901078338d884413e97010b0)
-    # reuse the current configuration
-    { config = config.nixpkgs.config; };
-in
 {
   imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];
   boot.initrd.availableKernelModules =
@@ -21,9 +15,6 @@ in
     { from = "host"; host.port = 4020; guest.port = 4020; }
   ];
 
-  # --
-
-
   users.users = {
     root = {
       initialPassword = "toor";
@@ -34,6 +25,7 @@ in
     };
   };
   users.groups.jailman.members = [ "jailman" ];
+  services.getty.autologinUser = "root";
 
   services.openssh.enable = true;
 
@@ -45,10 +37,11 @@ in
       dockerCompat = true;
 
       # Required for containers under podman-compose to be able to talk to each other.
-      defaultNetwork.dnsname.enable = true;
+      #defaultNetwork.dnsname.enable = true;
     };
+    oci-containers.backend = "podman";
     oci-containers.containers = {
-      container-name = {
+      vm-connector = {
         image = "docker.io/alephim/vm-connector:alpha";
         autoStart = true;
         ports = [ "4021:4021" ];
@@ -58,7 +51,7 @@ in
 
   environment.systemPackages = with pkgs; [
   
-    ( callPackage ./default.nix {} )
+    #( callPackage ./default.nix {} )
   
     helix
 
@@ -70,10 +63,9 @@ in
     debootstrap
     vim
     firecracker
-    unstable.nftables
-#    unstable.python310Packages.nftables
+    nftables
     (
-      unstable.python310.withPackages(ps: with ps; [
+      python310.withPackages(ps: with ps; [
         aiohttp
         msgpack
         aiodns
@@ -89,10 +81,10 @@ in
         (
           buildPythonPackage rec {
             pname = "aleph-message";
-            version = "0.3.0";
+            version = "0.4.0a1";
             src = fetchPypi {
               inherit pname version;
-              sha256 = "sha256-8dr9Kh7LFDgQs43ffgtjCyTS1Q3Y3zy8o0m8SUAQKSc=";
+              sha256 = "sha256-owxMgV99SONtzykgNfwbbRLalhiGWfL49pNXv2YFBpk=";
             };
             doCheck = false;
             propagatedBuildInputs = [
