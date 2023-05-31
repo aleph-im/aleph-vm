@@ -206,10 +206,6 @@ def setup_code_asgi(
 def setup_code_executable(
     code: Optional[bytes], encoding: Optional[Encoding], entrypoint: Optional[str]
 ) -> subprocess.Popen:
-    if not code:
-        logger.debug("No code, it's an instance")
-        process = subprocess.Popen(["/bin/sleep", "infinity"])
-        return process
     logger.debug("Extracting code")
     if encoding == Encoding.squashfs:
         path = f"/opt/code/{entrypoint}"
