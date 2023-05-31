@@ -174,9 +174,16 @@ async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], name
 
 
 async def create_loopback_device(path: Path, read_only: bool = False) -> str:
-    find_flag = "--read-only" if read_only else ""
+    command_args = [
+        "losetup",
+        "--find",
+        "--show"
+    ]
+    if read_only:
+        command_args.append("--read-only")
+    command_args.append(str(path))
     loop_device = subprocess.run(
-        ["losetup", "--find", "--show", find_flag, path],
+        command_args,
         check=True,
         capture_output=True,
         encoding="UTF-8").stdout.strip()
