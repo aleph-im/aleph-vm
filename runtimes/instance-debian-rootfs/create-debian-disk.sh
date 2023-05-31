@@ -17,8 +17,7 @@ mount rootfs.ext4 /mnt/vm
 echo "Building Docker image"
 rm -rf ./docker-image
 docker buildx build -t docker-image --output type=local,dest=./docker-image .
-cp -vap ./docker-image/. ./rootfs/
 
 echo "Copying Docker image content to final rootfs file"
-cp -pr ./rootfs/. /mnt/vm
+cp -vap ./docker-image/. /mnt/vm
 umount /mnt/vm

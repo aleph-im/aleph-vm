@@ -7,33 +7,34 @@ RUN apt-get -y update && apt-get -y install nginx
 COPY nginx/index.html /usr/share/nginx/html/index.html
 COPY nginx/health-check.conf /etc/nginx/conf.d/health-check.conf
 
-# Install all needed dependencies
+# Install all basic dependencies
 RUN apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
-  socat libsecp256k1-0 \
-  \
+  socat libsecp256k1-0
+
+# Install all needed python modules
+RUN apt-get install -y --no-install-recommends --no-install-suggests \
   python3-aiohttp python3-msgpack \
-  python3-setuptools \
-  python3-pip python3-cytoolz python3-pydantic \
-  iproute2 unzip \
-  nodejs npm \
-  build-essential python3-dev \
-  \
-  docker.io \
-  cgroupfs-mount \
-  nftables \
-  \
-  iputils-ping curl
+  python3-setuptools python3-dev \
+  python3-pip python3-cytoolz python3-pydantic
 
+# Install NodeJS and some tools
+RUN apt-get install -y --no-install-recommends --no-install-suggests \
+  iproute2 unzip nodejs npm build-essential iputils-ping curl
+
+# Install Docker
+RUN apt-get install -y --no-install-recommends --no-install-suggests \
+  docker.io cgroupfs-mount nftables
+
+# Install Aleph dependencies
 RUN pip3 install 'fastapi~=0.71.0'
-
-RUN echo "Pip installing aleph-client"
 RUN pip3 install 'aleph-client>=0.4.6' 'coincurve==15.0.0'
 
 # Compile all Python bytecode
 RUN python3 -m compileall -f /usr/local/lib/python3.9
 
+# Enable root login by ssh
 RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 
 # Generate SSH host keys
@@ -42,6 +43,7 @@ RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 #RUN systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
 #RUN systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
 
+# Set root password
 RUN echo "root:toor" | /usr/sbin/chpasswd
 
 # Set up a login terminal on the serial console (ttyS0):
