@@ -50,9 +50,9 @@
   };
 
   environment.systemPackages = with pkgs; [
-  
-    #( callPackage ./default.nix {} )
-  
+
+    ( callPackage ./default.nix {} )
+
     helix
 
     git
