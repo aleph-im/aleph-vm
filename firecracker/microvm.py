@@ -71,7 +71,7 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
-    mount_fs: Optional[Path] = None
+    mounted_rootfs: Optional[Path] = None
 
     _unix_socket: Server
 
@@ -279,7 +279,7 @@ class MicroVM:
     def enable_device_mapper_rootfs(self, path_on_host: Path) -> Path:
         """Mount a rootfs to the VM.
         """
-        self.mount_fs = path_on_host
+        self.mounted_rootfs = path_on_host
         if not self.use_jailer:
             return path_on_host
 
@@ -433,10 +433,10 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
-        if self.mount_fs:
+        if self.mounted_rootfs:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
-            root_fs = self.mount_fs.name
+            root_fs = self.mounted_rootfs.name
             os.system(f"dmsetup remove {root_fs}")
             if self.use_jailer:
                 shutil.rmtree(self.jailer_path)
