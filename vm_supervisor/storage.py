@@ -98,8 +98,8 @@ async def get_message(ref: str) -> ExecutableMessage:
                 msg["item_content"].encode("utf-8")
             ).hexdigest()
         if msg["type"] == MessageType.program:
-            return ProgramMessage.parse_obj(**msg)
-        return InstanceMessage.parse_obj(**msg)
+            return ProgramMessage.parse_obj(msg)
+        return InstanceMessage.parse_obj(msg)
 
 
 async def get_code_path(ref: str) -> Path:
