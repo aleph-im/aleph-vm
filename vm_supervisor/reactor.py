@@ -25,7 +25,7 @@ def is_equal_or_includes(value, compare_to) -> bool:
         raise ValueError("Unsupported value")
 
 
-def subscription_matches(subscription: Subscription, message: ExecutableMessage) -> bool:
+def subscription_matches(subscription: Subscription, message: AlephMessage) -> bool:
     if not subscription:
         # Require at least one value to match
         return False
@@ -38,7 +38,7 @@ def subscription_matches(subscription: Subscription, message: ExecutableMessage)
 class Reactor:
 
     pubsub: PubSub
-    listeners: List[ExecutableMessage]
+    listeners: List[AlephMessage]
 
     def __init__(self, pubsub: PubSub):
         self.pubsub = pubsub
@@ -67,7 +67,7 @@ class Reactor:
         for coroutine in coroutines:
             create_task_log_exceptions(coroutine)
 
-    def register(self, message: ExecutableMessage):
+    def register(self, message: AlephMessage):
         if message.content.on.message:
             self.listeners.append(message)
         else:
