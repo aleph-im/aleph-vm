@@ -33,6 +33,8 @@ from .conf import settings
 
 logger = logging.getLogger(__name__)
 
+DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
+
 
 async def download_file(url: str, local_path: Path) -> None:
     # TODO: Limit max size of download to the message specification
@@ -221,7 +223,7 @@ async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namesp
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2"""
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     mapped_volume_name = f"{namespace}_{volume_name}"
-    path_mapped_volume_name = Path("/dev/mapper") / mapped_volume_name
+    path_mapped_volume_name = Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name
 
     if path_mapped_volume_name.is_block_device():
         return path_mapped_volume_name
@@ -235,9 +237,10 @@ async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namesp
     extended_block_size = get_block_size(volume_path)
 
     base_table_command = f"0 {base_block_size} linear {base_loop_device} 0\n{base_block_size} {extended_block_size} zero"
-    base_volume_name = f"{namespace}_{volume_name}_base"
-    create_mapped_device(base_volume_name, base_table_command)
-    path_base_device_name = Path("/dev/mapper") / base_volume_name
+    base_volume_name = volume.parent.ref
+    path_base_device_name = Path(DEVICE_MAPPER_DIRECTORY) / base_volume_name
+    if not path_base_device_name.is_block_device():
+        create_mapped_device(base_volume_name, base_table_command)
 
     snapshot_table_command = f"0 {extended_block_size} snapshot {path_base_device_name} {extended_loop_device} P 8"
     create_mapped_device(mapped_volume_name, snapshot_table_command)

@@ -71,7 +71,7 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
-    mounted_fs: Optional[Path] = None
+    mount_fs: Optional[Path] = None
 
     _unix_socket: Server
 
@@ -136,7 +136,6 @@ class MicroVM:
         #
         system(f"mkdir -p {self.jailer_path}/opt")
         system(f"mkdir -p {self.jailer_path}/dev/mapper")
-        system(f"mkdir -p {self.jailer_path}/dev/aleph-mapper")
 
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
@@ -280,13 +279,14 @@ class MicroVM:
     def enable_device_mapper_rootfs(self, path_on_host: Path) -> Path:
         """Mount a rootfs to the VM.
         """
-        self.mounted_fs = path_on_host
+        self.mount_fs = path_on_host
         if not self.use_jailer:
             return path_on_host
 
         rootfs_filename = path_on_host.name
         device_jailer_path = Path(DEVICE_BASE_DIRECTORY) / rootfs_filename
-        if not (self.jailer_path / device_jailer_path).is_block_device():
+        final_path = Path(self.jailer_path) / str(device_jailer_path).strip("/")
+        if not final_path.is_block_device():
             jailer_device_vm_path = Path(f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
             jailer_device_vm_path.mkdir(exist_ok=True, parents=True)
             rootfs_device = path_on_host.resolve()
@@ -433,10 +433,10 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
-        if self.mounted_fs:
+        if self.mount_fs:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
-            root_fs = self.mounted_fs.name
+            root_fs = self.mount_fs.name
             os.system(f"dmsetup remove {root_fs}")
             if self.use_jailer:
                 shutil.rmtree(self.jailer_path)
