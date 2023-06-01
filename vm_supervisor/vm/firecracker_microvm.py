@@ -368,7 +368,8 @@ class AlephFirecrackerVM:
         ):
             raise FileTooLargeError(f"Data file too large to pass as an inline zip")
 
-        input_data: bytes = load_file_content(self.resources.data_path)
+        input_data: bytes = load_file_content(self.resources.data_path) if \
+            hasattr(self.resources, "data_path") else None
 
         interface = (
             Interface.asgi
