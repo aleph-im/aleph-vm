@@ -303,9 +303,7 @@ class AlephFirecrackerVM:
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=fvm.mount_rootfs(self.resources.rootfs_path) if self.is_instance
-                    else fvm.enable_rootfs(self.resources.rootfs_path)
-                    ,
+                    path_on_host=fvm.enable_rootfs(self.resources.rootfs_path),
                     is_root_device=True,
                     is_read_only=not self.is_instance,
                 ),

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os.path
+import shutil
 import string
 import subprocess
 from asyncio import Task
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
 JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
-DEVICE_BASE_DIRECTORY = "/dev/aleph-mapper"
+DEVICE_BASE_DIRECTORY = "/dev/mapper"
 
 
 class MicroVMFailedInit(Exception):
@@ -31,7 +32,6 @@ class JSONBytesEncoder(json.JSONEncoder):
 
     # overload method default
     def default(self, obj):
-
         # Match all the types you want to handle in your converter
         if isinstance(obj, bytes):
             return obj.decode()
@@ -259,6 +259,12 @@ class MicroVM:
         return kernel_image_path
 
     def enable_rootfs(self, path_on_host: Path) -> Path:
+        if path_on_host.is_file():
+            return self.enable_file_rootfs(path_on_host)
+        elif path_on_host.is_block_device():
+            return self.enable_device_mapper_rootfs(path_on_host)
+
+    def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
         Creates a symlink to the rootfs file if jailer is in use.
@@ -271,43 +277,27 @@ class MicroVM:
         else:
             return path_on_host
 
-    def mount_rootfs(self, path_on_host: Path) -> Path:
+    def enable_device_mapper_rootfs(self, path_on_host: Path) -> Path:
         """Mount a rootfs to the VM.
         """
         self.mounted_fs = path_on_host
         if not self.use_jailer:
             return path_on_host
 
-        rootfs_filename = Path(path_on_host).name
-        jailer_path_on_host = Path(DEVICE_BASE_DIRECTORY) / rootfs_filename
-        if not (self.jailer_path / jailer_path_on_host).is_block_device():
-            device_vm_path = Path(DEVICE_BASE_DIRECTORY) / str(self.vm_id)
-            device_vm_path.mkdir(exist_ok=True, parents=True)
-            path_to_mount = device_vm_path / rootfs_filename
+        rootfs_filename = path_on_host.name
+        device_jailer_path = Path(DEVICE_BASE_DIRECTORY) / rootfs_filename
+        if not (self.jailer_path / device_jailer_path).is_block_device():
+            jailer_device_vm_path = Path(f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
+            jailer_device_vm_path.mkdir(exist_ok=True, parents=True)
+            rootfs_device = path_on_host.resolve()
+            # Copy the /dev/dm-{device_id} special block file that is the real mapping destination on Jailer
+            os.system(f"cp -vap {rootfs_device} {self.jailer_path}/dev/")
+            path_to_mount = jailer_device_vm_path / rootfs_filename
             if not path_to_mount.is_symlink():
-                path_to_mount.symlink_to(path_on_host)
-            # Copy all the /dev/dm-* special block files to make the mapping work on Jailer
-            os.system(f"cp -vap /dev/dm* {self.jailer_path}/dev/")
-            jailer_device_path_mount = Path(f"{self.jailer_path}/dev/mapper")
-            if not jailer_device_path_mount.is_mount():
-                # Mount as bind the /dev/mapper folder because if we change it as hardlinks it doesn't work
-                subprocess.run(
-                    ["mount", "--bind", "/dev/mapper", jailer_device_path_mount],
-                    check=True,
-                    capture_output=True)
+                path_to_mount.symlink_to(rootfs_device)
+            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
 
-            jailer_path_to_mount = Path(f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
-            if not jailer_path_to_mount.is_mount():
-                # Mount and rbind (recursively bind) /dev/aleph-mapper folder to the Jailer path, but only for the
-                # target VM devices
-                subprocess.run(
-                    ["mount", "--rbind", device_vm_path, jailer_path_to_mount],
-                    check=True,
-                    capture_output=True)
-                os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
-
-        return jailer_path_on_host
-
+        return device_jailer_path
 
     @staticmethod
     def compute_device_name(index: int) -> str:
@@ -447,12 +437,9 @@ class MicroVM:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
             root_fs = self.mounted_fs.name
-            os.system(f"dmsetup remove {root_fs} {root_fs}_base")
+            os.system(f"dmsetup remove {root_fs}")
             if self.use_jailer:
-                os.system(f"umount {self.jailer_path}/dev/mapper")
-                os.system(f"umount {self.jailer_path}/dev/aleph-mapper")
-                os.system(f"rm -rf {self.jailer_path}/dev")
-                os.system(f"rm -rf {DEVICE_BASE_DIRECTORY}/{self.vm_id}")
+                shutil.rmtree(self.jailer_path)
 
         if self._unix_socket:
             logger.debug("Closing unix socket")

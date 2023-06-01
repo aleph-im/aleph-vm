@@ -43,15 +43,12 @@ RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 #RUN systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
 #RUN systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
 
-# Set root password
-RUN echo "root:toor" | /usr/sbin/chpasswd
-
 # Set up a login terminal on the serial console (ttyS0):
 RUN ln -s agetty /etc/init.d/agetty.ttyS0
 RUN echo ttyS0 > /etc/securetty
 
-# Add custom inittab
-COPY inittab /etc/inittab
+# Set root password
+RUN echo "root:toor" | /usr/sbin/chpasswd
 
 # Reduce size
 RUN rm -fr /root/.cache
@@ -60,9 +57,3 @@ RUN mkdir -p /var/cache/apt/archives/partial
 RUN rm -fr /usr/share/doc
 RUN rm -fr /usr/share/man
 RUN rm -fr /var/lib/apt/lists/
-
-# Add the custom init
-COPY init0.sh /sbin/init
-COPY init1.py /root/init1.py
-RUN chmod +x /sbin/init
-RUN chmod +x /root/init1.py

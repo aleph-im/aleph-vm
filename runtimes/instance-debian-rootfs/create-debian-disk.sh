@@ -16,6 +16,15 @@ echo "Building Docker image"
 rm -rf ./docker-image
 docker buildx build -t docker-image --output type=local,dest=./docker-image .
 
+echo "Adding customizations"
+# Add custom inittab
+cp -vap ./inittab ./docker-image/etc/inittab
+# Copying init scripts
+cp ./init0.sh ./docker-image/sbin/init
+cp ./init1.py ./docker-image/root/init1.py
+chmod +x ./docker-image/sbin/init
+chmod +x ./docker-image/root/init1.py
+
 echo "Copying Docker image content to final rootfs file"
 cp -vap ./docker-image/. /mnt/vm
 umount /mnt/vm
