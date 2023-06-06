@@ -68,6 +68,7 @@ jobs:
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/aleph-vm.ubuntu-22.04.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_DNS_RESOLUTION=resolvectl >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
       - name: Test Aleph-VM on the Droplet
@@ -77,6 +78,14 @@ jobs:
           sleep 3
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
+
+      - name: Schedule an instance on the Droplet by faking a call from the scheduler
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-ubuntu-22-04 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
+            -H "X-Auth-Signature: test" \
+            -d '{"persistent_vms": [], "instances": ["INSTANCE-HASH-TODO-FIXME"]}' \
+            "http://${DROPLET_IPV4}:4020/control/allocations"
 
       - name: Cleanup
         if: always()

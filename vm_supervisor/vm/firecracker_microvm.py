@@ -33,9 +33,10 @@ from firecracker.microvm import MicroVM, setfacl
 from guest_api.__main__ import run_guest_api
 
 from ..conf import settings
+from ..models import ExecutableContent
 from ..network.firewall import teardown_nftables_for_vm
 from ..network.interfaces import TapInterface
-from ..storage import get_code_path, get_data_path, get_runtime_path, get_volume_path
+from ..storage import get_code_path, get_data_path, get_runtime_path, get_volume_path, create_devmapper
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -87,12 +88,12 @@ class HostVolume:
 
 @dataclass
 class ConfigurationPayload:
-    code: bytes
-    encoding: Encoding
-    entrypoint: str
     input_data: bytes
     interface: Interface
     vm_hash: str
+    code: Optional[bytes] = None
+    encoding: Optional[Encoding] = None
+    entrypoint: Optional[str] = None
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
@@ -120,33 +121,40 @@ class RunCodePayload:
 
 class AlephFirecrackerResources:
 
-    message_content: ProgramContent
+    message_content: ExecutableContent
 
     kernel_image_path: Path
-    code_path: Path
-    code_encoding: Encoding
-    code_entrypoint: str
+    code_path: Optional[Path]
+    code_encoding: Optional[Encoding]
+    code_entrypoint: Optional[str]
     rootfs_path: Path
     volumes: List[HostVolume]
     volume_paths: Dict[str, Path]
     data_path: Optional[Path]
     namespace: str
 
-    def __init__(self, message_content: ProgramContent, namespace: str):
+    def __init__(self, message_content: ExecutableContent, namespace: str):
         self.message_content = message_content
-        self.code_encoding = message_content.code.encoding
-        self.code_entrypoint = message_content.code.entrypoint
         self.namespace = namespace
+        if hasattr(message_content, "code"):
+            self.code_encoding = message_content.code.encoding
+            self.code_entrypoint = message_content.code.entrypoint
+        else:
+            self.code_path = None
+            self.code_encoding = None
+            self.code_entrypoint = None
 
     def to_dict(self):
         return self.__dict__
 
     async def download_kernel(self):
         # Assumes kernel is already present on the host
-        self.kernel_image_path = settings.LINUX_PATH
+        self.kernel_image_path = Path(settings.LINUX_PATH)
         assert isfile(self.kernel_image_path)
 
     async def download_code(self):
+        if not hasattr(self.message_content, "code"):
+            return
         code_ref: str = self.message_content.code.ref
         try:
             self.code_path = await get_code_path(code_ref)
@@ -155,21 +163,26 @@ class AlephFirecrackerResources:
         assert isfile(self.code_path), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self):
-        runtime_ref: str = self.message_content.runtime.ref
-        try:
-            self.rootfs_path = await get_runtime_path(runtime_ref)
-        except ClientResponseError as error:
-            raise ResourceDownloadError(error)
-        assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
-
-    async def download_data(self):
-        if self.message_content.data:
-            data_ref: str = self.message_content.data.ref
+        if hasattr(self.message_content, "rootfs"):
+            self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
+            assert self.rootfs_path.is_block_device(), f"Runtime not found on {self.rootfs_path}"
+        else:
+            runtime_ref: str = self.message_content.runtime.ref
             try:
-                self.data_path = await get_data_path(data_ref)
+                self.rootfs_path = await get_runtime_path(runtime_ref)
             except ClientResponseError as error:
                 raise ResourceDownloadError(error)
-            assert isfile(self.data_path)
+            assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+
+    async def download_data(self):
+        if hasattr(self.message_content, "data"):
+            if self.message_content.data:
+                data_ref: str = self.message_content.data.ref
+                try:
+                    self.data_path = await get_data_path(data_ref)
+                except ClientResponseError as error:
+                    raise ResourceDownloadError(error)
+                assert isfile(self.data_path)
         else:
             self.data_path = None
 
@@ -191,8 +204,8 @@ class AlephFirecrackerResources:
     async def download_all(self):
         await asyncio.gather(
             self.download_kernel(),
-            self.download_code(),
             self.download_runtime(),
+            self.download_code(),
             self.download_volumes(),
             self.download_data(),
         )
@@ -212,6 +225,7 @@ class AlephFirecrackerVM:
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
+    is_instance: bool
     hardware_resources: MachineResources
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
@@ -226,6 +240,7 @@ class AlephFirecrackerVM:
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
+        is_instance: bool = False,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -236,6 +251,7 @@ class AlephFirecrackerVM:
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
+        self.is_instance = is_instance
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -282,19 +298,19 @@ class AlephFirecrackerVM:
                 kernel_image_path=Path(
                     fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
-                boot_args=BootSource.args(enable_console=self.enable_console),
+                boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
             ),
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=Path(fvm.enable_rootfs(self.resources.rootfs_path)),
+                    path_on_host=fvm.enable_rootfs(self.resources.rootfs_path),
                     is_root_device=True,
-                    is_read_only=True,
+                    is_read_only=not self.is_instance,
                 ),
             ]
             + (
                 [fvm.enable_drive(self.resources.code_path)]
-                if self.resources.code_encoding == Encoding.squashfs
+                if hasattr(self.resources, "code_encoding") and self.resources.code_encoding == Encoding.squashfs
                 else []
             )
             + [
@@ -344,17 +360,18 @@ class AlephFirecrackerVM:
         """Configure the VM by sending configuration info to it's init"""
 
         if (
-            self.resources.data_path
+            hasattr(self.resources, "data_path") and self.resources.data_path
             and os.path.getsize(self.resources.data_path)
             > settings.MAX_DATA_ARCHIVE_SIZE
         ):
             raise FileTooLargeError(f"Data file too large to pass as an inline zip")
 
-        input_data: bytes = load_file_content(self.resources.data_path)
+        input_data: bytes = load_file_content(self.resources.data_path) if \
+            hasattr(self.resources, "data_path") else None
 
         interface = (
             Interface.asgi
-            if ":" in self.resources.code_entrypoint
+            if self.resources.code_entrypoint and ":" in self.resources.code_entrypoint
             else Interface.executable
         )
 
@@ -371,7 +388,7 @@ class AlephFirecrackerVM:
             ]
         else:
             if (
-                self.resources.data_path
+                hasattr(self.resources, "data_path") and self.resources.data_path
                 and os.path.getsize(self.resources.code_path)
                 > settings.MAX_PROGRAM_ARCHIVE_SIZE
             ):
@@ -379,7 +396,7 @@ class AlephFirecrackerVM:
                     f"Program file too large to pass as an inline zip"
                 )
 
-            code: bytes = load_file_content(self.resources.code_path)
+            code: Optional[bytes] = load_file_content(self.resources.code_path) if self.resources.code_path else None
             volumes = [
                 Volume(
                     mount=volume.mount,

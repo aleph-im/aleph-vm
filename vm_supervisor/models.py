@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, NewType, Optional
 
-from aleph_message.models import ProgramContent
+from aleph_message.models import ExecutableContent, InstanceContent
+from aleph_message.models.execution.base import MachineType
 
 from .conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
@@ -20,7 +21,6 @@ from .vm.firecracker_microvm import AlephFirecrackerResources
 logger = logging.getLogger(__name__)
 
 VmHash = NewType("VmHash", str)
-
 
 @dataclass
 class VmExecutionTimes:
@@ -45,8 +45,8 @@ class VmExecution:
 
     uuid: uuid.UUID  # Unique identifier of this execution
     vm_hash: VmHash
-    original: ProgramContent
-    program: ProgramContent
+    original: ExecutableContent
+    message: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
     vm: Optional[AlephFirecrackerVM] = None
 
@@ -59,6 +59,7 @@ class VmExecution:
     update_task: Optional[asyncio.Task] = None
 
     persistent: bool = False
+    is_instance: bool = False
 
     @property
     def is_running(self):
@@ -73,16 +74,17 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+        self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
-        self.program = program
+        self.message = message
         self.original = original
         self.times = VmExecutionTimes(defined_at=datetime.now())
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.is_instance = isinstance(self.message, InstanceContent)
 
     def to_dict(self) -> Dict:
         return {
@@ -96,7 +98,7 @@ class VmExecution:
     async def prepare(self):
         """Download VM required files"""
         self.times.preparing_at = datetime.now()
-        resources = AlephFirecrackerResources(self.program, namespace=self.vm_hash)
+        resources = AlephFirecrackerResources(self.message, namespace=self.vm_hash)
         await resources.download_all()
         self.times.prepared_at = datetime.now()
         self.resources = resources
@@ -111,9 +113,10 @@ class VmExecution:
             vm_id=vm_id,
             vm_hash=self.vm_hash,
             resources=self.resources,
-            enable_networking=self.program.environment.internet,
-            hardware_resources=self.program.resources,
+            enable_networking=self.message.environment.internet,
+            hardware_resources=self.message.resources,
             tap_interface=tap_interface,
+            is_instance=self.is_instance,
         )
         try:
             await vm.setup()
@@ -187,16 +190,25 @@ class VmExecution:
             )
 
     async def watch_for_updates(self, pubsub: PubSub):
-        await pubsub.msubscribe(
-            self.original.code.ref,
-            self.original.runtime.ref,
-            self.original.data.ref if self.original.data else None,
-            *(
-                volume.ref
-                for volume in (self.original.volumes or [])
-                if hasattr(volume, "ref")
-            ),
-        )
+        if self.is_instance:
+            await pubsub.msubscribe(
+                *(
+                    volume.ref
+                    for volume in (self.original.volumes or [])
+                    if hasattr(volume, "ref")
+                ),
+            )
+        else:
+            await pubsub.msubscribe(
+                self.original.code.ref,
+                self.original.runtime.ref,
+                self.original.data.ref if self.original.data else None,
+                *(
+                    volume.ref
+                    for volume in (self.original.volumes or [])
+                    if hasattr(volume, "ref")
+                ),
+            )
         logger.debug("Update received, stopping VM...")
         await self.stop()
 

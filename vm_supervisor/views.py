@@ -215,6 +215,19 @@ async def update_allocations(request: web.Request):
             await execution.stop()
             execution.persistent = False
 
+    # Start Instances
+    for instance_hash in allocation.instances:
+        instance_hash = VmHash(instance_hash)
+        logger.info(f"Starting instance {instance_hash}")
+        await start_persistent_vm(instance_hash, pubsub)
+
+    # Stop Instances
+    for execution in pool.get_instance_executions():
+        if execution.vm_hash not in allocation.instances:
+            logger.info(f"Stopping instance {execution.vm_hash}")
+            await execution.stop()
+            execution.persistent = False
+
     # Log unsupported features
     if allocation.on_demand_vms:
         logger.warning("Not supported yet: 'allocation.on_demand_vms'")

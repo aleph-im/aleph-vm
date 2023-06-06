@@ -60,9 +60,9 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: bytes = None
-    encoding: Encoding = None
-    entrypoint: str = None
+    code: Optional[bytes] = None
+    encoding: Optional[Encoding] = None
+    entrypoint: Optional[str] = None
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
@@ -204,8 +204,12 @@ def setup_code_asgi(
 
 
 def setup_code_executable(
-    code: bytes, encoding: Encoding, entrypoint: str
+    code: Optional[bytes], encoding: Optional[Encoding], entrypoint: Optional[str]
 ) -> subprocess.Popen:
+    if not code:
+        logger.debug("No code, it's an instance")
+        process = subprocess.Popen(["/bin/sleep", "infinity"])
+        return process
     logger.debug("Extracting code")
     if encoding == Encoding.squashfs:
         path = f"/opt/code/{entrypoint}"
