@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os.path
+import shutil
 import string
+import subprocess
 from asyncio import Task
 from asyncio.base_events import Server
 from os import getuid
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
 JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
+DEVICE_BASE_DIRECTORY = "/dev/mapper"
 
 
 class MicroVMFailedInit(Exception):
@@ -29,7 +32,6 @@ class JSONBytesEncoder(json.JSONEncoder):
 
     # overload method default
     def default(self, obj):
-
         # Match all the types you want to handle in your converter
         if isinstance(obj, bytes):
             return obj.decode()
@@ -61,14 +63,15 @@ async def setfacl():
 class MicroVM:
     vm_id: int
     use_jailer: bool
-    firecracker_bin_path: str
-    jailer_bin_path: Optional[str]
+    firecracker_bin_path: Path
+    jailer_bin_path: Optional[Path]
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
+    mounted_rootfs: Optional[Path] = None
 
     _unix_socket: Server
 
@@ -98,9 +101,9 @@ class MicroVM:
     def __init__(
         self,
         vm_id: int,
-        firecracker_bin_path: str,
+        firecracker_bin_path: Path,
         use_jailer: bool = True,
-        jailer_bin_path: Optional[str] = None,
+        jailer_bin_path: Optional[Path] = None,
         init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
@@ -132,6 +135,7 @@ class MicroVM:
         system(f"chown jailman:jailman {self.jailer_path}/tmp/")
         #
         system(f"mkdir -p {self.jailer_path}/opt")
+        system(f"mkdir -p {self.jailer_path}/dev/mapper")
 
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
@@ -241,19 +245,25 @@ class MicroVM:
         )
         return self.proc
 
-    def enable_kernel(self, kernel_image_path: str) -> str:
+    def enable_kernel(self, kernel_image_path: Path) -> Path:
         """Make a kernel available to the VM.
 
         Creates a symlink to the kernel file if jailer is in use.
         """
         if self.use_jailer:
-            kernel_filename = Path(kernel_image_path).name
+            kernel_filename = kernel_image_path.name
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
             os.link(kernel_image_path, f"{self.jailer_path}{jailer_kernel_image_path}")
             kernel_image_path = jailer_kernel_image_path
         return kernel_image_path
 
-    def enable_rootfs(self, path_on_host: str) -> str:
+    def enable_rootfs(self, path_on_host: Path) -> Path:
+        if path_on_host.is_file():
+            return self.enable_file_rootfs(path_on_host)
+        elif path_on_host.is_block_device():
+            return self.enable_device_mapper_rootfs(path_on_host)
+
+    def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
         Creates a symlink to the rootfs file if jailer is in use.
@@ -262,15 +272,38 @@ class MicroVM:
             rootfs_filename = Path(path_on_host).name
             jailer_path_on_host = f"/opt/{rootfs_filename}"
             os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
-            return jailer_path_on_host
+            return Path(jailer_path_on_host)
         else:
             return path_on_host
+
+    def enable_device_mapper_rootfs(self, path_on_host: Path) -> Path:
+        """Mount a rootfs to the VM.
+        """
+        self.mounted_rootfs = path_on_host
+        if not self.use_jailer:
+            return path_on_host
+
+        rootfs_filename = path_on_host.name
+        device_jailer_path = Path(DEVICE_BASE_DIRECTORY) / rootfs_filename
+        final_path = Path(self.jailer_path) / str(device_jailer_path).strip("/")
+        if not final_path.is_block_device():
+            jailer_device_vm_path = Path(f"{self.jailer_path}/{DEVICE_BASE_DIRECTORY}")
+            jailer_device_vm_path.mkdir(exist_ok=True, parents=True)
+            rootfs_device = path_on_host.resolve()
+            # Copy the /dev/dm-{device_id} special block file that is the real mapping destination on Jailer
+            os.system(f"cp -vap {rootfs_device} {self.jailer_path}/dev/")
+            path_to_mount = jailer_device_vm_path / rootfs_filename
+            if not path_to_mount.is_symlink():
+                path_to_mount.symlink_to(rootfs_device)
+            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
+
+        return device_jailer_path
 
     @staticmethod
     def compute_device_name(index: int) -> str:
         return f"vd{string.ascii_lowercase[index + 1]}"
 
-    def enable_drive(self, drive_path: str, read_only: bool = True) -> Drive:
+    def enable_drive(self, drive_path: Path, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
         Creates a symlink to the volume file if jailer is in use.
@@ -278,14 +311,14 @@ class MicroVM:
         index = len(self.drives)
         device_name = self.compute_device_name(index)
         if self.use_jailer:
-            drive_filename = Path(drive_path).name
+            drive_filename = drive_path.name
             jailer_path_on_host = f"/opt/{drive_filename}"
             os.link(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
             drive_path = jailer_path_on_host
 
         drive = Drive(
             drive_id=device_name,
-            path_on_host=Path(drive_path),
+            path_on_host=drive_path,
             is_root_device=False,
             is_read_only=read_only,
         )
@@ -391,7 +424,7 @@ class MicroVM:
             await asyncio.wait_for(self.shutdown(), timeout=5)
         except asyncio.TimeoutError:
             logger.exception(f"Timeout during VM shutdown vm={self.vm_id}")
-        logger.debug("Waiting for one second for the process to shudown")
+        logger.debug("Waiting for one second for the process to shutdown")
         await asyncio.sleep(1)
         await self.stop()
 
@@ -399,6 +432,14 @@ class MicroVM:
             self.stdout_task.cancel()
         if self.stderr_task:
             self.stderr_task.cancel()
+
+        if self.mounted_rootfs:
+            logger.debug("Waiting for one second for the VM to shutdown")
+            await asyncio.sleep(1)
+            root_fs = self.mounted_rootfs.name
+            os.system(f"dmsetup remove {root_fs}")
+            if self.use_jailer:
+                shutil.rmtree(self.jailer_path)
 
         if self._unix_socket:
             logger.debug("Closing unix socket")

@@ -122,5 +122,6 @@ async def about_system_usage(request: web.Request):
 
 class Allocation(BaseModel):
     persistent_vms: Set[str]
+    instances: Optional[Set[str]] = None
     on_demand_vms: Optional[Set[str]] = None
     jobs: Optional[Set] = None

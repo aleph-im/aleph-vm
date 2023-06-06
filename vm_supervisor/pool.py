@@ -2,12 +2,12 @@ import asyncio
 import logging
 from typing import Dict, Iterable, Optional
 
-from aleph_message.models import ProgramContent, ProgramMessage
+from aleph_message.models import ExecutableMessage
 
 from vm_supervisor.network.hostnetwork import Network
 
 from .conf import settings
-from .models import VmExecution, VmHash
+from .models import VmExecution, VmHash, ExecutableContent
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class VmPool:
 
     counter: int  # Used to provide distinct ids to network interfaces
     executions: Dict[VmHash, VmExecution]
-    message_cache: Dict[str, ProgramMessage] = {}
+    message_cache: Dict[str, ExecutableMessage] = {}
     network: Optional[Network]
 
     def __init__(self):
@@ -40,10 +40,10 @@ class VmPool:
         )
 
     async def create_a_vm(
-        self, vm_hash: VmHash, program: ProgramContent, original: ProgramContent
+        self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        execution = VmExecution(vm_hash=vm_hash, program=program, original=original)
+        execution = VmExecution(vm_hash=vm_hash, message=message, original=original)
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
@@ -114,4 +114,9 @@ class VmPool:
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():
             if execution.persistent and execution.is_running:
+                yield execution
+
+    def get_instance_executions(self) -> Iterable[VmExecution]:
+        for vm_hash, execution in self.executions.items():
+            if execution.is_instance and execution.is_running:
                 yield execution
