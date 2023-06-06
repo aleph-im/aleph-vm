@@ -14,8 +14,12 @@ class BootSource(BaseModel):
     )
 
     @staticmethod
-    def args(enable_console: bool = True):
-        default = "reboot=k panic=1 pci=off ro noapic nomodules random.trust_cpu=on"
+    def args(enable_console: bool = True, writable: bool = False):
+        default = "reboot=k panic=1 pci=off noapic nomodules random.trust_cpu=on"
+        if writable:
+            default = default + " rw"
+        else:
+            default = default + " ro"
         if enable_console:
             return "console=ttyS0 " + default
         else:
