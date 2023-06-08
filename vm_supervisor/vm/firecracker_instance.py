@@ -81,11 +81,11 @@ class AlephFirecrackerInstance(AlephFirecrackerVM):
         super().__init__(vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface)
         self.is_instance = True
 
-    async def setup(self, config: FirecrackerConfig):
+    async def setup(self):
         logger.debug("instance setup started")
         await setfacl()
 
-        config = config or FirecrackerConfig(
+        config = FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(
                     self.fvm.enable_kernel(self.resources.kernel_image_path)
@@ -120,10 +120,10 @@ class AlephFirecrackerInstance(AlephFirecrackerVM):
 
         await super().setup(config)
 
-    async def configure(self, volumes: Optional[List[Volume]], interface: Optional[Interface]):
+    async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
-        interface = interface or Interface.executable
-        await super().configure(volumes, interface)
+        interface = Interface.executable
+        await super().configure(None, interface)
 
         # TODO: Implement Machine handler to check if is mounted or not
 

@@ -172,12 +172,13 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
         tap_interface: Optional[TapInterface] = None
     ):
         super().__init__(vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface)
+        self.is_instance = False
 
-    async def setup(self, config: FirecrackerConfig):
+    async def setup(self):
         logger.debug("setup started")
         await setfacl()
 
-        config = config or FirecrackerConfig(
+        config = FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(
                     self.fvm.enable_kernel(self.resources.kernel_image_path)
@@ -217,7 +218,7 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
 
         await super().setup(config)
 
-    async def configure(self, volumes: Optional[List[Volume]], interface: Optional[Interface]):
+    async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
 
         if (
@@ -230,12 +231,12 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
         input_data: bytes = load_file_content(self.resources.data_path) if \
             hasattr(self.resources, "data_path") else None
 
-        interface = interface or Interface.asgi
+        interface = Interface.asgi
 
         volumes: List[Volume]
         if self.resources.code_encoding == Encoding.squashfs:
             code = b""
-            volumes = volumes or [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
+            volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
                 Volume(
                     mount=volume.mount,
                     device=self.fvm.drives[index + 1].drive_id,
@@ -254,7 +255,7 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
                 )
 
             code: Optional[bytes] = load_file_content(self.resources.code_path) if self.resources.code_path else None
-            volumes = volumes or [
+            volumes = [
                 Volume(
                     mount=volume.mount,
                     device=self.fvm.drives[index].drive_id,
