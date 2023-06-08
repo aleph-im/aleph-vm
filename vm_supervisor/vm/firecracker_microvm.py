@@ -1,7 +1,6 @@
 import asyncio
 import dataclasses
 import logging
-import os.path
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
@@ -17,7 +16,6 @@ try:
 except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
-from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import MachineResources
 
 from firecracker.config import (
@@ -35,23 +33,10 @@ from ..conf import settings
 from ..models import ExecutableContent
 from ..network.firewall import teardown_nftables_for_vm
 from ..network.interfaces import TapInterface
-from ..storage import get_code_path, get_data_path, get_runtime_path, get_volume_path, create_devmapper
+from ..storage import get_volume_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
-
-
-def load_file_content(path: Path) -> bytes:
-    if path:
-        with open(path, "rb") as fd:
-            return fd.read()
-    else:
-        return b""
-
-
-class FileTooLargeError(Exception):
-    pass
-
 
 class ResourceDownloadError(ClientResponseError):
     """An error occurred while downloading a VM resource file"""
@@ -164,11 +149,13 @@ class AlephFirecrackerVM:
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
+    is_instance: bool
     hardware_resources: MachineResources
     vm_configuration: VMConfiguration
     fvm: Optional[MicroVM] = None
     guest_api_process: Optional[Process] = None
     tap_interface: Optional[TapInterface] = None
+    fvm: MicroVM
 
     def __init__(
         self,
@@ -189,6 +176,15 @@ class AlephFirecrackerVM:
         self.enable_console = enable_console
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
+
+        self.fvm = MicroVM(
+            vm_id=self.vm_id,
+            firecracker_bin_path=settings.FIRECRACKER_PATH,
+            use_jailer=settings.USE_JAILER,
+            jailer_bin_path=settings.JAILER_PATH,
+            init_timeout=settings.INIT_TIMEOUT,
+        )
+        self.fvm.prepare_jailer()
 
     def to_dict(self):
         if self.fvm.proc and psutil:
@@ -221,37 +217,23 @@ class AlephFirecrackerVM:
         logger.debug("setup started")
         await setfacl()
 
-        fvm = MicroVM(
-            vm_id=self.vm_id,
-            firecracker_bin_path=settings.FIRECRACKER_PATH,
-            use_jailer=settings.USE_JAILER,
-            jailer_bin_path=settings.JAILER_PATH,
-            init_timeout=settings.INIT_TIMEOUT,
-        )
-        fvm.prepare_jailer()
-
-        config = FirecrackerConfig(
+        config = config or FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(
-                    fvm.enable_kernel(self.resources.kernel_image_path)
+                    self.fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
                 boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
             ),
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=fvm.enable_rootfs(self.resources.rootfs_path),
+                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
                     is_root_device=True,
-                    is_read_only=not self.is_instance,
+                    is_read_only=True,
                 ),
             ]
-            + (
-                [fvm.enable_drive(self.resources.code_path)]
-                if hasattr(self.resources, "code_encoding") and self.resources.code_encoding == Encoding.squashfs
-                else []
-            )
             + [
-                fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
                 for volume in self.resources.volumes
             ],
             machine_config=MachineConfig(
@@ -271,11 +253,10 @@ class AlephFirecrackerVM:
         logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
 
         try:
-            await fvm.start(config)
+            await self.fvm.start(config)
             logger.debug("setup done")
-            self.fvm = fvm
         except Exception:
-            await fvm.teardown()
+            await self.fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
             raise
@@ -285,17 +266,14 @@ class AlephFirecrackerVM:
         if not self.fvm:
             raise ValueError("No VM found. Call setup() before start()")
 
-        fvm = self.fvm
-
         if self.enable_console:
-            fvm.start_printing_logs()
+            self.fvm.start_printing_logs()
 
         logger.debug(f"started fvm {self.vm_id}")
 
-    async def configure(self):
+    async def configure(self, volumes: Optional[List[Volume]], interface: Optional[Interface]):
         """Configure the VM by sending configuration info to it's init"""
-        volumes: List[Volume]
-        volumes = [
+        volumes = volumes or [
             Volume(
                 mount=volume.mount,
                 device=self.fvm.drives[index].drive_id,
@@ -303,8 +281,6 @@ class AlephFirecrackerVM:
             )
             for index, volume in enumerate(self.resources.volumes)
         ]
-
-        reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
         # The ip and route should not contain the network mask in order to maintain
         # compatibility with the existing runtimes.
@@ -318,6 +294,7 @@ class AlephFirecrackerVM:
             vm_hash=self.vm_hash,
             volumes=volumes,
             variables=self.resources.message_content.variables,
+            interface=interface,
         )
 
     async def start_guest_api(self):
