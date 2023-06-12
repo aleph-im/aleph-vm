@@ -8,9 +8,9 @@ from typing import AsyncIterable, TypeVar
 import aiohttp
 import pydantic
 from aiohttp import web
+from aleph_message.models import AlephMessage, ProgramMessage, parse_message
 from yarl import URL
 
-from aleph_message.models import AlephMessage, ProgramMessage, InstanceMessage, parse_message
 from .conf import settings
 from .messages import load_updated_message
 from .models import VmHash

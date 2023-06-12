@@ -7,7 +7,7 @@ from aleph_message.models import ExecutableMessage
 from vm_supervisor.network.hostnetwork import Network
 
 from .conf import settings
-from .models import VmExecution, VmHash, ExecutableContent
+from .models import ExecutableContent, VmExecution, VmHash
 
 logger = logging.getLogger(__name__)
 
