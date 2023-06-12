@@ -1,15 +1,21 @@
+"""
+This module contains abstract class for executables (programs and instances) running inside Firecracker MicroVMs.
+"""
+
 import asyncio
 import dataclasses
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from enum import Enum
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import msgpack
+from aleph_message.models import ItemHash
+
+from .firecracker_program import Interface
 
 try:
     import psutil as psutil
@@ -18,15 +24,8 @@ except ImportError:
 from aiohttp import ClientResponseError
 from aleph_message.models.execution.environment import MachineResources
 
-from firecracker.config import (
-    BootSource,
-    Drive,
-    FirecrackerConfig,
-    MachineConfig,
-    NetworkInterface,
-    Vsock,
-)
-from firecracker.microvm import MicroVM, setfacl
+from firecracker.config import FirecrackerConfig
+from firecracker.microvm import MicroVM
 from guest_api.__main__ import run_guest_api
 
 from ..conf import settings
@@ -37,6 +36,7 @@ from ..storage import get_volume_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
+
 
 class ResourceDownloadError(ClientResponseError):
     """An error occurred while downloading a VM resource file"""
@@ -49,11 +49,6 @@ class ResourceDownloadError(ClientResponseError):
             message=error.message,
             headers=error.headers,
         )
-
-
-class Interface(str, Enum):
-    asgi = "asgi"
-    executable = "executable"
 
 
 @dataclass
@@ -73,7 +68,7 @@ class HostVolume:
 @dataclass
 class VMConfiguration:
     interface: Interface
-    vm_hash: str
+    vm_hash: ItemHash
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
@@ -92,6 +87,7 @@ class ConfigurationResponse:
 
 
 class AlephFirecrackerResources:
+    """Resources required to start a Firecracker VM"""
 
     message_content: ExecutableContent
 
@@ -143,24 +139,24 @@ class VmInitNotConnected(Exception):
     pass
 
 
-class AlephFirecrackerVM:
+class AlephFirecrackerExecutable:
     vm_id: int
-    vm_hash: str
+    vm_hash: ItemHash
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
-    is_instance: bool
     hardware_resources: MachineResources
-    vm_configuration: VMConfiguration
-    fvm: Optional[MicroVM] = None
-    guest_api_process: Optional[Process] = None
     tap_interface: Optional[TapInterface] = None
     fvm: MicroVM
+    vm_configuration: Optional[VMConfiguration]
+    guest_api_process: Optional[Process] = None
+    is_instance: bool
+    _firecracker_config: Optional[FirecrackerConfig] = None
 
     def __init__(
         self,
         vm_id: int,
-        vm_hash: str,
+        vm_hash: ItemHash,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
@@ -170,10 +166,10 @@ class AlephFirecrackerVM:
         self.vm_id = vm_id
         self.vm_hash = vm_hash
         self.resources = resources
-        self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         if enable_console is None:
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
+        self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
 
@@ -186,8 +182,15 @@ class AlephFirecrackerVM:
         )
         self.fvm.prepare_jailer()
 
+        # These properties are set later in the setup and configuration.
+        self.vm_configuration = None
+        self.guest_api_process = None
+        self._firecracker_config = None
+
     def to_dict(self):
+        """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.fvm.proc and psutil:
+            # The firecracker process is still running and process information can be obtained from `psutil`.
             try:
                 p = psutil.Process(self.fvm.proc.pid)
                 pid_info = {
@@ -213,89 +216,33 @@ class AlephFirecrackerVM:
             **self.__dict__,
         }
 
-    async def setup(self, config: FirecrackerConfig):
-        logger.debug("setup started")
-        await setfacl()
+    async def setup(self):
+        # self._firecracker_config = FirecrackerConfig(...)
+        raise NotImplementedError()
 
-        config = config or FirecrackerConfig(
-            boot_source=BootSource(
-                kernel_image_path=Path(
-                    self.fvm.enable_kernel(self.resources.kernel_image_path)
-                ),
-                boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
-            ),
-            drives=[
-                Drive(
-                    drive_id="rootfs",
-                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
-                    is_root_device=True,
-                    is_read_only=True,
-                ),
-            ]
-            + [
-                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
-                for volume in self.resources.volumes
-            ],
-            machine_config=MachineConfig(
-                vcpu_count=self.hardware_resources.vcpus,
-                mem_size_mib=self.hardware_resources.memory,
-            ),
-            vsock=Vsock(),
-            network_interfaces=[
-                NetworkInterface(
-                    iface_id="eth0", host_dev_name=self.tap_interface.device_name
-                )
-            ]
-            if self.enable_networking
-            else [],
-        )
+    async def start(self):
+        logger.debug(f"Starting VM={self.vm_id}")
 
-        logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
+        if not self.fvm:
+            raise ValueError("No VM found. Call setup() before start()")
 
         try:
-            await self.fvm.start(config)
+            await self.fvm.start(self._firecracker_config)
             logger.debug("setup done")
         except Exception:
+            # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
             await self.fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
             raise
-
-    async def start(self):
-        logger.debug(f"starting vm {self.vm_id}")
-        if not self.fvm:
-            raise ValueError("No VM found. Call setup() before start()")
 
         if self.enable_console:
             self.fvm.start_printing_logs()
 
         logger.debug(f"started fvm {self.vm_id}")
 
-    async def configure(self, volumes: Optional[List[Volume]], interface: Optional[Interface]):
-        """Configure the VM by sending configuration info to it's init"""
-        volumes = volumes or [
-            Volume(
-                mount=volume.mount,
-                device=self.fvm.drives[index].drive_id,
-                read_only=volume.read_only,
-            )
-            for index, volume in enumerate(self.resources.volumes)
-        ]
-
-        # The ip and route should not contain the network mask in order to maintain
-        # compatibility with the existing runtimes.
-        ip = self.tap_interface.guest_ip.with_prefixlen.split("/", 1)[0]
-        route = str(self.tap_interface.host_ip).split("/", 1)[0]
-
-        self.vm_configuration = VMConfiguration(
-            ip=ip if self.enable_networking else None,
-            route=route if self.enable_networking else None,
-            dns_servers=settings.DNS_NAMESERVERS,
-            vm_hash=self.vm_hash,
-            volumes=volumes,
-            variables=self.resources.message_content.variables,
-            interface=interface,
-        )
+    async def configure(self):
+        raise NotImplementedError()
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")

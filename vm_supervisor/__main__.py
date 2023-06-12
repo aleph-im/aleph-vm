@@ -16,13 +16,14 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from . import supervisor, metrics
-from .conf import settings, make_db_url
+import alembic.command
+import alembic.config
+
+from . import metrics, supervisor
+from .conf import make_db_url, settings
 from .models import VmHash
 from .pubsub import PubSub
-from .run import run_code_on_request, run_code_on_event
-import alembic.config
-import alembic.command
+from .run import run_code_on_event, run_code_on_request
 
 logger = logging.getLogger(__name__)
 
