@@ -69,9 +69,9 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: Optional[bytes] = None
-    encoding: Optional[Encoding] = None
-    entrypoint: Optional[str] = None
+    code: bytes = None
+    encoding: Encoding = None
+    entrypoint: str = None
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
