@@ -1,7 +1,7 @@
 """execution records
 
 Revision ID: bbb12a12372e
-Revises: 
+Revises:
 Create Date: 2022-09-28 18:52:16.431200
 
 """

@@ -10,24 +10,28 @@ import json
 import logging
 import os
 import re
-import sys
 import subprocess
+import sys
 from os.path import isfile, join
 from pathlib import Path
 from shutil import make_archive
 from typing import Union
 
 import aiohttp
-from aleph_message.models import ExecutableMessage, InstanceMessage, ProgramMessage, MessageType
+from aleph_message.models import (
+    ExecutableMessage,
+    InstanceMessage,
+    MessageType,
+    ProgramMessage,
+)
+from aleph_message.models.execution.instance import RootfsVolume
+from aleph_message.models.execution.program import Encoding
 from aleph_message.models.execution.volume import (
     ImmutableVolume,
     MachineVolume,
-    ImmutableVolume,
     PersistentVolume,
     VolumePersistence,
 )
-from aleph_message.models.execution.program import Encoding
-from aleph_message.models.execution.instance import RootfsVolume
 
 from .conf import settings
 
@@ -166,7 +170,9 @@ def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_volume_file(
+    volume: Union[PersistentVolume, RootfsVolume], namespace: str
+) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.ext4"
     if not path.is_file():
@@ -178,19 +184,13 @@ async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], name
 
 
 async def create_loopback_device(path: Path, read_only: bool = False) -> str:
-    command_args = [
-        "losetup",
-        "--find",
-        "--show"
-    ]
+    command_args = ["losetup", "--find", "--show"]
     if read_only:
         command_args.append("--read-only")
     command_args.append(str(path))
     loop_device = subprocess.run(
-        command_args,
-        check=True,
-        capture_output=True,
-        encoding="UTF-8").stdout.strip()
+        command_args, check=True, capture_output=True, encoding="UTF-8"
+    ).stdout.strip()
     return loop_device
 
 
@@ -199,18 +199,21 @@ def get_block_size(device_path: Path) -> str:
         ["blockdev", "--getsz", device_path],
         check=True,
         capture_output=True,
-        encoding="UTF-8").stdout.strip()
+        encoding="UTF-8",
+    ).stdout.strip()
     return block_size
 
 
 def create_mapped_device(device_name: str, table_command: str) -> None:
-    subprocess.run(f"dmsetup create {device_name}",
-                   input=table_command,
-                   text=True,
-                   shell=True,
-                   check=True,
-                   stdout=subprocess.PIPE,
-                   stderr=subprocess.PIPE)
+    subprocess.run(
+        f"dmsetup create {device_name}",
+        input=table_command,
+        text=True,
+        shell=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
 
 def e2fs_check_and_resize(device_path: Path) -> None:
@@ -218,7 +221,9 @@ def e2fs_check_and_resize(device_path: Path) -> None:
     os.system(f"resize2fs {device_path}")
 
 
-async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_devmapper(
+    volume: Union[PersistentVolume, RootfsVolume], namespace: str
+) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2"""
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
