@@ -14,7 +14,7 @@ from .messages import load_updated_message
 from .models import VmExecution, VmHash
 from .pool import VmPool
 from .pubsub import PubSub
-from .vm.firecracker_microvm import (
+from .vm.firecracker_program import (
     FileTooLargeError,
     ResourceDownloadError,
     VmSetupError,
