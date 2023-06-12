@@ -2,11 +2,9 @@ import asyncio
 import dataclasses
 import logging
 import os.path
-import subprocess
 from dataclasses import dataclass, field
-from enum import Enum
 from multiprocessing import Process, set_start_method
-from os.path import exists, isfile
+from os.path import isfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -17,7 +15,6 @@ try:
 except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
-from aleph_message.models import ProgramContent
 from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import MachineResources
 
@@ -30,13 +27,13 @@ from firecracker.config import (
     Vsock,
 )
 from firecracker.microvm import MicroVM, setfacl
-from guest_api.__main__ import run_guest_api
 
+from .firecracker_microvm import AlephFirecrackerVM, AlephFirecrackerResources, VmSetupError, VmInitNotConnected, \
+    Interface, Volume
 from ..conf import settings
 from ..models import ExecutableContent
-from ..network.firewall import teardown_nftables_for_vm
 from ..network.interfaces import TapInterface
-from ..storage import get_code_path, get_data_path, get_runtime_path, get_volume_path, create_devmapper
+from ..storage import get_code_path, get_data_path, get_runtime_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -67,33 +64,14 @@ class ResourceDownloadError(ClientResponseError):
         )
 
 
-class Interface(str, Enum):
-    asgi = "asgi"
-    executable = "executable"
-
-
-@dataclass
-class Volume:
-    mount: str
-    device: str
-    read_only: bool
-
-
-@dataclass
-class HostVolume:
-    mount: str
-    path_on_host: Path
-    read_only: bool
-
-
 @dataclass
 class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: Optional[bytes] = None
-    encoding: Optional[Encoding] = None
-    entrypoint: Optional[str] = None
+    code: bytes = None
+    encoding: Encoding = None
+    entrypoint: str = None
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
@@ -119,23 +97,15 @@ class RunCodePayload:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
-class AlephFirecrackerResources:
+class AlephFunctionResources(AlephFirecrackerResources):
 
-    message_content: ExecutableContent
-
-    kernel_image_path: Path
-    code_path: Optional[Path]
-    code_encoding: Optional[Encoding]
-    code_entrypoint: Optional[str]
-    rootfs_path: Path
-    volumes: List[HostVolume]
-    volume_paths: Dict[str, Path]
+    code_path: Path
+    code_encoding: Encoding
+    code_entrypoint: str
     data_path: Optional[Path]
-    namespace: str
 
     def __init__(self, message_content: ExecutableContent, namespace: str):
-        self.message_content = message_content
-        self.namespace = namespace
+        super().__init__(message_content, namespace)
         if hasattr(message_content, "code"):
             self.code_encoding = message_content.code.encoding
             self.code_entrypoint = message_content.code.entrypoint
@@ -144,17 +114,7 @@ class AlephFirecrackerResources:
             self.code_encoding = None
             self.code_entrypoint = None
 
-    def to_dict(self):
-        return self.__dict__
-
-    async def download_kernel(self):
-        # Assumes kernel is already present on the host
-        self.kernel_image_path = Path(settings.LINUX_PATH)
-        assert isfile(self.kernel_image_path)
-
     async def download_code(self):
-        if not hasattr(self.message_content, "code"):
-            return
         code_ref: str = self.message_content.code.ref
         try:
             self.code_path = await get_code_path(code_ref)
@@ -163,43 +123,21 @@ class AlephFirecrackerResources:
         assert isfile(self.code_path), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self):
-        if hasattr(self.message_content, "rootfs"):
-            self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
-            assert self.rootfs_path.is_block_device(), f"Runtime not found on {self.rootfs_path}"
-        else:
-            runtime_ref: str = self.message_content.runtime.ref
-            try:
-                self.rootfs_path = await get_runtime_path(runtime_ref)
-            except ClientResponseError as error:
-                raise ResourceDownloadError(error)
-            assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+        runtime_ref: str = self.message_content.runtime.ref
+        try:
+            self.rootfs_path = await get_runtime_path(runtime_ref)
+        except ClientResponseError as error:
+            raise ResourceDownloadError(error)
+        assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
 
     async def download_data(self):
-        if hasattr(self.message_content, "data"):
-            if self.message_content.data:
-                data_ref: str = self.message_content.data.ref
-                try:
-                    self.data_path = await get_data_path(data_ref)
-                except ClientResponseError as error:
-                    raise ResourceDownloadError(error)
-                assert isfile(self.data_path)
-        else:
-            self.data_path = None
-
-    async def download_volumes(self):
-        volumes = []
-        # TODO: Download in parallel
-        for volume in self.message_content.volumes:
-            volumes.append(
-                HostVolume(
-                    mount=volume.mount,
-                    path_on_host=(
-                        await get_volume_path(volume=volume, namespace=self.namespace)
-                    ),
-                    read_only=volume.is_read_only(),
-                )
-            )
-        self.volumes = volumes
+        if self.message_content.data:
+            data_ref: str = self.message_content.data.ref
+            try:
+                self.data_path = await get_data_path(data_ref)
+            except ClientResponseError as error:
+                raise ResourceDownloadError(error)
+            assert isfile(self.data_path)
 
     async def download_all(self):
         await asyncio.gather(
@@ -211,18 +149,10 @@ class AlephFirecrackerResources:
         )
 
 
-class VmSetupError(Exception):
-    pass
-
-
-class VmInitNotConnected(Exception):
-    pass
-
-
-class AlephFirecrackerVM:
+class AlephFirecrackerFunction(AlephFirecrackerVM):
     vm_id: int
     vm_hash: str
-    resources: AlephFirecrackerResources
+    resources: AlephFunctionResources
     enable_console: bool
     enable_networking: bool
     is_instance: bool
@@ -235,86 +165,41 @@ class AlephFirecrackerVM:
         self,
         vm_id: int,
         vm_hash: str,
-        resources: AlephFirecrackerResources,
+        resources: AlephFunctionResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
-        tap_interface: Optional[TapInterface] = None,
-        is_instance: bool = False,
+        tap_interface: Optional[TapInterface] = None
     ):
-        self.vm_id = vm_id
-        self.vm_hash = vm_hash
-        self.resources = resources
-        self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
-        if enable_console is None:
-            enable_console = settings.PRINT_SYSTEM_LOGS
-        self.enable_console = enable_console
-        self.hardware_resources = hardware_resources
-        self.tap_interface = tap_interface
-        self.is_instance = is_instance
-
-    def to_dict(self):
-        if self.fvm.proc and psutil:
-            try:
-                p = psutil.Process(self.fvm.proc.pid)
-                pid_info = {
-                    "status": p.status(),
-                    "create_time": p.create_time(),
-                    "cpu_times": p.cpu_times(),
-                    "cpu_percent": p.cpu_percent(),
-                    "memory_info": p.memory_info(),
-                    "io_counters": p.io_counters(),
-                    "open_files": p.open_files(),
-                    "connections": p.connections(),
-                    "num_threads": p.num_threads(),
-                    "num_ctx_switches": p.num_ctx_switches(),
-                }
-            except psutil.NoSuchProcess:
-                logger.warning("Cannot read process metrics (process not found)")
-                pid_info = None
-        else:
-            pid_info = None
-
-        return {
-            "process": pid_info,
-            **self.__dict__,
-        }
+        super().__init__(vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface)
+        self.is_instance = False
 
     async def setup(self):
         logger.debug("setup started")
         await setfacl()
 
-        fvm = MicroVM(
-            vm_id=self.vm_id,
-            firecracker_bin_path=settings.FIRECRACKER_PATH,
-            use_jailer=settings.USE_JAILER,
-            jailer_bin_path=settings.JAILER_PATH,
-            init_timeout=settings.INIT_TIMEOUT,
-        )
-        fvm.prepare_jailer()
-
         config = FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(
-                    fvm.enable_kernel(self.resources.kernel_image_path)
+                    self.fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
                 boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
             ),
             drives=[
                 Drive(
                     drive_id="rootfs",
-                    path_on_host=fvm.enable_rootfs(self.resources.rootfs_path),
+                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
                     is_root_device=True,
-                    is_read_only=not self.is_instance,
+                    is_read_only=True,
                 ),
             ]
             + (
-                [fvm.enable_drive(self.resources.code_path)]
+                [self.fvm.enable_drive(self.resources.code_path)]
                 if hasattr(self.resources, "code_encoding") and self.resources.code_encoding == Encoding.squashfs
                 else []
             )
             + [
-                fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
                 for volume in self.resources.volumes
             ],
             machine_config=MachineConfig(
@@ -331,30 +216,7 @@ class AlephFirecrackerVM:
             else [],
         )
 
-        logger.debug(config.json(by_alias=True, exclude_none=True, indent=4))
-
-        try:
-            await fvm.start(config)
-            logger.debug("setup done")
-            self.fvm = fvm
-        except Exception:
-            await fvm.teardown()
-            teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
-            raise
-
-    async def start(self):
-        logger.debug(f"starting vm {self.vm_id}")
-        if not self.fvm:
-            raise ValueError("No VM found. Call setup() before start()")
-
-        fvm = self.fvm
-
-        if self.enable_console:
-            fvm.start_printing_logs()
-
-        await fvm.wait_for_init()
-        logger.debug(f"started fvm {self.vm_id}")
+        await super().setup(config)
 
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
@@ -369,11 +231,7 @@ class AlephFirecrackerVM:
         input_data: bytes = load_file_content(self.resources.data_path) if \
             hasattr(self.resources, "data_path") else None
 
-        interface = (
-            Interface.asgi
-            if self.resources.code_entrypoint and ":" in self.resources.code_entrypoint
-            else Interface.executable
-        )
+        interface = Interface.asgi
 
         volumes: List[Volume]
         if self.resources.code_encoding == Encoding.squashfs:
@@ -406,6 +264,7 @@ class AlephFirecrackerVM:
                 for index, volume in enumerate(self.resources.volumes)
             ]
 
+        await super().configure(volumes, interface)
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
         # The ip and route should not contain the network mask in order to maintain
@@ -437,30 +296,6 @@ class AlephFirecrackerVM:
         if response.success is False:
             logger.exception(response.traceback)
             raise VmSetupError(response.error)
-
-    async def start_guest_api(self):
-        logger.debug(f"starting guest API for {self.vm_id}")
-        vsock_path = f"{self.fvm.vsock_path}_53"
-        vm_hash = self.vm_hash
-        self.guest_api_process = Process(
-            target=run_guest_api, args=(vsock_path, vm_hash)
-        )
-        self.guest_api_process.start()
-        while not exists(vsock_path):
-            await asyncio.sleep(0.01)
-        subprocess.run(f"chown jailman:jailman {vsock_path}", shell=True, check=True)
-        logger.debug(f"started guest API for {self.vm_id}")
-
-    async def stop_guest_api(self):
-        if self.guest_api_process and self.guest_api_process._popen:
-            self.guest_api_process.terminate()
-
-    async def teardown(self):
-        if self.fvm:
-            await self.fvm.teardown()
-            teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
-        await self.stop_guest_api()
 
     async def run_code(
         self,
