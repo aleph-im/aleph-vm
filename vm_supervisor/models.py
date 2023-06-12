@@ -5,22 +5,31 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, NewType, Optional
+from typing import Dict, Optional
 
-from aleph_message.models import ExecutableContent, InstanceContent
-from aleph_message.models.execution.base import MachineType
+from aleph_message.models import (
+    ExecutableContent,
+    InstanceContent,
+    ItemHash,
+    ProgramContent,
+)
 
 from .conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
 from .pubsub import PubSub
 from .utils import create_task_log_exceptions, dumps_for_json
-from .vm import AlephFirecrackerVM
-from .vm.firecracker_program import AlephFirecrackerResources
+from .vm import AlephFirecrackerExecutable
+from .vm.firecracker_program import (
+    AlephFirecrackerProgram,
+    AlephFirecrackerResources,
+    AlephProgramResources,
+)
 
 logger = logging.getLogger(__name__)
 
-VmHash = NewType("VmHash", str)
+VmHash = ItemHash
+
 
 @dataclass
 class VmExecutionTimes:
@@ -48,7 +57,7 @@ class VmExecution:
     original: ExecutableContent
     message: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[AlephFirecrackerVM] = None
+    vm: Optional[AlephFirecrackerExecutable] = None
 
     times: VmExecutionTimes
 
@@ -59,11 +68,18 @@ class VmExecution:
     update_task: Optional[asyncio.Task] = None
 
     persistent: bool = False
-    is_instance: bool = False
 
     @property
     def is_running(self):
         return self.times.starting_at and not self.times.stopping_at
+
+    @property
+    def is_program(self):
+        return isinstance(self.message, ProgramContent)
+
+    @property
+    def is_instance(self):
+        return isinstance(self.message, InstanceContent)
 
     @property
     def becomes_ready(self):
@@ -84,7 +100,6 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
-        self.is_instance = isinstance(self.message, InstanceContent)
 
     def to_dict(self) -> Dict:
         return {
@@ -98,25 +113,30 @@ class VmExecution:
     async def prepare(self):
         """Download VM required files"""
         self.times.preparing_at = datetime.now()
-        resources = AlephFirecrackerResources(self.message, namespace=self.vm_hash)
+        if self.is_program:
+            resources = AlephProgramResources(self.message, namespace=self.vm_hash)
+        elif self.is_instance:
+            # resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+            pass  # TODO
+        else:
+            raise ValueError("Unknown executable message type")
         await resources.download_all()
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
     async def create(
         self, vm_id: int, tap_interface: TapInterface
-    ) -> AlephFirecrackerVM:
+    ) -> AlephFirecrackerExecutable:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
-        self.vm = vm = AlephFirecrackerVM(
+        self.vm = vm = AlephFirecrackerProgram(
             vm_id=vm_id,
             vm_hash=self.vm_hash,
             resources=self.resources,
             enable_networking=self.message.environment.internet,
             hardware_resources=self.message.resources,
             tap_interface=tap_interface,
-            is_instance=self.is_instance,
         )
         try:
             await vm.setup()

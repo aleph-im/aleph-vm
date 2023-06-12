@@ -3,12 +3,13 @@ import dataclasses
 import logging
 import os.path
 from dataclasses import dataclass, field
-from multiprocessing import Process, set_start_method
-from os.path import isfile
+from enum import Enum
+from multiprocessing import set_start_method
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import msgpack
+from aleph_message.models import ItemHash
 
 try:
     import psutil as psutil
@@ -26,25 +27,22 @@ from firecracker.config import (
     NetworkInterface,
     Vsock,
 )
-from firecracker.microvm import MicroVM, setfacl
+from firecracker.microvm import setfacl
 
-from .firecracker_microvm import AlephFirecrackerVM, AlephFirecrackerResources, VmSetupError, VmInitNotConnected, \
-    Interface, Volume
 from ..conf import settings
 from ..models import ExecutableContent
 from ..network.interfaces import TapInterface
 from ..storage import get_code_path, get_data_path, get_runtime_path
+from .firecracker_executable import (
+    AlephFirecrackerExecutable,
+    AlephFirecrackerResources,
+    VmInitNotConnected,
+    VmSetupError,
+    Volume,
+)
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
-
-
-def load_file_content(path: Path) -> bytes:
-    if path:
-        with open(path, "rb") as fd:
-            return fd.read()
-    else:
-        return b""
 
 
 class FileTooLargeError(Exception):
@@ -64,8 +62,35 @@ class ResourceDownloadError(ClientResponseError):
         )
 
 
+def read_input_data(path_to_data: Path) -> Optional[bytes]:
+    if not path_to_data:
+        return None
+
+    if os.path.getsize(path_to_data) > settings.MAX_DATA_ARCHIVE_SIZE:
+        raise FileTooLargeError(f"Data file too large to pass as an inline zip")
+
+    return path_to_data.read_bytes()
+
+
+class Interface(str, Enum):
+    asgi = "asgi"
+    executable = "executable"
+
+    @classmethod
+    def from_entrypoint(cls, entrypoint: str):
+        """Determine the interface type (Python ASGI or executable HTTP service) from the entrypoint of the program."""
+        # Only Python ASGI entrypoints contain a column `:` in their name.
+        # We use this to differentiate Python ASGI programs from executable HTTP service mode.
+        if ":" in entrypoint:
+            return cls.asgi
+        else:
+            return cls.executable
+
+
 @dataclass
 class ConfigurationPayload:
+    """Configuration passed to the init of the virtual machine in order to start the program."""
+
     input_data: bytes
     interface: Interface
     vm_hash: str
@@ -84,6 +109,8 @@ class ConfigurationPayload:
 
 @dataclass
 class ConfigurationResponse:
+    """Response received from the virtual machine in response to a request."""
+
     success: bool
     error: Optional[str] = None
     traceback: Optional[str] = None
@@ -91,13 +118,17 @@ class ConfigurationResponse:
 
 @dataclass
 class RunCodePayload:
+    """Information passed to the init of the virtual machine to launch a function/path of the program."""
+
     scope: Dict
 
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
-class AlephFunctionResources(AlephFirecrackerResources):
+class AlephProgramResources(AlephFirecrackerResources):
+    """Resources required by the virtual machine in order to launch the program.
+    Extends the resources required by all Firecracker VMs."""
 
     code_path: Path
     code_encoding: Encoding
@@ -106,13 +137,8 @@ class AlephFunctionResources(AlephFirecrackerResources):
 
     def __init__(self, message_content: ExecutableContent, namespace: str):
         super().__init__(message_content, namespace)
-        if hasattr(message_content, "code"):
-            self.code_encoding = message_content.code.encoding
-            self.code_entrypoint = message_content.code.entrypoint
-        else:
-            self.code_path = None
-            self.code_encoding = None
-            self.code_entrypoint = None
+        self.code_encoding = message_content.code.encoding
+        self.code_entrypoint = message_content.code.entrypoint
 
     async def download_code(self):
         code_ref: str = self.message_content.code.ref
@@ -120,7 +146,7 @@ class AlephFunctionResources(AlephFirecrackerResources):
             self.code_path = await get_code_path(code_ref)
         except ClientResponseError as error:
             raise ResourceDownloadError(error)
-        assert isfile(self.code_path), f"Code not found on '{self.code_path}'"
+        assert self.code_path.is_file(), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self):
         runtime_ref: str = self.message_content.runtime.ref
@@ -128,7 +154,7 @@ class AlephFunctionResources(AlephFirecrackerResources):
             self.rootfs_path = await get_runtime_path(runtime_ref)
         except ClientResponseError as error:
             raise ResourceDownloadError(error)
-        assert isfile(self.rootfs_path), f"Runtime not found on {self.rootfs_path}"
+        assert self.rootfs_path.is_file(), f"Runtime not found on {self.rootfs_path}"
 
     async def download_data(self):
         if self.message_content.data:
@@ -137,7 +163,7 @@ class AlephFunctionResources(AlephFirecrackerResources):
                 self.data_path = await get_data_path(data_ref)
             except ClientResponseError as error:
                 raise ResourceDownloadError(error)
-            assert isfile(self.data_path)
+            assert self.data_path.is_file(), f"Data nout found on {self.data_path}"
 
     async def download_all(self):
         await asyncio.gather(
@@ -149,41 +175,73 @@ class AlephFunctionResources(AlephFirecrackerResources):
         )
 
 
-class AlephFirecrackerFunction(AlephFirecrackerVM):
-    vm_id: int
-    vm_hash: str
-    resources: AlephFunctionResources
-    enable_console: bool
-    enable_networking: bool
-    is_instance: bool
-    hardware_resources: MachineResources
-    fvm: Optional[MicroVM] = None
-    guest_api_process: Optional[Process] = None
-    tap_interface: Optional[TapInterface] = None
+def get_volumes_for_program(
+    resources: AlephProgramResources, drives: List[Drive]
+) -> Tuple[Optional[bytes], List[Volume]]:
+    if resources.code_encoding == Encoding.squashfs:
+        code = b""
+        volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
+            Volume(
+                mount=volume.mount,
+                device=drives[index + 1].drive_id,
+                read_only=volume.read_only,
+            )
+            for index, volume in enumerate(resources.volumes)
+        ]
+    else:
+        if os.path.getsize(resources.code_path) > settings.MAX_PROGRAM_ARCHIVE_SIZE:
+            raise FileTooLargeError(f"Program file too large to pass as an inline zip")
+
+        code: Optional[bytes] = (
+            resources.code_path.read_bytes() if resources.code_path else None
+        )
+        volumes = [
+            Volume(
+                mount=volume.mount,
+                device=drives[index].drive_id,
+                read_only=volume.read_only,
+            )
+            for index, volume in enumerate(resources.volumes)
+        ]
+    return code, volumes
+
+
+class AlephFirecrackerProgram(AlephFirecrackerExecutable):
+    resources: AlephProgramResources
+    is_instance = False
 
     def __init__(
         self,
         vm_id: int,
-        vm_hash: str,
-        resources: AlephFunctionResources,
+        vm_hash: ItemHash,
+        resources: AlephProgramResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
-        tap_interface: Optional[TapInterface] = None
+        tap_interface: Optional[TapInterface] = None,
     ):
-        super().__init__(vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface)
-        self.is_instance = False
+        super().__init__(
+            vm_id,
+            vm_hash,
+            resources,
+            enable_networking,
+            enable_console,
+            hardware_resources,
+            tap_interface,
+        )
 
     async def setup(self):
-        logger.debug("setup started")
+        logger.debug(f"Setup started for VM={self.vm_id}")
         await setfacl()
 
-        config = FirecrackerConfig(
+        self._firecracker_config = FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(
                     self.fvm.enable_kernel(self.resources.kernel_image_path)
                 ),
-                boot_args=BootSource.args(enable_console=self.enable_console, writable=self.is_instance),
+                boot_args=BootSource.args(
+                    enable_console=self.enable_console, writable=False
+                ),
             ),
             drives=[
                 Drive(
@@ -195,7 +253,8 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
             ]
             + (
                 [self.fvm.enable_drive(self.resources.code_path)]
-                if hasattr(self.resources, "code_encoding") and self.resources.code_encoding == Encoding.squashfs
+                if hasattr(self.resources, "code_encoding")
+                and self.resources.code_encoding == Encoding.squashfs
                 else []
             )
             + [
@@ -216,55 +275,31 @@ class AlephFirecrackerFunction(AlephFirecrackerVM):
             else [],
         )
 
-        await super().setup(config)
-
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
 
-        if (
-            hasattr(self.resources, "data_path") and self.resources.data_path
-            and os.path.getsize(self.resources.data_path)
-            > settings.MAX_DATA_ARCHIVE_SIZE
-        ):
-            raise FileTooLargeError(f"Data file too large to pass as an inline zip")
-
-        input_data: bytes = load_file_content(self.resources.data_path) if \
-            hasattr(self.resources, "data_path") else None
-
-        interface = Interface.asgi
-
+        code: Optional[bytes]
         volumes: List[Volume]
-        if self.resources.code_encoding == Encoding.squashfs:
-            code = b""
-            volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
-                Volume(
-                    mount=volume.mount,
-                    device=self.fvm.drives[index + 1].drive_id,
-                    read_only=volume.read_only,
-                )
-                for index, volume in enumerate(self.resources.volumes)
-            ]
-        else:
-            if (
-                hasattr(self.resources, "data_path") and self.resources.data_path
-                and os.path.getsize(self.resources.code_path)
-                > settings.MAX_PROGRAM_ARCHIVE_SIZE
-            ):
-                raise FileTooLargeError(
-                    f"Program file too large to pass as an inline zip"
-                )
 
-            code: Optional[bytes] = load_file_content(self.resources.code_path) if self.resources.code_path else None
-            volumes = [
-                Volume(
-                    mount=volume.mount,
-                    device=self.fvm.drives[index].drive_id,
-                    read_only=volume.read_only,
-                )
-                for index, volume in enumerate(self.resources.volumes)
-            ]
+        code, volumes = get_volumes_for_program(
+            resources=self.resources, drives=self.fvm.drives
+        )
+        interface: Interface = Interface.from_entrypoint(self.resources.code_entrypoint)
+        input_data: Optional[bytes] = read_input_data(self.resources.data_path)
 
-        await super().configure(volumes, interface)
+        self._setup_configuration(
+            code=code, input_data=input_data, interface=interface, volumes=volumes
+        )
+
+    def _setup_configuration(
+        self,
+        code: Optional[bytes],
+        input_data: Optional[bytes],
+        interface: Interface,
+        volumes: List[Volume],
+    ):
+        """Set up the VM configuration. The program mode uses a VSOCK connection to the custom init of the virtual
+        machine to send this configuration. Other modes may use Cloud-init, ..."""
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
         # The ip and route should not contain the network mask in order to maintain
