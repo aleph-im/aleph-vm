@@ -5,18 +5,17 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, NewType, Optional
+from typing import Dict, NewType, Optional, Union
 
 from aleph_message.models import ExecutableContent, InstanceContent
-from aleph_message.models.execution.base import MachineType
 
 from .conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
 from .pubsub import PubSub
 from .utils import create_task_log_exceptions, dumps_for_json
-from .vm import AlephFirecrackerVM
-from .vm.firecracker_microvm import AlephFirecrackerResources
+from .vm.firecracker_function import AlephFirecrackerFunction, AlephFunctionResources
+from .vm.firecracker_instance import AlephFirecrackerInstance, AlephInstanceResources
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +46,8 @@ class VmExecution:
     vm_hash: VmHash
     original: ExecutableContent
     message: ExecutableContent
-    resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[AlephFirecrackerVM] = None
+    resources: Optional[Union[AlephFunctionResources, AlephInstanceResources]] = None
+    vm: Optional[Union[AlephFirecrackerFunction, AlephFirecrackerInstance]] = None
 
     times: VmExecutionTimes
 
@@ -98,26 +97,39 @@ class VmExecution:
     async def prepare(self):
         """Download VM required files"""
         self.times.preparing_at = datetime.now()
-        resources = AlephFirecrackerResources(self.message, namespace=self.vm_hash)
+        if self.is_instance:
+            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+        else:
+            resources = AlephFunctionResources(self.message, namespace=self.vm_hash)
         await resources.download_all()
         self.times.prepared_at = datetime.now()
         self.resources = resources
 
     async def create(
         self, vm_id: int, tap_interface: TapInterface
-    ) -> AlephFirecrackerVM:
+    ) -> Union[AlephFirecrackerFunction, AlephFirecrackerInstance]:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
-        self.vm = vm = AlephFirecrackerVM(
-            vm_id=vm_id,
-            vm_hash=self.vm_hash,
-            resources=self.resources,
-            enable_networking=self.message.environment.internet,
-            hardware_resources=self.message.resources,
-            tap_interface=tap_interface,
-            is_instance=self.is_instance,
-        )
+        if self.is_instance:
+            vm = AlephFirecrackerInstance(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
+        else:
+            vm = AlephFirecrackerFunction(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
+        self.vm = vm
         try:
             await vm.setup()
             await vm.start()
