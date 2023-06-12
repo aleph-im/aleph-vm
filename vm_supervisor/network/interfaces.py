@@ -1,10 +1,10 @@
 import asyncio
 import logging
+import shutil
 from ipaddress import IPv4Interface
 from subprocess import run
 
 from .ipaddresses import IPv4NetworkWithInterfaces
-import shutil
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import logging
 from typing import Coroutine, List
 
-from aleph_message.models import ProgramMessage, AlephMessage
+from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
 from .pubsub import PubSub
