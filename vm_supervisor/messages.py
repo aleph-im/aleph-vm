@@ -56,17 +56,25 @@ async def update_message(message: ExecutableMessage):
             update_with_latest_ref(message.content.runtime),
             update_with_latest_ref(message.content.code),
             update_with_latest_ref(message.content.data),
-            *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
+            *(
+                update_with_latest_ref(volume)
+                for volume in (message.content.volumes or [])
+            ),
         )
     else:
         assert message.type == MessageType.instance
         await asyncio.gather(
             update_with_latest_ref(message.content.rootfs.parent),
-            *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
+            *(
+                update_with_latest_ref(volume)
+                for volume in (message.content.volumes or [])
+            ),
         )
 
 
-async def load_updated_message(ref: VmHash) -> Tuple[ExecutableMessage, ExecutableMessage]:
+async def load_updated_message(
+    ref: VmHash,
+) -> Tuple[ExecutableMessage, ExecutableMessage]:
     original_message = await try_get_message(ref)
     message = copy.deepcopy(original_message)
     await update_message(message)

@@ -1,8 +1,10 @@
-from logging.config import fileConfig
-
 from alembic import context
-from vm_supervisor.conf import make_db_url
 from sqlalchemy import create_engine
+
+from vm_supervisor.conf import make_db_url
+
+# Auto-generate migrations
+from vm_supervisor.metrics import Base
 
 # # this is the Alembic Config object, which provides
 # # access to the values within the .ini file in use.
@@ -13,8 +15,7 @@ from sqlalchemy import create_engine
 # if config.config_file_name is not None:
 #     fileConfig(config.config_file_name)
 
-# Auto-generate migrations
-from vm_supervisor.metrics import Base
+
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
@@ -56,9 +57,7 @@ def run_migrations_online() -> None:
     """
     connectable = create_engine(make_db_url())
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
