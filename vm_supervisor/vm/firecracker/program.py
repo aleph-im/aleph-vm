@@ -9,13 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import msgpack
-from aleph_message.models import ItemHash
-
-try:
-    import psutil as psutil
-except ImportError:
-    psutil = None
 from aiohttp import ClientResponseError
+from aleph_message.models import ItemHash
 from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import MachineResources
 
@@ -28,18 +23,16 @@ from firecracker.config import (
     Vsock,
 )
 from firecracker.microvm import setfacl
-
-from ..conf import settings
-from ..models import ExecutableContent
-from ..network.interfaces import TapInterface
-from ..storage import get_code_path, get_data_path, get_runtime_path
-from .firecracker_executable import (
+from vm_supervisor.conf import settings
+from vm_supervisor.models import ExecutableContent
+from vm_supervisor.network.interfaces import TapInterface
+from vm_supervisor.storage import get_code_path, get_data_path, get_runtime_path
+from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
     VmInitNotConnected,
     VmSetupError,
-    Volume,
-)
+    Volume, )
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -85,6 +78,20 @@ class Interface(str, Enum):
             return cls.asgi
         else:
             return cls.executable
+
+
+@dataclass
+class ProgramVmConfiguration:
+    interface: Interface
+    vm_hash: ItemHash
+    ip: Optional[str] = None
+    route: Optional[str] = None
+    dns_servers: List[str] = field(default_factory=list)
+    volumes: List[Volume] = field(default_factory=list)
+    variables: Optional[Dict[str, str]] = None
+
+    def as_msgpack(self) -> bytes:
+        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
 @dataclass
@@ -207,6 +214,7 @@ def get_volumes_for_program(
 
 
 class AlephFirecrackerProgram(AlephFirecrackerExecutable):
+    vm_configuration: Optional[ProgramVmConfiguration]
     resources: AlephProgramResources
     is_instance = False
 
@@ -287,11 +295,11 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable):
         interface: Interface = Interface.from_entrypoint(self.resources.code_entrypoint)
         input_data: Optional[bytes] = read_input_data(self.resources.data_path)
 
-        self._setup_configuration(
+        await self._setup_configuration(
             code=code, input_data=input_data, interface=interface, volumes=volumes
         )
 
-    def _setup_configuration(
+    async def _setup_configuration(
         self,
         code: Optional[bytes],
         input_data: Optional[bytes],
