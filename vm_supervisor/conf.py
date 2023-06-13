@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     )
 
     FAKE_DATA_MESSAGE = Path(
-        abspath(join(__file__, "../../examples/message_from_aleph.json"))
+        abspath(join(__file__, "../../examples/program_message_from_aleph.json"))
     )
     FAKE_DATA_DATA: Optional[Path] = Path(
         abspath(join(__file__, "../../examples/data/"))
@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     )
     FAKE_DATA_VOLUME: Optional[Path] = Path(
         abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
+    )
+
+    FAKE_INSTANCE_ID = (
+        "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    )
+    FAKE_INSTANCE_MESSAGE = Path(
+        abspath(join(__file__, "../../examples/instance_message_from_aleph.json"))
     )
 
     CHECK_FASTAPI_VM_ID = (

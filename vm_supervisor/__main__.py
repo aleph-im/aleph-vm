@@ -23,7 +23,7 @@ from aleph_message.models import ItemHash
 from . import metrics, supervisor
 from .conf import make_db_url, settings
 from .pubsub import PubSub
-from .run import run_code_on_event, run_code_on_request
+from .run import run_code_on_event, run_code_on_request, start_persistent_vm
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +122,25 @@ def parse_args(args):
         default=None,
         help="Path to project containing fake data",
     )
+    parser.add_argument(
+        "-k",
+        "--run-test-instance",
+        dest="run_test_instance",
+        action="store_true",
+        default=False,
+        help="Run a test instance instead of starting the entire supervisor",
+    )
     return parser.parse_args(args)
 
 
 async def benchmark(runs: int):
-    """Measure performance by immediately running the supervisor
+    """Measure program performance by immediately running the supervisor
     with fake requests.
     """
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
 
-    ref = ItemHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
+    ref = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
     FakeRequest: Request
@@ -209,6 +217,17 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
+async def run_instance(item_hash: ItemHash):
+    """Run an instance from an InstanceMessage."""
+
+    # The main program uses a singleton pubsub instance in order to watch for updates.
+    # We create another instance here since that singleton is not initialized yet.
+    # Watching for updates on this instance will therefore not work.
+    dummy_pubsub = PubSub()
+
+    await start_persistent_vm(item_hash, dummy_pubsub)
+
+
 @contextlib.contextmanager
 def change_dir(directory: Path):
     current_directory = Path.cwd()
@@ -283,9 +302,21 @@ def main():
 
     if args.benchmark > 0:
         asyncio.run(benchmark(runs=args.benchmark), debug=args.debug_asyncio)
-        print("Finished")
+        logger.info("Finished")
+        sys.exit(0)
     elif args.do_not_run:
         logger.info("Option --do-not-run, exiting")
+    elif args.run_test_instance:
+        logger.info("Running test instance virtual machine")
+        instance_item_hash = settings.FAKE_INSTANCE_ID
+
+        async def forever():
+            await run_instance(item_hash=instance_item_hash)
+            await asyncio.sleep(1000)
+
+        asyncio.run(forever())
+        logger.info("Finished")
+        sys.exit(0)
     else:
         supervisor.run()
 

@@ -50,6 +50,10 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
+    logger.debug(
+        f"Message: {message.json(indent=4, sort_keys=True, exclude_none=True)}"
+    )
+
     try:
         execution = await pool.create_a_vm(
             vm_hash=vm_hash,
@@ -222,7 +226,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        logger.info(f"Starting persistent VM {vm_hash}")
+        logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash)
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
