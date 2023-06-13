@@ -1,0 +1,40 @@
+name: Test code quality
+
+on: push
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
+        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
+
+      - name: Install required system packages only for Ubuntu Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get -y upgrade
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-aioredis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema
+
+      - name: Install required Python packages
+        run: |
+          python3 -m pip install mypy pytest black isort
+
+      - name: Test with Black
+        run: |
+          black --check ./vm_supervisor
+
+      - name: Test with isort
+        run: |
+          isort --check-only --profile=black ./vm_supervisor
+
+      - name: Test with MyPy
+        run: |
+          mypy --ignore-missing-imports ./vm_supervisor
+#          mypy --config-file ./mypy.ini ./vm_supervisor
+
+#      - name: Test with flake8
+#        run: |
+#          flake8 ./vm_supervisor
