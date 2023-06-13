@@ -95,9 +95,9 @@ class Settings(BaseSettings):
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None
 
-    FIRECRACKER_PATH = "/opt/firecracker/firecracker"
-    JAILER_PATH = "/opt/firecracker/jailer"
-    LINUX_PATH = "/opt/firecracker/vmlinux.bin"
+    FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
+    JAILER_PATH = Path("/opt/firecracker/jailer")
+    LINUX_PATH = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
     CONNECTOR_URL = Url("http://localhost:4021")

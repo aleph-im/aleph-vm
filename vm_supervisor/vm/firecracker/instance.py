@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from multiprocessing import set_start_method
 from pathlib import Path
 from typing import Optional
 
@@ -18,13 +17,10 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import create_devmapper
-from .executable import (
-    AlephFirecrackerExecutable,
-    AlephFirecrackerResources,
-)
+
+from .executable import AlephFirecrackerExecutable, AlephFirecrackerResources
 
 logger = logging.getLogger(__name__)
-set_start_method("spawn")
 
 
 class AlephInstanceResources(AlephFirecrackerResources):
@@ -107,7 +103,12 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             else [],
         )
 
+    async def wait_for_init(self) -> None:
+        """Wait for the init process of the instance to be ready."""
+        # TODO: Check availability via ping ?
+        return
+
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
         # TODO: Implement Cloud-init interface
-        raise NotImplementedError()
+        pass

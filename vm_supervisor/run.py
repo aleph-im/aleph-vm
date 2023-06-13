@@ -5,16 +5,17 @@ from typing import Any, Dict, Optional
 import msgpack
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
+from aleph_message.models import ItemHash
 from msgpack import UnpackValueError
 
 from firecracker.microvm import MicroVMFailedInit
 
 from .conf import settings
 from .messages import load_updated_message
-from .models import VmExecution, VmHash
+from .models import VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
-from .vm.firecracker_program import (
+from .vm.firecracker.program import (
     FileTooLargeError,
     ResourceDownloadError,
     VmSetupError,
@@ -45,7 +46,7 @@ async def build_event_scope(event) -> Dict[str, Any]:
     }
 
 
-async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
+async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
@@ -77,7 +78,7 @@ async def create_vm_execution(vm_hash: VmHash) -> VmExecution:
 
 
 async def run_code_on_request(
-    vm_hash: VmHash, path: str, request: web.Request
+    vm_hash: ItemHash, path: str, request: web.Request
 ) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
@@ -167,7 +168,7 @@ async def run_code_on_request(
             await execution.stop()
 
 
-async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
+async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
     """
     Execute code in response to an event.
     """
@@ -217,7 +218,7 @@ async def run_code_on_event(vm_hash: VmHash, event, pubsub: PubSub):
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
+async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
@@ -236,7 +237,7 @@ async def start_persistent_vm(vm_hash: VmHash, pubsub: PubSub) -> VmExecution:
     return execution
 
 
-async def stop_persistent_vm(vm_hash: VmHash) -> Optional[VmExecution]:
+async def stop_persistent_vm(vm_hash: ItemHash) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
     if execution:
