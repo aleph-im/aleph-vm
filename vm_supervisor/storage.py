@@ -4,7 +4,6 @@ This module is in charge of providing the source code corresponding to a 'code i
 In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
-import hashlib
 import json
 import logging
 import re
@@ -14,12 +13,7 @@ from shutil import make_archive
 from typing import Union
 
 import aiohttp
-from aleph_message.models import (
-    ExecutableMessage,
-    InstanceMessage,
-    MessageType,
-    ProgramMessage,
-)
+from aleph_message.models import InstanceMessage, ProgramMessage, parse_message
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.program import Encoding
 from aleph_message.models.execution.volume import (
@@ -30,7 +24,7 @@ from aleph_message.models.execution.volume import (
 )
 
 from .conf import settings
-from .utils import run_in_subprocess
+from .utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +63,9 @@ async def download_file(url: str, local_path: Path) -> None:
                         sys.stdout.write(".")
                         sys.stdout.flush()
 
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
         except Exception:
@@ -90,8 +87,11 @@ async def get_latest_amend(item_hash: str) -> str:
             return result or item_hash
 
 
-async def get_message(ref: str) -> ExecutableMessage:
-    if settings.FAKE_DATA_PROGRAM:
+async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
+    if ref == settings.FAKE_INSTANCE_ID:
+        logger.debug("Using the fake instance message since the ref matches")
+        cache_path = settings.FAKE_INSTANCE_MESSAGE
+    elif settings.FAKE_DATA_PROGRAM:
         cache_path = settings.FAKE_DATA_MESSAGE
     else:
         cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
@@ -100,14 +100,16 @@ async def get_message(ref: str) -> ExecutableMessage:
 
     with open(cache_path, "r") as cache_file:
         msg = json.load(cache_file)
-        if settings.FAKE_DATA_PROGRAM:
-            msg["item_content"] = json.dumps(msg["content"])
-            msg["item_hash"] = hashlib.sha256(
-                msg["item_content"].encode("utf-8")
-            ).hexdigest()
-        if msg["type"] == MessageType.program:
-            return ProgramMessage.parse_obj(msg)
-        return InstanceMessage.parse_obj(msg)
+
+        if cache_path in (settings.FAKE_DATA_MESSAGE, settings.FAKE_INSTANCE_MESSAGE):
+            # Ensure validation passes while tweaking message content
+            msg = fix_message_validation(msg)
+
+        result = parse_message(message_dict=msg)
+        assert isinstance(result, ProgramMessage) or isinstance(
+            result, InstanceMessage
+        ), "Parsed message is not executable"
+        return result
 
 
 async def get_code_path(ref: str) -> Path:
@@ -164,7 +166,7 @@ async def get_runtime_path(ref: str) -> Path:
 
 async def create_ext4(path: Path, size_mib: int) -> bool:
     if path.is_file():
-        logger.debug("File already exists, skipping ext4 creation", path)
+        logger.debug(f"File already exists, skipping ext4 creation on {path}")
         return False
     tmp_path = f"{path}.tmp"
     await run_in_subprocess(
@@ -183,6 +185,9 @@ async def create_volume_file(
     path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.ext4"
     if not path.is_file():
         logger.debug(f"Creating {volume.size_mib}MB volume")
+        # Ensure that the parent directory exists
+        path.parent.mkdir(exist_ok=True)
+        # Create an empty file the right size
         await run_in_subprocess(
             ["dd", "if=/dev/zero", f"of={path}", "bs=1M", f"count={volume.size_mib}"]
         )
