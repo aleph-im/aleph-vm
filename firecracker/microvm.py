@@ -206,11 +206,11 @@ class MicroVM:
         logger.debug(
             " ".join(
                 (
-                    self.jailer_bin_path,
+                    str(self.jailer_bin_path),
                     "--id",
                     str(self.vm_id),
                     "--exec-file",
-                    self.firecracker_bin_path,
+                    str(self.firecracker_bin_path),
                     "--uid",
                     uid,
                     "--gid",

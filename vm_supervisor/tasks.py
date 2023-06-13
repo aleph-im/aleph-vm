@@ -8,12 +8,11 @@ from typing import AsyncIterable, TypeVar
 import aiohttp
 import pydantic
 from aiohttp import web
-from aleph_message.models import AlephMessage, ProgramMessage, parse_message
+from aleph_message.models import AlephMessage, ItemHash, ProgramMessage, parse_message
 from yarl import URL
 
 from .conf import settings
 from .messages import load_updated_message
-from .models import VmHash
 from .pubsub import PubSub
 from .reactor import Reactor
 from .utils import create_task_log_exceptions
@@ -114,7 +113,7 @@ async def start_watch_for_messages_task(app: web.Application):
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
     sample_message, _ = await load_updated_message(
-        ref=VmHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+        ref=ItemHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
     )
     if isinstance(sample_message, ProgramMessage):
         assert sample_message.content.on.message, sample_message

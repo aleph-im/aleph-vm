@@ -5,7 +5,7 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 from aleph_message.models import (
     ExecutableContent,
@@ -19,7 +19,9 @@ from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
 from .pubsub import PubSub
 from .utils import create_task_log_exceptions, dumps_for_json
+from .vm import AlephFirecrackerInstance
 from .vm.firecracker.executable import AlephFirecrackerExecutable
+from .vm.firecracker.instance import AlephInstanceResources
 from .vm.firecracker.program import (
     AlephFirecrackerProgram,
     AlephFirecrackerResources,
@@ -27,8 +29,6 @@ from .vm.firecracker.program import (
 )
 
 logger = logging.getLogger(__name__)
-
-VmHash = ItemHash
 
 
 @dataclass
@@ -53,7 +53,7 @@ class VmExecution:
     """
 
     uuid: uuid.UUID  # Unique identifier of this execution
-    vm_hash: VmHash
+    vm_hash: ItemHash
     original: ExecutableContent
     message: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
@@ -90,7 +90,7 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-        self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
+        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -116,8 +116,7 @@ class VmExecution:
         if self.is_program:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
         elif self.is_instance:
-            # resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-            pass  # TODO
+            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
         else:
             raise ValueError("Unknown executable message type")
         await resources.download_all()
@@ -125,19 +124,34 @@ class VmExecution:
         self.resources = resources
 
     async def create(
-        self, vm_id: int, tap_interface: TapInterface
+        self, vm_id: int, tap_interface: Optional[TapInterface] = None
     ) -> AlephFirecrackerExecutable:
         if not self.resources:
             raise ValueError("Execution resources must be configured first")
         self.times.starting_at = datetime.now()
-        self.vm = vm = AlephFirecrackerProgram(
-            vm_id=vm_id,
-            vm_hash=self.vm_hash,
-            resources=self.resources,
-            enable_networking=self.message.environment.internet,
-            hardware_resources=self.message.resources,
-            tap_interface=tap_interface,
-        )
+
+        vm: Union[AlephFirecrackerProgram, AlephFirecrackerInstance]
+        if self.is_program:
+            assert isinstance(self.resources, AlephProgramResources)
+            self.vm = vm = AlephFirecrackerProgram(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
+        else:
+            assert self.is_instance
+            assert isinstance(self.resources, AlephInstanceResources)
+            self.vm = vm = AlephFirecrackerInstance(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
         try:
             await vm.setup()
             await vm.start()
@@ -293,6 +307,11 @@ class VmExecution:
     async def run_code(self, scope: Optional[dict] = None) -> bytes:
         if not self.vm:
             raise ValueError("The VM has not been created yet")
+
+        if not self.is_program:
+            raise ValueError("Code can ony be run on programs")
+        assert isinstance(self.vm, AlephFirecrackerProgram)
+
         self.concurrent_runs += 1
         self.runs_done_event.clear()
         try:
