@@ -9,6 +9,7 @@ import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
+from aleph_message.models import ItemHash
 from pydantic import ValidationError
 
 from packaging.version import InvalidVersion, Version
@@ -16,7 +17,6 @@ from packaging.version import InvalidVersion, Version
 from . import status
 from .conf import settings
 from .metrics import get_execution_records
-from .models import VmHash
 from .pubsub import PubSub
 from .resources import Allocation
 from .run import pool, run_code_on_request, start_persistent_vm
@@ -35,7 +35,7 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = VmHash(request.match_info["ref"])
+    message_ref = ItemHash(request.match_info["ref"])
     return run_code_on_request(message_ref, path, request)
 
 
@@ -62,16 +62,16 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
     message_ref_base32 = request.host.split(".")[0]
     if settings.FAKE_DATA_PROGRAM:
-        message_ref = VmHash("fake-hash")
+        message_ref = ItemHash("fake-hash")
     else:
         try:
-            message_ref = VmHash(b32_to_b16(message_ref_base32).decode())
+            message_ref = ItemHash(b32_to_b16(message_ref_base32).decode())
             logger.debug(
                 f"Using base32 message id from hostname to obtain '{message_ref}"
             )
         except binascii.Error:
             try:
-                message_ref = VmHash(
+                message_ref = ItemHash(
                     await get_ref_from_dns(domain=f"_aleph-id.{request.host}")
                 )
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
@@ -204,7 +204,7 @@ async def update_allocations(request: web.Request):
 
     # Start VMs
     for vm_hash in allocation.persistent_vms:
-        vm_hash = VmHash(vm_hash)
+        vm_hash = ItemHash(vm_hash)
         logger.info(f"Starting long running VM {vm_hash}")
         await start_persistent_vm(vm_hash, pubsub)
 
@@ -217,7 +217,7 @@ async def update_allocations(request: web.Request):
 
     # Start Instances
     for instance_hash in allocation.instances:
-        instance_hash = VmHash(instance_hash)
+        instance_hash = ItemHash(instance_hash)
         logger.info(f"Starting instance {instance_hash}")
         await start_persistent_vm(instance_hash, pubsub)
 

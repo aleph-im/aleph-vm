@@ -4,9 +4,8 @@ from typing import Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
-from aleph_message.models import ExecutableMessage, MessageType
+from aleph_message.models import ExecutableMessage, ItemHash, MessageType
 
-from .models import VmHash
 from .storage import get_latest_amend, get_message
 
 
@@ -73,7 +72,7 @@ async def update_message(message: ExecutableMessage):
 
 
 async def load_updated_message(
-    ref: VmHash,
+    ref: ItemHash,
 ) -> Tuple[ExecutableMessage, ExecutableMessage]:
     original_message = await try_get_message(ref)
     message = copy.deepcopy(original_message)

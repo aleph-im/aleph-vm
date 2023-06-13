@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional, Set, Tuple
@@ -100,8 +101,8 @@ async def about_system_usage(request: web.Request):
             core_frequencies=CoreFrequencies.from_psutil(psutil.cpu_freq()),
         ),
         mem=MemoryUsage(
-            total_kB=psutil.virtual_memory().total / 1000,
-            available_kB=psutil.virtual_memory().available / 1000,
+            total_kB=math.ceil(psutil.virtual_memory().total / 1000),
+            available_kB=math.floor(psutil.virtual_memory().available / 1000),
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total
@@ -122,6 +123,6 @@ async def about_system_usage(request: web.Request):
 
 class Allocation(BaseModel):
     persistent_vms: Set[str]
-    instances: Optional[Set[str]] = None
-    on_demand_vms: Optional[Set[str]] = None
+    instances: Set[str] = set()
+    on_demand_vms: Set[str] = set()
     jobs: Optional[Set] = None

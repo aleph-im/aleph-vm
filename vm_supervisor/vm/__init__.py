@@ -1,6 +1,4 @@
-from .firecracker import AlephFirecrackerProgram
-from .firecracker import AlephFirecrackerInstance
-
+from .firecracker import AlephFirecrackerInstance, AlephFirecrackerProgram
 
 __all__ = (
     "AlephFirecrackerProgram",
