@@ -13,7 +13,8 @@ debian-package-code:
 	# Fake data for diagnostic and benchmarks
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/
 	cp -r ../examples/example_fastapi ./aleph-vm/opt/aleph-vm/examples/example_fastapi
-	cp ../examples/message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/message_from_aleph.json
+	cp ../examples/program_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/program_message_from_aleph.json
+	cp ../examples/instance_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/instance_message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.0a2'

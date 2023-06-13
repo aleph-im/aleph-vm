@@ -1,11 +1,12 @@
 import asyncio
+import hashlib
 import json
 import logging
 import subprocess
 from base64 import b16encode, b32decode
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
-from typing import Any, Coroutine, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional
 
 import aiodns
 
@@ -68,8 +69,23 @@ async def run_in_subprocess(
     stdout, stderr = await process.communicate(input=stdin_input)
 
     if check and process.returncode:
+        logger.error(
+            f"Command failed with error code {process.returncode}:\n"
+            f"    stdin = {stdin_input!r}\n"
+            f"    command = {command}\n"
+            f"    stdout = {stderr!r}"
+        )
         raise subprocess.CalledProcessError(
             process.returncode, str(command), stderr.decode()
         )
 
     return stdout
+
+
+def fix_message_validation(message: Dict) -> Dict:
+    """Patch a fake message program to pass validation."""
+    message["item_content"] = json.dumps(message["content"])
+    message["item_hash"] = hashlib.sha256(
+        message["item_content"].encode("utf-8")
+    ).hexdigest()
+    return message
