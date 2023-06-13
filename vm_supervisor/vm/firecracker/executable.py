@@ -9,13 +9,13 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from aleph_message.models import ItemHash
 
 psutil: Optional[Any]
 try:
-    import psutil as psutil
+    import psutil  # type: ignore [no-redef]
 except ImportError:
     psutil = None
 from aiohttp import ClientResponseError
@@ -62,7 +62,7 @@ class HostVolume:
 
 
 @dataclass
-class VmConfiguration:
+class BaseConfiguration:
     vm_hash: ItemHash
     ip: Optional[str] = None
     route: Optional[str] = None
@@ -131,7 +131,10 @@ class VmInitNotConnected(Exception):
     pass
 
 
-class AlephFirecrackerExecutable:
+ConfigurationType = TypeVar("ConfigurationType")
+
+
+class AlephFirecrackerExecutable(Generic[ConfigurationType]):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephFirecrackerResources
@@ -140,7 +143,7 @@ class AlephFirecrackerExecutable:
     hardware_resources: MachineResources
     tap_interface: Optional[TapInterface] = None
     fvm: MicroVM
-    vm_configuration: Optional[VmConfiguration]
+    vm_configuration: Optional[ConfigurationType]
     guest_api_process: Optional[Process] = None
     is_instance: bool
     _firecracker_config: Optional[FirecrackerConfig] = None

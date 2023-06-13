@@ -36,7 +36,6 @@ def subscription_matches(subscription: Subscription, message: AlephMessage) -> b
 
 
 class Reactor:
-
     pubsub: PubSub
     listeners: List[AlephMessage]
 

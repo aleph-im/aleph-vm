@@ -131,7 +131,6 @@ async def check_error_raised(session: ClientSession) -> bool:
 
 
 async def check_crash_and_restart(session: ClientSession) -> bool:
-
     # Crash the VM init.
     async with session.get(f"{CHECK_VM_URL}/crash") as resp:
         if resp.status != 502:

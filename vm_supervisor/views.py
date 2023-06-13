@@ -1,7 +1,7 @@
 import binascii
 import logging
-import os.path
 from hashlib import sha256
+from pathlib import Path
 from string import Template
 from typing import Awaitable, Optional
 
@@ -123,17 +123,15 @@ async def about_execution_records(request: web.Request):
 
 async def index(request: web.Request):
     assert request.method == "GET"
-    path = os.path.join(os.path.dirname(__file__), "templates/index.html")
-    with open(path, "r") as template:
-        body = template.read()
-        s = Template(body)
-        body = s.substitute(
-            public_url=f"https://{settings.DOMAIN_NAME}/",
-            multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
-            multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
-            check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
-            version=__version__,
-        )
+    body = (Path(__file__).parent.absolute() / "templates/index.html").read_text()
+    s = Template(body)
+    body = s.substitute(
+        public_url=f"https://{settings.DOMAIN_NAME}/",
+        multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
+        multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
+        check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
+        version=__version__,
+    )
     return web.Response(content_type="text/html", body=body)
 
 

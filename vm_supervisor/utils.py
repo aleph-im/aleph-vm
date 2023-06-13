@@ -1,10 +1,11 @@
 import asyncio
 import json
 import logging
+import subprocess
 from base64 import b16encode, b32decode
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
-from typing import Any, Coroutine, Optional
+from typing import Any, Coroutine, List, Optional
 
 import aiodns
 
@@ -52,3 +53,23 @@ async def run_and_log_exception(coro: Coroutine):
 def create_task_log_exceptions(coro: Coroutine, *, name=None):
     """Ensure that exceptions running in coroutines are logged."""
     return asyncio.create_task(run_and_log_exception(coro), name=name)
+
+
+async def run_in_subprocess(
+    command: List[str], check: bool = True, stdin_input: Optional[bytes] = None
+) -> bytes:
+    """Run the specified command in a subprocess, returns the stdout of the process."""
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate(input=stdin_input)
+
+    if check and process.returncode:
+        raise subprocess.CalledProcessError(
+            process.returncode, str(command), stderr.decode()
+        )
+
+    return stdout
