@@ -1,7 +1,6 @@
 import logging
-import os
-from os.path import join
-from typing import Iterable, Optional
+from pathlib import Path
+from typing import Any, Iterable
 from uuid import UUID
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
@@ -15,7 +14,7 @@ Session: sessionmaker
 
 logger = logging.getLogger(__name__)
 
-Base = declarative_base()
+Base: Any = declarative_base()
 
 
 def setup_engine():
@@ -40,13 +39,13 @@ class ExecutionRecord(Base):
     time_started = Column(DateTime)
     time_stopping = Column(DateTime)
 
-    cpu_time_user: Optional[float] = Column(Float, nullable=True)
-    cpu_time_system: Optional[float] = Column(Float, nullable=True)
+    cpu_time_user = Column(Float, nullable=True)
+    cpu_time_system = Column(Float, nullable=True)
 
-    io_read_count: Optional[int] = Column(Integer, nullable=True)
-    io_write_count: Optional[int] = Column(Integer, nullable=True)
-    io_read_bytes: Optional[int] = Column(Integer, nullable=True)
-    io_write_bytes: Optional[int] = Column(Integer, nullable=True)
+    io_read_count = Column(Integer, nullable=True)
+    io_write_count = Column(Integer, nullable=True)
+    io_read_bytes = Column(Integer, nullable=True)
+    io_write_bytes = Column(Integer, nullable=True)
 
     vcpus = Column(Integer, nullable=False)
     memory = Column(Integer, nullable=False)
@@ -61,10 +60,9 @@ class ExecutionRecord(Base):
 
 async def save_execution_data(execution_uuid: UUID, execution_data: str):
     """Save the execution data in a file on disk"""
-    os.makedirs(settings.EXECUTION_LOG_DIRECTORY, exist_ok=True)
-    filepath = join(settings.EXECUTION_LOG_DIRECTORY, f"{execution_uuid}.json")
-    with open(filepath, "w") as fd:
-        fd.write(execution_data)
+    directory = Path(settings.EXECUTION_LOG_DIRECTORY)
+    directory.mkdir(exist_ok=True)
+    (directory / f"{execution_uuid}.json").write_text(execution_data)
 
 
 async def save_record(record: ExecutionRecord):

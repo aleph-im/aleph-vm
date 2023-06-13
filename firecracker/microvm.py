@@ -166,9 +166,9 @@ class MicroVM:
         logger.debug(
             " ".join(
                 (
-                    self.firecracker_bin_path,
+                    str(self.firecracker_bin_path),
                     "--api-sock",
-                    self.socket_path,
+                    str(self.socket_path),
                     "--config-file",
                     config_file.name,
                 )
@@ -253,15 +253,18 @@ class MicroVM:
         if self.use_jailer:
             kernel_filename = kernel_image_path.name
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
-            os.link(kernel_image_path, f"{self.jailer_path}{jailer_kernel_image_path}")
-            kernel_image_path = jailer_kernel_image_path
-        return kernel_image_path
+            kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+            return Path(jailer_kernel_image_path)
+        else:
+            return kernel_image_path
 
     def enable_rootfs(self, path_on_host: Path) -> Path:
         if path_on_host.is_file():
             return self.enable_file_rootfs(path_on_host)
         elif path_on_host.is_block_device():
             return self.enable_device_mapper_rootfs(path_on_host)
+        else:
+            raise ValueError(f"Not a file or a block device: {path_on_host}")
 
     def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
@@ -310,11 +313,12 @@ class MicroVM:
         """
         index = len(self.drives)
         device_name = self.compute_device_name(index)
+
         if self.use_jailer:
             drive_filename = drive_path.name
             jailer_path_on_host = f"/opt/{drive_filename}"
-            os.link(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
-            drive_path = jailer_path_on_host
+            drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+            drive_path = Path(jailer_path_on_host)
 
         drive = Drive(
             drive_id=device_name,
@@ -370,7 +374,7 @@ class MicroVM:
             logger.warning("Never received signal from init")
             raise MicroVMFailedInit()
 
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         logger.debug(f"Shutdown vm={self.vm_id}")
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
@@ -400,7 +404,7 @@ class MicroVM:
             logger.debug(f"msg2={msg2!r}")
 
             if msg2 != b"STOPZ\n":
-                logger.warning(f"Unexpected response from VM: {msg2[:20]}")
+                logger.warning(f"Unexpected response from VM: {msg2[:20]!r}")
         except ConnectionResetError as error:
             logger.warning(
                 f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}"
