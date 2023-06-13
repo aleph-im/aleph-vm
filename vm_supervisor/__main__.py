@@ -18,10 +18,10 @@ except ImportError:
 
 import alembic.command
 import alembic.config
+from aleph_message.models import ItemHash
 
 from . import metrics, supervisor
 from .conf import make_db_url, settings
-from .models import VmHash
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request
 
@@ -132,7 +132,7 @@ async def benchmark(runs: int):
     engine = metrics.setup_engine()
     metrics.create_tables(engine)
 
-    ref = VmHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
+    ref = ItemHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
     FakeRequest: Request

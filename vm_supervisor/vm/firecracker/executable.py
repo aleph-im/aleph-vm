@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 from aleph_message.models import ItemHash
 
@@ -24,7 +24,6 @@ from aleph_message.models.execution.environment import MachineResources
 from firecracker.config import FirecrackerConfig
 from firecracker.microvm import MicroVM
 from guest_api.__main__ import run_guest_api
-
 from vm_supervisor.conf import settings
 from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.firewall import teardown_nftables_for_vm
@@ -232,7 +231,13 @@ class AlephFirecrackerExecutable:
         if self.enable_console:
             self.fvm.start_printing_logs()
 
+        await self.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")
+
+    async def wait_for_init(self) -> None:
+        """Wait for the init process of the virtual machine to be ready.
+        May be empty."""
+        return
 
     async def configure(self):
         raise NotImplementedError()

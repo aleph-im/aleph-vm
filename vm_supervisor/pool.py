@@ -2,12 +2,12 @@ import asyncio
 import logging
 from typing import Dict, Iterable, Optional
 
-from aleph_message.models import ExecutableMessage
+from aleph_message.models import ExecutableMessage, ItemHash
 
 from vm_supervisor.network.hostnetwork import Network
 
 from .conf import settings
-from .models import ExecutableContent, VmExecution, VmHash
+from .models import ExecutableContent, VmExecution
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class VmPool:
     """
 
     counter: int  # Used to provide distinct ids to network interfaces
-    executions: Dict[VmHash, VmExecution]
+    executions: Dict[ItemHash, VmExecution]
     message_cache: Dict[str, ExecutableMessage] = {}
     network: Optional[Network]
 
@@ -40,7 +40,7 @@ class VmPool:
         )
 
     async def create_a_vm(
-        self, vm_hash: VmHash, message: ExecutableContent, original: ExecutableContent
+        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
         execution = VmExecution(vm_hash=vm_hash, message=message, original=original)
@@ -48,7 +48,11 @@ class VmPool:
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
 
-        tap_interface = await self.network.create_tap(vm_id)
+        if self.network:
+            tap_interface = await self.network.create_tap(vm_id)
+        else:
+            tap_interface = None
+
         await execution.create(vm_id=vm_id, tap_interface=tap_interface)
         return execution
 
@@ -82,7 +86,7 @@ class VmPool:
             else:
                 raise ValueError("No available value for vm_id.")
 
-    async def get_running_vm(self, vm_hash: VmHash) -> Optional[VmExecution]:
+    async def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running:
@@ -91,7 +95,7 @@ class VmPool:
         else:
             return None
 
-    def forget_vm(self, vm_hash: VmHash) -> None:
+    def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
 
         Used after self.create_a_vm(...) raised an error in order to
