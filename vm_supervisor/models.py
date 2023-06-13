@@ -19,8 +19,8 @@ from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
 from .pubsub import PubSub
 from .utils import create_task_log_exceptions, dumps_for_json
-from .vm import AlephFirecrackerExecutable
-from .vm.firecracker_program import (
+from .vm.firecracker.executable import AlephFirecrackerExecutable
+from .vm.firecracker.program import (
     AlephFirecrackerProgram,
     AlephFirecrackerResources,
     AlephProgramResources,

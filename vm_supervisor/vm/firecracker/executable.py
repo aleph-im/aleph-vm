@@ -3,20 +3,17 @@ This module contains abstract class for executables (programs and instances) run
 """
 
 import asyncio
-import dataclasses
 import logging
 import subprocess
 from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
-import msgpack
 from aleph_message.models import ItemHash
 
-from .firecracker_program import Interface
-
+psutil: Optional[Any]
 try:
     import psutil as psutil
 except ImportError:
@@ -28,11 +25,11 @@ from firecracker.config import FirecrackerConfig
 from firecracker.microvm import MicroVM
 from guest_api.__main__ import run_guest_api
 
-from ..conf import settings
-from ..models import ExecutableContent
-from ..network.firewall import teardown_nftables_for_vm
-from ..network.interfaces import TapInterface
-from ..storage import get_volume_path
+from vm_supervisor.conf import settings
+from vm_supervisor.models import ExecutableContent
+from vm_supervisor.network.firewall import teardown_nftables_for_vm
+from vm_supervisor.network.interfaces import TapInterface
+from vm_supervisor.storage import get_volume_path
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")
@@ -66,17 +63,13 @@ class HostVolume:
 
 
 @dataclass
-class VMConfiguration:
-    interface: Interface
+class VmConfiguration:
     vm_hash: ItemHash
     ip: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
-
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
 @dataclass
@@ -148,7 +141,7 @@ class AlephFirecrackerExecutable:
     hardware_resources: MachineResources
     tap_interface: Optional[TapInterface] = None
     fvm: MicroVM
-    vm_configuration: Optional[VMConfiguration]
+    vm_configuration: Optional[VmConfiguration]
     guest_api_process: Optional[Process] = None
     is_instance: bool
     _firecracker_config: Optional[FirecrackerConfig] = None
