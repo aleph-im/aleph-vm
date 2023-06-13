@@ -18,7 +18,11 @@ from firecracker.microvm import setfacl
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import create_devmapper
 
-from .executable import AlephFirecrackerExecutable, AlephFirecrackerResources
+from .executable import (
+    AlephFirecrackerExecutable,
+    AlephFirecrackerResources,
+    BaseConfiguration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,7 @@ class AlephInstanceResources(AlephFirecrackerResources):
 
 
 class AlephFirecrackerInstance(AlephFirecrackerExecutable):
+    vm_configuration: BaseConfiguration
     resources: AlephInstanceResources
     is_instance = True
 

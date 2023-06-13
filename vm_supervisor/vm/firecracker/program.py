@@ -213,7 +213,7 @@ def get_volumes_for_program(
     return code, volumes
 
 
-class AlephFirecrackerProgram(AlephFirecrackerExecutable):
+class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]):
     vm_configuration: Optional[ProgramVmConfiguration]
     resources: AlephProgramResources
     is_instance = False
