@@ -117,10 +117,10 @@ class VmPool:
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():
-            if execution.persistent and execution.is_running:
+            if execution.persistent and execution.is_program and execution.is_running:
                 yield execution
 
     def get_instance_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():
-            if execution.is_instance and execution.is_running:
+            if execution.persistent and execution.is_instance and execution.is_running:
                 yield execution
