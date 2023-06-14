@@ -7,7 +7,7 @@ from msgpack import UnpackValueError
 
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
-from http import cookies
+from multidict import CIMultiDict
 from aleph_message.models import ItemHash
 
 from firecracker.microvm import MicroVMFailedInit
@@ -136,19 +136,15 @@ async def run_code_on_request(
                 content_type="text/plain",
             )
 
-        response_cookies = []
-        for header, value in result["headers"]["headers"]:
-          if "set-cookie" in header.decode().lower():
-            response_cookies.append(value.decode())
-
-        headers = {
-            key.decode().lower(): value.decode() for key, value in result["headers"]["headers"]
-        }
+        # HTTP Headers require specific data structure
+        headers = CIMultiDict([
+            (key.decode().lower(), value.decode()) for key, value in result["headers"]["headers"]
+        ])
         if "content-length" not in headers:
             headers["Content-Length".lower()] = str(len(result["body"]["body"]))
-        for header in ["Content-Encoding", "Transfer-Encoding", "Vary", "Set-Cookie"]:
-            if header.lower() in headers:
-                del headers[header.lower()]
+        for header in ["Content-Encoding", "Transfer-Encoding", "Vary"]:
+            if header in headers:
+                del headers[header]
 
         headers.update(
             {
@@ -158,20 +154,11 @@ async def run_code_on_request(
             }
         )
 
-        response = web.Response(
+        return web.Response(
             status=result["headers"]["status"],
             body=result["body"]["body"],
             headers=headers,
         )
-
-        if len(response_cookies) > 0:
-            simple_cookie = cookies.SimpleCookie()
-            for cookie in response_cookies:
-                simple_cookie.load(cookie) # load with Morsel compatibility
-            for cookie_name in simple_cookie.keys():
-                response.cookies[cookie_name] = simple_cookie[cookie_name] # set cookies
-
-        return response
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=502, reason="Invalid response from VM")
