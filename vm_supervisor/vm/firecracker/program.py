@@ -170,7 +170,9 @@ class AlephProgramResources(AlephFirecrackerResources):
                 self.data_path = await get_data_path(data_ref)
             except ClientResponseError as error:
                 raise ResourceDownloadError(error)
-            assert self.data_path.is_file(), f"Data nout found on {self.data_path}"
+            assert self.data_path.is_file(), f"Data not found on {self.data_path}"
+        else:
+            self.data_path = None
 
     async def download_all(self):
         await asyncio.gather(
