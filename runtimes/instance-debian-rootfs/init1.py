@@ -91,6 +91,9 @@ os.environ["ALEPH_API_UNIX_SOCKET"] = "/tmp/socat-socket"
 os.environ["ALEPH_REMOTE_CRYPTO_HOST"] = "http://localhost"
 os.environ["ALEPH_REMOTE_CRYPTO_UNIX_SOCKET"] = "/tmp/socat-socket"
 
+# Additional node modules from immutable volume
+os.environ["NODE_PATH"] = "/opt/node_modules"
+
 logger.debug("init1.py is launching")
 
 
