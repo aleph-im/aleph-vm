@@ -118,6 +118,10 @@ or in debug mode:
 ```shell
 python3 -m vm_supervisor -vv --system-logs
 ```
+or in test mode to run a single function:
+```shell
+python3 -m vm_supervisor -vv --system-logs -f examples/example_fastapi
+```
 
 Test accessing the service on
 http://localhost:4020/
