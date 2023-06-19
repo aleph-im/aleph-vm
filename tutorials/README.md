@@ -29,7 +29,7 @@ simple API and the `uvicorn` server to test your program on your desktop before 
 Aleph.
 
 First, you need a recent version of Python and [pip](https://pip.pypa.io/en/stable/), 
-preferably running on Debian 11 or Ubuntu Linux 20.04 since we have not tested other platforms yet, 
+preferably running on Debian 11 or Ubuntu Linux 22.04 since we have not tested other platforms yet, 
 but feel free to use the platform of your choice if you have the skills to adapt our instructions to it.
 
 Some cryptographic functionalities of Aleph use curve secp256k1 and require installing [libsecp256k1](https://github.com/bitcoin-core/secp256k1).

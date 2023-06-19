@@ -1,7 +1,7 @@
 Origin: Aleph-IM
 Label: aleph-im
 Suite: stable
-Codename: focal
+Codename: jammy
 Version: 3.0
 Architectures: amd64 source
 Components: contrib
