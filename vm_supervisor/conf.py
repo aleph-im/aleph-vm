@@ -32,7 +32,7 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
     """
     Use resolvectl to list available DNS servers (IPv4 and IPv6).
 
-    Note: we used to use systemd-resolve for Ubuntu 20.04 and Debian.
+    Note: we used to use systemd-resolve for Debian 11.
     This command is not available anymore on Ubuntu 22.04 and is actually a symlink
     to resolvectl.
 

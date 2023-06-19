@@ -68,17 +68,6 @@ all-podman-debian-11: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
 
-all-podman-ubuntu-2004: version
-	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2004:latest -f ./packaging/ubuntu-20.04.dockerfile .
-	mkdir -p ./target
-	podman run --rm -ti \
-		-w /opt/packaging \
-		-v ./target:/opt/packaging/target \
-		localhost/aleph-vm-packaging-ubuntu-2004:latest \
-		make
-	file target/aleph-vm.deb
-	mv target/aleph-vm.deb target/aleph-vm.ubuntu-20.04.deb
-
 all-podman-ubuntu-2204: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2204:latest -f ./packaging/ubuntu-22.04.dockerfile .
 	mkdir -p ./target
@@ -99,15 +88,6 @@ requirements-debian-11: all-podman-debian-11
 		debian:bullseye \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-11.txt"
 
-# extract Python requirements from Ubuntu 20.04 container
-requirements-ubuntu-20.04: all-podman-ubuntu-2004
-	podman run --rm -ti \
-		-v ./target/aleph-vm.ubuntu-20.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
-		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
-		-v ./requirements-ubuntu-20.04.txt:/mnt/requirements-ubuntu-20.04.txt \
-		ubuntu:focal \
-		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-20.04.txt"
-
 # extract Python requirements from Ubuntu 22.04 container
 requirements-ubuntu-22.04: all-podman-ubuntu-2204
 	podman run --rm -ti \
@@ -122,9 +102,9 @@ repository-bullseye:
 	cd ./repositories/bullseye && reprepro -Vb . includedeb bullseye ../../target/aleph-vm.debian-11.deb && cd ..
 
 # run on host in order to sign with GPG
-repository-focal:
-	cd ./repositories/focal && reprepro -Vb . includedeb focal ../../target/aleph-vm.ubuntu-20.04.deb && cd ..
+repository-jammy:
+	cd ./repositories/jammy && reprepro -Vb . includedeb jammy ../../target/aleph-vm.ubuntu-22.04.deb && cd ..
 
-repositories: repository-bullseye repository-focal
+repositories: repository-bullseye repository-jammy
 
-all-podman: all-podman-debian-11 all-podman-ubuntu-2004 repositories
+all-podman: all-podman-debian-11 all-podman-ubuntu-2204 repositories

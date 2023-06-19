@@ -18,7 +18,7 @@ Writing programs in Python using ASGI compatible frameworks (
 Install Aleph-VM to run an Aleph.im Compute Resource Node easily from official pre-built packages.
 
 - [On Debian 11](./doc/INSTALL-Debian-11.md)
-- [On Ubuntu 20.04](./doc/INSTALL-Ubuntu-20.04.md)
+- [On Ubuntu 22.04](./doc/INSTALL-Ubuntu-22.04.md)
 
 ## 2. Install Aleph-VM from source
 

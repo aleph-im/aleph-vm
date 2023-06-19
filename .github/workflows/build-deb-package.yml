@@ -25,28 +25,6 @@ jobs:
           name: aleph-vm.debian-11.deb
           path: packaging/target/aleph-vm.debian-11.deb
 
-  build_deb_ubuntu_20_04:
-    name: "Build Debian Package"
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Unshallow
-        run: |
-          git fetch --prune --unshallow
-          git describe --tags
-
-      - run: |
-          cd packaging && make all-podman-ubuntu-2004 && cd ..
-          ls packaging/target
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: aleph-vm.ubuntu-20.04.deb
-          path: packaging/target/aleph-vm.ubuntu-20.04.deb
-
   build_deb_ubuntu_22_04:
     name: "Build Debian Package"
     runs-on: ubuntu-latest
