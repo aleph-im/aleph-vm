@@ -4,10 +4,11 @@ from typing import Dict, Iterable, Optional
 
 from aleph_message.models import ExecutableMessage, ItemHash
 
-from vm_supervisor.network.hostnetwork import Network
+from vm_supervisor.network.hostnetwork import Network, make_ipv6_allocator
 
 from .conf import settings
 from .models import ExecutableContent, VmExecution
+from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,17 @@ class VmPool:
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+
         self.network = (
             Network(
-                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
                 vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
                 external_interface=settings.NETWORK_INTERFACE,
+                ipv6_allocator=make_ipv6_allocator(
+                    allocation_policy=settings.IPV6_ALLOCATION_POLICY,
+                    address_pool=settings.IPV6_ADDRESS_POOL,
+                    subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+                ),
             )
             if settings.ALLOW_VM_NETWORKING
             else None
@@ -49,7 +56,8 @@ class VmPool:
         vm_id = self.get_unique_vm_id()
 
         if self.network:
-            tap_interface = await self.network.create_tap(vm_id)
+            vm_type = VmType.from_message_content(message)
+            tap_interface = await self.network.create_tap(vm_id, vm_hash, vm_type)
         else:
             tap_interface = None
 
