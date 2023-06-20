@@ -4,17 +4,15 @@ import logging
 import os.path
 import shutil
 import string
-import subprocess
 from asyncio import Task
 from asyncio.base_events import Server
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
-from .config import FirecrackerConfig
-from .config import Drive
+from .config import Drive, FirecrackerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -294,11 +292,11 @@ class MicroVM:
             jailer_device_vm_path.mkdir(exist_ok=True, parents=True)
             rootfs_device = path_on_host.resolve()
             # Copy the /dev/dm-{device_id} special block file that is the real mapping destination on Jailer
-            os.system(f"cp -vap {rootfs_device} {self.jailer_path}/dev/")
+            system(f"cp -vap {rootfs_device} {self.jailer_path}/dev/")
             path_to_mount = jailer_device_vm_path / rootfs_filename
             if not path_to_mount.is_symlink():
                 path_to_mount.symlink_to(rootfs_device)
-            os.system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
+            system(f"chown -Rh jailman:jailman {self.jailer_path}/dev")
 
         return device_jailer_path
 
@@ -366,7 +364,7 @@ class MicroVM:
         self._unix_socket = await asyncio.start_unix_server(
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
-        os.system(f"chown jailman:jailman {self.vsock_path}_52")
+        system(f"chown jailman:jailman {self.vsock_path}_52")
         try:
             await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")
@@ -441,7 +439,7 @@ class MicroVM:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
             root_fs = self.mounted_rootfs.name
-            os.system(f"dmsetup remove {root_fs}")
+            system(f"dmsetup remove {root_fs}")
             if self.use_jailer:
                 shutil.rmtree(self.jailer_path)
 

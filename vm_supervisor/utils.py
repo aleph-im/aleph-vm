@@ -60,6 +60,8 @@ async def run_in_subprocess(
     command: List[str], check: bool = True, stdin_input: Optional[bytes] = None
 ) -> bytes:
     """Run the specified command in a subprocess, returns the stdout of the process."""
+    logger.debug(f"command: {' '.join(command)}")
+
     process = await asyncio.create_subprocess_exec(
         *command,
         stdin=asyncio.subprocess.PIPE,
