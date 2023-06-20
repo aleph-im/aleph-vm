@@ -13,7 +13,12 @@ from shutil import make_archive
 from typing import Union
 
 import aiohttp
-from aleph_message.models import InstanceMessage, ProgramMessage, parse_message
+from aleph_message.models import (
+    InstanceMessage,
+    ItemHash,
+    ProgramMessage,
+    parse_message,
+)
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.program import Encoding
 from aleph_message.models.execution.volume import (
@@ -154,8 +159,22 @@ async def get_data_path(ref: str) -> Path:
 
 
 async def get_runtime_path(ref: str) -> Path:
-    if settings.FAKE_DATA_PROGRAM or settings.FAKE_DATA_INSTANCE:
+    """Obtain the runtime used for the rootfs of a program."""
+    if settings.FAKE_DATA_PROGRAM:
         return Path(settings.FAKE_DATA_RUNTIME)
+
+    cache_path = Path(settings.RUNTIME_CACHE) / ref
+    url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
+    await download_file(url, cache_path)
+    await chown_to_jailman(cache_path)
+    return cache_path
+
+
+async def get_rootfs_base_path(ref: ItemHash) -> Path:
+    """Obtain the base partition for the rootfs of an instance."""
+    if settings.USE_FAKE_INSTANCE_BASE and settings.FAKE_INSTANCE_BASE:
+        logger.debug("Using fake instance base")
+        return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
@@ -236,7 +255,7 @@ async def create_devmapper(
         return path_mapped_volume_name
 
     volume_path = await create_volume_file(volume, namespace)
-    parent_path = await get_runtime_path(volume.parent.ref)
+    parent_path = await get_rootfs_base_path(volume.parent.ref)
 
     base_loop_device = await create_loopback_device(parent_path, read_only=True)
     base_block_size: int = await get_block_size(parent_path)
