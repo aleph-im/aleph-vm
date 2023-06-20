@@ -309,6 +309,9 @@ def main():
     elif args.run_test_instance:
         logger.info("Running test instance virtual machine")
         instance_item_hash = settings.FAKE_INSTANCE_ID
+        settings.update(
+            FAKE_DATA_INSTANCE=True,
+        )
 
         async def forever():
             await run_instance(item_hash=instance_item_hash)
