@@ -19,7 +19,7 @@
         },
         "resources": {
             "vcpus": 1,
-            "memory": 128,
+            "memory": 512,
             "seconds": 30
         },
         "rootfs": {
@@ -28,14 +28,11 @@
                 "use_latest": true
             },
             "persistence": "host",
-            "size_mib": 20000
+            "size_mib": 5000
         },
-        "cloud_config": {
-            "password": "password",
-            "chpasswd": {
-                "expire": "False"
-            }
-        },
+        "authorized_keys": [
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHlGJRaIv/EzNT0eNqNB5DiGEbii28Fb2zCjuO/bMu7y amolinsdiaz@gmail.com"
+        ],
         "volumes": [
             {
                 "mount": "/opt/venv",
