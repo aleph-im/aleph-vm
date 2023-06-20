@@ -319,8 +319,8 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         # The ip and route should not contain the network mask in order to maintain
         # compatibility with the existing runtimes.
         if self.enable_networking and self.tap_interface:
-            ip = self.tap_interface.guest_ip.with_prefixlen.split("/", 1)[0]
-            route = str(self.tap_interface.host_ip).split("/", 1)[0]
+            ip = self.get_vm_ip().split("/", 1)[0]
+            route = self.get_vm_route()
         else:
             ip, route = None, None
 
