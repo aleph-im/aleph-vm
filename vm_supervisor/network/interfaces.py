@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import shutil
-from ipaddress import IPv4Interface
+from ipaddress import IPv4Interface, IPv6Network, IPv6Interface, IPv6Address
 from subprocess import run
 
 from .ipaddresses import IPv4NetworkWithInterfaces
@@ -12,10 +12,17 @@ logger = logging.getLogger(__name__)
 class TapInterface:
     device_name: str
     ip_network: IPv4NetworkWithInterfaces
+    ipv6_network: IPv6Network
 
-    def __init__(self, device_name: str, ip_network: IPv4NetworkWithInterfaces):
+    def __init__(
+        self,
+        device_name: str,
+        ip_network: IPv4NetworkWithInterfaces,
+        ipv6_network: IPv6Network,
+    ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
+        self.ipv6_network = ipv6_network
 
     @property
     def guest_ip(self) -> IPv4Interface:
@@ -24,6 +31,14 @@ class TapInterface:
     @property
     def host_ip(self) -> IPv4Interface:
         return self.ip_network[1]
+
+    @property
+    def guest_ipv6(self) -> IPv6Interface:
+        return IPv6Interface(f"{self.ipv6_network[1]}/{self.ipv6_network.prefixlen}")
+
+    @property
+    def host_ipv6(self) -> IPv6Interface:
+        return IPv6Interface(f"{self.ipv6_network[0]}/{self.ipv6_network.prefixlen}")
 
     async def create(self):
         logger.debug("Create network interface")
@@ -36,6 +51,16 @@ class TapInterface:
                 "addr",
                 "add",
                 str(self.host_ip.with_prefixlen),
+                "dev",
+                self.device_name,
+            ]
+        )
+        run(
+            [
+                ip_command,
+                "addr",
+                "add",
+                str(self.host_ipv6.with_prefixlen),
                 "dev",
                 self.device_name,
             ]
