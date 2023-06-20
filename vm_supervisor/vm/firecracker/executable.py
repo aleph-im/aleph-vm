@@ -182,6 +182,12 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         self.guest_api_process = None
         self._firecracker_config = None
 
+    def get_vm_ip(self):
+        return self.tap_interface.guest_ip.with_prefixlen
+
+    def get_vm_route(self):
+        return str(self.tap_interface.host_ip).split("/", 1)[0]
+
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.fvm.proc and psutil:
