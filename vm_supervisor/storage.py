@@ -154,7 +154,7 @@ async def get_data_path(ref: str) -> Path:
 
 
 async def get_runtime_path(ref: str) -> Path:
-    if settings.FAKE_DATA_PROGRAM:
+    if settings.FAKE_DATA_PROGRAM or settings.FAKE_DATA_INSTANCE:
         return Path(settings.FAKE_DATA_RUNTIME)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
