@@ -188,6 +188,12 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
     def get_vm_route(self):
         return str(self.tap_interface.host_ip).split("/", 1)[0]
 
+    def get_ipv6(self) -> str:
+        return self.tap_interface.guest_ipv6.with_prefixlen
+
+    def get_vm_ipv6_gateway(self) -> str:
+        return str(self.tap_interface.host_ipv6.ip)
+
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.fvm.proc and psutil:

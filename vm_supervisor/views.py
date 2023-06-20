@@ -62,7 +62,7 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
 
     message_ref_base32 = request.host.split(".")[0]
     if settings.FAKE_DATA_PROGRAM:
-        message_ref = ItemHash("fake-hash")
+        message_ref = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     else:
         try:
             message_ref = ItemHash(b32_to_b16(message_ref_base32).decode())

@@ -31,7 +31,8 @@ class VmPool:
         self.executions = {}
         self.network = (
             Network(
-                vm_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
+                vm_ipv6_address_range=settings.IPV6_ADDRESS_POOL,
                 vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
                 external_interface=settings.NETWORK_INTERFACE,
             )
@@ -49,7 +50,7 @@ class VmPool:
         vm_id = self.get_unique_vm_id()
 
         if self.network:
-            tap_interface = await self.network.create_tap(vm_id)
+            tap_interface = await self.network.create_tap(vm_id, vm_hash)
         else:
             tap_interface = None
 
