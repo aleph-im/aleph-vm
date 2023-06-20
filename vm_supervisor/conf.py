@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     )
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
+    FAKE_DATA_INSTANCE: Optional[bool] = False
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
         abspath(join(__file__, "../../examples/example_fastapi"))
     )
