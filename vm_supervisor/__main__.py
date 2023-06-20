@@ -123,12 +123,28 @@ def parse_args(args):
         help="Path to project containing fake data",
     )
     parser.add_argument(
-        "-k",
+        "-i",
         "--run-test-instance",
         dest="run_test_instance",
         action="store_true",
         default=False,
-        help="Run a test instance instead of starting the entire supervisor",
+        help="Run a test instance from the network instead of starting the entire supervisor",
+    )
+    parser.add_argument(
+        "-k",
+        "--run-fake-instance",
+        dest="run_fake_instance",
+        action="store_true",
+        default=False,
+        help="Run a fake instance from a local rootfs instead of starting the entire supervisor",
+    )
+    parser.add_argument(
+        "-r",
+        "--fake-instance-base",
+        dest="fake_instance_base",
+        type=str,
+        default=settings.FAKE_INSTANCE_BASE,
+        help="Filesystem path of the base for the rootfs of fake instances. An empty value signals a download instead.",
     )
     return parser.parse_args(args)
 
@@ -217,7 +233,7 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
-async def run_instance(item_hash: ItemHash):
+async def start_instance(item_hash: ItemHash) -> None:
     """Run an instance from an InstanceMessage."""
 
     # The main program uses a singleton pubsub instance in order to watch for updates.
@@ -226,6 +242,16 @@ async def run_instance(item_hash: ItemHash):
     dummy_pubsub = PubSub()
 
     await start_persistent_vm(item_hash, dummy_pubsub)
+
+
+async def run_instances(instances: List[ItemHash]) -> None:
+    """Run instances from a list of message identifiers."""
+    logger.info(f"Instances to run: {instances}")
+
+    await asyncio.gather(
+        *[start_instance(item_hash=instance_id) for instance_id in instances]
+    )
+    await asyncio.Event().wait()  # wait forever
 
 
 @contextlib.contextmanager
@@ -270,7 +296,10 @@ def main():
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
         FAKE_DATA_PROGRAM=args.fake_data_program,
         DEBUG_ASYNCIO=args.debug_asyncio,
+        FAKE_INSTANCE_BASE=args.fake_instance_base,
     )
+    if args.run_fake_instance:
+        settings.USE_FAKE_INSTANCE_BASE = True
 
     if sentry_sdk:
         if settings.SENTRY_DSN:
@@ -307,17 +336,11 @@ def main():
     elif args.do_not_run:
         logger.info("Option --do-not-run, exiting")
     elif args.run_test_instance:
-        logger.info("Running test instance virtual machine")
-        instance_item_hash = settings.FAKE_INSTANCE_ID
-        settings.update(
-            FAKE_DATA_INSTANCE=True,
-        )
-
-        async def forever():
-            await run_instance(item_hash=instance_item_hash)
-            await asyncio.sleep(1000)
-
-        asyncio.run(forever())
+        asyncio.run(run_instances([ItemHash(settings.TEST_INSTANCE_ID)]))
+        logger.info("Finished")
+        sys.exit(0)
+    elif args.run_fake_instance:
+        asyncio.run(run_instances([ItemHash(settings.FAKE_INSTANCE_ID)]))
         logger.info("Finished")
         sys.exit(0)
     else:
