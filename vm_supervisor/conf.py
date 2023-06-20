@@ -123,8 +123,9 @@ class Settings(BaseSettings):
         "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
     )
 
+    # Tests on programs
+
     FAKE_DATA_PROGRAM: Optional[Path] = None
-    FAKE_DATA_INSTANCE: Optional[bool] = False
     BENCHMARK_FAKE_DATA_PROGRAM = Path(
         abspath(join(__file__, "../../examples/example_fastapi"))
     )
@@ -142,8 +143,21 @@ class Settings(BaseSettings):
         abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs"))
     )
 
-    FAKE_INSTANCE_ID = (
-        "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    # Tests on instances
+
+    TEST_INSTANCE_ID: Optional[str] = Field(
+        default=None,  # TODO: Use a valid item_hash here
+        description="Identifier of the instance message used when testing the launch of an instance from the network",
+    )
+
+    USE_FAKE_INSTANCE_BASE = False
+    FAKE_INSTANCE_BASE = Path(
+        abspath(join(__file__, "../../runtimes/instance-debian-rootfs/rootfs.ext4"))
+    )
+    FAKE_INSTANCE_ID: str = Field(
+        default="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+        description="Identifier used for the 'fake instance' message defined in "
+        "examples/instance_message_from_aleph.json",
     )
     FAKE_INSTANCE_MESSAGE = Path(
         abspath(join(__file__, "../../examples/instance_message_from_aleph.json"))
