@@ -20,6 +20,11 @@ class DnsResolver(str, Enum):
     resolvectl = "resolvectl"  # Systemd-resolved, common on Ubuntu
 
 
+class IPv6AllocationPolicy(str, Enum):
+    static = "static"  # Compute the IP address based on the VM item hash.
+    dynamic = "dynamic"  # Assign an available IP address.
+
+
 def etc_resolv_conf_dns_servers():
     with open("/etc/resolv.conf", "r") as resolv_file:
         for line in resolv_file.readlines():
@@ -89,6 +94,18 @@ class Settings(BaseSettings):
     IPV4_NETWORK_PREFIX_LENGTH = Field(
         default=24,
         description="Individual VM network prefix length in bits",
+    )
+    IPV6_ADDRESS_POOL: str = Field(
+        default="fc00:1:2:3::/64",
+        description="IPv6 address range assigned to the host. Example: 1111:2222:3333:4444::/64. "
+        "Defaults to a local address range for compatibility with hosts not yet configured for IPv6.",
+    )
+    IPV6_ALLOCATION_POLICY: IPv6AllocationPolicy = Field(
+        default=IPv6AllocationPolicy.static
+    )
+    IPV6_SUBNET_PREFIX: int = Field(
+        default=124,
+        description="IPv6 subnet prefix for VMs. Made configurable for testing.",
     )
     NFTABLES_CHAIN_PREFIX = "aleph"
 

@@ -85,6 +85,7 @@ class ProgramVmConfiguration:
     interface: Interface
     vm_hash: ItemHash
     ip: Optional[str] = None
+    ipv6: Optional[str] = None
     route: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
@@ -105,7 +106,9 @@ class ConfigurationPayload:
     entrypoint: str
     code: Optional[bytes] = None
     ip: Optional[str] = None
+    ipv6: Optional[str] = None
     route: Optional[str] = None
+    ipv6_gateway: Optional[str] = None
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
@@ -316,20 +319,23 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         machine to send this configuration. Other modes may use Cloud-init, ..."""
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
-        # The ip and route should not contain the network mask in order to maintain
-        # compatibility with the existing runtimes.
-        if self.enable_networking and self.tap_interface:
-            ip = self.get_vm_ip().split("/", 1)[0]
-            route = self.get_vm_route()
-        else:
-            ip, route = None, None
+        ip = self.get_vm_ip()
+        if ip:
+            # The ip and route should not contain the network mask in order to maintain
+            # compatibility with the existing runtimes.
+            ip = ip.split("/", 1)[0]
+        route = self.get_vm_route()
+        ipv6 = self.get_vm_ipv6()
+        ipv6_gateway = self.get_vm_ipv6_gateway()
 
         if not settings.DNS_NAMESERVERS:
             raise ValueError("Invalid configuration: DNS nameservers missing")
 
         config = ConfigurationPayload(
             ip=ip,
+            ipv6=ipv6,
             route=route,
+            ipv6_gateway=ipv6_gateway,
             dns_servers=settings.DNS_NAMESERVERS,
             code=code,
             encoding=self.resources.code_encoding,
