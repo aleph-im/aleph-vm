@@ -1,11 +1,12 @@
 import logging
 from ipaddress import IPv6Network
 from pathlib import Path
-from typing import Protocol, Optional
+from typing import Optional, Protocol
 
 from aleph_message.models import ItemHash
 
 from vm_supervisor.conf import IPv6AllocationPolicy
+
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
