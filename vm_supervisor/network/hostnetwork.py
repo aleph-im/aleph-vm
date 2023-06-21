@@ -6,6 +6,7 @@ from typing import Protocol, Optional
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
+from .ndp_proxy import NdpProxy
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,36 @@ class Network:
     network_size: int
     external_interface: str
 
+    def __init__(
+        self,
+        vm_ipv4_address_pool_range: str,
+        vm_ipv6_address_range: str,
+        vm_network_size: int,
+        external_interface: str,
+    ) -> None:
+        """Sets up the Network class with some information it needs so future function calls work as expected"""
+        self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
+        if not self.ipv4_address_pool.is_private:
+            logger.warning(
+                f"Using a network range that is not private: {self.ipv4_address_pool}"
+            )
+        self.ipv6_allocator = DynamicIPv6Allocator(
+            ipv6_range=IPv6Network(vm_ipv6_address_range, strict=False),
+            vm_subnet_prefix=127,
+        )
+
+        self.network_size = vm_network_size
+        self.external_interface = external_interface
+        self.ipv4_forward_state_before_setup = None
+        self.ipv6_forward_state_before_setup = None
+
+        self.enable_ipv4_forwarding()
+        self.enable_ipv6_forwarding()
+
+        self.ndp_proxy = NdpProxy(host_network_interface=external_interface)
+
+        initialize_nftables()
+
     def get_network_for_tap(self, vm_id: int) -> IPv4NetworkWithInterfaces:
         subnets = list(self.ipv4_address_pool.subnets(new_prefix=self.network_size))
         return subnets[vm_id]
@@ -105,32 +136,6 @@ class Network:
                 str(self.ipv6_forward_state_before_setup)
             )
 
-    def __init__(
-        self,
-        vm_ipv4_address_pool_range: str,
-        vm_ipv6_address_range: str,
-        vm_network_size: int,
-        external_interface: str,
-    ) -> None:
-        """Sets up the Network class with some information it needs so future function calls work as expected"""
-        self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
-        if not self.ipv4_address_pool.is_private:
-            logger.warning(
-                f"Using a network range that is not private: {self.ipv4_address_pool}"
-            )
-        self.ipv6_allocator = DynamicIPv6Allocator(
-            ipv6_range=IPv6Network(vm_ipv6_address_range, strict=False),
-            vm_subnet_prefix=127,
-        )
-
-        self.ipv4_forward_state_before_setup = None
-        self.ipv6_forward_state_before_setup = None
-
-        self.network_size = vm_network_size
-        self.external_interface = external_interface
-        self.enable_ipv4_forwarding()
-        initialize_nftables()
-
     def teardown(self) -> None:
         teardown_nftables()
         self.reset_ipv4_forwarding_state()
@@ -140,10 +145,11 @@ class Network:
         """Create TAP interface to be used by VM"""
         interface = TapInterface(
             f"vmtap{vm_id}",
-            self.get_network_for_tap(vm_id),
+            ip_network=self.get_network_for_tap(vm_id),
             ipv6_network=self.ipv6_allocator.allocate_vm_ipv6_range(
                 vm_id=vm_id, vm_hash=vm_hash
             ),
+            ndp_proxy=self.ndp_proxy,
         )
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
