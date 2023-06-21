@@ -95,9 +95,10 @@ class Settings(BaseSettings):
         default=24,
         description="Individual VM network prefix length in bits",
     )
-    IPV6_ADDRESS_POOL: Optional[str] = Field(
-        default=None,
-        description="IPv6 address range assigned to the host. Example: 1111:2222:3333:4444::/64."
+    IPV6_ADDRESS_POOL: str = Field(
+        default="fc00:1:2:3::/64",
+        description="IPv6 address range assigned to the host. Example: 1111:2222:3333:4444::/64. "
+        "Defaults to a local address range for compatibility with hosts not yet configured for IPv6.",
     )
     IPV6_ALLOCATION_POLICY: IPv6AllocationPolicy = Field(
         default=IPv6AllocationPolicy.static

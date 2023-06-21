@@ -29,11 +29,21 @@ def get_ipv6_forwarding_state() -> int:
 
 
 class IPv6Allocator(Protocol):
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: str) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
         ...
 
 
 class StaticIPv6Allocator(IPv6Allocator):
+    """
+    Static IPv6 allocator.
+    Computes IPv6 addresses based on the machine type and VM hash. The algorithm works
+    as follows:
+
+    | Component | CRN /64 range | VM type | Item hash prefix | Instance range |
+    |-----------|---------------|---------|------------------|----------------|
+    | Length    | 64 bits       | 16 bits | 44 bits          | 4 bits         |
+    """
+
     def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
         if ipv6_range.prefixlen != 64:
             raise ValueError(
@@ -54,16 +64,23 @@ class StaticIPv6Allocator(IPv6Allocator):
 
 
 class DynamicIPv6Allocator(IPv6Allocator):
+    """
+    A dynamic allocator, for testing purposes.
+    This allocator slices the input IPv6 address range in subnets of the same size
+    and iterates through them. The first subnet is assumed to be reserved for use by the host,
+    as we use this allocator in situations where the address range is small and the host
+    subnet cannot be isolated from the VM subnets (ex: /124 network on Digital Ocean for the CI).
+    """
+
     def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
         self.ipv6_range = ipv6_range
         self.vm_subnet_prefix = subnet_prefix
 
         self.subnets_generator = ipv6_range.subnets(new_prefix=subnet_prefix)
-        # Assume the first two subnets are reserved
-        _ = next(self.subnets_generator)
+        # Assume the first subnet is reserved for the host
         _ = next(self.subnets_generator)
 
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: str) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
         return next(self.subnets_generator)
 
 
@@ -164,7 +181,7 @@ class Network:
         self.reset_ipv4_forwarding_state()
         self.reset_ipv6_forwarding_state()
 
-    async def create_tap(self, vm_id: int, vm_hash: str) -> TapInterface:
+    async def create_tap(self, vm_id: int, vm_hash: ItemHash) -> TapInterface:
         """Create TAP interface to be used by VM"""
         interface = TapInterface(
             f"vmtap{vm_id}",
