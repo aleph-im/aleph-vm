@@ -5,6 +5,7 @@ from typing import Dict, Iterable, Optional
 from aleph_message.models import ExecutableMessage, ItemHash
 
 from vm_supervisor.network.hostnetwork import Network, make_ipv6_allocator
+
 from .conf import settings
 from .models import ExecutableContent, VmExecution
 

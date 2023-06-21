@@ -15,7 +15,6 @@ from ipaddress import IPv6Network
 from pathlib import Path
 from subprocess import run
 
-
 logger = logging.getLogger(__name__)
 
 

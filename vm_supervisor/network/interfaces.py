@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import shutil
-from ipaddress import IPv4Interface, IPv6Network, IPv6Interface, IPv6Address
+from ipaddress import IPv4Interface, IPv6Address, IPv6Interface, IPv6Network
 from subprocess import run
 
 from .ipaddresses import IPv4NetworkWithInterfaces
