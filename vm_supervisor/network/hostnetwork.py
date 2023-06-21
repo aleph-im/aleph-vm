@@ -3,6 +3,9 @@ from ipaddress import IPv6Network
 from pathlib import Path
 from typing import Protocol, Optional
 
+from aleph_message.models import ItemHash
+
+from vm_supervisor.conf import IPv6AllocationPolicy
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
@@ -26,34 +29,55 @@ def get_ipv6_forwarding_state() -> int:
 
 
 class IPv6Allocator(Protocol):
-    def allocate_vm_ipv6_range(self, vm_id: int, vm_hash: str) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: str) -> IPv6Network:
         ...
 
 
 class StaticIPv6Allocator(IPv6Allocator):
-    def __init__(self, ipv6_range: IPv6Network):
+    def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
         if ipv6_range.prefixlen != 64:
             raise ValueError(
                 "The static IP address allocation scheme requires a /64 subnet"
             )
-        self.ipv6_range = ipv6_range
+        if subnet_prefix < 124:
+            raise ValueError("The IPv6 subnet prefix cannot be larger than /124.")
 
-    def allocate_vm_ipv6_range(self, vm_id: int, vm_hash: str) -> IPv6Network:
-        ...
+        self.ipv6_range = ipv6_range
+        self.subnet_prefix = subnet_prefix
+
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
+        ipv6_elems = self.ipv6_range.exploded.split(":")[:4]
+        ipv6_elems += ["1"]  # Magic number for microVMs
+        ipv6_elems += [vm_hash[0:4], vm_hash[4:8], vm_hash[8:11] + "0"]
+
+        return IPv6Network(":".join(ipv6_elems) + "/124")
 
 
 class DynamicIPv6Allocator(IPv6Allocator):
-    def __init__(self, ipv6_range: IPv6Network, vm_subnet_prefix: int):
+    def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
         self.ipv6_range = ipv6_range
-        self.vm_subnet_prefix = vm_subnet_prefix
+        self.vm_subnet_prefix = subnet_prefix
 
-        self.subnets_generator = ipv6_range.subnets(new_prefix=vm_subnet_prefix)
+        self.subnets_generator = ipv6_range.subnets(new_prefix=subnet_prefix)
         # Assume the first two subnets are reserved
         _ = next(self.subnets_generator)
         _ = next(self.subnets_generator)
 
-    def allocate_vm_ipv6_range(self, vm_id: int, vm_hash: str) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: str) -> IPv6Network:
         return next(self.subnets_generator)
+
+
+def make_ipv6_allocator(
+    allocation_policy: IPv6AllocationPolicy, address_pool: str, subnet_prefix: int
+) -> IPv6Allocator:
+    allocator_cls = (
+        StaticIPv6Allocator
+        if allocation_policy == IPv6AllocationPolicy.static
+        else DynamicIPv6Allocator
+    )
+    return allocator_cls(
+        ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix
+    )
 
 
 class Network:
@@ -66,12 +90,14 @@ class Network:
     network_size: int
     external_interface: str
 
+    IPV6_SUBNET_PREFIX: int = 124
+
     def __init__(
         self,
         vm_ipv4_address_pool_range: str,
-        vm_ipv6_address_range: str,
         vm_network_size: int,
         external_interface: str,
+        ipv6_allocator: IPv6Allocator,
     ) -> None:
         """Sets up the Network class with some information it needs so future function calls work as expected"""
         self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
@@ -79,10 +105,7 @@ class Network:
             logger.warning(
                 f"Using a network range that is not private: {self.ipv4_address_pool}"
             )
-        self.ipv6_allocator = DynamicIPv6Allocator(
-            ipv6_range=IPv6Network(vm_ipv6_address_range, strict=False),
-            vm_subnet_prefix=127,
-        )
+        self.ipv6_allocator = ipv6_allocator
 
         self.network_size = vm_network_size
         self.external_interface = external_interface
@@ -146,7 +169,7 @@ class Network:
         interface = TapInterface(
             f"vmtap{vm_id}",
             ip_network=self.get_network_for_tap(vm_id),
-            ipv6_network=self.ipv6_allocator.allocate_vm_ipv6_range(
+            ipv6_network=self.ipv6_allocator.allocate_vm_ipv6_subnet(
                 vm_id=vm_id, vm_hash=vm_hash
             ),
             ndp_proxy=self.ndp_proxy,
