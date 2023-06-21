@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from ipaddress import IPv6Network
 from pathlib import Path
-from  subprocess import run
+from subprocess import run
 
 
 logger = logging.getLogger(__name__)
@@ -25,10 +25,9 @@ class NdpRule:
 
 
 class NdpProxy:
-
     def __init__(self, host_network_interface: str):
         self.host_network_interface = host_network_interface
-        self.address_range_interface_mapping = {}
+        self.interface_address_range_mapping = {}
 
     @staticmethod
     def _restart_ndppd():
@@ -37,21 +36,21 @@ class NdpProxy:
 
     def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"
-        for address_range, interface in self.address_range_interface_mapping.items():
+        for interface, address_range in self.interface_address_range_mapping.items():
             config += f"  rule {address_range} {{\n    iface {interface}\n  }}\n"
         config += "}\n"
         Path("/etc/ndppd.conf").write_text(config)
         self._restart_ndppd()
 
-    def add_range(self, address_range: IPv6Network, interface: str):
+    def add_range(self, interface: str, address_range: IPv6Network):
         logger.debug("Proxying range %s -> %s", address_range, interface)
-        self.address_range_interface_mapping[address_range] = interface
+        self.interface_address_range_mapping[interface] = address_range
         self._update_ndppd_conf()
 
-    def delete_range(self, address_range: IPv6Network):
-        logger.debug("Removing range %s", address_range)
+    def delete_range(self, interface: str):
         try:
-            del self.address_range_interface_mapping[address_range]
+            address_range = self.interface_address_range_mapping.pop(interface)
+            logger.debug("Deactivated proxying for %s (%s)", interface, address_range)
         except KeyError:
             return
 
