@@ -89,3 +89,20 @@ def fix_message_validation(message: Dict) -> Dict:
         message["item_content"].encode("utf-8")
     ).hexdigest()
     return message
+
+
+class HostNotFoundError(Exception):
+    pass
+
+
+async def ping(host: str, packets: int, timeout: int):
+    """
+    Waits for a host to respond to a ping request.
+    """
+
+    try:
+        await run_in_subprocess(
+            ["ping", "-c", str(packets), "-W", str(timeout), host], check=True
+        )
+    except subprocess.CalledProcessError as err:
+        raise HostNotFoundError() from err

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,7 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import create_devmapper
+from vm_supervisor.utils import ping, HostNotFoundError
 
 from .executable import (
     AlephFirecrackerExecutable,
@@ -110,8 +112,24 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the instance to be ready."""
-        # TODO: Check availability via ping ?
-        return
+        if not self.vm_configuration:
+            raise ValueError("The VM has not been configured yet")
+
+        if not self.vm_configuration.ip:
+            raise ValueError("VM IP address not set")
+
+        attempts = 5
+        timeout_seconds = 1.0
+
+        for attempt in range(attempts):
+            try:
+                await ping(self.vm_configuration.ip, packets=1, timeout=timeout_seconds)
+                return
+            except HostNotFoundError:
+                if attempt < (attempts - 1):
+                    continue
+                else:
+                    raise
 
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
