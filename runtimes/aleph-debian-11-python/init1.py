@@ -10,20 +10,20 @@ logger = logging.getLogger(__name__)
 
 logger.debug("Imports starting")
 
-import ctypes
 import asyncio
+import ctypes
 import os
 import socket
-from enum import Enum
 import subprocess
 import sys
 import traceback
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
+from enum import Enum
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Optional, Dict, Any, Tuple, List, NewType, Union, AsyncIterable
+from typing import Any, AsyncIterable, Dict, List, NewType, Optional, Tuple, Union
 
 import aiohttp
 import msgpack
@@ -127,7 +127,9 @@ def setup_network(
         # Forward compatibility with future supervisors that pass the mask with the IP.
         system(f"ip addr add {ip} dev eth0")
     else:
-        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
+        logger.warning(
+            "Not passing the mask with the IP is deprecated and will be unsupported"
+        )
         system(f"ip addr add {ip}/24 dev eth0")
     system("ip link set eth0 up")
 
@@ -236,9 +238,11 @@ def setup_code_executable(
 
 
 def setup_code(
-    code: Optional[bytes], encoding: Optional[Encoding], entrypoint: Optional[str], interface: Interface
+    code: Optional[bytes],
+    encoding: Optional[Encoding],
+    entrypoint: Optional[str],
+    interface: Interface,
 ) -> Union[ASGIApplication, subprocess.Popen]:
-
     if interface == Interface.asgi:
         return setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
     elif interface == Interface.executable:
@@ -252,7 +256,6 @@ def setup_code(
 async def run_python_code_http(
     application: ASGIApplication, scope: dict
 ) -> Tuple[Dict, Dict, str, Optional[bytes]]:
-
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
@@ -354,7 +357,6 @@ async def process_instruction(
     interface: Interface,
     application: Union[ASGIApplication, subprocess.Popen],
 ) -> AsyncIterable[bytes]:
-
     if instruction == b"halt":
         logger.info("Received halt command")
         system("sync")
@@ -454,7 +456,7 @@ def setup_system(config: ConfigurationPayload):
     # Linux host names are limited to 63 characters. We therefore use the base32 representation
     # of the item_hash instead of its common base16 representation.
     item_hash_binary: bytes = base64.b16decode(config.vm_hash.encode().upper())
-    hostname = base64.b32encode(item_hash_binary).decode().strip('=').lower()
+    hostname = base64.b32encode(item_hash_binary).decode().strip("=").lower()
     setup_hostname(hostname)
 
     setup_variables(config.variables)
@@ -472,7 +474,7 @@ def umount_volumes(volumes: List[Volume]):
         system(f"umount {volume.mount}")
 
 
-async def main():
+async def main() -> None:
     client, addr = s.accept()
 
     logger.debug("Receiving setup...")
