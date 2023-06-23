@@ -97,7 +97,7 @@ class HostNotFoundError(Exception):
 
 async def ping(host: str, packets: int, timeout: int):
     """
-    Returns True if host (str) responds to a ping request.
+    Waits for a host to respond to a ping request.
     """
 
     try:
