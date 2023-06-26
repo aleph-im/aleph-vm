@@ -170,6 +170,8 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         ip = self.get_vm_ip()
         route = self.get_vm_route()
+        ipv6 = self.get_vm_ipv6()
+        ipv6_gateway = self.get_vm_ipv6_gateway()
 
         network = {
             "network": {
@@ -177,8 +179,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                     "eth0": {
                         "dhcp4": False,
                         "dhcp6": False,
-                        "addresses": [str(ip)],
+                        "addresses": [str(ip), ipv6],
                         "gateway4": route,
+                        "gateway6": ipv6_gateway,
                         "nameservers": {
                             "addresses": settings.DNS_NAMESERVERS,
                         },
