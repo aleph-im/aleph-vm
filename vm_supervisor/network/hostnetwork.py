@@ -11,6 +11,7 @@ from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftab
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
 from .ndp_proxy import NdpProxy
+from ..vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,9 @@ def get_ipv6_forwarding_state() -> int:
 
 
 class IPv6Allocator(Protocol):
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(
+        self, vm_id: int, vm_hash: ItemHash, vm_type: VmType
+    ) -> IPv6Network:
         ...
 
 
@@ -45,6 +48,12 @@ class StaticIPv6Allocator(IPv6Allocator):
     | Length    | 64 bits       | 16 bits | 44 bits          | 4 bits         |
     """
 
+    VM_TYPE_PREFIX = {
+        VmType.microvm: "1",
+        VmType.persistent_program: "2",
+        VmType.instance: "3",
+    }
+
     def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
         if ipv6_range.prefixlen != 64:
             raise ValueError(
@@ -56,9 +65,11 @@ class StaticIPv6Allocator(IPv6Allocator):
         self.ipv6_range = ipv6_range
         self.subnet_prefix = subnet_prefix
 
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(
+        self, vm_id: int, vm_hash: ItemHash, vm_type: VmType
+    ) -> IPv6Network:
         ipv6_elems = self.ipv6_range.exploded.split(":")[:4]
-        ipv6_elems += ["1"]  # Magic number for microVMs
+        ipv6_elems += [self.VM_TYPE_PREFIX[vm_type]]
 
         # Add the item hash of the VM as the last 44 bits of the IPv6 address.
         # The last 4 bits are left for use to the VM owner as a /124 subnet.
@@ -84,7 +95,9 @@ class DynamicIPv6Allocator(IPv6Allocator):
         # Assume the first subnet is reserved for the host
         _ = next(self.subnets_generator)
 
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(
+        self, vm_id: int, vm_hash: ItemHash, vm_type: VmType
+    ) -> IPv6Network:
         return next(self.subnets_generator)
 
 
@@ -186,13 +199,17 @@ class Network:
         self.reset_ipv4_forwarding_state()
         self.reset_ipv6_forwarding_state()
 
-    async def create_tap(self, vm_id: int, vm_hash: ItemHash) -> TapInterface:
+    async def create_tap(
+        self, vm_id: int, vm_hash: ItemHash, vm_type: VmType
+    ) -> TapInterface:
         """Create TAP interface to be used by VM"""
         interface = TapInterface(
             f"vmtap{vm_id}",
             ip_network=self.get_network_for_tap(vm_id),
             ipv6_network=self.ipv6_allocator.allocate_vm_ipv6_subnet(
-                vm_id=vm_id, vm_hash=vm_hash
+                vm_id=vm_id,
+                vm_hash=vm_hash,
+                vm_type=vm_type,
             ),
             ndp_proxy=self.ndp_proxy,
         )

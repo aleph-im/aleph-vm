@@ -8,6 +8,7 @@ from vm_supervisor.network.hostnetwork import Network, make_ipv6_allocator
 
 from .conf import settings
 from .models import ExecutableContent, VmExecution
+from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,8 @@ class VmPool:
         vm_id = self.get_unique_vm_id()
 
         if self.network:
-            tap_interface = await self.network.create_tap(vm_id, vm_hash)
+            vm_type = VmType.from_message_content(message)
+            tap_interface = await self.network.create_tap(vm_id, vm_hash, vm_type)
         else:
             tap_interface = None
 

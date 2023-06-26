@@ -324,7 +324,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         if self.enable_networking and self.tap_interface:
             ip = self.get_vm_ip().split("/", 1)[0]
             route = self.get_vm_route()
-            ipv6 = self.get_ipv6()
+            ipv6 = self.get_vm_ipv6()
             ipv6_gateway = self.get_vm_ipv6_gateway()
         else:
             ip, route, ipv6, ipv6_gateway = None, None, None, None
