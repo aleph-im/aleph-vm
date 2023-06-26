@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -OO
 import base64
 import logging
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -329,20 +330,19 @@ async def make_request(session, scope):
 
 
 def show_loading():
-    with open("/root/loading.html", "r") as f:
-        body = {
-            "body": f.read()
-        }
-        headers = {
-            "headers": [
-                [b'Content-Type', b'text/html'],
-                [b'Connection', b'keep-alive'],
-                [b'Keep-Alive', b'timeout=5'],
-                [b'Transfer-Encoding', b'chunked']
-            ],
-            "status": 503,
-        }
-        return headers, body
+    body = {
+        "body": Path("/root/loading.html").read_text()
+    }
+    headers = {
+        "headers": [
+            [b'Content-Type', b'text/html'],
+            [b'Connection', b'keep-alive'],
+            [b'Keep-Alive', b'timeout=5'],
+            [b'Transfer-Encoding', b'chunked']
+        ],
+        "status": 503,
+    }
+    return headers, body
 
 
 async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
