@@ -3,12 +3,11 @@ import logging
 from typing import Any, Dict, Optional
 
 import msgpack
-from msgpack import UnpackValueError
-
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
-from multidict import CIMultiDict
 from aleph_message.models import ItemHash
+from msgpack import UnpackValueError
+from multidict import CIMultiDict
 
 from firecracker.microvm import MicroVMFailedInit
 
@@ -141,9 +140,12 @@ async def run_code_on_request(
             )
 
         # HTTP Headers require specific data structure
-        headers = CIMultiDict([
-            (key.decode().lower(), value.decode()) for key, value in result["headers"]["headers"]
-        ])
+        headers = CIMultiDict(
+            [
+                (key.decode().lower(), value.decode())
+                for key, value in result["headers"]["headers"]
+            ]
+        )
         if "content-length" not in headers:
             headers["Content-Length".lower()] = str(len(result["body"]["body"]))
         for header in ["Content-Encoding", "Transfer-Encoding", "Vary"]:
