@@ -92,6 +92,7 @@ rm -fr ./rootfs/var/lib/apt/lists/
 # Custom init
 cp ./init0.sh ./rootfs/sbin/init
 cp ./init1.py ./rootfs/root/init1.py
+cp ./loading.html ./rootfs/root/loading.html
 chmod +x ./rootfs/sbin/init
 chmod +x ./rootfs/root/init1.py
 
