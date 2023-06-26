@@ -21,7 +21,7 @@ from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import create_devmapper
-from vm_supervisor.utils import ping, HostNotFoundError
+from vm_supervisor.utils import HostNotFoundError, ping
 
 from ...utils import run_in_subprocess
 from .executable import (

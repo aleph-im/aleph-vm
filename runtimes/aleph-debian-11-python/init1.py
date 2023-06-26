@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -OO
 import base64
 import logging
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -328,6 +329,22 @@ async def make_request(session, scope):
     return headers, body
 
 
+def show_loading():
+    body = {
+        "body": Path("/root/loading.html").read_text()
+    }
+    headers = {
+        "headers": [
+            [b'Content-Type', b'text/html'],
+            [b'Connection', b'keep-alive'],
+            [b'Keep-Alive', b'timeout=5'],
+            [b'Transfer-Encoding', b'chunked']
+        ],
+        "status": 503,
+    }
+    return headers, body
+
+
 async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
     logger.debug("Calling localhost")
 
@@ -343,7 +360,7 @@ async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[by
                 headers, body = await make_request(session, scope)
             except aiohttp.ClientConnectorError:
                 if tries > 20:
-                    raise
+                    headers, body = show_loading()
                 await asyncio.sleep(0.05)
 
     output = ""  # Process stdout is not captured per request
