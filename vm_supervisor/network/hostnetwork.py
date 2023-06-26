@@ -15,18 +15,18 @@ from .ndp_proxy import NdpProxy
 logger = logging.getLogger(__name__)
 
 
-def _read_proc_file_value(config_file: Path) -> int:
+def _read_file_as_int(config_file: Path) -> int:
     return int(config_file.read_text())
 
 
 def get_ipv4_forwarding_state() -> int:
     """Reads the current IPv4 forwarding setting from the host, converts it to int and returns it"""
-    return _read_proc_file_value(Path("/proc/sys/net/ipv4/ip_forward"))
+    return _read_file_as_int(Path("/proc/sys/net/ipv4/ip_forward"))
 
 
 def get_ipv6_forwarding_state() -> int:
     """Reads the current IPv6 forwarding setting from the host, converts it to int and returns it"""
-    return _read_proc_file_value(Path("/proc/sys/net/ipv6/conf/all/forwarding"))
+    return _read_file_as_int(Path("/proc/sys/net/ipv6/conf/all/forwarding"))
 
 
 class IPv6Allocator(Protocol):
@@ -59,6 +59,9 @@ class StaticIPv6Allocator(IPv6Allocator):
     def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash) -> IPv6Network:
         ipv6_elems = self.ipv6_range.exploded.split(":")[:4]
         ipv6_elems += ["1"]  # Magic number for microVMs
+
+        # Add the item hash of the VM as the last 44 bits of the IPv6 address.
+        # The last 4 bits are left for use to the VM owner as a /124 subnet.
         ipv6_elems += [vm_hash[0:4], vm_hash[4:8], vm_hash[8:11] + "0"]
 
         return IPv6Network(":".join(ipv6_elems) + "/124")
@@ -88,12 +91,13 @@ class DynamicIPv6Allocator(IPv6Allocator):
 def make_ipv6_allocator(
     allocation_policy: IPv6AllocationPolicy, address_pool: str, subnet_prefix: int
 ) -> IPv6Allocator:
-    allocator_cls = (
-        StaticIPv6Allocator
-        if allocation_policy == IPv6AllocationPolicy.static
-        else DynamicIPv6Allocator
-    )
-    return allocator_cls(
+
+    if allocation_policy == IPv6AllocationPolicy.static:
+        return StaticIPv6Allocator(
+            ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix
+        )
+
+    return DynamicIPv6Allocator(
         ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix
     )
 
