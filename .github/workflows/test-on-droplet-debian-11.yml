@@ -79,7 +79,7 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
             -H "X-Auth-Signature: test" \
-            -d '{"persistent_vms": [], "instances": ["INSTANCE-HASH-TODO-FIXME"]}' \
+            -d '{"persistent_vms": [], "instances": ["67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"]}' \
             "http://${DROPLET_IPV4}:4020/control/allocations"
 
       - name: Cleanup
