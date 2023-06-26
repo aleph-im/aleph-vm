@@ -126,12 +126,13 @@ def setup_network(
         logger.info("No network IP")
         return
 
+    # Configure loopback networking
+    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
+    system("ip addr add ::1/128 dev lo")
+    system("ip link set lo up")
+
     if ip:
         logger.debug("Setting up IPv4")
-        system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
-        system("ip addr add ::1/128 dev lo")
-        system("ip link set lo up")
-        system(f"ip addr add {ip} dev eth0")
 
         # Forward compatibility with future supervisors that pass the mask with the IP.
         if "/" not in ip:
@@ -141,13 +142,12 @@ def setup_network(
             ip = f"{ip}/24"
 
         system(f"ip addr add {ip} dev eth0")
-        system("ip link set eth0 up")
 
-    if route:
-        system(f"ip route add default via {route} dev eth0")
-        logger.debug(f"IP and route set: {ip} via {route}")
-    else:
-        logger.warning("IPv4 set with no network route")
+        if route:
+            system(f"ip route add default via {route} dev eth0")
+            logger.debug(f"IP and route set: {ip} via {route}")
+        else:
+            logger.warning("IPv4 set with no network route")
 
     if ipv6:
         logger.debug("Setting up IPv6")
@@ -155,7 +155,8 @@ def setup_network(
         system(f"ip -6 route add default via {ipv6_gateway} dev eth0")
         logger.debug(f"IPv6 setup to address {ipv6}")
 
-    system("ip link set eth0 up")
+    if ip or ipv6:
+        system("ip link set eth0 up")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
