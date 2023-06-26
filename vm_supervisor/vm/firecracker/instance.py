@@ -1,9 +1,8 @@
 import asyncio
 import logging
-import subprocess
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 import yaml
 from aleph_message.models import ItemHash
@@ -148,8 +147,8 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
-        config = {
-            "hostname": self.vm_hash,
+        config: Dict[str, Union[str, bool, List[str]]] = {
+            "hostname": str(self.vm_hash),
             "disable_root": False,
             "ssh_pwauth": False,
             "ssh_authorized_keys": ssh_authorized_keys,
