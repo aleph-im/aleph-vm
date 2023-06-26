@@ -42,9 +42,9 @@ jobs:
           --enable-ipv6 \
           --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
           aleph-vm-ci-runtime
-      
+
       - name: "Build custom runtime"
-      - run: |
+        run: |
           sudo apt update
           sudo apt install -y debootstrap
           cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
