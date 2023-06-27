@@ -7,11 +7,11 @@ from aleph_message.models import ItemHash
 
 from vm_supervisor.conf import IPv6AllocationPolicy
 
+from ..vm.vm_type import VmType
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
 from .ndp_proxy import NdpProxy
-from ..vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
