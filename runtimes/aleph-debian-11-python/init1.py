@@ -19,7 +19,7 @@ import subprocess
 import sys
 import traceback
 from contextlib import redirect_stdout
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from io import StringIO
 from os import system
@@ -69,6 +69,15 @@ class ConfigurationPayload:
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ConfigurationPayload":
+        """
+        Builds a configuration payload from a dictionary while ignoring extra arguments.
+        """
+
+        field_names = set(f.name for f in fields(cls))
+        return cls(**{k: v for k, v in d.items() if k in field_names})
 
 
 @dataclass
@@ -330,15 +339,13 @@ async def make_request(session, scope):
 
 
 def show_loading():
-    body = {
-        "body": Path("/root/loading.html").read_text()
-    }
+    body = {"body": Path("/root/loading.html").read_text()}
     headers = {
         "headers": [
-            [b'Content-Type', b'text/html'],
-            [b'Connection', b'keep-alive'],
-            [b'Keep-Alive', b'timeout=5'],
-            [b'Transfer-Encoding', b'chunked']
+            [b"Content-Type", b"text/html"],
+            [b"Connection", b"keep-alive"],
+            [b"Keep-Alive", b"timeout=5"],
+            [b"Transfer-Encoding", b"chunked"],
         ],
         "status": 503,
     }
@@ -458,7 +465,7 @@ def receive_data_length(client) -> int:
 def load_configuration(data: bytes) -> ConfigurationPayload:
     msg_ = msgpack.loads(data, raw=False)
     msg_["volumes"] = [Volume(**volume_dict) for volume_dict in msg_.get("volumes")]
-    return ConfigurationPayload(**msg_)
+    return ConfigurationPayload.from_dict(msg_)
 
 
 def receive_config(client) -> ConfigurationPayload:
