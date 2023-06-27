@@ -6,11 +6,14 @@ import shutil
 import string
 from asyncio import Task
 from asyncio.base_events import Server
+from dataclasses import dataclass
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any, Dict
+
+import msgpack
 
 from .config import Drive, FirecrackerConfig
 
@@ -56,6 +59,14 @@ async def setfacl():
         logger.warning(f"[stdout]\n{stdout.decode()}")
     if stderr:
         logger.warning(f"[stderr]\n{stderr.decode()}")
+
+
+@dataclass
+class RuntimeConfig:
+    version: str
+
+    def supports_ipv6(self) -> bool:
+        return self.version != "0.1.0"
 
 
 class MicroVM:
@@ -110,6 +121,7 @@ class MicroVM:
         self.jailer_bin_path = jailer_bin_path
         self.drives = []
         self.init_timeout = init_timeout
+        self.runtime_config = None
 
     def to_dict(self):
         return {
@@ -278,8 +290,7 @@ class MicroVM:
             return path_on_host
 
     def enable_device_mapper_rootfs(self, path_on_host: Path) -> Path:
-        """Mount a rootfs to the VM.
-        """
+        """Mount a rootfs to the VM."""
         self.mounted_rootfs = path_on_host
         if not self.use_jailer:
             return path_on_host
@@ -358,15 +369,28 @@ class MicroVM:
         logger.debug("Waiting for init...")
         queue = asyncio.Queue()
 
-        async def unix_client_connected(*_):
-            await queue.put(True)
+        async def unix_client_connected(
+            reader: asyncio.StreamReader, _writer: asyncio.StreamWriter
+        ):
+            data = await reader.read(1_000_000)
+            if data:
+                config_dict: Dict[str, Any] = msgpack.loads(data)
+                runtime_config = RuntimeConfig(version=config_dict["version"])
+            else:
+                # Older runtimes do not send a config. Use a default.
+                runtime_config = RuntimeConfig(version="0.1.0")
+
+            logger.debug("Runtime version: %s", runtime_config)
+            await queue.put(runtime_config)
 
         self._unix_socket = await asyncio.start_unix_server(
             unix_client_connected, path=f"{self.vsock_path}_52"
         )
         system(f"chown jailman:jailman {self.vsock_path}_52")
         try:
-            await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
+            self.runtime_config = await asyncio.wait_for(
+                queue.get(), timeout=self.init_timeout
+            )
             logger.debug("...signal from init received")
         except asyncio.TimeoutError:
             logger.warning("Never received signal from init")

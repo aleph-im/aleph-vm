@@ -21,7 +21,7 @@ from firecracker.config import (
     NetworkInterface,
     Vsock,
 )
-from firecracker.microvm import setfacl
+from firecracker.microvm import RuntimeConfig, setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.interfaces import TapInterface
@@ -113,8 +113,13 @@ class ConfigurationPayload:
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
 
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
+    def as_msgpack(self, runtime_config: RuntimeConfig) -> bytes:
+        payload_dict = dataclasses.asdict(self)
+        if not runtime_config.supports_ipv6():
+            del payload_dict["ipv6"]
+            del payload_dict["ipv6_gateway"]
+
+        return msgpack.dumps(payload_dict, use_bin_type=True)
 
 
 @dataclass
@@ -331,6 +336,9 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         if not settings.DNS_NAMESERVERS:
             raise ValueError("Invalid configuration: DNS nameservers missing")
 
+        runtime_config = self.fvm.runtime_config
+        assert runtime_config
+
         config = ConfigurationPayload(
             ip=ip,
             ipv6=ipv6,
@@ -346,7 +354,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             volumes=volumes,
             variables=self.resources.message_content.variables,
         )
-        payload = config.as_msgpack()
+        payload = config.as_msgpack(runtime_config=runtime_config)
         length = f"{len(payload)}\n".encode()
         writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()
