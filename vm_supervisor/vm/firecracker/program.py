@@ -5,7 +5,7 @@ import os.path
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import msgpack
 from aiohttp import ClientResponseError
@@ -345,7 +345,8 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()
 
-        await reader.readline()  # Ignore the acknowledgement from the socket
+        line = await reader.readline()  # Ignore the acknowledgement from the socket
+        logger.debug("test-ack=%s", line)
         response_raw = await reader.read(1000_000)
         response = ConfigurationResponse(**msgpack.loads(response_raw, raw=False))
         if response.success is False:

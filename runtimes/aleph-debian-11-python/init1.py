@@ -31,6 +31,7 @@ import msgpack
 
 logger.debug("Imports finished")
 
+__version__ = "0.2.0"
 ASGIApplication = NewType("ASGIApplication", Any)
 
 
@@ -84,6 +85,7 @@ s.listen()
 # Send the host that we are ready
 s0 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
 s0.connect((2, 52))
+s0.sendall(msgpack.dumps({"version": __version__}))
 s0.close()
 
 # Configure aleph-client to use the guest API
