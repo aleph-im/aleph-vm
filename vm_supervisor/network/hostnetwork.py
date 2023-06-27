@@ -104,7 +104,6 @@ class DynamicIPv6Allocator(IPv6Allocator):
 def make_ipv6_allocator(
     allocation_policy: IPv6AllocationPolicy, address_pool: str, subnet_prefix: int
 ) -> IPv6Allocator:
-
     if allocation_policy == IPv6AllocationPolicy.static:
         return StaticIPv6Allocator(
             ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix
