@@ -88,8 +88,9 @@ def check_if_table_exists(family: str, table: str) -> bool:
         if (
             isinstance(entry, dict)
             and "table" in entry
-            and entry["family"] == family
-            and entry["name"] == table
+            # Key "family" was reported by users as not always present, so we use .get() instead of [].
+            and entry.get("family") == family
+            and entry.get("name") == table
         ):
             return True
     return False
