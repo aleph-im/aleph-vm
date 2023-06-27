@@ -319,15 +319,14 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         machine to send this configuration. Other modes may use Cloud-init, ..."""
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
-        # The ip and route should not contain the network mask in order to maintain
-        # compatibility with the existing runtimes.
-        if self.enable_networking and self.tap_interface:
-            ip = self.get_vm_ip().split("/", 1)[0]
-            route = self.get_vm_route()
-            ipv6 = self.get_vm_ipv6()
-            ipv6_gateway = self.get_vm_ipv6_gateway()
-        else:
-            ip, route, ipv6, ipv6_gateway = None, None, None, None
+        ip = self.get_vm_ip()
+        if ip:
+            # The ip and route should not contain the network mask in order to maintain
+            # compatibility with the existing runtimes.
+            ip = ip.split("/", 1)[0]
+        route = self.get_vm_route()
+        ipv6 = self.get_vm_ipv6()
+        ipv6_gateway = self.get_vm_ipv6_gateway()
 
         if not settings.DNS_NAMESERVERS:
             raise ValueError("Invalid configuration: DNS nameservers missing")

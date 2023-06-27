@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from ipaddress import IPv6Network
 from pathlib import Path
 from subprocess import run
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class NdpRule:
 class NdpProxy:
     def __init__(self, host_network_interface: str):
         self.host_network_interface = host_network_interface
-        self.interface_address_range_mapping = {}
+        self.interface_address_range_mapping: Dict[str, IPv6Network] = {}
 
     @staticmethod
     def _restart_ndppd():
