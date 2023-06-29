@@ -16,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 
 class MsgpackSerializable:
-    def __init_subclass__(cls, *args, **kwargs):
-        if not is_dataclass(cls):
-            raise TypeError("Decorated class must be a dataclass")
+    def __post_init__(self, *args, **kwargs):
+        if not is_dataclass(self):
+            raise TypeError(f"Decorated class must be a dataclass: {self}")
         super().__init_subclass__(*args, **kwargs)
 
     def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)  # type: ignore
+        if is_dataclass(self):
+            return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)  # type: ignore
+        else:
+            raise TypeError(f"Decorated class must be a dataclass: {self}")
 
 
 def b32_to_b16(hash: str) -> bytes:
