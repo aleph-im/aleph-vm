@@ -72,6 +72,7 @@ class ConfigurationPayload:
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
+    authorized_keys: Optional[List[str]] = None
 
 
 @dataclass
@@ -173,6 +174,12 @@ def setup_input_data(input_data: bytes):
             open("/opt/input.zip", "wb").write(input_data)
             os.makedirs("/data", exist_ok=True)
             os.system("unzip -q /opt/input.zip -d /data")
+
+
+def setup_authorized_keys(authorized_keys: Optional[List[str]]) -> None:
+    path = Path("/root/.ssh/authorized_keys")
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("\n".join(key for key in authorized_keys))
 
 
 def setup_volumes(volumes: List[Volume]):
@@ -506,6 +513,7 @@ def setup_system(config: ConfigurationPayload):
         dns_servers=config.dns_servers,
     )
     setup_input_data(config.input_data)
+    setup_authorized_keys(config.authorized_keys)
     logger.debug("Setup finished")
 
 
