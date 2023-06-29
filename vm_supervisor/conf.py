@@ -6,13 +6,16 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import check_output
-from typing import Any, Dict, Iterable, List, NewType, Optional
+from typing import Any, Dict, Iterable, List, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
 
 logger = logging.getLogger(__name__)
 
 Url = NewType("Url", str)
+
+# This variable may not be set from an environment variable
+ALLOW_DEVELOPER_SSH_KEYS = object()
 
 
 class DnsResolver(str, Enum):
@@ -184,7 +187,12 @@ class Settings(BaseSettings):
         "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
     )
 
+    # Developer options
+
     SENTRY_DSN: Optional[str] = None
+    DEVELOPER_SSH_KEYS: Optional[List[str]] = []
+    # Using an object here forces the value to come from Python code and not from an environment variable.
+    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = False
 
     # Fields
     SENSITIVE_FIELDS: List[str] = Field(

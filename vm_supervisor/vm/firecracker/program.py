@@ -144,6 +144,7 @@ class ConfigurationPayloadV2(ConfigurationPayloadV1):
 
     ipv6: Optional[str]
     ipv6_gateway: Optional[str]
+    authorized_keys: Optional[List[str]]
 
 
 @dataclass
@@ -163,6 +164,7 @@ class ProgramConfiguration:
     dns_servers: List[str] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
+    authorized_keys: Optional[List[str]] = None
 
     def to_runtime_format(
         self, runtime_config: RuntimeConfiguration
@@ -392,6 +394,12 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         runtime_config = self.fvm.runtime_config
         assert runtime_config
 
+        authorized_keys: Optional[List[str]]
+        if settings.USE_DEVELOPER_SSH_KEYS:
+            authorized_keys = settings.DEVELOPER_SSH_KEYS
+        else:
+            authorized_keys = self.resources.message_content.authorized_keys
+
         program_config = ProgramConfiguration(
             ip=ip,
             ipv6=ipv6,
@@ -406,6 +414,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             vm_hash=self.vm_hash,
             volumes=volumes,
             variables=self.resources.message_content.variables,
+            authorized_keys=authorized_keys,
         )
         # Convert the configuration in a format compatible with the runtime
         versioned_config = program_config.to_runtime_format(runtime_config)
