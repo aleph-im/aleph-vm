@@ -21,7 +21,7 @@ import alembic.config
 from aleph_message.models import ItemHash
 
 from . import metrics, supervisor
-from .conf import make_db_url, settings
+from .conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
 
@@ -145,6 +145,13 @@ def parse_args(args):
         type=str,
         default=settings.FAKE_INSTANCE_BASE,
         help="Filesystem path of the base for the rootfs of fake instances. An empty value signals a download instead.",
+    )
+    parser.add_argument(
+        "--developer-ssh-keys",
+        dest="use_developer_ssh_keys",
+        action="store_true",
+        default=False,
+        help="Authorize the developer's SSH keys to connect instead of those specified in the message",
     )
     return parser.parse_args(args)
 
@@ -298,8 +305,12 @@ def main():
         DEBUG_ASYNCIO=args.debug_asyncio,
         FAKE_INSTANCE_BASE=args.fake_instance_base,
     )
+
     if args.run_fake_instance:
         settings.USE_FAKE_INSTANCE_BASE = True
+
+    if args.use_developer_ssh_keys:
+        settings.USE_DEVELOPER_SSH_KEYS = ALLOW_DEVELOPER_SSH_KEYS
 
     if sentry_sdk:
         if settings.SENTRY_DSN:
