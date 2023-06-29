@@ -39,7 +39,10 @@ pip3 install 'aleph-client>=0.4.6' 'coincurve==15.0.0'
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
 
-echo "root:toor" | /usr/sbin/chpasswd
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
+echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 
 mkdir -p /overlay
 
@@ -48,7 +51,6 @@ ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 EOT
 
-echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
 
 # Generate SSH host keys
 #systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
