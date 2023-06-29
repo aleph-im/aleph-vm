@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 import logging
@@ -21,12 +23,13 @@ from firecracker.config import (
     NetworkInterface,
     Vsock,
 )
-from firecracker.microvm import setfacl
+from firecracker.microvm import RuntimeConfiguration, setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import get_code_path, get_data_path, get_runtime_path
 
+from ...utils import MsgpackSerializable
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
@@ -81,7 +84,7 @@ class Interface(str, Enum):
 
 
 @dataclass
-class ProgramVmConfiguration:
+class ProgramVmConfiguration(MsgpackSerializable):
     interface: Interface
     vm_hash: ItemHash
     ip: Optional[str] = None
@@ -91,12 +94,60 @@ class ProgramVmConfiguration:
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
 
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
+
+@dataclass
+class ConfigurationPayload(MsgpackSerializable):
+    ...
 
 
 @dataclass
-class ConfigurationPayload:
+class ConfigurationPayloadV1(ConfigurationPayload):
+    """
+    Configuration payload for runtime v1.
+    """
+
+    input_data: Optional[bytes]
+    interface: Interface
+    vm_hash: str
+    encoding: Encoding
+    entrypoint: str
+    code: Optional[bytes]
+    ip: Optional[str]
+    route: Optional[str]
+    dns_servers: List[str]
+    volumes: List[Volume]
+    variables: Optional[Dict[str, str]]
+
+    @classmethod
+    def from_program_config(
+        cls, program_config: ProgramConfiguration
+    ) -> ConfigurationPayload:
+        """Converts a program configuration into a configuration payload
+        to be sent to a runtime.
+        """
+        field_names = set(f.name for f in dataclasses.fields(cls))
+        return cls(
+            **{
+                k: v
+                for k, v in dataclasses.asdict(program_config).items()
+                if k in field_names
+            }
+        )
+
+
+@dataclass
+class ConfigurationPayloadV2(ConfigurationPayloadV1):
+    """
+    Configuration payload for runtime v2.
+    Adds support for IPv6.
+    """
+
+    ipv6: Optional[str]
+    ipv6_gateway: Optional[str]
+
+
+@dataclass
+class ProgramConfiguration:
     """Configuration passed to the init of the virtual machine in order to start the program."""
 
     input_data: Optional[bytes]
@@ -113,8 +164,18 @@ class ConfigurationPayload:
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
 
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
+    def to_runtime_format(
+        self, runtime_config: RuntimeConfiguration
+    ) -> ConfigurationPayload:
+        if runtime_config.version == "1.0.0":
+            return ConfigurationPayloadV1.from_program_config(self)
+
+        if runtime_config.version != "2.0.0":
+            logger.warning(
+                "This runtime version may be unsupported: %s", runtime_config.version
+            )
+
+        return ConfigurationPayloadV2.from_program_config(self)
 
 
 @dataclass
@@ -127,13 +188,10 @@ class ConfigurationResponse:
 
 
 @dataclass
-class RunCodePayload:
+class RunCodePayload(MsgpackSerializable):
     """Information passed to the init of the virtual machine to launch a function/path of the program."""
 
     scope: Dict
-
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
 class AlephProgramResources(AlephFirecrackerResources):
@@ -331,7 +389,10 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         if not settings.DNS_NAMESERVERS:
             raise ValueError("Invalid configuration: DNS nameservers missing")
 
-        config = ConfigurationPayload(
+        runtime_config = self.fvm.runtime_config
+        assert runtime_config
+
+        program_config = ProgramConfiguration(
             ip=ip,
             ipv6=ipv6,
             route=route,
@@ -346,7 +407,9 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             volumes=volumes,
             variables=self.resources.message_content.variables,
         )
-        payload = config.as_msgpack()
+        # Convert the configuration in a format compatible with the runtime
+        versioned_config = program_config.to_runtime_format(runtime_config)
+        payload = versioned_config.as_msgpack()
         length = f"{len(payload)}\n".encode()
         writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()
