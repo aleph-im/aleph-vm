@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -9,8 +10,22 @@ from dataclasses import is_dataclass
 from typing import Any, Coroutine, Dict, List, Optional
 
 import aiodns
+import msgpack
 
 logger = logging.getLogger(__name__)
+
+
+def msgpackable(cls):
+    """
+    Class decorator that adds an `as_msgpack()` method to dataclasses.
+    """
+    def as_msgpack(self) -> bytes:
+        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
+
+    if not is_dataclass(cls):
+        raise TypeError("Decorated class must be a dataclass")
+
+    cls.as_msgpack = as_msgpack
 
 
 def b32_to_b16(hash: str) -> bytes:

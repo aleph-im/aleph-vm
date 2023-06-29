@@ -1,3 +1,4 @@
+import abc
 import asyncio
 import dataclasses
 import logging
@@ -21,12 +22,13 @@ from firecracker.config import (
     NetworkInterface,
     Vsock,
 )
-from firecracker.microvm import RuntimeConfig, setfacl
+from firecracker.microvm import RuntimeConfiguration, setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import get_code_path, get_data_path, get_runtime_path
 
+from ...utils import msgpackable
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
@@ -95,8 +97,59 @@ class ProgramVmConfiguration:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
+@msgpackable
 @dataclass
-class ConfigurationPayload:
+class ConfigurationPayload(abc.ABC):
+    ...
+
+
+@dataclass
+class ConfigurationPayloadV1(ConfigurationPayload):
+    """
+    Configuration payload for runtime v1.
+    """
+
+    input_data: Optional[bytes]
+    interface: Interface
+    vm_hash: str
+    encoding: Encoding
+    entrypoint: str
+    code: Optional[bytes]
+    ip: Optional[str]
+    ipv6: Optional[str]
+    route: Optional[str]
+    ipv6_gateway: Optional[str]
+    dns_servers: List[str]
+    volumes: List[Volume]
+    variables: Optional[Dict[str, str]]
+
+    @classmethod
+    def from_program_config(
+        cls, program_config: "ProgramConfiguration"
+    ) -> ConfigurationPayload:
+        field_names = set(f.name for f in dataclasses.fields(cls))
+        return cls(
+            **{
+                k: v
+                for k, v in dataclasses.asdict(program_config).items()
+                if k in field_names
+            }
+        )
+
+
+@dataclass
+class ConfigurationPayloadV2(ConfigurationPayloadV1):
+    """
+    Configuration payload for runtime v2.
+    Adds support for IPv6.
+    """
+
+    ipv6: Optional[str]
+    ipv6_gateway: Optional[str]
+
+
+@dataclass
+class ProgramConfiguration:
     """Configuration passed to the init of the virtual machine in order to start the program."""
 
     input_data: Optional[bytes]
@@ -113,13 +166,16 @@ class ConfigurationPayload:
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
 
-    def as_msgpack(self, runtime_config: RuntimeConfig) -> bytes:
-        payload_dict = dataclasses.asdict(self)
-        if not runtime_config.supports_ipv6():
-            del payload_dict["ipv6"]
-            del payload_dict["ipv6_gateway"]
+    def to_runtime_format(
+        self, runtime_config: RuntimeConfiguration
+    ) -> ConfigurationPayload:
+        if runtime_config.version == "1.0.0":
+            return ConfigurationPayloadV1.from_program_config(self)
 
-        return msgpack.dumps(payload_dict, use_bin_type=True)
+        if runtime_config.version != "2.0.0":
+            logger.warning("Unsupported runtime version: %s", runtime_config.version)
+
+        return ConfigurationPayloadV2.from_program_config(self)
 
 
 @dataclass
@@ -339,7 +395,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         runtime_config = self.fvm.runtime_config
         assert runtime_config
 
-        config = ConfigurationPayload(
+        program_config = ProgramConfiguration(
             ip=ip,
             ipv6=ipv6,
             route=route,
@@ -354,7 +410,9 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             volumes=volumes,
             variables=self.resources.message_content.variables,
         )
-        payload = config.as_msgpack(runtime_config=runtime_config)
+        # Convert the configuration in a format compatible with the runtime
+        versioned_config = program_config.to_runtime_format(runtime_config)
+        payload = versioned_config.as_msgpack(runtime_config=runtime_config)
         length = f"{len(payload)}\n".encode()
         writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()

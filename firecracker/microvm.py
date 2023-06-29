@@ -62,11 +62,11 @@ async def setfacl():
 
 
 @dataclass
-class RuntimeConfig:
+class RuntimeConfiguration:
     version: str
 
     def supports_ipv6(self) -> bool:
-        return self.version != "0.1.0"
+        return self.version != "1.0.0"
 
 
 class MicroVM:
@@ -375,10 +375,10 @@ class MicroVM:
             data = await reader.read(1_000_000)
             if data:
                 config_dict: Dict[str, Any] = msgpack.loads(data)
-                runtime_config = RuntimeConfig(version=config_dict["version"])
+                runtime_config = RuntimeConfiguration(version=config_dict["version"])
             else:
                 # Older runtimes do not send a config. Use a default.
-                runtime_config = RuntimeConfig(version="0.1.0")
+                runtime_config = RuntimeConfiguration(version="1.0.0")
 
             logger.debug("Runtime version: %s", runtime_config)
             await queue.put(runtime_config)
