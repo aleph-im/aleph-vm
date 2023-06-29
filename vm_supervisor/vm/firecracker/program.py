@@ -116,9 +116,7 @@ class ConfigurationPayloadV1(ConfigurationPayload):
     entrypoint: str
     code: Optional[bytes]
     ip: Optional[str]
-    ipv6: Optional[str]
     route: Optional[str]
-    ipv6_gateway: Optional[str]
     dns_servers: List[str]
     volumes: List[Volume]
     variables: Optional[Dict[str, str]]
@@ -173,7 +171,9 @@ class ProgramConfiguration:
             return ConfigurationPayloadV1.from_program_config(self)
 
         if runtime_config.version != "2.0.0":
-            logger.warning("Unsupported runtime version: %s", runtime_config.version)
+            logger.warning(
+                "This runtime version may be unsupported: %s", runtime_config.version
+            )
 
         return ConfigurationPayloadV2.from_program_config(self)
 
