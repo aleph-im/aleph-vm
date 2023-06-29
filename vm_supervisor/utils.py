@@ -15,19 +15,14 @@ import msgpack
 logger = logging.getLogger(__name__)
 
 
-def msgpackable(cls):
-    """
-    Class decorator that adds an `as_msgpack()` method to dataclasses.
-    """
+class MsgpackSerializable:
+    def __init_subclass__(cls, *args, **kwargs):
+        if not is_dataclass(cls):
+            raise TypeError("Decorated class must be a dataclass")
+        super().__init_subclass__(*args, **kwargs)
 
     def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
-
-    if not is_dataclass(cls):
-        raise TypeError("Decorated class must be a dataclass")
-
-    cls.as_msgpack = as_msgpack
-    return cls
+        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)  # type: ignore
 
 
 def b32_to_b16(hash: str) -> bytes:

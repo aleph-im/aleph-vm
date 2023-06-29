@@ -1,4 +1,5 @@
-import abc
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 import logging
@@ -28,7 +29,7 @@ from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.storage import get_code_path, get_data_path, get_runtime_path
 
-from ...utils import msgpackable
+from ...utils import MsgpackSerializable
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
@@ -83,7 +84,7 @@ class Interface(str, Enum):
 
 
 @dataclass
-class ProgramVmConfiguration:
+class ProgramVmConfiguration(MsgpackSerializable):
     interface: Interface
     vm_hash: ItemHash
     ip: Optional[str] = None
@@ -93,13 +94,9 @@ class ProgramVmConfiguration:
     volumes: List[Volume] = field(default_factory=list)
     variables: Optional[Dict[str, str]] = None
 
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
-
-@msgpackable
 @dataclass
-class ConfigurationPayload(abc.ABC):
+class ConfigurationPayload(MsgpackSerializable):
     ...
 
 
@@ -123,8 +120,11 @@ class ConfigurationPayloadV1(ConfigurationPayload):
 
     @classmethod
     def from_program_config(
-        cls, program_config: "ProgramConfiguration"
+        cls, program_config: ProgramConfiguration
     ) -> ConfigurationPayload:
+        """Converts a program configuration into a configuration payload
+        to be sent to a runtime.
+        """
         field_names = set(f.name for f in dataclasses.fields(cls))
         return cls(
             **{
@@ -188,13 +188,10 @@ class ConfigurationResponse:
 
 
 @dataclass
-class RunCodePayload:
+class RunCodePayload(MsgpackSerializable):
     """Information passed to the init of the virtual machine to launch a function/path of the program."""
 
     scope: Dict
-
-    def as_msgpack(self) -> bytes:
-        return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
 
 class AlephProgramResources(AlephFirecrackerResources):
