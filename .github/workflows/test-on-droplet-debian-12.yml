@@ -1,12 +1,12 @@
-name: "Test DigitalOcean Droplet Bullseye"
+name: "Test on DigitalOcean Droplet Bookworm"
 on:
   push
 
 jobs:
-  run_debian_11:
-    name: "Run in DigitalOcean Droplet with Debian 11"
+  run_debian_12:
+    name: "Run in DigitalOcean Droplet with Debian 12"
     runs-on: ubuntu-latest
-    concurrency: droplet-aleph-vm-debian-11
+    concurrency: droplet-aleph-vm-debian-12
 
     steps:
       - name: Checkout repository
@@ -32,27 +32,27 @@ jobs:
       - name: Create the Droplet
         run: |
           doctl compute droplet create \
-          --image debian-11-x64 \
+          --image debian-12-x64 \
           --size c-2 \
           --region fra1 \
           --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
           --enable-ipv6 \
           --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
-          aleph-vm-ci-debian-11
+          aleph-vm-ci-debian-12
 
       - name: Build Debian Package
         run: |
-          cd packaging && make all-podman-debian-11 && cd ..
+          cd packaging && make all-podman-debian-12 && cd ..
           ls packaging/target
 
       - name: Wait for the system to setup and boot
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-12 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
 
       - name: Install Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-12 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
@@ -60,15 +60,15 @@ jobs:
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
-          scp packaging/target/aleph-vm.debian-11.deb root@${DROPLET_IPV4}:/opt
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/aleph-vm.debian-11.deb"
+          scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/aleph-vm.debian-12.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
       - name: Test Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-12 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           
           sleep 3
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
@@ -76,7 +76,7 @@ jobs:
 
       - name: Schedule an instance on the Droplet by faking a call from the scheduler
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-12 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
             -H "X-Auth-Signature: test" \
             -d '{"persistent_vms": [], "instances": ["67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"]}' \
@@ -85,5 +85,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f aleph-vm-ci-debian-11
+          doctl compute droplet delete -f aleph-vm-ci-debian-12
 

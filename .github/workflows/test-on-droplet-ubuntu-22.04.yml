@@ -1,4 +1,4 @@
-name: "Run tests on DigitalOcean Droplet"
+name: "Test on DigitalOcean Droplet Jammy"
 on:
   push
 
