@@ -27,6 +27,7 @@ def msgpackable(cls):
         raise TypeError("Decorated class must be a dataclass")
 
     cls.as_msgpack = as_msgpack
+    return cls
 
 
 def b32_to_b16(hash: str) -> bytes:

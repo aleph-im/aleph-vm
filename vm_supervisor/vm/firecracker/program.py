@@ -412,7 +412,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         )
         # Convert the configuration in a format compatible with the runtime
         versioned_config = program_config.to_runtime_format(runtime_config)
-        payload = versioned_config.as_msgpack(runtime_config=runtime_config)
+        payload = versioned_config.as_msgpack()
         length = f"{len(payload)}\n".encode()
         writer.write(b"CONNECT 52\n" + length + payload)
         await writer.drain()
