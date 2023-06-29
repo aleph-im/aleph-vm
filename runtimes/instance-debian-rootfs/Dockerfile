@@ -35,7 +35,10 @@ RUN pip3 install 'aleph-client>=0.4.6' 'coincurve==15.0.0'
 RUN python3 -m compileall -f /usr/local/lib/python3.9
 
 # Enable root login by ssh
-RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+RUN echo "PubkeyAuthentication yes" >> ./rootfs/etc/ssh/sshd_config
+RUN echo "PasswordAuthentication no" >> ./rootfs/etc/ssh/sshd_config
+RUN echo "ChallengeResponseAuthentication no" >> ./rootfs/etc/ssh/sshd_config
+RUN echo "PermitRootLogin yes" >> ./rootfs/etc/ssh/sshd_config
 
 # Generate SSH host keys
 #RUN systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
@@ -46,9 +49,6 @@ RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 # Set up a login terminal on the serial console (ttyS0):
 RUN ln -s agetty /etc/init.d/agetty.ttyS0
 RUN echo ttyS0 > /etc/securetty
-
-# Set root password
-RUN echo "root:toor" | /usr/sbin/chpasswd
 
 # Reduce size
 RUN rm -fr /root/.cache
