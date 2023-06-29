@@ -19,6 +19,7 @@ def msgpackable(cls):
     """
     Class decorator that adds an `as_msgpack()` method to dataclasses.
     """
+
     def as_msgpack(self) -> bytes:
         return msgpack.dumps(dataclasses.asdict(self), use_bin_type=True)
 
