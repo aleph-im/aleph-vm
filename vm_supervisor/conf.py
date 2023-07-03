@@ -108,6 +108,10 @@ class Settings(BaseSettings):
         description="IPv6 subnet prefix for VMs. Made configurable for testing.",
     )
     NFTABLES_CHAIN_PREFIX = "aleph"
+    USE_NDP_PROXY: bool = Field(
+        default=True,
+        description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
+    )
 
     DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
     DNS_NAMESERVERS: Optional[List[str]] = None

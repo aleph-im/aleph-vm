@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import shutil
-from ipaddress import IPv4Interface, IPv6Address, IPv6Interface, IPv6Network
+from ipaddress import IPv4Interface, IPv6Interface, IPv6Network
 from subprocess import run
+from typing import Optional
 
 from .ipaddresses import IPv4NetworkWithInterfaces
 from .ndp_proxy import NdpProxy
@@ -20,7 +21,7 @@ class TapInterface:
         device_name: str,
         ip_network: IPv4NetworkWithInterfaces,
         ipv6_network: IPv6Network,
-        ndp_proxy: NdpProxy,
+        ndp_proxy: Optional[NdpProxy],
     ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
@@ -70,7 +71,8 @@ class TapInterface:
             ]
         )
         run([ip_command, "link", "set", self.device_name, "up"])
-        self.ndp_proxy.add_range(self.device_name, ipv6_gateway.network)
+        if self.ndp_proxy:
+            await self.ndp_proxy.add_range(self.device_name, ipv6_gateway.network)
         logger.debug(f"Network interface created: {self.device_name}")
 
     async def delete(self) -> None:
@@ -78,5 +80,6 @@ class TapInterface:
         Then removes the interface from the host."""
         logger.debug(f"Removing interface {self.device_name}")
         await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug
-        self.ndp_proxy.delete_range(self.device_name)
+        if self.ndp_proxy:
+            await self.ndp_proxy.delete_range(self.device_name)
         run(["ip", "tuntap", "del", self.device_name, "mode", "tap"])

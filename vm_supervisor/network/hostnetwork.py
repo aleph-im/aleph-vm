@@ -5,7 +5,7 @@ from typing import Optional, Protocol
 
 from aleph_message.models import ItemHash
 
-from vm_supervisor.conf import IPv6AllocationPolicy
+from vm_supervisor.conf import IPv6AllocationPolicy, settings
 
 from ..vm.vm_type import VmType
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
@@ -123,6 +123,7 @@ class Network:
     ipv6_address_pool: IPv6Network
     network_size: int
     external_interface: str
+    ndp_proxy: Optional[NdpProxy] = None
 
     IPV6_SUBNET_PREFIX: int = 124
 
@@ -149,7 +150,8 @@ class Network:
         self.enable_ipv4_forwarding()
         self.enable_ipv6_forwarding()
 
-        self.ndp_proxy = NdpProxy(host_network_interface=external_interface)
+        if settings.USE_NDP_PROXY:
+            self.ndp_proxy = NdpProxy(host_network_interface=external_interface)
 
         initialize_nftables()
 
