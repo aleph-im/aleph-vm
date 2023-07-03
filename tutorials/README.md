@@ -187,7 +187,7 @@ aleph --help
 Upload your program:
 
 ```shell
-aleph program ./my-program main:app
+aleph program upload ./my-program main:app
 ```
 
 Press Enter at the following prompt to use the default runtime:
