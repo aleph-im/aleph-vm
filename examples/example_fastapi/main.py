@@ -65,6 +65,14 @@ async def environ() -> Dict[str, str]:
     return dict(os.environ)
 
 
+@app.get("/print")
+async def print_stdout() -> str:
+    print("Hello from the VM")
+    sys.stdout.write("Hello via stdout")
+    sys.stderr.write("Hello via stderr")
+    return "Hello"
+
+
 @app.get("/messages")
 async def read_aleph_messages():
     """Read data from Aleph using the Aleph Client library."""
