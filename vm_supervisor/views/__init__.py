@@ -14,14 +14,14 @@ from pydantic import ValidationError
 
 from packaging.version import InvalidVersion, Version
 
-from . import status
-from .conf import settings
-from .metrics import get_execution_records
-from .pubsub import PubSub
-from .resources import Allocation
-from .run import pool, run_code_on_request, start_persistent_vm
-from .utils import b32_to_b16, dumps_for_json, get_ref_from_dns
-from .version import __version__
+from vm_supervisor import status
+from vm_supervisor.conf import settings
+from vm_supervisor.metrics import get_execution_records
+from vm_supervisor.pubsub import PubSub
+from vm_supervisor.resources import Allocation
+from vm_supervisor.run import pool, run_code_on_request, start_persistent_vm
+from vm_supervisor.utils import b32_to_b16, dumps_for_json, get_ref_from_dns
+from vm_supervisor.version import __version__
 
 logger = logging.getLogger(__name__)
 
