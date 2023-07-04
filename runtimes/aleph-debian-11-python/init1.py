@@ -146,6 +146,9 @@ def setup_network(
 
         system(f"ip addr add {ip} dev eth0")
 
+        # Interface must be up before a route can use it
+        system("ip link set eth0 up")
+
         if route:
             system(f"ip route add default via {route} dev eth0")
             logger.debug(f"IP and route set: {ip} via {route}")
@@ -154,12 +157,13 @@ def setup_network(
 
     if ipv6:
         logger.debug("Setting up IPv6")
-        system(f"ip addr add {ipv6} dev eth0")
+        system(f"ip -6 addr add {ipv6} dev eth0")
+
+        # Interface must be up before a route can use it
+        system("ip -6 link set eth0 up")
+
         system(f"ip -6 route add default via {ipv6_gateway} dev eth0")
         logger.debug(f"IPv6 setup to address {ipv6}")
-
-    if ip or ipv6:
-        system("ip link set eth0 up")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
