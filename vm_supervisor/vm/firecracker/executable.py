@@ -86,7 +86,6 @@ class AlephFirecrackerResources:
     kernel_image_path: Path
     rootfs_path: Path
     volumes: List[HostVolume]
-    volume_paths: Dict[str, Path]
     namespace: str
 
     def __init__(self, message_content: ExecutableContent, namespace: str):
