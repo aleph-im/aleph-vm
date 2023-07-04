@@ -187,6 +187,8 @@ class Network:
 
     def reset_ipv6_forwarding_state(self) -> None:
         """Returns the host IPv6 forwarding state how it was before we enabled it"""
+        if not settings.IPV6_FORWARDING_ENABLED:
+            return
         logger.debug("Resetting IPv6 forwarding state to state before we enabled it")
         if self.ipv6_forward_state_before_setup is None:
             return
