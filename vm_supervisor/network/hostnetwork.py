@@ -5,7 +5,7 @@ from typing import Optional, Protocol
 
 from aleph_message.models import ItemHash
 
-from vm_supervisor.conf import IPv6AllocationPolicy, settings
+from vm_supervisor.conf import IPv6AllocationPolicy
 
 from ..vm.vm_type import VmType
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
@@ -115,8 +115,8 @@ def make_ipv6_allocator(
 
 
 class Network:
-    ipv4_forward_state_before_setup: Optional[int]
-    ipv6_forward_state_before_setup: Optional[int]
+    ipv4_forward_state_before_setup: Optional[int] = None
+    ipv6_forward_state_before_setup: Optional[int] = None
     ipv4_address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces(
         "172.16.0.0/12"
     )
@@ -133,6 +133,8 @@ class Network:
         vm_network_size: int,
         external_interface: str,
         ipv6_allocator: IPv6Allocator,
+        use_ndp_proxy: bool,
+        ipv6_forwarding_enabled: bool = True,
     ) -> None:
         """Sets up the Network class with some information it needs so future function calls work as expected"""
         self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
@@ -144,13 +146,12 @@ class Network:
 
         self.network_size = vm_network_size
         self.external_interface = external_interface
-        self.ipv4_forward_state_before_setup = None
-        self.ipv6_forward_state_before_setup = None
 
         self.enable_ipv4_forwarding()
-        self.enable_ipv6_forwarding()
+        if ipv6_forwarding_enabled:
+            self.enable_ipv6_forwarding()
 
-        if settings.USE_NDP_PROXY:
+        if use_ndp_proxy:
             self.ndp_proxy = NdpProxy(host_network_interface=external_interface)
 
         initialize_nftables()
