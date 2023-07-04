@@ -68,6 +68,17 @@ all-podman-debian-11: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
 
+all-podman-debian-12: version
+	cd .. && podman build -t localhost/aleph-vm-packaging-debian-12:latest -f ./packaging/debian-12.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging-debian-12:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.debian-12.deb
+
 all-podman-ubuntu-2204: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2204:latest -f ./packaging/ubuntu-22.04.dockerfile .
 	mkdir -p ./target
@@ -87,6 +98,15 @@ requirements-debian-11: all-podman-debian-11
 		-v ./requirements-debian-11.txt:/mnt/requirements-debian-11.txt \
 		debian:bullseye \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-11.txt"
+
+# extract Python requirements from Debian 12 container
+requirements-debian-12: all-podman-debian-12
+	podman run --rm -ti \
+		-v ./target/aleph-vm.debian-12.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-debian-12.txt:/mnt/requirements-debian-12.txt \
+		debian:bullseye \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-12.txt"
 
 # extract Python requirements from Ubuntu 22.04 container
 requirements-ubuntu-22.04: all-podman-ubuntu-2204
