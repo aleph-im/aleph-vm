@@ -21,7 +21,7 @@ def get_version_from_apt() -> Optional[str]:
         import apt
 
         return apt.Cache().get("aleph-vm").installed.version
-    except ImportError:
+    except (ImportError, AttributeError):
         logger.warning("apt version not available")
         return None
 
