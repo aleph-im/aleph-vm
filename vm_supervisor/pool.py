@@ -41,6 +41,8 @@ class VmPool:
                     address_pool=settings.IPV6_ADDRESS_POOL,
                     subnet_prefix=settings.IPV6_SUBNET_PREFIX,
                 ),
+                use_ndp_proxy=settings.USE_NDP_PROXY,
+                ipv6_forwarding_enabled=settings.IPV6_FORWARDING_ENABLED,
             )
             if settings.ALLOW_VM_NETWORKING
             else None
