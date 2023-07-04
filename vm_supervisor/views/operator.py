@@ -2,7 +2,10 @@ import asyncio
 import logging
 from datetime import timedelta
 
+import aiohttp.web_exceptions
 from aiohttp import web
+from aiohttp.web_urldispatcher import UrlMappingMatchInfo
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from ..models import VmExecution
@@ -11,19 +14,30 @@ from ..run import pool
 logger = logging.getLogger(__name__)
 
 
+def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
+    try:
+        ref = match_info["ref"]
+    except KeyError:
+        raise aiohttp.web_exceptions.HTTPBadRequest(body="Missing field: 'ref'")
+    try:
+        return ItemHash(ref)
+    except UnknownHashError:
+        raise aiohttp.web_exceptions.HTTPBadRequest(body=f"Invalid ref: '{ref}'")
+
+
 def get_execution_or_404(ref: ItemHash) -> VmExecution:
     """Return the execution corresponding to the ref or raise an HTTP 404 error.
     """
-    for execution in pool.get_instance_executions():
-        if execution.vm_hash == ref:
-            return execution
+    execution = pool.executions.get(ref)
+    if execution:
+        return execution
     else:
         raise web.HTTPNotFound(body=f"No virtual machine with ref {ref}")
 
 
 async def stream_logs(request: web.Request):
     # TODO: Add user authentication
-    vm_hash = ItemHash(request.match_info["ref"])
+    vm_hash = get_itemhash_or_400(request.match_info)
     execution = get_execution_or_404(vm_hash)
 
     queue = asyncio.Queue()
@@ -35,12 +49,12 @@ async def stream_logs(request: web.Request):
             execution.vm.fvm.log_queues.append(queue)
 
             while True:
-                log_type, message = queue.get()
+                log_type, message = await queue.get()
                 assert log_type in ('stdout', 'stderr')
 
                 await ws.send_json({
                     "type": log_type,
-                    "message": message
+                    "message": message.decode()
                 })
         finally:
             await ws.close()
@@ -53,19 +67,16 @@ async def operate_expire(request: web.Request):
     """Stop the virtual machine, smoothly if possible.
     """
     # TODO: Add user authentication
-    vm_hash = ItemHash(request.match_info["ref"])
+    vm_hash = get_itemhash_or_400(request.match_info)
     timeout = float(ItemHash(request.match_info["timeout"]))
     if not 0 < timeout < timedelta(days=10).total_seconds():
         return web.HTTPBadRequest(body="Invalid timeout duration")
 
-    for execution in pool.get_instance_executions():
-        if execution.vm_hash == vm_hash:
-            logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
-            await execution.expire(timeout=timeout)
-            execution.persistent = False
-            break
-    else:
-        return web.HTTPNotFound(body=f"No running VM with ref {vm_hash}")
+    execution = get_execution_or_404(vm_hash)
+
+    logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
+    await execution.expire(timeout=timeout)
+    execution.persistent = False
 
     return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
 
@@ -74,18 +85,18 @@ async def operate_stop(request: web.Request):
     """Stop the virtual machine, smoothly if possible.
     """
     # TODO: Add user authentication
-    vm_hash = ItemHash(request.match_info["ref"])
+    vm_hash = get_itemhash_or_400(request.match_info)
 
-    for execution in pool.get_instance_executions():
-        if execution.vm_hash == vm_hash:
-            logger.info(f"Stopping {execution.vm_hash}")
-            await execution.stop()
-            execution.persistent = False
-            break
+    logger.debug(f"Iterating through running executions... {pool.executions}")
+    execution = get_execution_or_404(vm_hash)
+
+    if execution.is_running:
+        logger.info(f"Stopping {execution.vm_hash}")
+        await execution.stop()
+        execution.persistent = False
+        return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
     else:
-        return web.HTTPNotFound(body=f"No running VM with ref {vm_hash}")
-
-    return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
+        return web.Response(status=200, body=f"Already stopped, nothing to do")
 
 
 async def operate_erase(request: web.Request):
@@ -93,23 +104,19 @@ async def operate_erase(request: web.Request):
     Stop the virtual machine first if needed.
     """
     # TODO: Add user authentication
-    vm_hash = ItemHash(request.match_info["ref"])
-    for execution in pool.get_instance_executions():
-        if execution.vm_hash == vm_hash:
-            logger.info(f"Erasing {execution.vm_hash}")
+    vm_hash = get_itemhash_or_400(request.match_info)
+    execution = get_execution_or_404(vm_hash)
 
-            # Stop the VM
-            await execution.stop()
-            execution.persistent = False
+    logger.info(f"Erasing {execution.vm_hash}")
 
-            # Delete all data
-            for volume in execution.resources.volumes:
-                if not volume.read_only:
-                    logger.info(f"Deleting volume {volume.path_on_host}")
-                    volume.path_on_host.unlink()
+    # Stop the VM
+    await execution.stop()
+    execution.persistent = False
 
-            break
-    else:
-        return web.HTTPNotFound(body=f"No running VM with ref {vm_hash}")
+    # Delete all data
+    for volume in execution.resources.volumes:
+        if not volume.read_only:
+            logger.info(f"Deleting volume {volume.path_on_host}")
+            volume.path_on_host.unlink()
 
     return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
