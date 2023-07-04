@@ -113,20 +113,16 @@ def setup_variables(variables: Optional[Dict[str, str]]):
 
 
 def setup_network(
-    ip: Optional[str],
+    ipv4: Optional[str],
     ipv6: Optional[str],
-    route: Optional[str],
+    ipv4_gateway: Optional[str],
     ipv6_gateway: Optional[str],
     dns_servers: Optional[List[str]] = None,
 ):
     """Setup the system with info from the host."""
     dns_servers = dns_servers or []
     if not os.path.exists("/sys/class/net/eth0"):
-        logger.info("No network interface eth0")
-        return
-
-    if not (ip or ipv6):
-        logger.info("No network IP")
+        logger.error("No network interface eth0")
         return
 
     # Configure loopback networking
@@ -134,36 +130,32 @@ def setup_network(
     system("ip addr add ::1/128 dev lo")
     system("ip link set lo up")
 
-    if ip:
-        logger.debug("Setting up IPv4")
+    # Forward compatibility with future supervisors that pass the mask with the IP.
+    if ipv4 and ("/" not in ipv4):
+        logger.warning(
+            "Not passing the mask with the IP is deprecated and will be unsupported"
+        )
+        ipv4 = f"{ipv4}/24"
 
-        # Forward compatibility with future supervisors that pass the mask with the IP.
-        if "/" not in ip:
-            logger.warning(
-                "Not passing the mask with the IP is deprecated and will be unsupported"
-            )
-            ip = f"{ip}/24"
+    addresses = [ip for ip in [ipv4, ipv6] if ip]
+    gateways = [gateway for gateway in [ipv4_gateway, ipv6_gateway] if gateway]
 
+    for address in addresses:
         system(f"ip addr add {ip} dev eth0")
 
-        # Interface must be up before a route can use it
+    # Interface must be up before a route can use it
+    if addresses:
         system("ip link set eth0 up")
+    else:
+        logger.debug("No ip address provided")
 
-        if route:
-            system(f"ip route add default via {route} dev eth0")
-            logger.debug(f"IP and route set: {ip} via {route}")
-        else:
-            logger.warning("IPv4 set with no network route")
+    for gateway in gateways:
+        system("ip route add default via {gateway} def eth0")
 
-    if ipv6:
-        logger.debug("Setting up IPv6")
-        system(f"ip -6 addr add {ipv6} dev eth0")
+    if not gateways:
+        logger.debug("No ip gateway provided")
 
-        # Interface must be up before a route can use it
-        system("ip -6 link set eth0 up")
-
-        system(f"ip -6 route add default via {ipv6_gateway} dev eth0")
-        logger.debug(f"IPv6 setup to address {ipv6}")
+       system("ip link set eth0 up")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
@@ -510,9 +502,9 @@ def setup_system(config: ConfigurationPayload):
     setup_variables(config.variables)
     setup_volumes(config.volumes)
     setup_network(
-        ip=config.ip,
+        ipv4=config.ip,
         ipv6=config.ipv6,
-        route=config.route,
+        ipv4_gateway=config.route,
         ipv6_gateway=config.ipv6_gateway,
         dns_servers=config.dns_servers,
     )
