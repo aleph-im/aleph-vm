@@ -173,7 +173,7 @@ def setup_input_data(input_data: bytes):
             os.system("unzip -q /opt/input.zip -d /data")
 
 
-def setup_authorized_keys(authorized_keys: Optional[List[str]]) -> None:
+def setup_authorized_keys(authorized_keys: List[str]) -> None:
     path = Path("/root/.ssh/authorized_keys")
     path.parent.mkdir(exist_ok=True)
     path.write_text("\n".join(key for key in authorized_keys))
@@ -510,7 +510,8 @@ def setup_system(config: ConfigurationPayload):
         dns_servers=config.dns_servers,
     )
     setup_input_data(config.input_data)
-    setup_authorized_keys(config.authorized_keys)
+    if authorized_keys := config.authorized_keys:
+        setup_authorized_keys(authorized_keys)
     logger.debug("Setup finished")
 
 
