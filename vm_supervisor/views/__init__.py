@@ -13,7 +13,6 @@ from aleph_message.models import ItemHash
 from pydantic import ValidationError
 
 from packaging.version import InvalidVersion, Version
-
 from vm_supervisor import status
 from vm_supervisor.conf import settings
 from vm_supervisor.metrics import get_execution_records
