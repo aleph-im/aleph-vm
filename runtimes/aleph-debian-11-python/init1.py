@@ -142,7 +142,7 @@ def setup_network(
     gateways = [gateway for gateway in [ipv4_gateway, ipv6_gateway] if gateway]
 
     for address in addresses:
-        system(f"ip addr add {ip} dev eth0")
+        system(f"ip addr add {address} dev eth0")
 
     # Interface must be up before a route can use it
     if addresses:
@@ -151,12 +151,12 @@ def setup_network(
         logger.debug("No ip address provided")
 
     for gateway in gateways:
-        system("ip route add default via {gateway} def eth0")
+        system(f"ip route add default via {gateway} def eth0")
 
     if not gateways:
         logger.debug("No ip gateway provided")
 
-       system("ip link set eth0 up")
+        system("ip link set eth0 up")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
@@ -354,15 +354,13 @@ async def make_request(session, scope):
 
 
 def show_loading():
-    body = {
-        "body": Path("/root/loading.html").read_text()
-    }
+    body = {"body": Path("/root/loading.html").read_text()}
     headers = {
         "headers": [
-            [b'Content-Type', b'text/html'],
-            [b'Connection', b'keep-alive'],
-            [b'Keep-Alive', b'timeout=5'],
-            [b'Transfer-Encoding', b'chunked']
+            [b"Content-Type", b"text/html"],
+            [b"Connection", b"keep-alive"],
+            [b"Keep-Alive", b"timeout=5"],
+            [b"Transfer-Encoding", b"chunked"],
         ],
         "status": 503,
     }
@@ -406,13 +404,6 @@ async def process_instruction(
             application.terminate()
             logger.debug("Application terminated")
             # application.communicate()
-        else:
-            # Close the cached session in aleph_client:
-            from aleph_client.asynchronous import get_fallback_session
-
-            session: aiohttp.ClientSession = get_fallback_session()
-            await session.close()
-            logger.debug("Aiohttp cached session closed")
         yield b"STOP\n"
         logger.debug("Supervisor informed of halt")
         raise ShutdownException
