@@ -151,12 +151,10 @@ def setup_network(
         logger.debug("No ip address provided")
 
     for gateway in gateways:
-        system(f"ip route add default via {gateway} def eth0")
+        system(f"ip route add default via {gateway} dev eth0")
 
     if not gateways:
         logger.debug("No ip gateway provided")
-
-        system("ip link set eth0 up")
 
     with open("/etc/resolv.conf", "wb") as resolvconf_fd:
         for server in dns_servers:
