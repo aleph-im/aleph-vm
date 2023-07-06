@@ -34,6 +34,7 @@ from typing import (
     Optional,
     Tuple,
     Union,
+    cast,
 )
 
 import aiohttp
@@ -72,9 +73,9 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: bytes = None
-    encoding: Encoding = None
-    entrypoint: str = None
+    code: bytes
+    encoding: Encoding
+    entrypoint: str
     ip: Optional[str] = None
     ipv6: Optional[str] = None
     route: Optional[str] = None
@@ -184,6 +185,8 @@ def setup_input_data(input_data: bytes):
 
 
 def setup_authorized_keys(authorized_keys: Optional[List[str]]) -> None:
+    if authorized_keys is None:
+        return
     path = Path("/root/.ssh/authorized_keys")
     path.parent.mkdir(exist_ok=True)
     path.write_text("\n".join(key for key in authorized_keys))
@@ -333,7 +336,7 @@ async def run_python_code_http(
         # Execute in the same process, saves ~20ms than a subprocess
 
         # The body should not be part of the ASGI scope itself
-        body: bytes = scope.pop("body")
+        scope_body: bytes = scope.pop("body")
 
         async def receive():
             type_ = (
@@ -341,7 +344,7 @@ async def run_python_code_http(
                 if scope["type"] in ("http", "websocket")
                 else "aleph.message"
             )
-            return {"type": type_, "body": body, "more_body": False}
+            return {"type": type_, "body": scope_body, "more_body": False}
 
         send_queue: asyncio.Queue = asyncio.Queue()
 
@@ -366,7 +369,7 @@ async def run_python_code_http(
         output = buf.getvalue()
 
         logger.debug(f"Headers {headers}")
-        logger.debug(f"Body {body}")
+        logger.debug(f"Body {body!r}")
         logger.debug(f"Output {output}")
 
     logger.debug("Getting output data")
@@ -452,7 +455,6 @@ async def process_instruction(
             logger.debug("Application terminated")
             # application.communicate()
         else:
-            assert isinstance(application, ASGIApplication)
             await wait_for_lifespan_event_completion(
                 application=application, event="shutdown"
             )
@@ -483,6 +485,7 @@ async def process_instruction(
             output_data: Optional[bytes]
 
             if interface == Interface.asgi:
+                application = cast(ASGIApplication, application)
                 headers, body, output, output_data = await run_python_code_http(
                     application=application, scope=payload.scope
                 )
