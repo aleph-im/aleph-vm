@@ -30,7 +30,14 @@ logger.debug("imports done")
 
 http_app = FastAPI()
 app = AlephApp(http_app=http_app)
-cache = VmCache()
+cache = VmCache(
+    session=aiohttp.ClientSession(
+        connector=aiohttp.UnixConnector(path=os.environ["ALEPH_API_UNIX_SOCKET"])
+    )
+)
+
+
+ALEPH_API_SERVER = "https://official.aleph.cloud"
 
 
 @app.get("/")
@@ -68,7 +75,9 @@ async def environ() -> Dict[str, str]:
 @app.get("/messages")
 async def read_aleph_messages():
     """Read data from Aleph using the Aleph Client library."""
-    async with AlephClient() as client:
+    async with AlephClient(
+        api_server=ALEPH_API_SERVER, api_unix_socket=os.environ["ALEPH_API_UNIX_SOCKET"]
+    ) as client:
         data = await client.get_messages(
             hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"]
         )
@@ -155,6 +164,8 @@ async def post_a_message():
         "something": "interesting",
     }
     async with AuthenticatedAlephClient(
+        api_server=ALEPH_API_SERVER,
+        api_unix_socket=os.environ["ALEPH_API_UNIX_SOCKET"],
         account=account,
     ) as client:
         response = await client.create_post(
