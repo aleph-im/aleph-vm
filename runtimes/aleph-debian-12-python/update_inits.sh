@@ -1,0 +1,1 @@
+../aleph-debian-11-python/update_inits.sh
