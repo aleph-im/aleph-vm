@@ -7,6 +7,7 @@ ROOTFS_FILE="./rootfs.btrfs"
 ROOTFS_DIR="./rootfs"
 MOUNT_DIR="/mnt/vm"
 IMAGE_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64-root.tar.xz"
+IMAGE_NAME="jammy-server-cloudimg-root.tar.xz"
 
 # Cleanup previous run
 umount "$MOUNT_DIR" || true
@@ -19,7 +20,7 @@ mkdir -p "$ROOTFS_DIR"
 
 # Download Ubuntu image
 echo "Downloading Ubuntu 22.04 image"
-curl -L --remote-name "$IMAGE_URL"
+curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 
 # Create rootfs.btrfs file
 echo "Creating rootfs.btrfs file"
@@ -29,7 +30,9 @@ mount "$ROOTFS_FILE" "$MOUNT_DIR"
 
 # Extract Ubuntu image to rootfs
 echo "Extracting Ubuntu 22.04 image"
-tar xvf jammy-server-cloudimg-amd64-root.tar.xz -C "$MOUNT_DIR"
+tar xvf "$IMAGE_NAME" -C "$MOUNT_DIR"
 
 # Cleanup and unmount
 umount "$MOUNT_DIR"
+rm -rf "$ROOTFS_DIR"
+rm "$IMAGE_NAME"
