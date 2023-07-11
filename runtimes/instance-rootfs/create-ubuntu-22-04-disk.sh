@@ -22,9 +22,9 @@ mkdir -p "$ROOTFS_DIR"
 echo "Downloading Ubuntu 22.04 image"
 curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 
-# Create rootfs.btrfs file
-echo "Creating rootfs.btrfs file"
-dd if=/dev/zero of="$ROOTFS_FILE" bs=1M count=1400
+# Allocate 1,4 GB rootfs.btrfs file
+echo "Allocate 1,4 GB rootfs.btrfs file"
+fallocate -l 1400M "$ROOTFS_FILE"
 mkfs.btrfs "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
 

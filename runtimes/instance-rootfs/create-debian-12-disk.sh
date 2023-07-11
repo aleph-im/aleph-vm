@@ -23,9 +23,9 @@ mkdir -p "$MOUNT_DIR"
 echo "Downloading Debian 12 image"
 curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 
-# Create rootfs.btrfs file
-echo "Creating rootfs.btrfs file"
-dd if=/dev/zero of="$ROOTFS_FILE" bs=1G count=2
+# Allocate 2GB rootfs.btrfs file
+echo "Allocate 2GB rootfs.btrfs file"
+fallocate -l 1G "$ROOTFS_FILE"
 mkfs.btrfs "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
 
