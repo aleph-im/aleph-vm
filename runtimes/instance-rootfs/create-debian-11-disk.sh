@@ -23,8 +23,8 @@ mkdir -p "$MOUNT_DIR"
 echo "Downloading Debian 11 image"
 curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 
-# Allocate 2GB rootfs.btrfs file
-echo "Allocate 2GB rootfs.btrfs file"
+# Allocate 1GB rootfs.btrfs file
+echo "Allocate 1GB rootfs.btrfs file"
 fallocate -l 1G "$ROOTFS_FILE"
 mkfs.btrfs "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
