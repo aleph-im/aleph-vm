@@ -238,10 +238,9 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
 
 
 async def e2fs_check_and_resize(device_path: Path, mount_path: Path) -> None:
-    await run_in_subprocess(["e2fsck", "-fy", str(device_path)])
     await run_in_subprocess(["mount", str(device_path), str(mount_path)])
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
-    await run_in_subprocess(["umount", str(device_path), str(mount_path)])
+    await run_in_subprocess(["umount", str(mount_path)])
 
 
 async def create_devmapper(
