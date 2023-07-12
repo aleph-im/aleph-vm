@@ -3,7 +3,7 @@
 set -euf
 
 # Variables
-ROOTFS_FILE="./rootfs.btrfs"
+ROOTFS_FILE="./ubuntu-22-04.btrfs"
 ROOTFS_DIR="./rootfs"
 MOUNT_DIR="/mnt/vm"
 IMAGE_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64-root.tar.xz"
@@ -23,7 +23,7 @@ echo "Downloading Ubuntu 22.04 image"
 curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 
 # Allocate 1,4 GB rootfs.btrfs file
-echo "Allocate 1,4 GB rootfs.btrfs file"
+echo "Allocate 1,4 GB $ROOTFS_FILE file"
 fallocate -l 1400M "$ROOTFS_FILE"
 mkfs.btrfs "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
