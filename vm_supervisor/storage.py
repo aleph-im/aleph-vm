@@ -202,7 +202,7 @@ async def create_volume_file(
 ) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
-    path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.btrfs"
+    path = settings.PERSISTENT_VOLUMES_DIR / namespace / f"{volume_name}.btrfs"
     if not path.is_file():
         logger.debug(f"Creating {volume.size_mib}MB volume")
         # Ensure that the parent directory exists
@@ -237,7 +237,7 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
     await run_in_subprocess(command, stdin_input=table_command.encode())
 
 
-async def e2fs_check_and_resize(device_path: Path, mount_path: Path) -> None:
+async def resize_file_system(device_path: Path, mount_path: Path) -> None:
     await run_in_subprocess(["mount", str(device_path), str(mount_path)])
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
     await run_in_subprocess(["umount", str(mount_path)])
@@ -274,9 +274,8 @@ async def create_devmapper(
     await create_mapped_device(mapped_volume_name, snapshot_table_command)
 
     mount_path = Path(f"/mnt/{mapped_volume_name}")
-    if not mount_path.is_dir():
-        mount_path.mkdir()
-    await e2fs_check_and_resize(path_mapped_volume_name, mount_path)
+    mount_path.mkdir(parents=True, exist_ok=True)
+    await resize_file_system(path_mapped_volume_name, mount_path)
     await chown_to_jailman(path_base_device_name)
     await chown_to_jailman(path_mapped_volume_name)
     return path_mapped_volume_name
