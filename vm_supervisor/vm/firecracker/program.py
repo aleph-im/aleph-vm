@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import ipaddress
 import logging
 import os.path
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import ipaddress
 
 import msgpack
 from aiohttp import ClientResponseError
@@ -38,7 +38,6 @@ from .executable import (
     VmSetupError,
     Volume,
 )
-
 
 logger = logging.getLogger(__name__)
 
