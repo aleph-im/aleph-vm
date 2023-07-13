@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import ipaddress
 
 import msgpack
 from aiohttp import ClientResponseError
@@ -37,6 +38,7 @@ from .executable import (
     VmSetupError,
     Volume,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -388,8 +390,12 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         ipv6 = self.get_vm_ipv6()
         ipv6_gateway = self.get_vm_ipv6_gateway()
 
-        if not settings.DNS_NAMESERVERS:
+        dns_servers = settings.DNS_NAMESERVERS
+        if not dns_servers:
             raise ValueError("Invalid configuration: DNS nameservers missing")
+
+        # Apply DNS IPv6 filtering here if needed
+        dns_servers = [server for server in dns_servers if not ipaddress.ip_address(server).version == 6]
 
         runtime_config = self.fvm.runtime_config
         assert runtime_config
@@ -405,7 +411,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             ipv6=ipv6,
             route=route,
             ipv6_gateway=ipv6_gateway,
-            dns_servers=settings.DNS_NAMESERVERS,
+            dns_servers=dns_servers,
             code=code,
             encoding=self.resources.code_encoding,
             entrypoint=self.resources.code_entrypoint,

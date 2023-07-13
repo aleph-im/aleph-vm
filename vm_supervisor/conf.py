@@ -263,7 +263,7 @@ class Settings(BaseSettings):
 
             elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
                 self.DNS_NAMESERVERS = list(
-                    resolvectl_dns_servers_ipv4(interface=self.NETWORK_INTERFACE)
+                    resolvectl_dns_servers(interface=self.NETWORK_INTERFACE)
                 )
             else:
                 assert "This should never happen"
