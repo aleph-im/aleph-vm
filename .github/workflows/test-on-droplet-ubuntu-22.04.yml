@@ -33,7 +33,7 @@ jobs:
         run: |
           doctl compute droplet create \
           --image ubuntu-22-04-x64 \
-          --size c-4 \
+          --size c-2 \
           --region fra1 \
           --vpc-uuid 992896c8-c089-4da3-9288-f81e28c095a4 \
           --enable-ipv6 \
