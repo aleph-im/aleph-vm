@@ -119,10 +119,14 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     async def wait_for_init(self) -> None:
         """Wait for the init process of the instance to be ready."""
         assert (
-                self.enable_networking and self.tap_interface
+            self.enable_networking and self.tap_interface
         ), f"Network not enabled for VM {self.vm_id}"
 
-        ip = self.get_vm_ip().split("/", 1)[0]
+        ip = self.get_vm_ip()
+        if not ip:
+            raise ValueError("Host IP not available")
+
+        ip = ip.split("/", 1)[0]
 
         attempts = 10
         timeout_seconds = 1.0
