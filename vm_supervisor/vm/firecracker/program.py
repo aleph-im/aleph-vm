@@ -389,13 +389,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         route = self.get_vm_route()
         ipv6 = self.get_vm_ipv6()
         ipv6_gateway = self.get_vm_ipv6_gateway()
-
-        dns_servers = settings.DNS_NAMESERVERS
-        if not dns_servers:
-            raise ValueError("Invalid configuration: DNS nameservers missing")
-
-        # Apply DNS IPv6 filtering here if needed
-        dns_servers = [server for server in dns_servers if not ipaddress.ip_address(server).version == 6]
+        dns_servers = settings.dns_servers(False)
 
         runtime_config = self.fvm.runtime_config
         assert runtime_config
