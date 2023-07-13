@@ -284,14 +284,18 @@ class Settings(BaseSettings):
         return "\n".join(
             f"{attribute:<27} = {value}" for attribute, value in attributes.items()
         )
-    
+
     def dns_servers(self, ipv4_only: bool) -> Optional[List[str]]:
         dns_servers = self.DNS_NAMESERVERS
         if not dns_servers:
             raise ValueError("Invalid configuration: DNS nameservers missing")
 
         # Apply DNS IPv6 filtering here if needed
-        dns_servers = [server for server in dns_servers if not ipaddress.ip_address(server).version == 6 or ipv4_only]
+        dns_servers = [
+            server
+            for server in dns_servers
+            if not ipaddress.ip_address(server).version == 6 or ipv4_only
+        ]
         return dns_servers
 
     class Config:
