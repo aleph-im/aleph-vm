@@ -56,6 +56,7 @@ jobs:
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
           # Ubuntu droplets run upgrades at boot, which locks apt-get
+          sleep 30
           until ! ssh root@${DROPLET_IPV4} "lslocks --json | grep /var/lib/apt/lists/lock\|/var/lib/dpkg/lock" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done
           
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
