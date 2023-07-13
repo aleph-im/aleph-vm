@@ -8,6 +8,8 @@ import json
 import logging
 import re
 import sys
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from shutil import make_archive
 from typing import Union
@@ -34,6 +36,10 @@ from .utils import fix_message_validation, run_in_subprocess
 logger = logging.getLogger(__name__)
 
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
+
+
+class CompressAlgorithm(str, Enum):
+    gz = "gzip"
 
 
 async def chown_to_jailman(path: Path) -> None:
@@ -311,3 +317,32 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")
+
+
+async def create_snapshot(path: Path) -> Path:
+    new_path = Path(f"{path}.{datetime.today().strftime('%d%m%Y-%H%M%S')}.bak")
+
+    await run_in_subprocess(
+        [
+            "cp",
+            "-vap",
+            path,
+            new_path
+        ]
+    )
+
+    return new_path
+
+
+async def compress_snapshot(path: Path, algorithm: CompressAlgorithm = CompressAlgorithm.gz) -> Path:
+    # Compression method is GZIP by default
+    new_path = Path(f"{path}.gz")
+
+    await run_in_subprocess(
+        [
+            algorithm,
+            path,
+        ]
+    )
+
+    return new_path

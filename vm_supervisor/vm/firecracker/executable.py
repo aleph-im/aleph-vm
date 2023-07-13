@@ -287,3 +287,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
             teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
         await self.stop_guest_api()
+
+    async def create_snapshot(self) -> Path:
+        raise NotImplementedError()
