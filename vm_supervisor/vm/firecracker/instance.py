@@ -19,7 +19,13 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
-from vm_supervisor.storage import create_volume_file, create_devmapper, create_snapshot, compress_snapshot
+from vm_supervisor.snapshots import CompressedDiskVolumeSnapshot, DiskVolume
+from vm_supervisor.storage import (
+    NotEnoughDiskSpace,
+    check_disk_space,
+    create_devmapper,
+    create_volume_file,
+)
 from vm_supervisor.utils import HostNotFoundError, ping
 
 from ...utils import run_in_subprocess
@@ -55,14 +61,14 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     is_instance = True
 
     def __init__(
-            self,
-            vm_id: int,
-            vm_hash: ItemHash,
-            resources: AlephInstanceResources,
-            enable_networking: bool = False,
-            enable_console: Optional[bool] = None,
-            hardware_resources: MachineResources = MachineResources(),
-            tap_interface: Optional[TapInterface] = None,
+        self,
+        vm_id: int,
+        vm_hash: ItemHash,
+        resources: AlephInstanceResources,
+        enable_networking: bool = False,
+        enable_console: Optional[bool] = None,
+        hardware_resources: MachineResources = MachineResources(),
+        tap_interface: Optional[TapInterface] = None,
     ):
         super().__init__(
             vm_id,
@@ -90,18 +96,18 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 ),
             ),
             drives=[
-                       Drive(
-                           drive_id="rootfs",
-                           path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
-                           is_root_device=True,
-                           is_read_only=False,
-                       ),
-                       cloud_init_drive,
-                   ]
-                   + [
-                       self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
-                       for volume in self.resources.volumes
-                   ],
+                Drive(
+                    drive_id="rootfs",
+                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
+                    is_root_device=True,
+                    is_read_only=False,
+                ),
+                cloud_init_drive,
+            ]
+            + [
+                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                for volume in self.resources.volumes
+            ],
             machine_config=MachineConfig(
                 vcpu_count=self.hardware_resources.vcpus,
                 mem_size_mib=self.hardware_resources.memory,
@@ -146,11 +152,20 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         # Configuration of instances is sent during `self.setup()` by passing it via a volume.
         pass
 
-    async def create_snapshot(self) -> Path:
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         """Create a VM snapshot"""
-        volume_path = await create_volume_file(self.resources.message_content.rootfs, self.resources.namespace)
-        snapshot = await create_snapshot(volume_path)
-        compressed_snapshot = await compress_snapshot(snapshot)
+        volume_path = await create_volume_file(
+            self.resources.message_content.rootfs, self.resources.namespace
+        )
+        volume = DiskVolume(path=volume_path)
+
+        if not check_disk_space(volume.size_mib):
+            raise NotEnoughDiskSpace
+
+        snapshot = await volume.take_snapshot()
+        compressed_snapshot = await snapshot.compress(
+            settings.SNAPSHOT_COMPRESSION_ALGORITHM
+        )
         return compressed_snapshot
 
     def _encode_user_data(self) -> bytes:
@@ -176,7 +191,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         """Creates network configuration file for cloud-init tool"""
 
         assert (
-                self.enable_networking and self.tap_interface
+            self.enable_networking and self.tap_interface
         ), f"Network not enabled for VM {self.vm_id}"
 
         ip = self.get_vm_ip()
