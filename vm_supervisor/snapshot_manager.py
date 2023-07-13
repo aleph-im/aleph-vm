@@ -1,0 +1,109 @@
+import logging
+import threading
+from typing import Dict, Optional
+from time import sleep
+
+from aleph_message.models import ItemHash
+from schedule import Job, Scheduler
+
+from .conf import settings
+from .models import VmExecution
+from .snapshots import CompressedDiskVolumeSnapshot
+
+logger = logging.getLogger(__name__)
+
+
+async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeSnapshot:
+    try:
+        logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
+        assert execution.vm, "VM execution not set"
+
+        snapshot = await execution.vm.create_snapshot()
+        # TODO: Publish snapshot to IPFS and Aleph network
+        logger.debug(f"New snapshots for VM {execution.vm_hash} created in {snapshot}")
+        return snapshot
+    except ValueError:
+        raise ValueError("Something failed taking an snapshot")
+
+
+class SnapshotExecution:
+    vm_hash: ItemHash
+    execution: VmExecution
+    frequency: int
+    _scheduler: Scheduler
+    _job: Job
+
+    def __init__(self, scheduler: Scheduler, vm_hash: ItemHash, execution: VmExecution, frequency: int):
+        self.vm_hash = vm_hash
+        self.execution = execution
+        self.frequency = frequency
+        self._scheduler = scheduler
+
+    async def start(self) -> None:
+        logger.debug(f"Starting snapshots for VM {self.vm_hash} every {self.frequency} minutes")
+        job = self._scheduler.every(self.frequency).minutes.do(do_execution_snapshot, self.execution)
+        self._job = job
+
+    async def stop(self) -> None:
+        logger.debug(f"Stopping snapshots for VM {self.vm_hash}")
+        self._scheduler.cancel_job(self._job)
+
+    async def _do_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        try:
+            logger.debug(f"Starting new snapshot for VM {self.vm_hash}")
+            assert self.execution.vm, "VM execution not set"
+
+            snapshot = await self.execution.vm.create_snapshot()
+            # TODO: Publish snapshot to IPFS and Aleph network
+            logger.debug(f"New snapshots for VM {self.vm_hash} created in {snapshot}")
+            return snapshot
+        except ValueError:
+            raise ValueError("Something failed taking an snapshot")
+
+
+class SnapshotManager:
+    """
+    Manage VM snapshots.
+    """
+
+    executions: Dict[ItemHash, SnapshotExecution]
+    _scheduler: Scheduler
+    is_running: bool
+
+    def __init__(self):
+        self.executions = {}
+        self._scheduler = Scheduler()
+        self.is_running = False
+
+    def run_snapshots(self) -> None:
+        logger.debug("Running SnapshotManager snapshots!")
+        self.is_running = True
+        job_thread = threading.Thread(target=self._infinite_run_snapshots(), daemon=True, name="SnapshotManager")
+        job_thread.start()
+
+    def _infinite_run_snapshots(self) -> None:
+        while True:
+            self._scheduler.run_pending()
+            sleep(10)
+
+    async def start_for(
+            self, execution: VmExecution, frequency: Optional[int] = None
+    ) -> None:
+        if not execution.is_instance:
+            raise TypeError("VM execution should be an Instance only")
+
+        if not frequency:
+            frequency = settings.SNAPSHOT_FREQUENCY
+
+        vm_hash = execution.vm_hash
+        snapshot_execution = SnapshotExecution(
+             scheduler=self._scheduler, vm_hash=vm_hash, execution=execution, frequency=frequency
+        )
+        self.executions[vm_hash] = snapshot_execution
+        await snapshot_execution.start()
+
+    async def stop_for(self, vm_hash: ItemHash) -> None:
+        if not self.executions[vm_hash]:
+            raise ValueError(f"Snapshot execution not running for VM {vm_hash}")
+
+        await self.executions[vm_hash].stop()

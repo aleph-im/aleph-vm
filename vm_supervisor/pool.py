@@ -8,7 +8,7 @@ from vm_supervisor.network.hostnetwork import Network, make_ipv6_allocator
 
 from .conf import settings
 from .models import ExecutableContent, VmExecution
-from .snapshots import SnapshotManager
+from .snapshot_manager import SnapshotManager
 from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,8 @@ class VmPool:
             else None
         )
         self.snapshot_manager = SnapshotManager()
+        logger.debug("Initializing SnapshotManager ...")
+        self.snapshot_manager.run_snapshots()
 
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
@@ -69,7 +71,7 @@ class VmPool:
         await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
         # Start VM snapshots automatically
-        self.snapshot_manager.start_for(execution=execution)
+        await self.snapshot_manager.start_for(execution=execution)
 
         return execution
 
