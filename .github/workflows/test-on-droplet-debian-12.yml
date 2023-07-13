@@ -35,9 +35,9 @@ jobs:
           --image debian-12-x64 \
           --size c-2 \
           --region fra1 \
-          --vpc-uuid 8c422d04-5dfa-4eca-add7-1e41b5f60d39 \
+          --vpc-uuid 992896c8-c089-4da3-9288-f81e28c095a4 \
           --enable-ipv6 \
-          --ssh-keys 18:09:36:58:79:44:bb:84:45:c8:6f:9a:f6:b8:0a:c5 \
+          --ssh-keys b3:ff:08:7f:57:00:fd:7a:14:00:f2:35:0a:f6:e8:55 \
           aleph-vm-ci-debian-12
 
       - name: Build Debian Package
@@ -86,4 +86,3 @@ jobs:
         if: always()
         run: |
           doctl compute droplet delete -f aleph-vm-ci-debian-12
-
