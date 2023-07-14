@@ -151,7 +151,7 @@ class Settings(BaseSettings):
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
     SNAPSHOT_FREQUENCY: int = Field(
-        default=5,
+        default=60,
         description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes.",
     )
 
