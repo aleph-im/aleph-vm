@@ -19,7 +19,11 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
-from vm_supervisor.snapshots import CompressedDiskVolumeSnapshot, DiskVolume
+from vm_supervisor.snapshots import (
+    CompressedDiskVolumeSnapshot,
+    DiskVolume,
+    DiskVolumeSnapshot,
+)
 from vm_supervisor.storage import (
     NotEnoughDiskSpace,
     check_disk_space,
@@ -58,6 +62,7 @@ class AlephInstanceResources(AlephFirecrackerResources):
 class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     vm_configuration: BaseConfiguration
     resources: AlephInstanceResources
+    latest_snapshot: Optional[DiskVolumeSnapshot]
     is_instance = True
 
     def __init__(
@@ -166,6 +171,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         compressed_snapshot = await snapshot.compress(
             settings.SNAPSHOT_COMPRESSION_ALGORITHM
         )
+
+        if self.latest_snapshot:
+            self.latest_snapshot.delete()
+
+        self.latest_snapshot = snapshot
         return compressed_snapshot
 
     def _encode_user_data(self) -> bytes:
