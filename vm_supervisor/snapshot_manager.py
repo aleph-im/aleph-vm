@@ -10,9 +10,17 @@ from schedule import Job, Scheduler
 from .conf import settings
 from .models import VmExecution
 from .snapshots import CompressedDiskVolumeSnapshot
-from .utils import run_threaded_async_function
 
 logger = logging.getLogger(__name__)
+
+
+def wrap_async_snapshot(execution):
+    asyncio.run(do_execution_snapshot(execution))
+
+
+def run_threaded_snapshot(execution):
+    job_thread = threading.Thread(target=wrap_async_snapshot, args=(execution,))
+    job_thread.start()
 
 
 async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeSnapshot:
@@ -59,7 +67,7 @@ class SnapshotExecution:
             f"Starting snapshots for VM {self.vm_hash} every {self.frequency} minutes"
         )
         job = self._scheduler.every(self.frequency).minutes.do(
-            run_threaded_async_function, do_execution_snapshot(self.execution)
+            run_threaded_snapshot, self.execution
         )
         self._job = job
 

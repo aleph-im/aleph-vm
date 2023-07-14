@@ -336,7 +336,7 @@ async def compress_volume_snapshot(
 
     await run_in_subprocess(
         [
-            str(algorithm),
+            "gzip",
             str(path),
         ]
     )
