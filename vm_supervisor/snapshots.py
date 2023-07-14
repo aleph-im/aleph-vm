@@ -9,11 +9,11 @@ logger = logging.getLogger(__name__)
 
 class DiskVolumeFile:
     path: Path
-    size_mib: int
+    size: int
 
     def __init__(self, path: Path):
         self.path = path
-        self.size_mib = int(path.stat().st_size / 2**20)
+        self.size = path.stat().st_size
 
 
 class CompressedDiskVolumeSnapshot(DiskVolumeFile):

@@ -134,13 +134,7 @@ class VmPool:
             *(execution.stop() for vm_hash, execution in self.executions.items())
         )
 
-        # Stop instance snapshot executions in parallel:
-        await asyncio.gather(
-            *(
-                self.snapshot_manager.stop_for(vm_hash)
-                for vm_hash, execution in self.get_instance_executions()
-            )
-        )
+        await self.snapshot_manager.stop_all()
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for vm_hash, execution in self.executions.items():

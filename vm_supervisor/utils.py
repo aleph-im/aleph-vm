@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import threading
 from base64 import b16encode, b32decode
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
@@ -123,3 +124,12 @@ async def ping(host: str, packets: int, timeout: float):
         )
     except subprocess.CalledProcessError as err:
         raise HostNotFoundError() from err
+
+
+def wrap_async_function(function):
+    asyncio.run(function)
+
+
+def run_threaded_async_function(function):
+    job_thread = threading.Thread(target=wrap_async_function, args=(function,))
+    job_thread.start()

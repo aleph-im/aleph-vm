@@ -344,10 +344,6 @@ async def compress_volume_snapshot(
     return new_path
 
 
-def check_disk_space(mib_to_use: int) -> bool:
+def check_disk_space(bytes_to_use: int) -> bool:
     host_disk_usage = disk_usage("/")
-    free_space_mib = host_disk_usage.free / 2**20
-    if free_space_mib < mib_to_use:
-        return False
-
-    return True
+    return bytes_to_use >= host_disk_usage.free

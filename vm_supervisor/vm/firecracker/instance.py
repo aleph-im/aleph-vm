@@ -159,7 +159,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         )
         volume = DiskVolume(path=volume_path)
 
-        if not check_disk_space(volume.size_mib):
+        if not check_disk_space(volume.size):
             raise NotEnoughDiskSpace
 
         snapshot = await volume.take_snapshot()
