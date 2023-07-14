@@ -28,6 +28,7 @@ from vm_supervisor.conf import settings
 from vm_supervisor.models import ExecutableContent
 from vm_supervisor.network.firewall import teardown_nftables_for_vm
 from vm_supervisor.network.interfaces import TapInterface
+from vm_supervisor.snapshots import CompressedDiskVolumeSnapshot
 from vm_supervisor.storage import get_volume_path
 
 logger = logging.getLogger(__name__)
@@ -287,3 +288,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
             teardown_nftables_for_vm(self.vm_id)
             await self.tap_interface.delete()
         await self.stop_guest_api()
+
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        raise NotImplementedError()
