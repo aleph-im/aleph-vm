@@ -33,7 +33,7 @@ jobs:
         run: |
           doctl compute droplet create \
           --image ubuntu-22-04-x64 \
-          --size c-2 \
+          --size c-4 \
           --region fra1 \
           --vpc-uuid 992896c8-c089-4da3-9288-f81e28c095a4 \
           --enable-ipv6 \
@@ -55,11 +55,9 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-ubuntu-22-04 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           
-          # Ubuntu droplets run upgrades at boot
+          # Ubuntu droplets run upgrades at boot, which locks apt-get
           sleep 30
-          until ! ssh root@${DROPLET_IPV4} "lslocks --json | grep /var/lib/dpkg/lock" > /dev/null; do sleep 1; echo "Waiting for dpkg lock..."; done
-          
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
+          until ! ssh root@${DROPLET_IPV4} "apt-get update" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done          
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
