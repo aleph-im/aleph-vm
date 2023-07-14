@@ -28,6 +28,10 @@ class IPv6AllocationPolicy(str, Enum):
     dynamic = "dynamic"  # Assign an available IP address.
 
 
+class SnapshotCompressionAlgorithm(str, Enum):
+    gz = "gzip"
+
+
 def etc_resolv_conf_dns_servers():
     with open("/etc/resolv.conf", "r") as resolv_file:
         for line in resolv_file.readlines():
@@ -145,6 +149,16 @@ class Settings(BaseSettings):
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
+
+    SNAPSHOT_FREQUENCY: int = Field(
+        default=60,
+        description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes.",
+    )
+
+    SNAPSHOT_COMPRESSION_ALGORITHM: SnapshotCompressionAlgorithm = Field(
+        default=SnapshotCompressionAlgorithm.gz,
+        description="Snapshot compression algorithm.",
+    )
 
     # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH = (
