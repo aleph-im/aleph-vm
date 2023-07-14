@@ -2,7 +2,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from aleph_message.models import ItemHash
+from aleph_message.models import ItemHash, StoreMessage
+from aleph_message.status import MessageStatus
+
+from aleph.sdk.chains.common import get_fallback_account
+from aleph.sdk.client import AuthenticatedAlephClient
+from aleph.sdk.types import StorageEnum
 
 from .conf import SnapshotCompressionAlgorithm
 from .storage import compress_volume_snapshot, create_volume_snapshot
@@ -29,9 +34,13 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
     def delete(self) -> None:
         self.path.unlink(missing_ok=True)
 
-    async def upload(self) -> ItemHash:
-        # TODO: Upload snapshots to Aleph Network
-        pass
+    async def upload(self, vm_hash: ItemHash) -> ItemHash:
+        account = get_fallback_account()
+        async with AuthenticatedAlephClient(account=account, api_server="https://official.aleph.cloud") as client:
+            message, status = await client.create_store(
+                file_path=self.path, storage_engine=StorageEnum.ipfs, sync=True, ref=f"snapshot_{vm_hash}"
+            )
+            assert status == MessageStatus.PROCESSED
 
 
 class DiskVolumeSnapshot(DiskVolumeFile):

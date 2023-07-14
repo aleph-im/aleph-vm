@@ -29,7 +29,7 @@ async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeS
         assert execution.vm, "VM execution not set"
 
         snapshot = await execution.vm.create_snapshot()
-        await snapshot.upload()
+        await snapshot.upload(execution.vm_hash)
 
         logger.debug(
             f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}"
