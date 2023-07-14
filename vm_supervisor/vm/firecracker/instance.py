@@ -75,6 +75,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
+        self.latest_snapshot = None
         super().__init__(
             vm_id,
             vm_hash,
