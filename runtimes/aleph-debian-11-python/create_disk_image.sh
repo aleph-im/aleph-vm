@@ -34,7 +34,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
 pip3 install 'fastapi~=0.95.1'
 
 echo "Pip installing aleph-client"
-pip3 install 'aleph-sdk-python==0.7.0b1'
+pip3 install 'aleph-sdk-python==0.7.0'
 
 # Compile all Python bytecode
 python3 -m compileall -f /usr/local/lib/python3.9
