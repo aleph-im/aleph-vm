@@ -346,4 +346,4 @@ async def compress_volume_snapshot(
 
 def check_disk_space(bytes_to_use: int) -> bool:
     host_disk_usage = disk_usage("/")
-    return bytes_to_use >= host_disk_usage.free
+    return host_disk_usage.free >= bytes_to_use
