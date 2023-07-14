@@ -8,8 +8,10 @@ import json
 import logging
 import re
 import sys
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from shutil import make_archive
+from shutil import copy2, disk_usage, make_archive
 from typing import Union
 
 import aiohttp
@@ -28,12 +30,16 @@ from aleph_message.models.execution.volume import (
     VolumePersistence,
 )
 
-from .conf import settings
+from .conf import SnapshotCompressionAlgorithm, settings
 from .utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
+
+
+class NotEnoughDiskSpace(Exception):
+    pass
 
 
 async def chown_to_jailman(path: Path) -> None:
@@ -315,3 +321,33 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             return volume_path
     else:
         raise NotImplementedError("Only immutable volumes are supported")
+
+
+async def create_volume_snapshot(path: Path) -> Path:
+    new_path = Path(f"{path}.{datetime.today().strftime('%d%m%Y-%H%M%S')}.bak")
+    copy2(path, new_path)
+    return new_path
+
+
+async def compress_volume_snapshot(
+    path: Path,
+    algorithm: SnapshotCompressionAlgorithm = SnapshotCompressionAlgorithm.gz,
+) -> Path:
+    if algorithm != SnapshotCompressionAlgorithm.gz:
+        raise NotImplementedError
+
+    new_path = Path(f"{path}.gz")
+
+    await run_in_subprocess(
+        [
+            "gzip",
+            str(path),
+        ]
+    )
+
+    return new_path
+
+
+def check_disk_space(bytes_to_use: int) -> bool:
+    host_disk_usage = disk_usage("/")
+    return host_disk_usage.free >= bytes_to_use

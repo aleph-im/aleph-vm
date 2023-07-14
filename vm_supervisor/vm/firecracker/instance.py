@@ -19,7 +19,17 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
-from vm_supervisor.storage import create_devmapper
+from vm_supervisor.snapshots import (
+    CompressedDiskVolumeSnapshot,
+    DiskVolume,
+    DiskVolumeSnapshot,
+)
+from vm_supervisor.storage import (
+    NotEnoughDiskSpace,
+    check_disk_space,
+    create_devmapper,
+    create_volume_file,
+)
 from vm_supervisor.utils import HostNotFoundError, ping
 
 from ...utils import run_in_subprocess
@@ -52,6 +62,7 @@ class AlephInstanceResources(AlephFirecrackerResources):
 class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     vm_configuration: BaseConfiguration
     resources: AlephInstanceResources
+    latest_snapshot: Optional[DiskVolumeSnapshot]
     is_instance = True
 
     def __init__(
@@ -64,6 +75,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
+        self.latest_snapshot = None
         super().__init__(
             vm_id,
             vm_hash,
@@ -145,6 +157,27 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         """Configure the VM by sending configuration info to it's init"""
         # Configuration of instances is sent during `self.setup()` by passing it via a volume.
         pass
+
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        """Create a VM snapshot"""
+        volume_path = await create_volume_file(
+            self.resources.message_content.rootfs, self.resources.namespace
+        )
+        volume = DiskVolume(path=volume_path)
+
+        if not check_disk_space(volume.size):
+            raise NotEnoughDiskSpace
+
+        snapshot = await volume.take_snapshot()
+        compressed_snapshot = await snapshot.compress(
+            settings.SNAPSHOT_COMPRESSION_ALGORITHM
+        )
+
+        if self.latest_snapshot:
+            self.latest_snapshot.delete()
+
+        self.latest_snapshot = snapshot
+        return compressed_snapshot
 
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
