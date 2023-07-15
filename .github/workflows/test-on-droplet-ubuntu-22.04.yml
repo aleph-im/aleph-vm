@@ -57,9 +57,9 @@ jobs:
           
           # Ubuntu droplets run upgrades at boot, which locks apt-get
           sleep 30
-          until ! ssh root@${DROPLET_IPV4} "apt-get update" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done          
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
+          until ssh root@${DROPLET_IPV4} "apt-get update" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done          
+          until ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done
+          until ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles" > /dev/null; do sleep 1; echo "Waiting for apt/dpkg lock..."; done
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
           scp packaging/target/aleph-vm.ubuntu-22.04.deb root@${DROPLET_IPV4}:/opt
