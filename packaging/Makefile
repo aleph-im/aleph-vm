@@ -17,7 +17,7 @@ debian-package-code:
 	cp ../examples/instance_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/instance_message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.0' 'jwskate==0.8.0'
+	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.0' 'jwskate==0.8.0' 'aleph-sdk-python==0.7.0'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux
