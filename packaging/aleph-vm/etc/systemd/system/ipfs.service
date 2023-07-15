@@ -39,7 +39,7 @@ TimeoutStartSec=infinity
 Type=notify
 StateDirectory=ipfs
 Environment=IPFS_PATH="${HOME}"
-ExecStart=/usr/local/bin/ipfs daemon --init --migrate
+ExecStart=/opt/kubo/ipfs daemon --init --migrate
 Restart=on-failure
 KillSignal=SIGINT
 
