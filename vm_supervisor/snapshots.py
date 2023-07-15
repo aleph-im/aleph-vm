@@ -29,10 +29,17 @@ class DiskVolumeFile:
 
 class CompressedDiskVolumeSnapshot(DiskVolumeFile):
     algorithm: SnapshotCompressionAlgorithm
+    uploaded_item_hash: Optional[ItemHash]
 
-    def __init__(self, path: Path, algorithm: SnapshotCompressionAlgorithm):
+    def __init__(
+        self,
+        path: Path,
+        algorithm: SnapshotCompressionAlgorithm,
+        uploaded_item_hash: Optional[ItemHash] = None,
+    ):
         super().__init__(path=path)
         self.algorithm = algorithm
+        self.uploaded_item_hash = uploaded_item_hash
 
     def delete(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -53,6 +60,20 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
                 sync=True,
                 ref=f"snapshot_{vm_hash}",
             )
+            assert status == MessageStatus.PROCESSED
+            self.uploaded_item_hash = message.item_hash
+            return self.uploaded_item_hash
+
+    async def forget(self) -> None:
+        assert (
+            self.uploaded_item_hash
+        ), "CompressedDiskVolumeSnapshot item_hash not available"
+
+        account = get_fallback_account()
+        async with AuthenticatedAlephClient(
+            account=account, api_server="https://official.aleph.cloud"
+        ) as client:
+            message, status = await client.forget(hashes=[self.uploaded_item_hash])
             assert status == MessageStatus.PROCESSED
 
 

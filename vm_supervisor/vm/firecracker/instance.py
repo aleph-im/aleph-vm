@@ -189,8 +189,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         compressed_snapshot = await snapshot.compress(
             settings.SNAPSHOT_COMPRESSION_ALGORITHM
         )
+        await compressed_snapshot.upload(self.vm_hash)
 
         if self.latest_snapshot:
+            if self.latest_snapshot.compressed:
+                await self.latest_snapshot.compressed.forget()
             self.latest_snapshot.delete()
 
         self.latest_snapshot = snapshot
