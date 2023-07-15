@@ -30,7 +30,6 @@ from aleph_message.models.execution.volume import (
 )
 
 from .conf import SnapshotCompressionAlgorithm, settings
-from .snapshots import DiskVolumeSnapshot
 from .utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -252,7 +251,7 @@ async def resize_file_system(device_path: Path, mount_path: Path) -> None:
 async def create_devmapper(
     volume: Union[PersistentVolume, RootfsVolume],
     namespace: str,
-    snapshot: Optional[DiskVolumeSnapshot] = None,
+    snapshot_path: Optional[Path] = None,
 ) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2
@@ -264,8 +263,8 @@ async def create_devmapper(
     if path_mapped_volume_name.is_block_device():
         return path_mapped_volume_name
 
-    if snapshot:
-        volume_path = snapshot.path
+    if snapshot_path:
+        volume_path = snapshot_path
     else:
         volume_path = await create_volume_file(volume, namespace)
     parent_path = await get_rootfs_base_path(volume.parent.ref)

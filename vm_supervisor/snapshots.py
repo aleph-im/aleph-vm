@@ -2,14 +2,17 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from aleph.sdk.chains.common import get_fallback_account
+from aleph.sdk.chains.common import get_fallback_private_key
+from aleph.sdk.chains.ethereum import ETHAccount
 from aleph.sdk.client import AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph_message.models import ItemHash, StoreMessage
 from aleph_message.status import MessageStatus
 
 from .conf import SnapshotCompressionAlgorithm
+from .messages import try_get_store_messages_sdk
 from .storage import (
+    get_data_path,
     compress_volume_snapshot,
     create_volume_snapshot,
     decompress_volume_snapshot,
@@ -50,7 +53,8 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
         return decompressed
 
     async def upload(self, vm_hash: ItemHash) -> ItemHash:
-        account = get_fallback_account()
+        pkey = get_fallback_private_key()
+        account = ETHAccount(private_key=pkey)
         async with AuthenticatedAlephClient(
             account=account, api_server="https://official.aleph.cloud"
         ) as client:
@@ -69,7 +73,8 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
             self.uploaded_item_hash
         ), "CompressedDiskVolumeSnapshot item_hash not available"
 
-        account = get_fallback_account()
+        pkey = get_fallback_private_key()
+        account = ETHAccount(private_key=pkey)
         async with AuthenticatedAlephClient(
             account=account, api_server="https://official.aleph.cloud"
         ) as client:
@@ -101,3 +106,20 @@ class DiskVolume(DiskVolumeFile):
     async def take_snapshot(self) -> DiskVolumeSnapshot:
         snapshot = await create_volume_snapshot(self.path)
         return DiskVolumeSnapshot(snapshot)
+
+
+async def get_last_snapshot_by_ref(ref: str) -> Optional[DiskVolumeSnapshot]:
+    messages = await try_get_store_messages_sdk(ref)
+    if len(messages) == 0:
+        return None
+
+    message = messages.pop()
+    compressed_snapshot_path = await get_data_path(message.item_hash)
+    compressed_snapshot = CompressedDiskVolumeSnapshot(
+        compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
+    )
+    snapshot = await compressed_snapshot.decompress(
+        SnapshotCompressionAlgorithm.gz
+    )
+    return snapshot
+
