@@ -20,12 +20,13 @@ debian-package-code:
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.0'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux
+debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
 	cp -pr ./target/firecracker ./aleph-vm/opt/firecracker/
 	cp -pr ./target/jailer ./aleph-vm/opt/firecracker/
+	cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
 
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
@@ -41,6 +42,10 @@ vmlinux:
 	#curl -fsSL -o ./target/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
 	curl -fsSL -o ./target/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.2.2/vmlinux.bin
 	#cp ../kernels/vmlinux.bin ./target/vmlinux.bin
+
+download-ipfs-kubo: target-dir build-dir
+	mkdir -p ./target/kubo
+	curl -fsSL https://dist.ipfs.tech/kubo/v0.21.0/kubo_v0.21.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control

@@ -9,6 +9,8 @@ rm -fr /srv/jailer  # Upgrade from < 0.1.11
 rm -fr /tmp/aleph   # Upgrade from < 0.1.11
 mkdir -p /var/lib/aleph/vm/jailer
 
+/opt/ipfs daemon
+
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
   systemctl daemon-reload
