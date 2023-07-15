@@ -139,7 +139,10 @@ async def stream_logs(request: web.Request):
     vm_hash = get_itemhash_or_400(request.match_info)
     execution = get_execution_or_404(vm_hash)
 
-    queue = asyncio.Queue()
+    if execution.vm is None:
+        raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
+
+    queue: asyncio.Queue = asyncio.Queue()
     try:
         ws = web.WebSocketResponse()
         try:
@@ -205,11 +208,8 @@ async def operate_reboot(request: web.Request):
     vm_hash = get_itemhash_or_400(request.match_info)
     execution = get_execution_or_404(vm_hash)
 
+    # TODO: implement this endpoint
     logger.info(f"Rebooting {execution.vm_hash}")
-    if execution.is_running:
-        await execution.stop()
-        execution.persistent = False
-
     return web.Response(status=200, body=f"Rebooted {execution.vm_hash}")
 
 
@@ -228,9 +228,10 @@ async def operate_erase(request: web.Request):
     execution.persistent = False
 
     # Delete all data
-    for volume in execution.resources.volumes:
-        if not volume.read_only:
-            logger.info(f"Deleting volume {volume.path_on_host}")
-            volume.path_on_host.unlink()
+    if execution.resources is not None:
+        for volume in execution.resources.volumes:
+            if not volume.read_only:
+                logger.info(f"Deleting volume {volume.path_on_host}")
+                volume.path_on_host.unlink()
 
     return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
