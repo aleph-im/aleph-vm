@@ -11,9 +11,10 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from jwskate import Jwk
+
 from ..models import VmExecution
 from ..run import pool
-from jwskate import Jwk
 
 logger = logging.getLogger(__name__)
 

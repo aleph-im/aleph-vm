@@ -28,7 +28,7 @@ from .views import (
     status_check_version,
     update_allocations,
 )
-from .views.operator import operate_erase, operate_stop, operate_expire, stream_logs
+from .views.operator import operate_erase, operate_expire, operate_stop, stream_logs
 
 logger = logging.getLogger(__name__)
 
