@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile
 from typing import Dict, List, Optional, Union
 
 import yaml
+from aiohttp.web_exceptions import HTTPNotFound
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
@@ -18,6 +19,7 @@ from firecracker.config import (
 )
 from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
+from vm_supervisor.messages import try_get_message
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.snapshots import (
     CompressedDiskVolumeSnapshot,
@@ -26,9 +28,11 @@ from vm_supervisor.snapshots import (
 )
 from vm_supervisor.storage import (
     NotEnoughDiskSpace,
+    SnapshotCompressionAlgorithm,
     check_disk_space,
     create_devmapper,
     create_volume_file,
+    get_data_path,
 )
 from vm_supervisor.utils import HostNotFoundError, ping
 
@@ -44,8 +48,21 @@ logger = logging.getLogger(__name__)
 
 class AlephInstanceResources(AlephFirecrackerResources):
     async def download_runtime(self):
+        ref = f"snapshot_{self.namespace}"
+        try:
+            message = await try_get_message(ref)
+            compressed_snapshot_path = await get_data_path(message.content.ref)
+            compressed_snapshot = CompressedDiskVolumeSnapshot(
+                compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
+            )
+            snapshot = await compressed_snapshot.decompress(
+                SnapshotCompressionAlgorithm.gz
+            )
+        except HTTPNotFound:
+            snapshot = None
+
         self.rootfs_path = await create_devmapper(
-            self.message_content.rootfs, self.namespace
+            self.message_content.rootfs, self.namespace, snapshot
         )
         assert (
             self.rootfs_path.is_block_device()
