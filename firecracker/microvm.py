@@ -77,11 +77,11 @@ class MicroVM:
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
+    log_queues: List
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
     mounted_rootfs: Optional[Path] = None
-
     _unix_socket: Server
 
     @property
@@ -122,6 +122,7 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
+        self.log_queues: List[asyncio.Queue] = []
 
     def to_dict(self):
         return {
@@ -343,6 +344,8 @@ class MicroVM:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
             stdout = await self.proc.stdout.readline()
+            for queue in self.log_queues:
+                await queue.put(('stdout', stdout))
             if stdout:
                 print(stdout.decode().strip())
             else:
@@ -352,9 +355,11 @@ class MicroVM:
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
-            stdout = await self.proc.stderr.readline()
-            if stdout:
-                print(stdout.decode().strip())
+            stderr = await self.proc.stderr.readline()
+            for queue in self.log_queues:
+                await queue.put(('stderr', stderr))
+            if stderr:
+                print(stderr.decode().strip())
             else:
                 await asyncio.sleep(0.001)
 
