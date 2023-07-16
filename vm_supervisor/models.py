@@ -18,6 +18,7 @@ from .conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
 from .pubsub import PubSub
+from .snapshot_manager import SnapshotManager
 from .utils import create_task_log_exceptions, dumps_for_json
 from .vm import AlephFirecrackerInstance
 from .vm.firecracker.executable import AlephFirecrackerExecutable
@@ -90,7 +91,11 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
+        self,
+        vm_hash: ItemHash,
+        message: ExecutableContent,
+        original: ExecutableContent,
+        snapshot_manager: SnapshotManager,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -100,6 +105,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.snapshot_manager = snapshot_manager
 
     def to_dict(self) -> Dict:
         return {
@@ -216,6 +222,9 @@ class VmExecution:
         self.times.stopped_at = datetime.now()
         self.cancel_expiration()
         self.cancel_update()
+
+        if isinstance(self.message, InstanceContent):
+            await self.snapshot_manager.stop_for(self.vm_hash)
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
