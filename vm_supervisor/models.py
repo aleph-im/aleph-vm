@@ -5,7 +5,7 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, TYPE_CHECKING
 
 from aleph_message.models import (
     ExecutableContent,
@@ -17,8 +17,10 @@ from aleph_message.models import (
 from .conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
 from .network.interfaces import TapInterface
+
+if TYPE_CHECKING:
+    from .snapshot_manager import SnapshotManager
 from .pubsub import PubSub
-from .snapshot_manager import SnapshotManager
 from .utils import create_task_log_exceptions, dumps_for_json
 from .vm import AlephFirecrackerInstance
 from .vm.firecracker.executable import AlephFirecrackerExecutable
