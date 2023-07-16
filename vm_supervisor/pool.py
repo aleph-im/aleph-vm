@@ -57,7 +57,12 @@ class VmPool:
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        execution = VmExecution(vm_hash=vm_hash, message=message, original=original)
+        execution = VmExecution(
+            vm_hash=vm_hash,
+            message=message,
+            original=original,
+            snapshot_manager=self.snapshot_manager,
+        )
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
