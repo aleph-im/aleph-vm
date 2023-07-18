@@ -26,7 +26,7 @@ curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 # Allocate 1GB rootfs.btrfs file
 echo "Allocate 1GB $ROOTFS_FILE file"
 fallocate -l 1G "$ROOTFS_FILE"
-mkfs.btrfs "$ROOTFS_FILE"
+mkfs.btrfs -m single --label root "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
 
 # Extract Debian image
