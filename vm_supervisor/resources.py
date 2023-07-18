@@ -7,7 +7,7 @@ import cpuinfo
 import psutil
 from aiohttp import web
 from aleph_message.models.execution.environment import CpuProperties
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .conf import settings
 
@@ -122,7 +122,7 @@ async def about_system_usage(request: web.Request):
 
 
 class Allocation(BaseModel):
-    persistent_vms: Set[str]
-    instances: Set[str] = set()
-    on_demand_vms: Set[str] = set()
+    persistent_vms: Set[str] = Field(default_factory=set)
+    instances: Set[str] = Field(default_factory=set)
+    on_demand_vms: Set[str] = Field(default_factory=set)
     jobs: Optional[Set] = None
