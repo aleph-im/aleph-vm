@@ -207,23 +207,19 @@ async def update_allocations(request: web.Request):
         logger.info(f"Starting long running VM {vm_hash}")
         await start_persistent_vm(vm_hash, pubsub)
 
-    # Stop VMs
-    for execution in pool.get_persistent_executions():
-        if execution.vm_hash not in allocation.persistent_vms:
-            logger.info(f"Stopping long running VM {execution.vm_hash}")
-            await execution.stop()
-            execution.persistent = False
-
     # Start Instances
     for instance_hash in allocation.instances:
         instance_hash = ItemHash(instance_hash)
         logger.info(f"Starting instance {instance_hash}")
         await start_persistent_vm(instance_hash, pubsub)
 
-    # Stop Instances
-    for execution in pool.get_instance_executions():
-        if execution.vm_hash not in allocation.instances:
-            logger.info(f"Stopping instance {execution.vm_hash}")
+    # Stop unscheduled persistent programs and instances.
+    # Instances are also marked with persistent = True.
+    allocations = allocation.persistent_vms | allocation.instances
+    for execution in pool.get_persistent_executions():
+        if execution.vm_hash not in allocations:
+            vm_type = "instance" if execution.is_instance else "persistent program"
+            logger.info(f"Stopping %s %s", vm_type, execution.vm_hash)
             await execution.stop()
             execution.persistent = False
 
