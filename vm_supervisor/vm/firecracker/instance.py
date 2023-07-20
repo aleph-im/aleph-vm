@@ -211,21 +211,19 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         ipv6_gateway = self.get_vm_ipv6_gateway()
 
         network = {
-            "network": {
-                "ethernets": {
-                    "eth0": {
-                        "dhcp4": False,
-                        "dhcp6": False,
-                        "addresses": [ip, ipv6],
-                        "gateway4": route,
-                        "gateway6": ipv6_gateway,
-                        "nameservers": {
-                            "addresses": settings.DNS_NAMESERVERS,
-                        },
+            "ethernets": {
+                "eth0": {
+                    "dhcp4": False,
+                    "dhcp6": False,
+                    "addresses": [ip, ipv6],
+                    "gateway4": route,
+                    "gateway6": ipv6_gateway,
+                    "nameservers": {
+                        "addresses": settings.DNS_NAMESERVERS,
                     },
                 },
-                "version": 2,
             },
+            "version": 2,
         }
 
         return yaml.safe_dump(
