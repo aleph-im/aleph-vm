@@ -261,6 +261,7 @@ async def create_devmapper(
     mapped_volume_name = f"{namespace}_{volume_name}"
     path_mapped_volume_name = Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name
 
+    # Check if rootfs volume is created
     if path_mapped_volume_name.is_block_device():
         return path_mapped_volume_name
 
@@ -269,9 +270,11 @@ async def create_devmapper(
     image_volume_name = volume.parent.ref
     image_block_size: int = await get_block_size(parent_path)
     path_image_device_name = Path(DEVICE_MAPPER_DIRECTORY) / image_volume_name
+    # Checks if parent rootfs image block device is created
     if not path_image_device_name.is_block_device():
         image_loop_device = await create_loopback_device(parent_path, read_only=True)
 
+        # Creates the parent rootfs image block device with the entire image size
         base_table_command = f"0 {image_block_size} linear {image_loop_device} 0"
         await create_mapped_device(image_volume_name, base_table_command)
 
@@ -283,15 +286,16 @@ async def create_devmapper(
         Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name_base
     )
     if not path_mapped_volume_name_base.is_block_device():
+        # Creates the base rootfs block device with the entire rootfs size using the image block device as source
         base_table_command = (
             f"0 {image_block_size} linear {path_image_device_name} 0\n"
             f"{image_block_size} {extended_block_size} zero "
         )
-
         await create_mapped_device(mapped_volume_name_base, base_table_command)
 
     extended_loop_device = await create_loopback_device(volume_path)
 
+    # Creates the final rootfs block device that is a snapshot of the base block device
     snapshot_table_command = f"0 {extended_block_size} snapshot {path_mapped_volume_name_base} {extended_loop_device} P 8"
     await create_mapped_device(mapped_volume_name, snapshot_table_command)
 
