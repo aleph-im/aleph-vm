@@ -278,10 +278,14 @@ async def create_devmapper(
     extended_block_size: int = await get_block_size(volume_path)
 
     mapped_volume_name_base = f"{namespace}_base"
-    path_mapped_volume_name_base = Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name_base
+    path_mapped_volume_name_base = (
+        Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name_base
+    )
     if not path_mapped_volume_name_base.is_block_device():
-        base_table_command = f"0 {image_block_size} linear {path_image_device_name} 0\n"\
-                             f"{image_block_size} {extended_block_size} zero "
+        base_table_command = (
+            f"0 {image_block_size} linear {path_image_device_name} 0\n"
+            f"{image_block_size} {extended_block_size} zero "
+        )
 
         await create_mapped_device(mapped_volume_name_base, base_table_command)
 
