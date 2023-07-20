@@ -243,7 +243,8 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
     await run_in_subprocess(command, stdin_input=table_command.encode())
 
 
-async def resize_file_system(device_path: Path, mount_path: Path) -> None:
+async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> None:
+    await run_in_subprocess(["btrfstune", "-m", str(device_path)])
     await run_in_subprocess(["mount", str(device_path), str(mount_path)])
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
     await run_in_subprocess(["umount", str(mount_path)])
@@ -262,27 +263,38 @@ async def create_devmapper(
     if path_mapped_volume_name.is_block_device():
         return path_mapped_volume_name
 
-    volume_path = await create_volume_file(volume, namespace)
     parent_path = await get_rootfs_base_path(volume.parent.ref)
 
-    base_loop_device = await create_loopback_device(parent_path, read_only=True)
-    base_block_size: int = await get_block_size(parent_path)
-    extended_loop_device = await create_loopback_device(volume_path)
+    image_volume_name = volume.parent.ref
+    image_block_size: int = await get_block_size(parent_path)
+    path_image_device_name = Path(DEVICE_MAPPER_DIRECTORY) / image_volume_name
+    if not path_image_device_name.is_block_device():
+        image_loop_device = await create_loopback_device(parent_path, read_only=True)
+
+        base_table_command = f"0 {image_block_size} linear {image_loop_device} 0"
+        await create_mapped_device(image_volume_name, base_table_command)
+
+    volume_path = await create_volume_file(volume, namespace)
     extended_block_size: int = await get_block_size(volume_path)
 
-    base_table_command = f"0 {base_block_size} linear {base_loop_device} 0\n{base_block_size} {extended_block_size} zero"
-    base_volume_name = volume.parent.ref
-    path_base_device_name = Path(DEVICE_MAPPER_DIRECTORY) / base_volume_name
-    if not path_base_device_name.is_block_device():
-        await create_mapped_device(base_volume_name, base_table_command)
+    mapped_volume_name_base = f"{namespace}_base"
+    path_mapped_volume_name_base = Path(DEVICE_MAPPER_DIRECTORY) / mapped_volume_name_base
+    if not path_mapped_volume_name_base.is_block_device():
+        base_table_command = f"0 {image_block_size} linear {path_image_device_name} 0\n"\
+                             f"{image_block_size} {extended_block_size} zero "
 
-    snapshot_table_command = f"0 {extended_block_size} snapshot {path_base_device_name} {extended_loop_device} P 8"
+        await create_mapped_device(mapped_volume_name_base, base_table_command)
+
+    extended_loop_device = await create_loopback_device(volume_path)
+
+    snapshot_table_command = f"0 {extended_block_size} snapshot {path_mapped_volume_name_base} {extended_loop_device} P 8"
     await create_mapped_device(mapped_volume_name, snapshot_table_command)
 
     mount_path = Path(f"/mnt/{mapped_volume_name}")
     mount_path.mkdir(parents=True, exist_ok=True)
-    await resize_file_system(path_mapped_volume_name, mount_path)
-    await chown_to_jailman(path_base_device_name)
+    await resize_and_tune_file_system(path_mapped_volume_name, mount_path)
+    await chown_to_jailman(path_image_device_name)
+    await chown_to_jailman(path_mapped_volume_name_base)
     await chown_to_jailman(path_mapped_volume_name)
     return path_mapped_volume_name
 
