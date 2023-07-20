@@ -26,7 +26,7 @@ curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
 # Allocate 1GB rootfs.btrfs file
 echo "Allocate 1GB $ROOTFS_FILE file"
 fallocate -l 1G "$ROOTFS_FILE"
-mkfs.btrfs "$ROOTFS_FILE"
+mkfs.btrfs -m single --label root "$ROOTFS_FILE"
 mount "$ROOTFS_FILE" "$MOUNT_DIR"
 
 # Extract Debian image
@@ -38,6 +38,9 @@ LOOPDISK=$(losetup --find --show $IMAGE_RAW_NAME)
 partx -u $LOOPDISK
 mount "$LOOPDISK"p1 "$MOUNT_ORIGIN_DIR"
 
+# Fix boot partition missing
+sed -i '$d' "$MOUNT_ORIGIN_DIR"/etc/fstab
+
 # Copy Debian image to rootfs
 echo "Copying Debian 11 image to $ROOTFS_FILE file"
 cp -vap "$MOUNT_ORIGIN_DIR/." "$MOUNT_DIR"
@@ -47,5 +50,6 @@ umount "$MOUNT_ORIGIN_DIR"
 partx -d "$LOOPDISK"
 losetup -d "$LOOPDISK"
 umount "$MOUNT_DIR"
+
 rm "$IMAGE_RAW_NAME"
 rm "$IMAGE_NAME"
