@@ -244,6 +244,7 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
 
 
 async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> None:
+    # This tune is needed to assign a random fsid to BTRFS device to be able to mount it
     await run_in_subprocess(["btrfstune", "-m", str(device_path)])
     await run_in_subprocess(["mount", str(device_path), str(mount_path)])
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
