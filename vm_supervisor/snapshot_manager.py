@@ -23,17 +23,25 @@ def run_threaded_snapshot(execution):
     job_thread.start()
 
 
-async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeSnapshot:
+async def do_execution_snapshot(
+    execution: VmExecution,
+) -> Optional[CompressedDiskVolumeSnapshot]:
     try:
-        logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
-        assert execution.vm, "VM execution not set"
+        # Only allow one snapshot operation at the same time
+        if not execution.snapshot_running:
+            logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
+            assert execution.vm, "VM execution not set"
 
-        snapshot = await execution.vm.create_snapshot()
+            execution.snapshot_running = True
+            snapshot = await execution.vm.create_snapshot()
+            execution.snapshot_running = False
 
-        logger.debug(
-            f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}"
-        )
-        return snapshot
+            logger.debug(
+                f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}"
+            )
+            return snapshot
+
+        return None
     except ValueError:
         raise ValueError("Something failed taking an snapshot")
 
