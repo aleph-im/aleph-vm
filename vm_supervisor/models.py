@@ -72,6 +72,7 @@ class VmExecution:
     update_task: Optional[asyncio.Task] = None
 
     persistent: bool = False
+    snapshot_running: bool = False
 
     @property
     def is_running(self):

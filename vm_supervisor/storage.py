@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import sys
-
 from datetime import datetime
 from pathlib import Path
 from shutil import copy2, disk_usage, make_archive

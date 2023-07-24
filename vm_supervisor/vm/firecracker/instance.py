@@ -175,8 +175,12 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         await compressed_snapshot.upload(self.vm_hash)
 
         if self.latest_snapshot:
-            if self.latest_snapshot.compressed:
-                await self.latest_snapshot.compressed.forget()
+            if (
+                self.latest_snapshot.compressed
+                and self.latest_snapshot.compressed.uploaded_item_hash
+            ):
+                forget_reason = f"In favor of recent snapshot for VM {self.vm_hash}"
+                await self.latest_snapshot.compressed.forget(forget_reason)
             self.latest_snapshot.delete()
 
         self.latest_snapshot = snapshot
