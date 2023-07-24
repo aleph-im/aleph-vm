@@ -102,7 +102,7 @@ class SnapshotManager:
         self, execution: VmExecution, frequency: Optional[int] = None
     ) -> None:
         if not execution.is_instance:
-            raise TypeError("VM execution should be an Instance only")
+            raise NotImplementedError("Snapshots are not implemented for programs.")
 
         if not frequency:
             frequency = settings.SNAPSHOT_FREQUENCY
@@ -118,10 +118,13 @@ class SnapshotManager:
         await snapshot_execution.start()
 
     async def stop_for(self, vm_hash: ItemHash) -> None:
-        if not self.executions[vm_hash]:
-            raise ValueError(f"Snapshot execution not running for VM {vm_hash}")
+        try:
+            snapshot_execution = self.executions.pop(vm_hash)
+        except KeyError:
+            logger.warning("Could not find snapshot task for instance %s", vm_hash)
+            return
 
-        await self.executions[vm_hash].stop()
+        await snapshot_execution.stop()
 
     async def stop_all(self) -> None:
         await asyncio.gather(
