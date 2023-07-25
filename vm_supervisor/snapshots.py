@@ -12,7 +12,12 @@ from .ipfs import (
     send_store_ipfs_message,
 )
 from .messages import try_get_store_messages_sdk
-from .storage import get_data_path, compress_volume_snapshot, create_volume_snapshot, decompress_volume_snapshot
+from .storage import (
+    compress_volume_snapshot,
+    create_volume_snapshot,
+    decompress_volume_snapshot,
+    get_data_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +115,5 @@ async def get_last_snapshot_by_ref(ref: str) -> Optional[DiskVolumeSnapshot]:
     compressed_snapshot = CompressedDiskVolumeSnapshot(
         compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
     )
-    snapshot = await compressed_snapshot.decompress(
-        SnapshotCompressionAlgorithm.gz
-    )
+    snapshot = await compressed_snapshot.decompress(SnapshotCompressionAlgorithm.gz)
     return snapshot
-

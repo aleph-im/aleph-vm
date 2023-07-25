@@ -1,11 +1,11 @@
 import asyncio
 import copy
-from typing import Tuple, List
+from typing import List, Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph.sdk.client import AlephClient
-from aleph_message.models import StoreMessage, ExecutableMessage, ItemHash, MessageType
+from aleph_message.models import ExecutableMessage, ItemHash, MessageType, StoreMessage
 
 from .storage import get_latest_amend, get_message
 
@@ -88,4 +88,3 @@ async def try_get_store_messages_sdk(ref: str) -> List[StoreMessage]:
             refs=ref,
         )
         return response.messages
-

@@ -21,9 +21,9 @@ from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.snapshots import (
     CompressedDiskVolumeSnapshot,
-    get_last_snapshot_by_ref,
     DiskVolume,
     DiskVolumeSnapshot,
+    get_last_snapshot_by_ref,
 )
 from vm_supervisor.storage import (
     NotEnoughDiskSpace,
