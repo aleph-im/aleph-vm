@@ -23,17 +23,25 @@ def run_threaded_snapshot(execution):
     job_thread.start()
 
 
-async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeSnapshot:
+async def do_execution_snapshot(
+    execution: VmExecution,
+) -> Optional[CompressedDiskVolumeSnapshot]:
     try:
-        logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
-        assert execution.vm, "VM execution not set"
+        # Only allow one snapshot operation at the same time
+        if not execution.snapshot_running:
+            logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
+            assert execution.vm, "VM execution not set"
 
-        snapshot = await execution.vm.create_snapshot()
+            execution.snapshot_running = True
+            snapshot = await execution.vm.create_snapshot()
+            execution.snapshot_running = False
 
-        logger.debug(
-            f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}"
-        )
-        return snapshot
+            logger.debug(
+                f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}"
+            )
+            return snapshot
+
+        return None
     except ValueError:
         raise ValueError("Something failed taking an snapshot")
 
@@ -102,7 +110,7 @@ class SnapshotManager:
         self, execution: VmExecution, frequency: Optional[int] = None
     ) -> None:
         if not execution.is_instance:
-            raise TypeError("VM execution should be an Instance only")
+            raise NotImplementedError("Snapshots are not implemented for programs.")
 
         if not frequency:
             frequency = settings.SNAPSHOT_FREQUENCY
@@ -118,10 +126,13 @@ class SnapshotManager:
         await snapshot_execution.start()
 
     async def stop_for(self, vm_hash: ItemHash) -> None:
-        if not self.executions[vm_hash]:
-            raise ValueError(f"Snapshot execution not running for VM {vm_hash}")
+        try:
+            snapshot_execution = self.executions.pop(vm_hash)
+        except KeyError:
+            logger.warning("Could not find snapshot task for instance %s", vm_hash)
+            return
 
-        await self.executions[vm_hash].stop()
+        await snapshot_execution.stop()
 
     async def stop_all(self) -> None:
         await asyncio.gather(

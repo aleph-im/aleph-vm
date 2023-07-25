@@ -181,8 +181,12 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         await compressed_snapshot.upload(self.vm_hash)
 
         if self.latest_snapshot:
-            if self.latest_snapshot.compressed:
-                await self.latest_snapshot.compressed.forget()
+            if (
+                self.latest_snapshot.compressed
+                and self.latest_snapshot.compressed.uploaded_item_hash
+            ):
+                forget_reason = f"In favor of recent snapshot for VM {self.vm_hash}"
+                await self.latest_snapshot.compressed.forget(forget_reason)
             self.latest_snapshot.delete()
 
         self.latest_snapshot = snapshot
@@ -220,21 +224,19 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         ipv6_gateway = self.get_vm_ipv6_gateway()
 
         network = {
-            "network": {
-                "ethernets": {
-                    "eth0": {
-                        "dhcp4": False,
-                        "dhcp6": False,
-                        "addresses": [ip, ipv6],
-                        "gateway4": route,
-                        "gateway6": ipv6_gateway,
-                        "nameservers": {
-                            "addresses": settings.DNS_NAMESERVERS,
-                        },
+            "ethernets": {
+                "eth0": {
+                    "dhcp4": False,
+                    "dhcp6": False,
+                    "addresses": [ip, ipv6],
+                    "gateway4": route,
+                    "gateway6": ipv6_gateway,
+                    "nameservers": {
+                        "addresses": settings.DNS_NAMESERVERS,
                     },
                 },
-                "version": 2,
             },
+            "version": 2,
         }
 
         return yaml.safe_dump(
