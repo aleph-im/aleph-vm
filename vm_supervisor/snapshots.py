@@ -16,7 +16,7 @@ from .storage import (
     compress_volume_snapshot,
     create_volume_snapshot,
     decompress_volume_snapshot,
-    get_data_path,
+    get_persistent_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ async def get_last_snapshot_by_ref(ref: str) -> Optional[DiskVolumeSnapshot]:
         return None
 
     message = messages.pop()
-    compressed_snapshot_path = await get_data_path(message.item_hash)
+    compressed_snapshot_path = await get_persistent_path(message.item_hash)
     compressed_snapshot = CompressedDiskVolumeSnapshot(
         compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
     )

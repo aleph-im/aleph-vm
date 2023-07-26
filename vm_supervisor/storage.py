@@ -188,6 +188,13 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
     return cache_path
 
 
+async def get_persistent_path(ref: str) -> Path:
+    cache_path = Path(settings.PERSISTENT_VOLUMES_DIR) / ref
+    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    await download_file(url, cache_path)
+    return cache_path
+
+
 async def create_ext4(path: Path, size_mib: int) -> bool:
     if path.is_file():
         logger.debug(f"File already exists, skipping ext4 creation on {path}")
