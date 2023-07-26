@@ -4,7 +4,7 @@ from typing import Optional
 
 from aleph_message.models import ItemHash
 
-from .conf import SnapshotCompressionAlgorithm
+from .conf import SnapshotCompressionAlgorithm, settings
 from .ipfs import (
     ipfs_remove_file,
     ipfs_upload_file,
@@ -105,15 +105,22 @@ class DiskVolume(DiskVolumeFile):
         return DiskVolumeSnapshot(snapshot)
 
 
-async def get_last_snapshot_by_ref(ref: str) -> Optional[DiskVolumeSnapshot]:
+async def get_last_snapshot_by_ref(ref: str, namespace: str) -> Optional[DiskVolumeSnapshot]:
     messages = await try_get_store_messages_sdk(ref)
     if len(messages) == 0:
         return None
 
-    message = messages.pop()
-    compressed_snapshot_path = await get_persistent_path(message.item_hash)
-    compressed_snapshot = CompressedDiskVolumeSnapshot(
-        compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
-    )
-    snapshot = await compressed_snapshot.decompress(SnapshotCompressionAlgorithm.gz)
+    message = messages[0]
+    logger.debug(f"Last snapshot message found: {message}")
+    snapshot_path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / message.item_hash
+    if not snapshot_path.is_file():
+        compressed_snapshot_path = Path(f"{snapshot_path}.gz")
+        downloaded_snapshot_path = await get_persistent_path(message.item_hash)
+        downloaded_snapshot_path.rename(compressed_snapshot_path)
+        compressed_snapshot = CompressedDiskVolumeSnapshot(
+            compressed_snapshot_path, SnapshotCompressionAlgorithm.gz
+        )
+        snapshot = await compressed_snapshot.decompress(SnapshotCompressionAlgorithm.gz)
+    else:
+        snapshot = DiskVolumeSnapshot(snapshot_path)
     return snapshot

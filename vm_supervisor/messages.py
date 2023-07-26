@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 from typing import List, Tuple
 
 from aiohttp import ClientConnectorError, ClientResponseError
@@ -8,6 +9,8 @@ from aleph.sdk.client import AlephClient
 from aleph_message.models import ExecutableMessage, ItemHash, MessageType, StoreMessage
 
 from .storage import get_latest_amend, get_message
+
+logger = logging.getLogger(__name__)
 
 
 async def try_get_message(ref: str) -> ExecutableMessage:
@@ -85,6 +88,6 @@ async def try_get_store_messages_sdk(ref: str) -> List[StoreMessage]:
     async with AlephClient(api_server="https://official.aleph.cloud") as client:
         response = await client.get_messages(
             message_type=MessageType.store,
-            refs=ref,
+            refs=[ref],
         )
         return response.messages

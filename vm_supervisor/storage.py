@@ -11,6 +11,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from shutil import copy2, disk_usage, make_archive
+from subprocess import CalledProcessError
 from typing import Optional, Union
 
 import aiohttp
@@ -252,7 +253,13 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
 async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> None:
     # This tune is needed to assign a random fsid to BTRFS device to be able to mount it
     await run_in_subprocess(["btrfstune", "-m", str(device_path)])
-    await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+    try:
+        await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+    except CalledProcessError:
+        # Sometime BTRFS don't unmount well, for this cases, try to rescue it cleaning disk logs and mount it again
+        await run_in_subprocess(["btrfs", "rescue", "zero-log", str(device_path)])
+        await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
     await run_in_subprocess(["umount", str(mount_path)])
 
