@@ -81,7 +81,7 @@ class MicroVM:
     drives: List[Drive]
     init_timeout: float
     mounted_rootfs: Optional[Path] = None
-    _unix_socket: Server
+    _unix_socket: Optional[Server] = None
 
     @property
     def namespace_path(self):
