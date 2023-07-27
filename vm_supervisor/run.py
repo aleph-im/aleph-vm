@@ -16,6 +16,7 @@ from .messages import load_updated_message
 from .models import VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
+from .utils import HostNotFoundError
 from .vm.firecracker.program import (
     FileTooLargeError,
     ResourceDownloadError,
@@ -75,6 +76,12 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during runtime initialisation")
+    except HostNotFoundError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(
+            reason="Error during vm initialisation, vm ping without response"
+        )
 
     if not execution.vm:
         raise ValueError("The VM has not been created")
