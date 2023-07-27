@@ -23,6 +23,7 @@ from vm_supervisor.snapshots import (
     CompressedDiskVolumeSnapshot,
     DiskVolume,
     DiskVolumeSnapshot,
+    get_last_snapshot_by_ref,
 )
 from vm_supervisor.storage import (
     NotEnoughDiskSpace,
@@ -44,8 +45,15 @@ logger = logging.getLogger(__name__)
 
 class AlephInstanceResources(AlephFirecrackerResources):
     async def download_runtime(self):
+        ref = f"snapshot_{self.namespace}"
+        snapshot_path = None
+        snapshot = await get_last_snapshot_by_ref(ref, self.namespace)
+        if snapshot:
+            logger.debug(f"Snapshot found on path {snapshot.path}")
+            snapshot_path = snapshot.path
+
         self.rootfs_path = await create_devmapper(
-            self.message_content.rootfs, self.namespace
+            self.message_content.rootfs, self.namespace, snapshot_path
         )
         assert (
             self.rootfs_path.is_block_device()

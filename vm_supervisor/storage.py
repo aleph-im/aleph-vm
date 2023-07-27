@@ -11,7 +11,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from shutil import copy2, disk_usage, make_archive
-from typing import Union
+from subprocess import CalledProcessError
+from typing import Optional, Union
 
 import aiohttp
 from aleph_message.models import (
@@ -188,6 +189,13 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
     return cache_path
 
 
+async def get_persistent_path(ref: str) -> Path:
+    cache_path = Path(settings.PERSISTENT_VOLUMES_DIR) / ref
+    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    await download_file(url, cache_path)
+    return cache_path
+
+
 async def create_ext4(path: Path, size_mib: int) -> bool:
     if path.is_file():
         logger.debug(f"File already exists, skipping ext4 creation on {path}")
@@ -245,13 +253,21 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
 async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> None:
     # This tune is needed to assign a random fsid to BTRFS device to be able to mount it
     await run_in_subprocess(["btrfstune", "-m", str(device_path)])
-    await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+    try:
+        await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+    except CalledProcessError:
+        # Sometime BTRFS don't unmount well, for this cases, try to rescue it cleaning disk logs and mount it again
+        await run_in_subprocess(["btrfs", "rescue", "zero-log", str(device_path)])
+        await run_in_subprocess(["mount", str(device_path), str(mount_path)])
+
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
     await run_in_subprocess(["umount", str(mount_path)])
 
 
 async def create_devmapper(
-    volume: Union[PersistentVolume, RootfsVolume], namespace: str
+    volume: Union[PersistentVolume, RootfsVolume],
+    namespace: str,
+    snapshot_path: Optional[Path] = None,
 ) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2
@@ -277,7 +293,10 @@ async def create_devmapper(
         base_table_command = f"0 {image_block_size} linear {image_loop_device} 0"
         await create_mapped_device(image_volume_name, base_table_command)
 
-    volume_path = await create_volume_file(volume, namespace)
+    if snapshot_path:
+        volume_path = snapshot_path
+    else:
+        volume_path = await create_volume_file(volume, namespace)
     extended_block_size: int = await get_block_size(volume_path)
 
     mapped_volume_name_base = f"{namespace}_base"
@@ -361,6 +380,26 @@ async def compress_volume_snapshot(
     await run_in_subprocess(
         [
             "gzip",
+            str(path),
+        ]
+    )
+
+    return new_path
+
+
+async def decompress_volume_snapshot(
+    path: Path,
+    algorithm: SnapshotCompressionAlgorithm = SnapshotCompressionAlgorithm.gz,
+) -> Path:
+    if algorithm != SnapshotCompressionAlgorithm.gz:
+        raise NotImplementedError
+
+    new_path = Path(str(path).split(".gz")[0])
+
+    await run_in_subprocess(
+        [
+            "gzip",
+            "-d",
             str(path),
         ]
     )

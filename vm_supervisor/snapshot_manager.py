@@ -43,6 +43,7 @@ async def do_execution_snapshot(
 
         return None
     except ValueError:
+        execution.snapshot_running = False
         raise ValueError("Something failed taking an snapshot")
 
 
