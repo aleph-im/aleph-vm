@@ -5,6 +5,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     git \
     curl \
     sudo \
+    libssl-dev build-essential automake pkg-config libtool libffi-dev libgmp-dev libyaml-cpp-dev \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
