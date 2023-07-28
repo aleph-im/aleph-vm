@@ -194,9 +194,7 @@ async def create_ext4(path: Path, size_mib: int) -> bool:
         logger.debug(f"File already exists, skipping ext4 creation on {path}")
         return False
     tmp_path = f"{path}.tmp"
-    await run_in_subprocess(
-        ["dd", "if=/dev/zero", f"of={tmp_path}", "bs=1M", f"count={size_mib}"]
-    )
+    await run_in_subprocess(["fallocate", "-l", f"{size_mib}M", str(tmp_path)])
     await run_in_subprocess(["mkfs.ext4", tmp_path])
     await chown_to_jailman(Path(tmp_path))
     Path(tmp_path).rename(path)
@@ -214,9 +212,7 @@ async def create_volume_file(
         # Ensure that the parent directory exists
         path.parent.mkdir(exist_ok=True)
         # Create an empty file the right size
-        await run_in_subprocess(
-            ["dd", "if=/dev/zero", f"of={path}", "bs=1M", f"count={volume.size_mib}"]
-        )
+        await run_in_subprocess(["fallocate", "-l", f"{volume.size_mib}M", str(path)])
         await chown_to_jailman(path)
     return path
 
