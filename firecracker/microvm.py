@@ -467,7 +467,7 @@ class MicroVM:
             await asyncio.sleep(1)
             root_fs = self.mounted_rootfs.name
             system(f"dmsetup remove {root_fs}")
-            if self.use_jailer:
+            if self.use_jailer and Path(self.jailer_path).is_dir():
                 shutil.rmtree(self.jailer_path)
 
         if self._unix_socket:
