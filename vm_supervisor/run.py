@@ -49,7 +49,6 @@ async def build_event_scope(event) -> Dict[str, Any]:
 
 
 async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
-    execution: Optional[VmExecution] = None
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
@@ -81,7 +80,7 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
 
-    if not execution or execution.vm:
+    if not execution.vm:
         raise ValueError("The VM has not been created")
 
     return execution
@@ -252,8 +251,9 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash)
-        # If the VM was already running in lambda mode, it should not expire
-        # as long as it is also scheduled as long-running
+
+    # If the VM was already running in lambda mode, it should not expire
+    # as long as it is also scheduled as long-running
     execution.persistent = True
     execution.cancel_expiration()
 
