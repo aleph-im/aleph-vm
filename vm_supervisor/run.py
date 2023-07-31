@@ -49,6 +49,7 @@ async def build_event_scope(event) -> Dict[str, Any]:
 
 
 async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
+    execution: Optional[VmExecution] = None
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
@@ -79,11 +80,8 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
     except HostNotFoundError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(
-            reason="Error during vm initialisation, vm ping without response"
-        )
 
-    if not execution.vm:
+    if not execution or execution.vm:
         raise ValueError("The VM has not been created")
 
     return execution
@@ -248,21 +246,28 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
+async def start_persistent_vm(
+    vm_hash: ItemHash, pubsub: PubSub
+) -> Optional[VmExecution]:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
-    if not execution:
-        logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(vm_hash=vm_hash)
-    # If the VM was already running in lambda mode, it should not expire
-    # as long as it is also scheduled as long-running
-    execution.persistent = True
-    execution.cancel_expiration()
+    try:
+        if not execution:
+            logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
+            execution = await create_vm_execution(vm_hash=vm_hash)
+        # If the VM was already running in lambda mode, it should not expire
+        # as long as it is also scheduled as long-running
+        execution.persistent = True
+        execution.cancel_expiration()
 
-    await execution.becomes_ready()
+        await execution.becomes_ready()
 
-    if settings.WATCH_FOR_UPDATES:
-        execution.start_watching_for_updates(pubsub=pubsub)
+        if settings.WATCH_FOR_UPDATES:
+            execution.start_watching_for_updates(pubsub=pubsub)
+
+    # TODO: Handle all the exceptions, for now Always return a 200 code for now
+    except:
+        pass
 
     return execution
 
@@ -270,6 +275,12 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
 async def stop_persistent_vm(vm_hash: ItemHash) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
-    if execution:
-        await execution.stop()
+
+    try:
+        if execution:
+            await execution.stop()
+    # TODO: Handle all the exceptions, for now Always return a 200 code for now
+    except:
+        pass
+
     return execution
