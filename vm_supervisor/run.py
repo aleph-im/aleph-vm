@@ -246,28 +246,21 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
             await execution.stop()
 
 
-async def start_persistent_vm(
-    vm_hash: ItemHash, pubsub: PubSub
-) -> Optional[VmExecution]:
+async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
-    try:
-        if not execution:
-            logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            execution = await create_vm_execution(vm_hash=vm_hash)
+    if not execution:
+        logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
+        execution = await create_vm_execution(vm_hash=vm_hash)
         # If the VM was already running in lambda mode, it should not expire
         # as long as it is also scheduled as long-running
-        execution.persistent = True
-        execution.cancel_expiration()
+    execution.persistent = True
+    execution.cancel_expiration()
 
-        await execution.becomes_ready()
+    await execution.becomes_ready()
 
-        if settings.WATCH_FOR_UPDATES:
-            execution.start_watching_for_updates(pubsub=pubsub)
-
-    # TODO: Handle all the exceptions, for now Always return a 200 code for now
-    except:
-        pass
+    if settings.WATCH_FOR_UPDATES:
+        execution.start_watching_for_updates(pubsub=pubsub)
 
     return execution
 
@@ -276,11 +269,7 @@ async def stop_persistent_vm(vm_hash: ItemHash) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
 
-    try:
-        if execution:
-            await execution.stop()
-    # TODO: Handle all the exceptions, for now Always return a 200 code for now
-    except:
-        pass
+    if execution:
+        await execution.stop()
 
     return execution
