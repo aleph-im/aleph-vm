@@ -489,6 +489,9 @@ def setup_system(config: ConfigurationPayload):
     hostname = base64.b32encode(item_hash_binary).decode().strip("=").lower()
     setup_hostname(hostname)
 
+    # Allows the VM to know its own hash to retrieve its PROGRAM message
+    config.variables["VM_HASH"] = config.vm_hash
+
     setup_variables(config.variables)
     setup_volumes(config.volumes)
     setup_network(
