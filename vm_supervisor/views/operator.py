@@ -164,7 +164,9 @@ async def stream_logs(request: web.Request):
 
 @require_jwk_authentication
 async def operate_expire(request: web.Request):
-    """Stop the virtual machine, smoothly if possible."""
+    """Stop the virtual machine, smoothly if possible.
+
+    A timeout may be specified to delay the action."""
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
     timeout = float(ItemHash(request.match_info["timeout"]))
