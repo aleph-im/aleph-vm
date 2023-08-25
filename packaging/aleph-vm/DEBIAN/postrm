@@ -5,4 +5,9 @@ rm -fr /srv/jailer  # Upgrade from < 0.1.11
 rm -fr /tmp/aleph/  # Upgrade from < 0.1.11
 rm -r /var/lib/aleph/vm/jailer
 
+if [ "$1" = "purge" ]; then
+    # Remove the directory when the package is purged
+    rm -rf /var/lib/ipfs
+fi
+
 systemctl daemon-reload
