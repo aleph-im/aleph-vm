@@ -30,7 +30,6 @@ class MicroVMFailedInit(Exception):
 
 # extend the json.JSONEncoder class to support bytes
 class JSONBytesEncoder(json.JSONEncoder):
-
     # overload method default
     def default(self, obj):
         # Match all the types you want to handle in your converter
@@ -77,7 +76,7 @@ class MicroVM:
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
-    log_queues: List
+    log_queues: List[asyncio.Queue]
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
@@ -160,7 +159,6 @@ class MicroVM:
     async def start_firecracker(
         self, config: FirecrackerConfig
     ) -> asyncio.subprocess.Process:
-
         if os.path.exists(VSOCK_PATH):
             os.remove(VSOCK_PATH)
         if os.path.exists(self.socket_path):

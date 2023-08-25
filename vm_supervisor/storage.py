@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
 
 
-class NotEnoughDiskSpace(Exception):
+class NotEnoughDiskSpace(OSError):
     pass
 
 
