@@ -1,6 +1,8 @@
 #!/bin/bash
 set -uf -o pipefail
 
+# Documentation: https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
+
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
   # Stop the service during an upgrade.
@@ -9,3 +11,7 @@ if ! [[ -v container ]]; then
 fi
 
 set -e
+
+# We will not delete this user on uninstall since there may be files owned by that user in /var/lib/ipfs
+addgroup --system ipfs
+adduser --system --ingroup ipfs ipfs
