@@ -98,18 +98,11 @@ async def ip_address():
 
 @app.get("/ip/4")
 async def connect_ipv4():
-    """Connect to the Quad9 VPN provider using their IPv4 address.
-    The webserver on that address returns a 404 error, so we accept that response code.
-    """
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(), timeout=timeout
-    ) as session:
-        async with session.get("https://9.9.9.9") as resp:
-            # We expect this endpoint to return a 404 error
-            if resp.status != 404:
-                resp.raise_for_status()
-            return {"result": True, "headers": resp.headers}
+    """Connect to the Quad9 VPN provider using their IPv4 address."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(("9.9.9.9", 53))
+    return {"result": True}
 
 
 @app.get("/ip/6")
