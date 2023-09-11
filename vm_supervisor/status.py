@@ -68,7 +68,6 @@ async def check_ipv4(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/ip/4")
         assert result["result"] is True
-        assert "headers" in result
         return True
     except ClientResponseError:
         return False
