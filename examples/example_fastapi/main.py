@@ -25,7 +25,11 @@ from aleph.sdk.vm.cache import VmCache
 logger.debug("import fastapi")
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
-from utilitybelt import dev_urandom_entropy
+
+from pathlib import Path
+logger.debug("%s", str([f for f in Path("/opt/packages").glob('**/*') if f.is_file()]))
+
+# from utilitybelt import dev_urandom_entropy
 logger.debug("imports done")
 
 http_app = FastAPI()
