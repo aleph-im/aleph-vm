@@ -52,13 +52,6 @@ ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 EOT
 
-
-# Generate SSH host keys
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
-
 cat <<EOT > ./rootfs/etc/inittab
 # /etc/inittab
 
