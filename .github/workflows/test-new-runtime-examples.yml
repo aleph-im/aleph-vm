@@ -3,8 +3,8 @@ on:
   push
 
 jobs:
-  run_debian_11:
-    name: "Test new runtime on Droplet with Debian 11"
+  run_debian_12:
+    name: "Test new runtime on Droplet with Debian 12"
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm-runtime
 
@@ -35,7 +35,7 @@ jobs:
       - name: Create the Droplet
         run: |
           doctl compute droplet create \
-          --image debian-11-x64 \
+          --image debian-12-x64 \
           --size c-2 \
           --region fra1 \
           --vpc-uuid 992896c8-c089-4da3-9288-f81e28c095a4 \
@@ -47,16 +47,16 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y debootstrap
-          cd runtimes/aleph-debian-11-python && sudo ./create_disk_image.sh && cd ../..
+          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
 
       - uses: actions/upload-artifact@v3
         with:
-          name: aleph-debian-11-python.squashfs
-          path: runtimes/aleph-debian-11-python/rootfs.squashfs
+          name: aleph-debian-12-python.squashfs
+          path: runtimes/aleph-debian-12-python/rootfs.squashfs
 
       - name: Build Debian Package
         run: |
-          cd packaging && make all-podman-debian-11 && cd ..
+          cd packaging && make all-podman-debian-12 && cd ..
           ls packaging/target
 
       - name: Wait for the system to setup and boot
@@ -68,7 +68,7 @@ jobs:
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-runtime --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
-          scp runtimes/aleph-debian-11-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt
+          scp runtimes/aleph-debian-12-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt
 
       - name: Install Aleph-VM on the Droplet
         run: |
@@ -80,9 +80,9 @@ jobs:
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
           
-          scp packaging/target/aleph-vm.debian-11.deb root@${DROPLET_IPV4}:/opt
+          scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
           scp -pr ./examples root@${DROPLET_IPV4}:/opt/
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt -o DPkg::Lock::Timeout=60 install -y /opt/aleph-vm.debian-11.deb"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt -o DPkg::Lock::Timeout=60 install -y /opt/aleph-vm.debian-12.deb"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_FAKE_DATA_PROGRAM=/opt/examples/example_fastapi >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_FAKE_DATA_RUNTIME=/opt/rootfs.squashfs >> /etc/aleph-vm/supervisor.env"
