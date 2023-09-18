@@ -25,7 +25,7 @@ jobs:
           sudo chown $(whoami) /opt/packages
 
       - run: |
-          pip3 install aleph-client
+          pip3 install aleph-sdk-python
 
       - run: |
           ls -la
