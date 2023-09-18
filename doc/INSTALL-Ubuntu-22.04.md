@@ -120,9 +120,6 @@ sudo cat >/etc/caddy/Caddyfile <<EOL
     }
 }
 vm.example.org:443 {
-    tls {
-        on_demand
-    }
     reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}
