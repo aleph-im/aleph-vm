@@ -64,7 +64,8 @@ ALEPH_VM_DNS_RESOLUTION=resolvectl
 
 > 💡 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
 
-On some systems, the default network interface is not `eth0` and you will want to configure the default interface
+The default network interface is detected automatically from the IP routes. 
+On some systems, this is not the desired configuration and you will want to configure the default interface
 by adding:
 ```
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
