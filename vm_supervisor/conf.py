@@ -69,6 +69,16 @@ def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
             yield server
 
 
+def get_default_interface() -> Optional[str]:
+    """Returns the default network interface"""
+    with open("/proc/net/route", "r") as f:
+        for line in f.readlines():
+            parts = line.strip().split()
+            if parts[1] == "00000000":  # Indicates default route
+                return parts[0]
+    return None
+
+
 class Settings(BaseSettings):
     SUPERVISOR_HOST = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
@@ -93,7 +103,7 @@ class Settings(BaseSettings):
 
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
-    NETWORK_INTERFACE = "eth0"
+    NETWORK_INTERFACE: Optional[str] = None
     IPV4_ADDRESS_POOL = Field(
         default="172.16.0.0/12",
         description="IPv4 address range used to provide networks to VMs.",
@@ -236,6 +246,7 @@ class Settings(BaseSettings):
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
+        assert self.NETWORK_INTERFACE, f"Network interface is not specified"
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
@@ -270,6 +281,9 @@ class Settings(BaseSettings):
         os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
+
+        if not self.NETWORK_INTERFACE:
+            self.NETWORK_INTERFACE = get_default_interface()
 
         if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
             if self.DNS_RESOLUTION == DnsResolver.resolv_conf:

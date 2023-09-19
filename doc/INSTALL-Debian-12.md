@@ -56,7 +56,8 @@ ALEPH_VM_DOMAIN_NAME=vm.example.org
 
 #### Network configuration
 
-On some systems, the default network interface is not `eth0` and you will want to configure the default interface
+The default network interface is detected automatically from the IP routes. 
+On some systems, this is not the desired configuration and you will want to configure the default interface
 by adding:
 ```
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
