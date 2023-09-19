@@ -5,7 +5,7 @@ import re
 from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
-from subprocess import check_output
+from subprocess import CalledProcessError, check_output
 from typing import Any, Dict, Iterable, List, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
@@ -19,6 +19,7 @@ ALLOW_DEVELOPER_SSH_KEYS = object()
 
 
 class DnsResolver(str, Enum):
+    detect = "detect"  # Detect the resolver used by the system
     resolv_conf = "resolv.conf"  # Simply copy from /etc/resolv.conf
     resolvectl = "resolvectl"  # Systemd-resolved, common on Ubuntu
 
@@ -79,6 +80,30 @@ def get_default_interface() -> Optional[str]:
     return None
 
 
+def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> List[str]:
+    # The match syntax is not yet available as of Python 3.9
+    # match dns_resolver:
+    if dns_resolver == DnsResolver.detect:
+        # Use a try-except approach since resolvectl can be present but disabled and raise the following
+        # "Failed to get global data: Unit dbus-org.freedesktop.resolve1.service not found."
+        try:
+            return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+        except (FileNotFoundError, CalledProcessError):
+            if Path("/etc/resolv.conf").exists():
+                return list(etc_resolv_conf_dns_servers())
+            else:
+                raise FileNotFoundError("No DNS resolver found")
+
+    elif dns_resolver == DnsResolver.resolv_conf:
+        return list(etc_resolv_conf_dns_servers())
+
+    elif dns_resolver == DnsResolver.resolvectl:
+        return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+
+    else:
+        assert "No DNS resolve defined, this should never happen."
+
+
 class Settings(BaseSettings):
     SUPERVISOR_HOST = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
@@ -134,7 +159,7 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
+    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.detect
     DNS_NAMESERVERS: Optional[List[str]] = None
 
     FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
@@ -286,15 +311,10 @@ class Settings(BaseSettings):
             self.NETWORK_INTERFACE = get_default_interface()
 
         if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
-            if self.DNS_RESOLUTION == DnsResolver.resolv_conf:
-                self.DNS_NAMESERVERS = list(etc_resolv_conf_dns_servers())
-
-            elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
-                self.DNS_NAMESERVERS = list(
-                    resolvectl_dns_servers_ipv4(interface=self.NETWORK_INTERFACE)
-                )
-            else:
-                assert "This should never happen"
+            self.DNS_NAMESERVERS = obtain_dns_ips(
+                dns_resolver=self.DNS_RESOLUTION,
+                network_interface=self.NETWORK_INTERFACE,
+            )
 
     def display(self) -> str:
         attributes: Dict[str, Any] = {}
