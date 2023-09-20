@@ -24,7 +24,7 @@ from enum import Enum
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Any, AsyncIterable, Dict, List, NewType, Optional, Tuple, Union
+from typing import Any, AsyncIterable, Dict, List, NewType, Optional, Tuple, Union, cast
 
 import aiohttp
 import msgpack
@@ -62,9 +62,9 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: bytes = None
-    encoding: Encoding = None
-    entrypoint: str = None
+    code: bytes
+    encoding: Encoding
+    entrypoint: str
     ip: Optional[str] = None
     ipv6: Optional[str] = None
     route: Optional[str] = None
@@ -225,7 +225,7 @@ def setup_code_asgi(
         app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
-    return app
+    return ASGIApplication(app)
 
 
 def setup_code_executable(
@@ -261,9 +261,9 @@ def setup_code_executable(
 
 
 def setup_code(
-    code: Optional[bytes],
-    encoding: Optional[Encoding],
-    entrypoint: Optional[str],
+    code: bytes,
+    encoding: Encoding,
+    entrypoint: str,
     interface: Interface,
 ) -> Union[ASGIApplication, subprocess.Popen]:
     if interface == Interface.asgi:
@@ -284,7 +284,7 @@ async def run_python_code_http(
         # Execute in the same process, saves ~20ms than a subprocess
 
         # The body should not be part of the ASGI scope itself
-        body: bytes = scope.pop("body")
+        request_body: bytes = scope.pop("body")
 
         async def receive():
             type_ = (
@@ -292,7 +292,7 @@ async def run_python_code_http(
                 if scope["type"] in ("http", "websocket")
                 else "aleph.message"
             )
-            return {"type": type_, "body": body, "more_body": False}
+            return {"type": type_, "body": request_body, "more_body": False}
 
         send_queue: asyncio.Queue = asyncio.Queue()
 
@@ -311,13 +311,13 @@ async def run_python_code_http(
             headers = {}
 
         logger.debug("Waiting for body")
-        body: Dict = await send_queue.get()
+        response_body: Dict = await send_queue.get()
 
         logger.debug("Waiting for buffer")
         output = buf.getvalue()
 
         logger.debug(f"Headers {headers}")
-        logger.debug(f"Body {body}")
+        logger.debug(f"Body {response_body}")
         logger.debug(f"Output {output}")
 
     logger.debug("Getting output data")
@@ -330,7 +330,7 @@ async def run_python_code_http(
         output_data = b""
 
     logger.debug("Returning result")
-    return headers, body, output, output_data
+    return headers, response_body, output, output_data
 
 
 async def make_request(session, scope):
@@ -429,6 +429,7 @@ async def process_instruction(
             output_data: Optional[bytes]
 
             if interface == Interface.asgi:
+                application = cast(ASGIApplication, application)
                 headers, body, output, output_data = await run_python_code_http(
                     application=application, scope=payload.scope
                 )
