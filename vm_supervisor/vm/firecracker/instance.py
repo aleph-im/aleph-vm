@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
@@ -236,9 +237,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _create_metadata_file(self) -> bytes:
         """Creates metadata configuration file for cloud-init tool"""
 
+        hostname = base64.b32encode(self.vm_hash).decode().strip("=").lower()
+
         metadata = {
             "instance-id": f"iid-instance-{self.vm_id}",
-            "local-hostname": str(self.vm_hash),
+            "local-hostname": hostname,
         }
 
         return json.dumps(metadata).encode()
