@@ -32,7 +32,7 @@ import msgpack
 logger.debug("Imports finished")
 
 __version__ = "2.0.0"
-ASGIApplication = NewType("ASGIApplication", Any)
+ASGIApplication = NewType("ASGIApplication", Any)  # type: ignore
 
 
 class Encoding(str, Enum):
