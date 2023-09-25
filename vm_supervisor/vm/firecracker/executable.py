@@ -9,16 +9,10 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Dict, Generic, List, Optional, TypeVar
 
-from aleph_message.models import ItemHash
-
-psutil: Optional[Any]
-try:
-    import psutil  # type: ignore [no-redef]
-except ImportError:
-    psutil = None
 from aiohttp import ClientResponseError
+from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from firecracker.config import FirecrackerConfig
@@ -30,6 +24,11 @@ from vm_supervisor.network.firewall import teardown_nftables_for_vm
 from vm_supervisor.network.interfaces import TapInterface
 from vm_supervisor.snapshots import CompressedDiskVolumeSnapshot
 from vm_supervisor.storage import get_volume_path
+
+try:
+    import psutil  # type: ignore [no-redef]
+except ImportError:
+    psutil = None
 
 logger = logging.getLogger(__name__)
 set_start_method("spawn")

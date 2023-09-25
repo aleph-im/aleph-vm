@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import logging
 from datetime import datetime, timedelta
@@ -17,9 +18,6 @@ from ..models import VmExecution
 from ..run import pool
 
 logger = logging.getLogger(__name__)
-
-
-import functools
 
 
 def is_token_still_valid(timestamp):
@@ -199,7 +197,7 @@ async def operate_stop(request: web.Request):
         execution.persistent = False
         return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
     else:
-        return web.Response(status=200, body=f"Already stopped, nothing to do")
+        return web.Response(status=200, body="Already stopped, nothing to do")
 
 
 @require_jwk_authentication
