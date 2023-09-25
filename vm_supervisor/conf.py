@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
+    IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
