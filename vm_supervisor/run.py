@@ -79,11 +79,35 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
     except HostNotFoundError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Host did not respond to ping")
 
     if not execution.vm:
         raise ValueError("The VM has not been created")
 
     return execution
+
+
+async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash) -> VmExecution:
+    try:
+        return await create_vm_execution(vm_hash=vm_hash)
+    except ResourceDownloadError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPBadRequest(reason="Code, runtime or data not available")
+    except FileTooLargeError as error:
+        raise HTTPInternalServerError(reason=error.args[0])
+    except VmSetupError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Error during vm initialisation")
+    except MicroVMFailedInit as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Error during runtime initialisation")
+    except HostNotFoundError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Host did not respond to ping")
 
 
 async def run_code_on_request(
@@ -96,7 +120,7 @@ async def run_code_on_request(
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -190,7 +214,7 @@ async def run_code_on_request(
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
 
@@ -203,7 +227,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
 
     logger.debug(f"Using vm={execution.vm_id}")
 

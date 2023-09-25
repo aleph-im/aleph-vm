@@ -3,15 +3,17 @@ import logging
 from hashlib import sha256
 from pathlib import Path
 from string import Template
-from typing import Awaitable, Optional
+from typing import Awaitable, Dict, Optional
 
 import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from pydantic import ValidationError
 
+from firecracker.microvm import MicroVMFailedInit
 from packaging.version import InvalidVersion, Version
 from vm_supervisor import status
 from vm_supervisor.conf import settings
@@ -19,8 +21,15 @@ from vm_supervisor.metrics import get_execution_records
 from vm_supervisor.pubsub import PubSub
 from vm_supervisor.resources import Allocation
 from vm_supervisor.run import pool, run_code_on_request, start_persistent_vm
-from vm_supervisor.utils import b32_to_b16, dumps_for_json, get_ref_from_dns
+from vm_supervisor.utils import (
+    HostNotFoundError,
+    b32_to_b16,
+    dumps_for_json,
+    get_ref_from_dns,
+)
 from vm_supervisor.version import __version__
+from vm_supervisor.vm.firecracker.executable import ResourceDownloadError, VmSetupError
+from vm_supervisor.vm.firecracker.program import FileTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -201,20 +210,7 @@ async def update_allocations(request: web.Request):
 
     pubsub: PubSub = request.app["pubsub"]
 
-    # Start VMs
-    for vm_hash in allocation.persistent_vms:
-        vm_hash = ItemHash(vm_hash)
-        logger.info(f"Starting long running VM {vm_hash}")
-        await start_persistent_vm(vm_hash, pubsub)
-
-    # Start Instances
-    for instance_hash in allocation.instances:
-        instance_hash = ItemHash(instance_hash)
-        logger.info(f"Starting instance {instance_hash}")
-        await start_persistent_vm(instance_hash, pubsub)
-
-    # Stop unscheduled persistent programs and instances.
-    # Instances are also marked with persistent = True.
+    # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
     for execution in pool.get_persistent_executions():
         if execution.vm_hash not in allocations:
@@ -223,10 +219,65 @@ async def update_allocations(request: web.Request):
             await execution.stop()
             execution.persistent = False
 
+    # Second start persistent VMs and instances sequentially to limit resource usage.
+
+    # Exceptions that can be raised when starting a VM:
+    vm_creation_exceptions = (
+        UnknownHashError,
+        ResourceDownloadError,
+        FileTooLargeError,
+        VmSetupError,
+        MicroVMFailedInit,
+        HostNotFoundError,
+    )
+
+    scheduling_errors: Dict[ItemHash, Exception] = {}
+
+    # Schedule the start of persistent VMs:
+    for vm_hash in allocation.persistent_vms:
+        try:
+            logger.info(f"Starting long running VM '{vm_hash}'")
+            vm_hash = ItemHash(vm_hash)
+            await start_persistent_vm(vm_hash, pubsub)
+        except vm_creation_exceptions as error:
+            logger.exception(error)
+            scheduling_errors[vm_hash] = error
+
+    # Schedule the start of instances:
+    for instance_hash in allocation.instances:
+        logger.info(f"Starting instance '{instance_hash}'")
+        try:
+            instance_hash = ItemHash(instance_hash)
+            await start_persistent_vm(instance_hash, pubsub)
+        except vm_creation_exceptions as error:
+            logger.exception(error)
+            scheduling_errors[instance_hash] = error
+
     # Log unsupported features
     if allocation.on_demand_vms:
         logger.warning("Not supported yet: 'allocation.on_demand_vms'")
     if allocation.jobs:
         logger.warning("Not supported yet: 'allocation.on_demand_vms'")
 
-    return web.json_response(data={"success": True})
+    failing = set(scheduling_errors.keys())
+    successful = allocations - failing
+
+    status_code: int
+    if not failing:
+        status_code = 200  # OK
+    elif not successful:
+        status_code = 503  # Service Unavailable
+    else:
+        status_code = 207  # Multi-Status
+
+    return web.json_response(
+        data={
+            "success": not failing,
+            "successful": list(successful),
+            "failing": list(failing),
+            "errors": {
+                vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()
+            },
+        },
+        status=status_code,
+    )
