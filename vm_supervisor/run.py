@@ -131,7 +131,21 @@ async def run_code_on_request(
         logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
 
         if "traceback" in result:
-            logger.warning(result["traceback"])
+            # An error took place, the stacktrace of the error will be returned.
+            # TODO: Add an option for VM developers to prevent stacktraces from being exposed.
+
+            # The Diagnostics VM checks for the proper handling of exceptions.
+            # This fills the logs with noisy stack traces, so we ignore this specific error.
+            ignored_error = 'raise CustomError("Whoops")'
+
+            if (
+                settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS
+                and ignored_error in result["traceback"]
+            ):
+                logger.debug('Ignored traceback from CustomError("Whoops")')
+            else:
+                logger.warning(result["traceback"])
+
             return web.Response(
                 status=500,
                 reason="Error in VM execution",
