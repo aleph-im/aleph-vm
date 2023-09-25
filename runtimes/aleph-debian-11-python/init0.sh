@@ -5,7 +5,7 @@ set -euf
 mount -t proc proc /proc -o nosuid,noexec,nodev
 
 log() {
-    echo "$(cat /proc/uptime | awk '{printf $1}')" '|S' "$@"
+    echo "$(awk '{print $1}' /proc/uptime)" '|S' "$@"
 }
 log "init0.sh is launching"
 

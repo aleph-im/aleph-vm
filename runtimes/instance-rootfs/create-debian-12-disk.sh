@@ -35,7 +35,7 @@ tar xvf "$IMAGE_NAME"
 
 # Mount first partition of Debian Image
 LOOPDISK=$(losetup --find --show $IMAGE_RAW_NAME)
-partx -u $LOOPDISK
+partx -u "$LOOPDISK"
 mount "$LOOPDISK"p1 "$MOUNT_ORIGIN_DIR"
 
 # Fix boot partition missing

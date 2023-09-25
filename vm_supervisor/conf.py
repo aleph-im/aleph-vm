@@ -271,7 +271,7 @@ class Settings(BaseSettings):
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
-        assert self.NETWORK_INTERFACE, f"Network interface is not specified"
+        assert self.NETWORK_INTERFACE, "Network interface is not specified"
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")

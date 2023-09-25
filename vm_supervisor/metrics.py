@@ -67,7 +67,7 @@ async def save_execution_data(execution_uuid: UUID, execution_data: str):
 
 async def save_record(record: ExecutionRecord):
     """Record the resource usage in database"""
-    session = Session()
+    session = Session()  # noqa: F821 undefined name 'Session'
     try:
         session.add(record)
         session.commit()
@@ -77,7 +77,7 @@ async def save_record(record: ExecutionRecord):
 
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
-    session = Session()
+    session = Session()  # noqa: F821 undefined name 'Session'
     try:
         return session.query(ExecutionRecord).all()
     finally:
