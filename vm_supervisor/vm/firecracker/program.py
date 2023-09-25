@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import logging
 import os.path
+from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -439,17 +440,19 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         logger.debug("running code")
         scope = scope or {}
 
-        async def communicate(reader, writer, scope) -> bytes:
-            payload = RunCodePayload(scope=scope)
+        async def communicate(
+            reader_: StreamReader, writer_: StreamWriter, scope_: dict
+        ) -> bytes:
+            payload = RunCodePayload(scope=scope_)
 
-            writer.write(b"CONNECT 52\n" + payload.as_msgpack())
-            await writer.drain()
+            writer_.write(b"CONNECT 52\n" + payload.as_msgpack())
+            await writer_.drain()
 
-            ack: bytes = await reader.readline()
+            ack: bytes = await reader_.readline()
             logger.debug(f"ack={ack.decode()}")
 
             logger.debug("waiting for VM response")
-            response: bytes = await reader.read()
+            response: bytes = await reader_.read()
 
             return response
 
