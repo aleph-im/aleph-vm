@@ -34,6 +34,7 @@ from ...utils import MsgpackSerializable
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
+    ResourceDownloadError,
     VmInitNotConnected,
     VmSetupError,
     Volume,
@@ -44,19 +45,6 @@ logger = logging.getLogger(__name__)
 
 class FileTooLargeError(Exception):
     pass
-
-
-class ResourceDownloadError(ClientResponseError):
-    """An error occurred while downloading a VM resource file"""
-
-    def __init__(self, error: ClientResponseError):
-        super().__init__(
-            request_info=error.request_info,
-            history=error.history,
-            status=error.status,
-            message=error.message,
-            headers=error.headers,
-        )
 
 
 def read_input_data(path_to_data: Optional[Path]) -> Optional[bytes]:
