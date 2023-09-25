@@ -9,7 +9,6 @@ import logging
 import re
 import sys
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from shutil import copy2, disk_usage, make_archive
 from typing import Union

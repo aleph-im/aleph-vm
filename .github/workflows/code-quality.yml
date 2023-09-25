@@ -21,7 +21,7 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install mypy pytest black isort
+          python3 -m pip install mypy pytest black isort flake8
 
       - name: Test with Black
         run: |

@@ -64,7 +64,7 @@ def read_input_data(path_to_data: Optional[Path]) -> Optional[bytes]:
         return None
 
     if os.path.getsize(path_to_data) > settings.MAX_DATA_ARCHIVE_SIZE:
-        raise FileTooLargeError(f"Data file too large to pass as an inline zip")
+        raise FileTooLargeError("Data file too large to pass as an inline zip")
 
     return path_to_data.read_bytes()
 

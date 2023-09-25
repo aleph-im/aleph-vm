@@ -219,7 +219,7 @@ async def update_allocations(request: web.Request):
     for execution in pool.get_persistent_executions():
         if execution.vm_hash not in allocations:
             vm_type = "instance" if execution.is_instance else "persistent program"
-            logger.info(f"Stopping %s %s", vm_type, execution.vm_hash)
+            logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await execution.stop()
             execution.persistent = False
 
