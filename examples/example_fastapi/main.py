@@ -6,26 +6,21 @@ import subprocess
 import sys
 from datetime import datetime
 from os import listdir
+from pathlib import Path
 from typing import Dict
 
-from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
-
-logger.debug("import aiohttp")
 import aiohttp
-
-logger.debug("import aleph_client")
-from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.chains.remote import RemoteAccount
+from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
 from aleph.sdk.vm.cache import VmCache
-
-logger.debug("import fastapi")
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from pip._internal.operations.freeze import freeze
+from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
 logger.debug("imports done")
 
 http_app = FastAPI()
@@ -60,6 +55,9 @@ async def index():
             "/post_a_message",
             "/state/increment",
             "/wait-for/{delay}",
+            "/platform/os",
+            "/platform/python",
+            "/platform/pip-freeze",
         ],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
@@ -72,7 +70,7 @@ async def check_lifespan():
     """
     Check that ASGI lifespan startup signal has been received
     """
-    return {"Lifetime": startup_lifespan_executed}
+    return {"Lifespan": startup_lifespan_executed}
 
 
 @app.get("/environ")
@@ -250,6 +248,21 @@ filters = [
         "channel": "TEST"
     }
 ]
+
+
+@app.get("/platform/os")
+def platform_os():
+    return PlainTextResponse(content=Path("/etc/os-release").read_text())
+
+
+@app.get("/platform/python")
+def platform_python():
+    return PlainTextResponse(content=sys.version)
+
+
+@app.get("/platform/pip-freeze")
+def platform_pip_freeze():
+    return list(freeze())
 
 
 @app.event(filters=filters)
