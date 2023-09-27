@@ -68,6 +68,7 @@ class VmExecution:
     ready_event: asyncio.Event
     concurrent_runs: int
     runs_done_event: asyncio.Event
+    stop_pending: asyncio.Semaphore
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
 
@@ -108,6 +109,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.stop_pending = asyncio.Semaphore()
         self.snapshot_manager = snapshot_manager
 
     def to_dict(self) -> Dict:
@@ -215,19 +217,23 @@ class VmExecution:
             return False
 
     async def stop(self):
-        if self.times.stopped_at is not None:
-            logger.debug(f"VM={self.vm.vm_id} already stopped")
-            return
-        await self.all_runs_complete()
-        self.times.stopping_at = datetime.now()
-        await self.record_usage()
-        await self.vm.teardown()
-        self.times.stopped_at = datetime.now()
-        self.cancel_expiration()
-        self.cancel_update()
+        """Stop the VM and release resources"""
 
-        if isinstance(self.message, InstanceContent):
-            await self.snapshot_manager.stop_for(self.vm_hash)
+        # Prevent concurrent calls to stop() using a semaphore
+        async with self.stop_pending:
+            if self.times.stopped_at is not None:
+                logger.debug(f"VM={self.vm.vm_id} already stopped")
+                return
+            await self.all_runs_complete()
+            self.times.stopping_at = datetime.now()
+            await self.record_usage()
+            await self.vm.teardown()
+            self.times.stopped_at = datetime.now()
+            self.cancel_expiration()
+            self.cancel_update()
+
+            if isinstance(self.message, InstanceContent):
+                await self.snapshot_manager.stop_for(self.vm_hash)
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
