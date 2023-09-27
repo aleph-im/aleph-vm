@@ -96,6 +96,14 @@ def run():
             app.on_cleanup.append(stop_all_vms)
 
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+    except OSError as e:
+        if e.errno == 98:
+            logger.error(
+                f"Port {settings.SUPERVISOR_PORT} already in use. "
+                f"Please check that no other instance of Aleph-VM is running."
+            )
+        else:
+            raise
     finally:
         if settings.ALLOW_VM_NETWORKING:
             pool.network.teardown()
