@@ -31,7 +31,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   \
   iputils-ping curl
 
-pip3 install 'fastapi~=0.95.1'
+pip3 install 'fastapi~=0.103.1'
 
 echo "Pip installing aleph-client"
 pip3 install 'aleph-sdk-python==0.7.0'
