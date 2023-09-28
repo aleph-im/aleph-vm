@@ -17,18 +17,15 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
   socat libsecp256k1-0 \
-  \
   python3-aiohttp python3-msgpack \
   python3-setuptools \
   python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip \
   nodejs npm \
   build-essential python3-dev \
-  \
   docker.io \
   cgroupfs-mount \
   nftables \
-  \
   iputils-ping curl
 
 pip3 install 'fastapi~=0.95.1'
