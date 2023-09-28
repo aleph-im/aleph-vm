@@ -17,7 +17,6 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
   socat libsecp256k1-1 \
-  \
   python3-aiohttp python3-msgpack \
   python3-setuptools python3-venv \
   python3-pip python3-cytoolz python3-pydantic \
@@ -25,12 +24,12 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   nodejs npm \
   build-essential python3-dev \
   python3-fastapi \
-  \
   docker.io \
   cgroupfs-mount \
   nftables \
-  \
   iputils-ping curl
+
+pip3 install --break-system-packages 'fastapi~=0.103.1'
 
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
