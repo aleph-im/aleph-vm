@@ -37,7 +37,7 @@ docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector al
 Then install the [VM-Supervisor](../vm_supervisor/README.md) using the official Debian package.
 The procedure is similar for updates.
 ```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.2.7/aleph-vm.debian-12.deb
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.2.9-rc1/aleph-vm.debian-12.deb
 apt install /opt/aleph-vm.debian-12.deb
 ```
 
