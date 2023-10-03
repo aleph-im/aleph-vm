@@ -236,13 +236,13 @@ async def wait_for_lifespan_event_completion(
 async def setup_code_asgi(
     code: bytes, encoding: Encoding, entrypoint: str
 ) -> ASGIApplication:
-    # Allow importing packages from /opt/packages
-    sys.path.append("/opt/packages")
+    # Allow importing packages from /opt/packages, give it priority
+    sys.path.insert(0, "/opt/packages")
 
     logger.debug("Extracting code")
     app: ASGIApplication
     if encoding == Encoding.squashfs:
-        sys.path.append("/opt/code")
+        sys.path.insert(0, "/opt/code")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
         module = __import__(module_name)
@@ -255,7 +255,7 @@ async def setup_code_asgi(
             open("/opt/archive.zip", "wb").write(code)
             logger.debug("Run unzip")
             os.system("unzip -q /opt/archive.zip -d /opt")
-        sys.path.append("/opt")
+        sys.path.insert(0, "/opt")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
         module = __import__(module_name)
