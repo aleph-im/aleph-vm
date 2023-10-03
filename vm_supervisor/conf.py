@@ -285,21 +285,15 @@ class Settings(BaseSettings):
             f"{attribute:<27} = {value}" for attribute, value in attributes.items()
         )
 
-    def dns_servers(self, ipv4_only: bool) -> Optional[List[str]]:
+    def filter_dns_servers(self, ipv4_only: bool) -> Optional[List[str]]:
         """
-        Retrieve a list of DNS nameservers, optionally filtering for IPv4.
+        Filter Dns (ipv4 + ipv6 or only ipv4)
 
-        Parameters:
-            ipv4_only (bool): If True, return only IPv4 DNS servers.
+        Parameter:
+            ipv4_only (bool)
+        Return:
+            Optional[List[str]]: list of dns filtered
 
-        Returns:
-            Optional[List[str]]: A list of DNS nameservers, or None if none are configured.
-
-        Raises:
-            ValueError: If there are no DNS nameservers in the configuration.
-
-        This method returns a list of DNS nameservers. If the `ipv4_only` parameter is True, it filters
-        out IPv6 nameservers. If no nameservers are configured, a ValueError is raised.
         """
         dns_servers = self.DNS_NAMESERVERS
         if not dns_servers:
