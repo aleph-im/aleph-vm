@@ -68,7 +68,7 @@ class VmExecution:
     ready_event: asyncio.Event
     concurrent_runs: int
     runs_done_event: asyncio.Event
-    stop_pending: asyncio.Semaphore
+    stop_pending_lock: asyncio.Lock
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
 
@@ -109,7 +109,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
-        self.stop_pending = asyncio.Semaphore()
+        self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
 
     def to_dict(self) -> Dict:
@@ -219,8 +219,8 @@ class VmExecution:
     async def stop(self):
         """Stop the VM and release resources"""
 
-        # Prevent concurrent calls to stop() using a semaphore
-        async with self.stop_pending:
+        # Prevent concurrent calls to stop() using a Lock
+        async with self.stop_pending_lock:
             if self.times.stopped_at is not None:
                 logger.debug(f"VM={self.vm.vm_id} already stopped")
                 return
