@@ -30,6 +30,14 @@ async def check_index(session: ClientSession) -> bool:
         return False
 
 
+async def check_lifespan(session: ClientSession) -> bool:
+    try:
+        result: Dict = await get_json_from_vm(session, "/lifespan")
+        return result["Lifetime"] is True
+    except ClientResponseError:
+        return False
+
+
 async def check_environ(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/environ")
@@ -68,7 +76,6 @@ async def check_ipv4(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/ip/4")
         assert result["result"] is True
-        assert "headers" in result
         return True
     except ClientResponseError:
         return False

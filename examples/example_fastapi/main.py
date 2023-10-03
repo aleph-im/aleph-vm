@@ -6,31 +6,34 @@ import subprocess
 import sys
 from datetime import datetime
 from os import listdir
+from pathlib import Path
 from typing import Dict
 
-from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
-
-logger.debug("import aiohttp")
 import aiohttp
-
-logger.debug("import aleph_client")
-from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.chains.remote import RemoteAccount
+from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
 from aleph.sdk.vm.cache import VmCache
-
-logger.debug("import fastapi")
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from pip._internal.operations.freeze import freeze
+from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
 logger.debug("imports done")
 
 http_app = FastAPI()
 app = AlephApp(http_app=http_app)
 cache = VmCache()
+
+startup_lifespan_executed: bool = False
+
+
+@app.on_event("startup")
+async def startup_event():
+    global startup_lifespan_executed
+    startup_lifespan_executed = True
 
 
 @app.get("/")
@@ -52,11 +55,22 @@ async def index():
             "/post_a_message",
             "/state/increment",
             "/wait-for/{delay}",
+            "/platform/os",
+            "/platform/python",
+            "/platform/pip-freeze",
         ],
         "files_in_volumes": {
             "/opt/venv": opt_venv,
         },
     }
+
+
+@app.get("/lifespan")
+async def check_lifespan():
+    """
+    Check that ASGI lifespan startup signal has been received
+    """
+    return {"Lifespan": startup_lifespan_executed}
 
 
 @app.get("/environ")
@@ -98,18 +112,11 @@ async def ip_address():
 
 @app.get("/ip/4")
 async def connect_ipv4():
-    """Connect to the Quad9 VPN provider using their IPv4 address.
-    The webserver on that address returns a 404 error, so we accept that response code.
-    """
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(), timeout=timeout
-    ) as session:
-        async with session.get("https://9.9.9.9") as resp:
-            # We expect this endpoint to return a 404 error
-            if resp.status != 404:
-                resp.raise_for_status()
-            return {"result": True, "headers": resp.headers}
+    """Connect to the Quad9 VPN provider using their IPv4 address."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(("9.9.9.9", 53))
+    return {"result": True}
 
 
 @app.get("/ip/6")
@@ -241,6 +248,21 @@ filters = [
         "channel": "TEST"
     }
 ]
+
+
+@app.get("/platform/os")
+def platform_os():
+    return PlainTextResponse(content=Path("/etc/os-release").read_text())
+
+
+@app.get("/platform/python")
+def platform_python():
+    return PlainTextResponse(content=sys.version)
+
+
+@app.get("/platform/pip-freeze")
+def platform_pip_freeze():
+    return list(freeze())
 
 
 @app.event(filters=filters)

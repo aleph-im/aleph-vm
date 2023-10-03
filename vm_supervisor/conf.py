@@ -5,7 +5,7 @@ import re
 from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
-from subprocess import check_output
+from subprocess import CalledProcessError, check_output
 from typing import Any, Dict, Iterable, List, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
@@ -19,6 +19,7 @@ ALLOW_DEVELOPER_SSH_KEYS = object()
 
 
 class DnsResolver(str, Enum):
+    detect = "detect"  # Detect the resolver used by the system
     resolv_conf = "resolv.conf"  # Simply copy from /etc/resolv.conf
     resolvectl = "resolvectl"  # Systemd-resolved, common on Ubuntu
 
@@ -26,6 +27,10 @@ class DnsResolver(str, Enum):
 class IPv6AllocationPolicy(str, Enum):
     static = "static"  # Compute the IP address based on the VM item hash.
     dynamic = "dynamic"  # Assign an available IP address.
+
+
+class SnapshotCompressionAlgorithm(str, Enum):
+    gz = "gzip"
 
 
 def etc_resolv_conf_dns_servers():
@@ -65,6 +70,40 @@ def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
             yield server
 
 
+def get_default_interface() -> Optional[str]:
+    """Returns the default network interface"""
+    with open("/proc/net/route", "r") as f:
+        for line in f.readlines():
+            parts = line.strip().split()
+            if parts[1] == "00000000":  # Indicates default route
+                return parts[0]
+    return None
+
+
+def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> List[str]:
+    # The match syntax is not yet available as of Python 3.9
+    # match dns_resolver:
+    if dns_resolver == DnsResolver.detect:
+        # Use a try-except approach since resolvectl can be present but disabled and raise the following
+        # "Failed to get global data: Unit dbus-org.freedesktop.resolve1.service not found."
+        try:
+            return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+        except (FileNotFoundError, CalledProcessError):
+            if Path("/etc/resolv.conf").exists():
+                return list(etc_resolv_conf_dns_servers())
+            else:
+                raise FileNotFoundError("No DNS resolver found")
+
+    elif dns_resolver == DnsResolver.resolv_conf:
+        return list(etc_resolv_conf_dns_servers())
+
+    elif dns_resolver == DnsResolver.resolvectl:
+        return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+
+    else:
+        assert "No DNS resolve defined, this should never happen."
+
+
 class Settings(BaseSettings):
     SUPERVISOR_HOST = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
@@ -85,11 +124,12 @@ class Settings(BaseSettings):
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
+    IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
-    NETWORK_INTERFACE = "eth0"
+    NETWORK_INTERFACE: Optional[str] = None
     IPV4_ADDRESS_POOL = Field(
         default="172.16.0.0/12",
         description="IPv4 address range used to provide networks to VMs.",
@@ -120,7 +160,7 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.resolv_conf
+    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.detect
     DNS_NAMESERVERS: Optional[List[str]] = None
 
     FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
@@ -145,6 +185,16 @@ class Settings(BaseSettings):
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
+
+    SNAPSHOT_FREQUENCY: int = Field(
+        default=60,
+        description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes.",
+    )
+
+    SNAPSHOT_COMPRESSION_ALGORITHM: SnapshotCompressionAlgorithm = Field(
+        default=SnapshotCompressionAlgorithm.gz,
+        description="Snapshot compression algorithm.",
+    )
 
     # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH = (
@@ -222,6 +272,7 @@ class Settings(BaseSettings):
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
+        assert self.NETWORK_INTERFACE, "Network interface is not specified"
         assert self.CONNECTOR_URL.startswith(
             "http://"
         ) or self.CONNECTOR_URL.startswith("https://")
@@ -258,15 +309,10 @@ class Settings(BaseSettings):
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
 
         if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
-            if self.DNS_RESOLUTION == DnsResolver.resolv_conf:
-                self.DNS_NAMESERVERS = list(etc_resolv_conf_dns_servers())
-
-            elif self.DNS_RESOLUTION == DnsResolver.resolvectl:
-                self.DNS_NAMESERVERS = list(
-                    resolvectl_dns_servers(interface=self.NETWORK_INTERFACE)
-                )
-            else:
-                assert "This should never happen"
+            self.DNS_NAMESERVERS = obtain_dns_ips(
+                dns_resolver=self.DNS_RESOLUTION,
+                network_interface=self.NETWORK_INTERFACE,
+            )
 
     def display(self) -> str:
         attributes: Dict[str, Any] = {}

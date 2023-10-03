@@ -7,7 +7,7 @@ set -euf
 rm -fr ./rootfs
 mkdir ./rootfs
 
-debootstrap --variant=minbase bullseye ./rootfs http://deb.debian.org/debian/
+debootstrap --variant=minbase bookworm ./rootfs http://deb.debian.org/debian/
 
 chroot ./rootfs /bin/sh <<EOT
 
@@ -16,25 +16,26 @@ set -euf
 apt-get install -y --no-install-recommends --no-install-suggests \
   python3-minimal \
   openssh-server \
-  socat libsecp256k1-0 \
+  socat libsecp256k1-1 \
   python3-aiohttp python3-msgpack \
-  python3-setuptools \
+  python3-setuptools python3-venv \
   python3-pip python3-cytoolz python3-pydantic \
   iproute2 unzip \
   nodejs npm \
   build-essential python3-dev \
+  python3-fastapi \
   docker.io \
   cgroupfs-mount \
   nftables \
   iputils-ping curl
 
-pip3 install 'fastapi~=0.103.1'
+echo "Pip installing aleph-sdk-python"
+mkdir -p /opt/aleph/libs
+pip3 install --target /opt/aleph/libs 'aleph-sdk-python==0.7.0' 'fastapi~=0.103.1'
 
-echo "Pip installing aleph-client"
-pip3 install 'aleph-sdk-python==0.7.0'
-
-# Compile all Python bytecode
-python3 -m compileall -f /usr/local/lib/python3.9
+# Compile Python code to bytecode for faster execution
+python3 -m compileall -f /usr/local/lib/python3.11
+python3 -m compileall -f /opt/aleph/libs
 
 echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
@@ -47,13 +48,6 @@ mkdir -p /overlay
 ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 EOT
-
-
-# Generate SSH host keys
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t dsa -f /etc/ssh/ssh_host_dsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
-#systemd-nspawn -D ./rootfs/ ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
 
 cat <<EOT > ./rootfs/etc/inittab
 # /etc/inittab

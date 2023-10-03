@@ -56,20 +56,23 @@ ALEPH_VM_DOMAIN_NAME=vm.example.org
 
 #### Network configuration
 
-Ubuntu 22.04 by default uses [systemd-resolved](https://manpages.ubuntu.com/manpages/jammy/man8/systemd-resolved.service.8.html)
-for DNS resolution. The following setting configures the VM Supervisor to use it instead of reading the default `/etc/resolv.conf`.
-```
-ALEPH_VM_DNS_RESOLUTION=resolvectl
-```
+The network configuration is detected automatically.
 
-> 💡 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
-
-On some systems, the default network interface is not `eth0` and you will want to configure the default interface
-by adding:
+The default network interface is detected automatically from the IP routes. 
+You can configure the default interface manually instead by adding:
 ```
 ALEPH_VM_NETWORK_INTERFACE=enp0s1
 ```
 (don't forget to replace `enp0s1` with the name of your default network interface).
+
+You can configure the DNS resolver manually by using one of the following options:
+```
+ALEPH_VM_DNS_RESOLUTION=resolvectl
+ALEPH_VM_DNS_RESOLUTION=resolv.conf
+```
+
+> 💡 You can instead specify the DNS resolvers used by the VMs using `ALEPH_VM_DNS_NAMESERVERS=["1.2.3.4", "5.6.7.8"]`.
+
 
 #### Volumes and partitions
 
@@ -120,9 +123,6 @@ sudo cat >/etc/caddy/Caddyfile <<EOL
     }
 }
 vm.example.org:443 {
-    tls {
-        on_demand
-    }
     reverse_proxy http://127.0.0.1:4020 {
         # Forward Host header to the backend
         header_up Host {host}

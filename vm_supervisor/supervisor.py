@@ -28,6 +28,7 @@ from .views import (
     status_check_version,
     update_allocations,
 )
+from .views.operator import operate_erase, operate_expire, operate_stop, stream_logs
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,10 @@ app.add_routes(
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
         web.post("/control/allocations", update_allocations),
+        web.get("/control/machine/{ref}/logs", stream_logs),
+        web.post("/control/machine/{ref}/expire", operate_expire),
+        web.post("/control/machine/{ref}/stop", operate_stop),
+        web.post("/control/machine/{ref}/erase", operate_erase),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
@@ -91,6 +96,14 @@ def run():
             app.on_cleanup.append(stop_all_vms)
 
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+    except OSError as e:
+        if e.errno == 98:
+            logger.error(
+                f"Port {settings.SUPERVISOR_PORT} already in use. "
+                f"Please check that no other instance of Aleph-VM is running."
+            )
+        else:
+            raise
     finally:
         if settings.ALLOW_VM_NETWORKING:
             pool.network.teardown()

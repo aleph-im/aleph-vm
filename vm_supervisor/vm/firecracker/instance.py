@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -19,7 +21,17 @@ from firecracker.config import (
 from firecracker.microvm import setfacl
 from vm_supervisor.conf import settings
 from vm_supervisor.network.interfaces import TapInterface
-from vm_supervisor.storage import create_devmapper
+from vm_supervisor.snapshots import (
+    CompressedDiskVolumeSnapshot,
+    DiskVolume,
+    DiskVolumeSnapshot,
+)
+from vm_supervisor.storage import (
+    NotEnoughDiskSpace,
+    check_disk_space,
+    create_devmapper,
+    create_volume_file,
+)
 from vm_supervisor.utils import HostNotFoundError, ping
 
 from ...utils import run_in_subprocess
@@ -52,6 +64,7 @@ class AlephInstanceResources(AlephFirecrackerResources):
 class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     vm_configuration: BaseConfiguration
     resources: AlephInstanceResources
+    latest_snapshot: Optional[DiskVolumeSnapshot]
     is_instance = True
 
     def __init__(
@@ -64,6 +77,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
+        self.latest_snapshot = None
         super().__init__(
             vm_id,
             vm_hash,
@@ -146,6 +160,27 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         # Configuration of instances is sent during `self.setup()` by passing it via a volume.
         pass
 
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        """Create a VM snapshot"""
+        volume_path = await create_volume_file(
+            self.resources.message_content.rootfs, self.resources.namespace
+        )
+        volume = DiskVolume(path=volume_path)
+
+        if not check_disk_space(volume.size):
+            raise NotEnoughDiskSpace
+
+        snapshot = await volume.take_snapshot()
+        compressed_snapshot = await snapshot.compress(
+            settings.SNAPSHOT_COMPRESSION_ALGORITHM
+        )
+
+        if self.latest_snapshot:
+            self.latest_snapshot.delete()
+
+        self.latest_snapshot = snapshot
+        return compressed_snapshot
+
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
@@ -156,6 +191,8 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             "disable_root": False,
             "ssh_pwauth": False,
             "ssh_authorized_keys": ssh_authorized_keys,
+            # Avoid the resize error because we already do it on the VM disk creation stage
+            "resize_rootfs": False,
         }
 
         cloud_config_header = "#cloud-config\n"
@@ -178,48 +215,63 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         ipv6_gateway = self.get_vm_ipv6_gateway()
 
         network = {
-            "network": {
-                "ethernets": {
-                    "eth0": {
-                        "dhcp4": False,
-                        "dhcp6": False,
-                        "addresses": [ip, ipv6],
-                        "gateway4": route,
-                        "gateway6": ipv6_gateway,
-                        "nameservers": {
-                            "addresses": settings.DNS_NAMESERVERS,
-                        },
+            "ethernets": {
+                "eth0": {
+                    "dhcp4": False,
+                    "dhcp6": False,
+                    "addresses": [ip, ipv6],
+                    "gateway4": route,
+                    "gateway6": ipv6_gateway,
+                    "nameservers": {
+                        "addresses": settings.DNS_NAMESERVERS,
                     },
                 },
-                "version": 2,
             },
+            "version": 2,
         }
 
         return yaml.safe_dump(
             network, default_flow_style=False, sort_keys=False
         ).encode()
 
+    def _create_metadata_file(self) -> bytes:
+        """Creates metadata configuration file for cloud-init tool"""
+
+        hostname = base64.b32encode(self.vm_hash).decode().strip("=").lower()
+
+        metadata = {
+            "instance-id": f"iid-instance-{self.vm_id}",
+            "local-hostname": hostname,
+        }
+
+        return json.dumps(metadata).encode()
+
     async def _create_cloud_init_drive(self) -> Drive:
         """Creates the cloud-init volume to configure and setup the VM"""
 
         disk_image_path = settings.EXECUTION_ROOT / f"cloud-init-{self.vm_hash}.img"
 
-        with NamedTemporaryFile() as main_config_file:
+        with NamedTemporaryFile() as user_data_config_file:
             user_data = self._encode_user_data()
-            main_config_file.write(user_data)
-            main_config_file.flush()
+            user_data_config_file.write(user_data)
+            user_data_config_file.flush()
             with NamedTemporaryFile() as network_config_file:
                 network_config = self._create_network_file()
                 network_config_file.write(network_config)
                 network_config_file.flush()
+                with NamedTemporaryFile() as metadata_config_file:
+                    metadata_config = self._create_metadata_file()
+                    metadata_config_file.write(metadata_config)
+                    metadata_config_file.flush()
 
-                await run_in_subprocess(
-                    [
-                        "cloud-localds",
-                        f"--network-config={network_config_file.name}",
-                        str(disk_image_path),
-                        main_config_file.name,
-                    ]
-                )
+                    await run_in_subprocess(
+                        [
+                            "cloud-localds",
+                            f"--network-config={network_config_file.name}",
+                            str(disk_image_path),
+                            user_data_config_file.name,
+                            metadata_config_file.name,
+                        ]
+                    )
 
         return self.fvm.enable_drive(disk_image_path, read_only=True)

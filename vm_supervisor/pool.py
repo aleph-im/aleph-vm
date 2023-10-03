@@ -3,11 +3,13 @@ import logging
 from typing import Dict, Iterable, Optional
 
 from aleph_message.models import ExecutableMessage, ItemHash
+from aleph_message.models.execution.instance import InstanceContent
 
 from vm_supervisor.network.hostnetwork import Network, make_ipv6_allocator
 
 from .conf import settings
 from .models import ExecutableContent, VmExecution
+from .snapshot_manager import SnapshotManager
 from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ class VmPool:
     executions: Dict[ItemHash, VmExecution]
     message_cache: Dict[str, ExecutableMessage] = {}
     network: Optional[Network]
+    snapshot_manager: SnapshotManager
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -47,12 +50,20 @@ class VmPool:
             if settings.ALLOW_VM_NETWORKING
             else None
         )
+        self.snapshot_manager = SnapshotManager()
+        logger.debug("Initializing SnapshotManager ...")
+        self.snapshot_manager.run_snapshots()
 
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-        execution = VmExecution(vm_hash=vm_hash, message=message, original=original)
+        execution = VmExecution(
+            vm_hash=vm_hash,
+            message=message,
+            original=original,
+            snapshot_manager=self.snapshot_manager,
+        )
         self.executions[vm_hash] = execution
         await execution.prepare()
         vm_id = self.get_unique_vm_id()
@@ -64,6 +75,11 @@ class VmPool:
             tap_interface = None
 
         await execution.create(vm_id=vm_id, tap_interface=tap_interface)
+
+        # Start VM snapshots automatically
+        if isinstance(message, InstanceContent):
+            await self.snapshot_manager.start_for(execution=execution)
+
         return execution
 
     def get_unique_vm_id(self) -> int:

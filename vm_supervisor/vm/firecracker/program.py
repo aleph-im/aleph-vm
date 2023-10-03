@@ -5,6 +5,7 @@ import dataclasses
 import ipaddress
 import logging
 import os.path
+from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -34,6 +35,7 @@ from ...utils import MsgpackSerializable
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
+    ResourceDownloadError,
     VmInitNotConnected,
     VmSetupError,
     Volume,
@@ -46,25 +48,12 @@ class FileTooLargeError(Exception):
     pass
 
 
-class ResourceDownloadError(ClientResponseError):
-    """An error occurred while downloading a VM resource file"""
-
-    def __init__(self, error: ClientResponseError):
-        super().__init__(
-            request_info=error.request_info,
-            history=error.history,
-            status=error.status,
-            message=error.message,
-            headers=error.headers,
-        )
-
-
 def read_input_data(path_to_data: Optional[Path]) -> Optional[bytes]:
     if not path_to_data:
         return None
 
     if os.path.getsize(path_to_data) > settings.MAX_DATA_ARCHIVE_SIZE:
-        raise FileTooLargeError(f"Data file too large to pass as an inline zip")
+        raise FileTooLargeError("Data file too large to pass as an inline zip")
 
     return path_to_data.read_bytes()
 
@@ -439,17 +428,19 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         logger.debug("running code")
         scope = scope or {}
 
-        async def communicate(reader, writer, scope) -> bytes:
-            payload = RunCodePayload(scope=scope)
+        async def communicate(
+            reader_: StreamReader, writer_: StreamWriter, scope_: dict
+        ) -> bytes:
+            payload = RunCodePayload(scope=scope_)
 
-            writer.write(b"CONNECT 52\n" + payload.as_msgpack())
-            await writer.drain()
+            writer_.write(b"CONNECT 52\n" + payload.as_msgpack())
+            await writer_.drain()
 
-            ack: bytes = await reader.readline()
+            ack: bytes = await reader_.readline()
             logger.debug(f"ack={ack.decode()}")
 
             logger.debug("waiting for VM response")
-            response: bytes = await reader.read()
+            response: bytes = await reader_.read()
 
             return response
 

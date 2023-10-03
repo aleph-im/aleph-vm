@@ -30,7 +30,6 @@ class MicroVMFailedInit(Exception):
 
 # extend the json.JSONEncoder class to support bytes
 class JSONBytesEncoder(json.JSONEncoder):
-
     # overload method default
     def default(self, obj):
         # Match all the types you want to handle in your converter
@@ -77,12 +76,12 @@ class MicroVM:
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
+    log_queues: List[asyncio.Queue]
     config_file_path: Optional[Path] = None
     drives: List[Drive]
     init_timeout: float
     mounted_rootfs: Optional[Path] = None
-
-    _unix_socket: Server
+    _unix_socket: Optional[Server] = None
 
     @property
     def namespace_path(self):
@@ -122,6 +121,7 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
+        self.log_queues: List[asyncio.Queue] = []
 
     def to_dict(self):
         return {
@@ -159,7 +159,6 @@ class MicroVM:
     async def start_firecracker(
         self, config: FirecrackerConfig
     ) -> asyncio.subprocess.Process:
-
         if os.path.exists(VSOCK_PATH):
             os.remove(VSOCK_PATH)
         if os.path.exists(self.socket_path):
@@ -343,6 +342,8 @@ class MicroVM:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
             stdout = await self.proc.stdout.readline()
+            for queue in self.log_queues:
+                await queue.put(('stdout', stdout))
             if stdout:
                 print(stdout.decode().strip())
             else:
@@ -352,9 +353,11 @@ class MicroVM:
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
-            stdout = await self.proc.stderr.readline()
-            if stdout:
-                print(stdout.decode().strip())
+            stderr = await self.proc.stderr.readline()
+            for queue in self.log_queues:
+                await queue.put(('stderr', stderr))
+            if stderr:
+                print(stderr.decode().strip())
             else:
                 await asyncio.sleep(0.001)
 
@@ -464,7 +467,7 @@ class MicroVM:
             await asyncio.sleep(1)
             root_fs = self.mounted_rootfs.name
             system(f"dmsetup remove {root_fs}")
-            if self.use_jailer:
+            if self.use_jailer and Path(self.jailer_path).is_dir():
                 shutil.rmtree(self.jailer_path)
 
         if self._unix_socket:

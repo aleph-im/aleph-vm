@@ -16,6 +16,7 @@ from .messages import load_updated_message
 from .models import VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
+from .utils import HostNotFoundError
 from .vm.firecracker.program import (
     FileTooLargeError,
     ResourceDownloadError,
@@ -75,11 +76,38 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during runtime initialisation")
+    except HostNotFoundError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Host did not respond to ping")
 
     if not execution.vm:
         raise ValueError("The VM has not been created")
 
     return execution
+
+
+async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash) -> VmExecution:
+    try:
+        return await create_vm_execution(vm_hash=vm_hash)
+    except ResourceDownloadError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPBadRequest(reason="Code, runtime or data not available")
+    except FileTooLargeError as error:
+        raise HTTPInternalServerError(reason=error.args[0])
+    except VmSetupError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Error during vm initialisation")
+    except MicroVMFailedInit as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Error during runtime initialisation")
+    except HostNotFoundError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPInternalServerError(reason="Host did not respond to ping")
 
 
 async def run_code_on_request(
@@ -92,7 +120,7 @@ async def run_code_on_request(
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -131,7 +159,21 @@ async def run_code_on_request(
         logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
 
         if "traceback" in result:
-            logger.warning(result["traceback"])
+            # An error took place, the stacktrace of the error will be returned.
+            # TODO: Add an option for VM developers to prevent stacktraces from being exposed.
+
+            # The Diagnostics VM checks for the proper handling of exceptions.
+            # This fills the logs with noisy stack traces, so we ignore this specific error.
+            ignored_error = 'raise CustomError("Whoops")'
+
+            if (
+                settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS
+                and ignored_error in result["traceback"]
+            ):
+                logger.debug('Ignored traceback from CustomError("Whoops")')
+            else:
+                logger.warning(result["traceback"])
+
             return web.Response(
                 status=500,
                 reason="Error in VM execution",
@@ -172,7 +214,7 @@ async def run_code_on_request(
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
 
@@ -185,7 +227,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -233,6 +275,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash)
+
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
     execution.persistent = True
@@ -249,6 +292,8 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
 async def stop_persistent_vm(vm_hash: ItemHash) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
+
     if execution:
         await execution.stop()
+
     return execution

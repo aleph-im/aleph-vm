@@ -24,7 +24,18 @@ from enum import Enum
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Any, AsyncIterable, Dict, List, NewType, Optional, Tuple, Union
+from typing import (
+    Any,
+    AsyncIterable,
+    Dict,
+    List,
+    Literal,
+    NewType,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import aiohttp
 import msgpack
@@ -32,7 +43,7 @@ import msgpack
 logger.debug("Imports finished")
 
 __version__ = "2.0.0"
-ASGIApplication = NewType("ASGIApplication", Any)
+ASGIApplication = NewType("ASGIApplication", Any)  # type: ignore
 
 
 class Encoding(str, Enum):
@@ -62,9 +73,9 @@ class ConfigurationPayload:
     input_data: bytes
     interface: Interface
     vm_hash: str
-    code: bytes = None
-    encoding: Encoding = None
-    entrypoint: str = None
+    code: bytes
+    encoding: Encoding
+    entrypoint: str
     ip: Optional[str] = None
     ipv6: Optional[str] = None
     route: Optional[str] = None
@@ -189,16 +200,49 @@ def setup_volumes(volumes: List[Volume]):
     system("mount")
 
 
-def setup_code_asgi(
+async def wait_for_lifespan_event_completion(
+    application: ASGIApplication, event: Union[Literal["startup", "shutdown"]]
+):
+    """
+    Send the startup lifespan signal to the ASGI app.
+    Specification: https://asgi.readthedocs.io/en/latest/specs/lifespan.html
+    """
+
+    lifespan_completion = asyncio.Event()
+
+    async def receive():
+        return {
+            "type": f"lifespan.{event}",
+        }
+
+    async def send(response: Dict):
+        response_type = response.get("type")
+        if response_type == f"lifespan.{event}.complete":
+            lifespan_completion.set()
+            return
+        else:
+            logger.warning(f"Unexpected response to {event}: {response_type}")
+
+    while not lifespan_completion.is_set():
+        await application(
+            scope={
+                "type": "lifespan",
+            },
+            receive=receive,
+            send=send,
+        )
+
+
+async def setup_code_asgi(
     code: bytes, encoding: Encoding, entrypoint: str
 ) -> ASGIApplication:
-    # Allow importing packages from /opt/packages
-    sys.path.append("/opt/packages")
+    # Allow importing packages from /opt/packages, give it priority
+    sys.path.insert(0, "/opt/packages")
 
     logger.debug("Extracting code")
     app: ASGIApplication
     if encoding == Encoding.squashfs:
-        sys.path.append("/opt/code")
+        sys.path.insert(0, "/opt/code")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
         module = __import__(module_name)
@@ -211,7 +255,7 @@ def setup_code_asgi(
             open("/opt/archive.zip", "wb").write(code)
             logger.debug("Run unzip")
             os.system("unzip -q /opt/archive.zip -d /opt")
-        sys.path.append("/opt")
+        sys.path.insert(0, "/opt")
         module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
         module = __import__(module_name)
@@ -225,7 +269,8 @@ def setup_code_asgi(
         app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
-    return app
+    await wait_for_lifespan_event_completion(application=app, event="startup")
+    return ASGIApplication(app)
 
 
 def setup_code_executable(
@@ -260,14 +305,16 @@ def setup_code_executable(
     return process
 
 
-def setup_code(
-    code: Optional[bytes],
-    encoding: Optional[Encoding],
-    entrypoint: Optional[str],
+async def setup_code(
+    code: bytes,
+    encoding: Encoding,
+    entrypoint: str,
     interface: Interface,
 ) -> Union[ASGIApplication, subprocess.Popen]:
     if interface == Interface.asgi:
-        return setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
+        return await setup_code_asgi(
+            code=code, encoding=encoding, entrypoint=entrypoint
+        )
     elif interface == Interface.executable:
         return setup_code_executable(
             code=code, encoding=encoding, entrypoint=entrypoint
@@ -284,7 +331,7 @@ async def run_python_code_http(
         # Execute in the same process, saves ~20ms than a subprocess
 
         # The body should not be part of the ASGI scope itself
-        body: bytes = scope.pop("body")
+        scope_body: bytes = scope.pop("body")
 
         async def receive():
             type_ = (
@@ -292,7 +339,7 @@ async def run_python_code_http(
                 if scope["type"] in ("http", "websocket")
                 else "aleph.message"
             )
-            return {"type": type_, "body": body, "more_body": False}
+            return {"type": type_, "body": scope_body, "more_body": False}
 
         send_queue: asyncio.Queue = asyncio.Queue()
 
@@ -311,13 +358,13 @@ async def run_python_code_http(
             headers = {}
 
         logger.debug("Waiting for body")
-        body: Dict = await send_queue.get()
+        response_body: Dict = await send_queue.get()
 
         logger.debug("Waiting for buffer")
         output = buf.getvalue()
 
         logger.debug(f"Headers {headers}")
-        logger.debug(f"Body {body}")
+        logger.debug(f"Body {response_body}")
         logger.debug(f"Output {output}")
 
     logger.debug("Getting output data")
@@ -330,7 +377,7 @@ async def run_python_code_http(
         output_data = b""
 
     logger.debug("Returning result")
-    return headers, body, output, output_data
+    return headers, response_body, output, output_data
 
 
 async def make_request(session, scope):
@@ -402,6 +449,10 @@ async def process_instruction(
             application.terminate()
             logger.debug("Application terminated")
             # application.communicate()
+        else:
+            await wait_for_lifespan_event_completion(
+                application=application, event="shutdown"
+            )
         yield b"STOP\n"
         logger.debug("Supervisor informed of halt")
         raise ShutdownException
@@ -429,6 +480,7 @@ async def process_instruction(
             output_data: Optional[bytes]
 
             if interface == Interface.asgi:
+                application = cast(ASGIApplication, application)
                 headers, body, output, output_data = await run_python_code_http(
                     application=application, scope=payload.scope
                 )
@@ -520,7 +572,7 @@ async def main() -> None:
     setup_system(config)
 
     try:
-        app: Union[ASGIApplication, subprocess.Popen] = setup_code(
+        app: Union[ASGIApplication, subprocess.Popen] = await setup_code(
             config.code, config.encoding, config.entrypoint, config.interface
         )
         client.send(msgpack.dumps({"success": True}))
