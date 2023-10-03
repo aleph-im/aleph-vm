@@ -29,8 +29,6 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   nftables \
   iputils-ping curl
 
-pip3 install --break-system-packages 'fastapi~=0.103.1'
-
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
 pip3 install --target /opt/aleph/libs 'aleph-sdk-python==0.7.0' 'fastapi~=0.103.1'
