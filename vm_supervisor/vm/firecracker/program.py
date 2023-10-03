@@ -389,7 +389,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         ipv6 = self.get_vm_ipv6()
         ipv6_gateway = self.get_vm_ipv6_gateway()
 
-        dns_servers = settings.dns_servers(ipv4_only=False) # True to Disable Ipv6 Dns
+        dns_servers = settings.filter_dns_servers(ipv4_only=False) # True to Disable Ipv6 Dns
 
         runtime_config = self.fvm.runtime_config
         assert runtime_config
