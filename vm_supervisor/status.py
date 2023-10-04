@@ -33,7 +33,7 @@ async def check_index(session: ClientSession) -> bool:
 async def check_lifespan(session: ClientSession) -> bool:
     try:
         result: Dict = await get_json_from_vm(session, "/lifespan")
-        return result["Lifetime"] is True
+        return result["Lifespan"] is True
     except ClientResponseError:
         return False
 
