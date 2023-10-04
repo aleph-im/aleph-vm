@@ -150,7 +150,7 @@ async def status_check_fastapi(request: web.Request):
         result = {
             "index": await status.check_index(session),
             # TODO: lifespan is a new feature that requires a new runtime to be deployed
-            # "lifespan": await status.check_lifespan(session),
+            "lifespan": await status.check_lifespan(session),
             "environ": await status.check_environ(session),
             "messages": await status.check_messages(session),
             "dns": await status.check_dns(session),
