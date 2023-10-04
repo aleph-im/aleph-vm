@@ -269,7 +269,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         vsock_path = f"{self.fvm.vsock_path}_53"
         vm_hash = self.vm_hash
         self.guest_api_process = Process(
-            target=run_guest_api, args=(vsock_path, vm_hash)
+            target=run_guest_api,
+            args=(vsock_path, vm_hash, settings.SENTRY_DSN, settings.DOMAIN_NAME),
         )
         self.guest_api_process.start()
         while not exists(vsock_path):

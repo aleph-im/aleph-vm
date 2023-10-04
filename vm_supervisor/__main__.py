@@ -324,7 +324,7 @@ def main():
                 traces_sample_rate=1.0,
             )
         else:
-            logger.debug("Sentry SDK found with no DNS configured.")
+            logger.debug("Sentry SDK found with no DSN configured.")
     else:
         logger.debug(
             "Sentry SDK not found. \n"
