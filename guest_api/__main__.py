@@ -4,9 +4,14 @@ import re
 from typing import Optional
 
 import aiohttp
-from aiohttp import web
 import aioredis
+from aiohttp import web
 from setproctitle import setproctitle
+
+try:
+    import sentry_sdk
+except ImportError:
+    sentry_sdk = None
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +160,23 @@ async def list_keys_from_cache(request: web.Request):
     return web.json_response(keys)
 
 
-def run_guest_api(unix_socket_path, vm_hash: Optional[str] = None):
+def run_guest_api(
+    unix_socket_path,
+    vm_hash: Optional[str] = None,
+    sentry_dsn: Optional[str] = None,
+    server_name: Optional[str] = None,
+):
+    # This function runs in a separate process, requiring to reinitialize the Sentry SDK
+    if sentry_sdk and sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            server_name=server_name,
+            # Set traces_sample_rate to 1.0 to capture 100%
+            # of transactions for performance monitoring.
+            # We recommend adjusting this value in production.
+            traces_sample_rate=1.0,
+        )
+
     setproctitle(f"aleph-vm guest_api on {unix_socket_path}")
     app = web.Application()
     app["meta_vm_hash"] = vm_hash or "_"
