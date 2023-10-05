@@ -237,7 +237,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _create_metadata_file(self) -> bytes:
         """Creates metadata configuration file for cloud-init tool"""
 
-        hostname = base64.b32encode(str.encode(self.vm_hash)).decode().strip("=").lower()
+        hostname = (
+            base64.b32encode(str.encode(self.vm_hash)).decode().strip("=").lower()
+        )
 
         metadata = {
             "instance-id": f"iid-instance-{self.vm_id}",
