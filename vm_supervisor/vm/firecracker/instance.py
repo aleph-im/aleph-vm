@@ -142,8 +142,8 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         ip = ip.split("/", 1)[0]
 
-        attempts = 10
-        timeout_seconds = 1.0
+        attempts = 30
+        timeout_seconds = 2.0
 
         for attempt in range(attempts):
             try:
