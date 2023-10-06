@@ -7,6 +7,7 @@ jobs:
     name: "Run in DigitalOcean Droplet with Ubuntu 22.04"
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm-ubuntu-22-04
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -49,6 +50,7 @@ jobs:
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-ubuntu-22-04 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
+        timeout-minutes: 3
 
       - name: Install Aleph-VM on the Droplet
         run: |
