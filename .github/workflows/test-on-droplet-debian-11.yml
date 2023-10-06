@@ -73,7 +73,7 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-debian-11 --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           
           sleep 3
-          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
+          curl --retry 20 --max-time 6 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Schedule an instance on the Droplet by faking a call from the scheduler
@@ -87,5 +87,4 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          ls
-#          doctl compute droplet delete -f aleph-vm-ci-debian-11
+          doctl compute droplet delete -f aleph-vm-ci-debian-11
