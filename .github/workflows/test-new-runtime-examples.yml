@@ -36,11 +36,11 @@ jobs:
         run: |
           doctl compute droplet create \
           --image debian-12-x64 \
-          --size c-2 \
-          --region fra1 \
-          --vpc-uuid 992896c8-c089-4da3-9288-f81e28c095a4 \
+          --size c-4 \
+          --region ams3 \
+          --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
-          --ssh-keys b3:ff:08:7f:57:00:fd:7a:14:00:f2:35:0a:f6:e8:55 \
+          --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
           aleph-vm-ci-runtime
 
       - name: "Build custom runtime"
