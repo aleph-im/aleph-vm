@@ -142,18 +142,22 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         ip = ip.split("/", 1)[0]
 
-        attempts = 30
-        timeout_seconds = 2.0
+        # Use an exponential value for the timeout, in seconds, based on exponential base 1.5
+        # attempt_timeouts = [math.floor(x**1.5) for x in range(1,16)]
+        attempt_timeouts = [1, 2, 5, 8, 11, 14, 18, 22, 27, 31, 36, 41, 46, 52, 58]
 
-        for attempt in range(attempts):
+        for timeout_seconds in attempt_timeouts:
             try:
                 await ping(ip, packets=1, timeout=timeout_seconds)
                 return
             except HostNotFoundError:
-                if attempt < (attempts - 1):
-                    continue
-                else:
+                # Only raise if we are on the last attempt
+                if attempt_timeouts == attempt_timeouts[-1]:
                     raise
+                else:
+                    continue
+        else:
+            assert False, "The timeout logic is broken, this should never be reached"
 
     async def configure(self):
         """Configure the VM by sending configuration info to it's init"""
