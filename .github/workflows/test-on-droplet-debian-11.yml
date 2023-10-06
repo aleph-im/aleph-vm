@@ -87,4 +87,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f aleph-vm-ci-debian-11
+          ls
+#          doctl compute droplet delete -f aleph-vm-ci-debian-11
