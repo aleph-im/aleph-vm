@@ -37,7 +37,7 @@ jobs:
           --region ams3 \
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
-          --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
+          --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64,9e:8b:06:53:e3:fc:6f:42:64:57:bf:1f:aa:54:11:55 \
           aleph-vm-ci-debian-11
 
       - name: Build Debian Package
