@@ -342,9 +342,10 @@ class MicroVM:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
             stdout = await self.proc.stdout.readline()
-            for queue in self.log_queues:
-                await queue.put(('stdout', stdout))
             if stdout:
+                # TODO: Limit the size of stdout
+                for queue in self.log_queues:
+                    await queue.put(("stdout", stdout))
                 print(stdout.decode().strip())
             else:
                 await asyncio.sleep(0.001)
@@ -354,9 +355,10 @@ class MicroVM:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
             stderr = await self.proc.stderr.readline()
-            for queue in self.log_queues:
-                await queue.put(('stderr', stderr))
             if stderr:
+                # TODO: Limit the size of stdout
+                for queue in self.log_queues:
+                    await queue.put(("stderr", stderr))
                 print(stderr.decode().strip())
             else:
                 await asyncio.sleep(0.001)

@@ -4,13 +4,14 @@ This module is in charge of providing the source code corresponding to a 'code i
 In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
+import asyncio
 import json
 import logging
 import re
 import sys
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PosixPath
 from shutil import copy2, disk_usage, make_archive
 from typing import Union
 
@@ -218,7 +219,7 @@ async def create_volume_file(
             ["dd", "if=/dev/zero", f"of={path}", "bs=1M", f"count={volume.size_mib}"]
         )
         await chown_to_jailman(path)
-    return path
+    return Path(path)
 
 
 async def create_loopback_device(path: Path, read_only: bool = False) -> str:
@@ -345,8 +346,20 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
 
 
 async def create_volume_snapshot(path: Path) -> Path:
-    new_path = Path(f"{path}.{datetime.today().strftime('%d%m%Y-%H%M%S')}.bak")
-    copy2(path, new_path)
+    filename: str = path.name
+    namespace: str = path.parent.name
+    snapshot_filename: str = f"{filename}.{datetime.today().isoformat()}.bak"
+
+    new_path = settings.SNAPSHOTS_DIR / namespace / snapshot_filename
+
+    # Make a standard copy of the volume file and metadata.
+    # This operation is heavy and should not run in the main thread.
+    asyncio.get_running_loop().run_in_executor(
+        None,
+        copy2,
+        path,
+        new_path,
+    )
     return new_path
 
 
@@ -354,6 +367,8 @@ async def compress_volume_snapshot(
     path: Path,
     algorithm: SnapshotCompressionAlgorithm = SnapshotCompressionAlgorithm.gz,
 ) -> Path:
+    # Why is this operating on a copy and not on the original file ?
+
     if algorithm != SnapshotCompressionAlgorithm.gz:
         raise NotImplementedError
 
@@ -369,6 +384,7 @@ async def compress_volume_snapshot(
     return new_path
 
 
-def check_disk_space(bytes_to_use: int) -> bool:
-    host_disk_usage = disk_usage("/")
+def check_disk_space(path: Path, bytes_to_use: int) -> bool:
+    """Check that there is enough space on the volume mounted on `path` for `bytes_to_use`."""
+    host_disk_usage = disk_usage(path)
     return host_disk_usage.free >= bytes_to_use

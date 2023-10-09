@@ -34,6 +34,7 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
         pass
 
 
+# Move to aleph.vm.firecracker.instance ?
 class DiskVolumeSnapshot(DiskVolumeFile):
     compressed: Optional[CompressedDiskVolumeSnapshot]
 
@@ -46,6 +47,7 @@ class DiskVolumeSnapshot(DiskVolumeFile):
     async def compress(
         self, algorithm: SnapshotCompressionAlgorithm
     ) -> CompressedDiskVolumeSnapshot:
+        # When is the original file, not compressed, deleted ?
         compressed_snapshot = await compress_volume_snapshot(self.path, algorithm)
         compressed = CompressedDiskVolumeSnapshot(
             path=compressed_snapshot, algorithm=algorithm

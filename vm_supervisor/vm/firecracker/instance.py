@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Union
 import yaml
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
+from aleph_message.models.execution.volume import PersistentVolumeSizeMib
 
 from firecracker.config import (
     BootSource,
@@ -160,18 +161,35 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         """Create a VM snapshot"""
+
+        if not check_disk_space(
+            path=settings.PERSISTENT_VOLUMES_DIR,
+            bytes_to_use=self.resources.message_content.rootfs.size_mib,
+        ):
+            raise NotEnoughDiskSpace(
+                f"Not enough space in path {settings.PERSISTENT_VOLUMES_DIR}"
+            )
+
+        # Why do we need to create a volume, a snapshot and a compressed snapshot at 3x the disk space ?
         volume_path = await create_volume_file(
             self.resources.message_content.rootfs, self.resources.namespace
         )
         volume = DiskVolume(path=volume_path)
 
-        if not check_disk_space(volume.size):
-            raise NotEnoughDiskSpace
-
+        if not check_disk_space(
+            path=settings.SNAPSHOTS_DIR,
+            bytes_to_use=volume.size
+            * 2,  # We need space for the snapshot and for its compressed version
+        ):
+            raise NotEnoughDiskSpace(
+                f"Not enough space in path {settings.SNAPSHOTS_DIR}"
+            )
         snapshot = await volume.take_snapshot()
         compressed_snapshot = await snapshot.compress(
             settings.SNAPSHOT_COMPRESSION_ALGORITHM
         )
+
+        # When is the compressed snapshot deleted ?
 
         if self.latest_snapshot:
             self.latest_snapshot.delete()
