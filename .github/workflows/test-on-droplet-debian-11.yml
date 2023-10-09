@@ -67,6 +67,7 @@ jobs:
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_CHECK_FASTAPI_VM_ID=67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8 >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
       - name: Test Aleph-VM on the Droplet
