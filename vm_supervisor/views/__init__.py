@@ -146,29 +146,29 @@ async def index(request: web.Request):
 
 
 async def status_check_fastapi(request: web.Request):
+    retro_compatibility: bool = request.rel_url.query.get('retro-compatibility', 'false') == 'true'
+
     async with aiohttp.ClientSession() as session:
         result = {
             "index": await status.check_index(session),
-            # Retro-compatibility with old diagnostic VM
-            # "lifespan": await status.check_lifespan(session),
             "environ": await status.check_environ(session),
             "messages": await status.check_messages(session),
             "dns": await status.check_dns(session),
             "ipv4": await status.check_ipv4(session),
-            # "ipv6": await status.check_ipv6(session),
             "internet": await status.check_internet(session),
             "cache": await status.check_cache(session),
             "persistent_storage": await status.check_persistent_storage(session),
             "error_handling": await status.check_error_raised(session),
         }
+        if not retro_compatibility:
+            # These fields were added in the runtime running Debian 12.
+            result = result | {
+                "lifespan": await status.check_lifespan(session),
+                # IPv6 requires extra work from node operators and is not required yet.
+                # "ipv6": await status.check_ipv6(session),
+            }
 
-        if not all(result.values()):
-            return web.json_response(result, status=503)
-
-        # Retro-compatibility with old diagnostic VM
-        result["lifespan"] = await status.check_lifespan(session)
-
-        return web.json_response(result, status=200)
+        return web.json_response(result, status=200 if all(result.values()) else 503)
 
 
 async def status_check_version(request: web.Request):
