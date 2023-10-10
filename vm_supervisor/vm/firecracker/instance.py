@@ -181,13 +181,17 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         self.latest_snapshot = snapshot
         return compressed_snapshot
 
+    def _get_hostname(self) -> str:
+        item_hash_binary: bytes = base64.b16decode(self.vm_hash.encode().upper())
+        return base64.b32encode(item_hash_binary).decode().strip("=").lower()
+
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
         config: Dict[str, Union[str, bool, List[str]]] = {
-            "hostname": str(self.vm_hash),
+            "hostname": self._get_hostname(),
             "disable_root": False,
             "ssh_pwauth": False,
             "ssh_authorized_keys": ssh_authorized_keys,
@@ -237,11 +241,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _create_metadata_file(self) -> bytes:
         """Creates metadata configuration file for cloud-init tool"""
 
-        hostname = base64.b32encode(self.vm_hash).decode().strip("=").lower()
-
         metadata = {
             "instance-id": f"iid-instance-{self.vm_id}",
-            "local-hostname": hostname,
+            "local-hostname": self._get_hostname(),
         }
 
         return json.dumps(metadata).encode()
