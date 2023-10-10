@@ -17,21 +17,21 @@ jobs:
         os_config:
           - os_name: "Debian 11"
             os_image: "debian-11-x64"
-            droplet_prefix: "aleph-vm-ci-debian-11"
+            alias: "debian-11"
             package_build_command: "all-podman-debian-11"
             package_name: "aleph-vm.debian-11.deb"
             concurrency_group: "droplet-aleph-vm-debian-11"
 
           - os_name: "Debian 12"
             os_image: "debian-12-x64"
-            droplet_prefix: "aleph-vm-ci-debian-12"
+            alias: "debian-12"
             package_build_command: "all-podman-debian-12"
             package_name: "aleph-vm.debian-12.deb"
             concurrency_group: "droplet-aleph-vm-debian-12"
 
           - os_name: "Ubuntu 22.04"
             os_image: "ubuntu-22-04-x64"
-            droplet_prefix: "aleph-vm-ci-ubuntu-22-04"
+            alias: "ubuntu-22-04"
             package_build_command: "all-podman-ubuntu-2204"
             package_name: "aleph-vm.ubuntu-22.04.deb"
             concurrency_group: "droplet-aleph-vm-ubuntu-22-04"
@@ -72,7 +72,7 @@ jobs:
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
           --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
-          aleph-vm-ci-${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }} 
+          aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }}
 
       - name: Build Package
         run: |
@@ -82,26 +82,26 @@ jobs:
 
       - name: Wait for the system to setup and boot
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.os_config.droplet_prefix }}  --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
         timeout-minutes: 3
 
       - name: Install Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.os_config.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
-          
+
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
-          
+
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/${{ matrix.os_config.package_name }}"
-          
+
           # Allow some time for IPFS Kubo to start
           sleep 5
-          
+
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> /etc/aleph-vm/supervisor.env"
@@ -110,15 +110,15 @@ jobs:
 
       - name: Test Aleph-VM on the Droplet
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.os_config.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
-          
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+
           sleep 3
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Schedule an instance on the Droplet by faking a call from the scheduler
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.os_config.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
             -H "X-Auth-Signature: test" \
             -d '{"persistent_vms": [], "instances": ["67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"]}' \
@@ -127,4 +127,4 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f aleph-vm-ci-${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }}
+          doctl compute droplet delete -f aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }}
