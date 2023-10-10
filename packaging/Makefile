@@ -40,7 +40,7 @@ firecracker-bins: target-dir build-dir
 
 vmlinux:
 	#curl -fsSL -o ./target/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
-	curl -fsSL -o ./target/vmlinux.bin https://github.com/aleph-im/aleph-vm/releases/download/0.2.2/vmlinux.bin
+	curl -fsSL -o ./target/vmlinux.bin https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy
 	#cp ../kernels/vmlinux.bin ./target/vmlinux.bin
 
 download-ipfs-kubo: target-dir build-dir
