@@ -71,7 +71,7 @@ jobs:
           --region ams3 \
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
-          --ssh-keys b3:ff:08:7f:57:00:fd:7a:14:00:f2:35:0a:f6:e8:55 \
+          --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
           aleph-vm-ci-${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }} 
 
       - name: Build Package
