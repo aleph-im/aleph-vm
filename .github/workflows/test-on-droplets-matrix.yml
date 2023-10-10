@@ -40,10 +40,10 @@ jobs:
         check_vm:
           - alias: "runtime-6770"  # Old runtime, using Debian 11
             item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
-            query_params: "?retro-compatibility=true"
+            query_params: ""
           - alias: "runtime-3fc0"  # New runtime, using Debian 12
             item_hash: "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
-            query_params: ""
+            query_params: "?retro-compatibility=false"
 
     steps:
       - name: Checkout repository
@@ -110,12 +110,14 @@ jobs:
           ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> /etc/aleph-vm/supervisor.env"
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
 
+          # Allow some time for Aleph Supervisor to restart
+          sleep 5
+
       - name: Test Aleph-VM on the Droplet
         if: always()
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
 
-          sleep 3
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
 
