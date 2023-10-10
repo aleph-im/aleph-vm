@@ -42,7 +42,7 @@ jobs:
             item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
             query_params: "?retro-compatibility=true"
           - alias: "runtime-3fc0"  # New runtime, using Debian 12
-            item_hash: "0ef47fb406c06e9f1f896f5a41d8e80bcb2c2d5ac19d53e4e2e35938bba1578b"
+            item_hash: "d5fb1c0818d4e978892032d2d7929b7c62ed0b32aa4c83643ba96659dd5b23d6"
             query_params: ""
 
     steps:
