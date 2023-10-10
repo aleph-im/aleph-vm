@@ -15,12 +15,12 @@ jobs:
 
         # Check compatibility with all supported OSes.
         os_config:
-          - os_name: "Debian 11"
-            os_image: "debian-11-x64"
-            alias: "debian-11"
-            package_build_command: "all-podman-debian-11"
-            package_name: "aleph-vm.debian-11.deb"
-            concurrency_group: "droplet-aleph-vm-debian-11"
+#          - os_name: "Debian 11"
+#            os_image: "debian-11-x64"
+#            alias: "debian-11"
+#            package_build_command: "all-podman-debian-11"
+#            package_name: "aleph-vm.debian-11.deb"
+#            concurrency_group: "droplet-aleph-vm-debian-11"
 
 #          - os_name: "Debian 12"
 #            os_image: "debian-12-x64"
@@ -29,21 +29,21 @@ jobs:
 #            package_name: "aleph-vm.debian-12.deb"
 #            concurrency_group: "droplet-aleph-vm-debian-12"
 
-#          - os_name: "Ubuntu 22.04"
-#            os_image: "ubuntu-22-04-x64"
-#            alias: "ubuntu-22-04"
-#            package_build_command: "all-podman-ubuntu-2204"
-#            package_name: "aleph-vm.ubuntu-22.04.deb"
-#            concurrency_group: "droplet-aleph-vm-ubuntu-22-04"
+          - os_name: "Ubuntu 22.04"
+            os_image: "ubuntu-22-04-x64"
+            alias: "ubuntu-22-04"
+            package_build_command: "all-podman-ubuntu-2204"
+            package_name: "aleph-vm.ubuntu-22.04.deb"
+            concurrency_group: "droplet-aleph-vm-ubuntu-22-04"
 
         # Check compatibility with all supported runtimes.
         check_vm:
           - alias: "runtime-6770"  # Old runtime, using Debian 11
             item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
-            query_params: ""
+            query_params: "?retro-compatibility=true"
           - alias: "runtime-3fc0"  # New runtime, using Debian 12
             item_hash: "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
-            query_params: "?retro-compatibility=false"
+            query_params: ""
 
     steps:
       - name: Checkout repository
