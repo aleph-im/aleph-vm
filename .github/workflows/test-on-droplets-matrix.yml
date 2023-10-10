@@ -1,11 +1,11 @@
-name: "Test on DigitalOcean Droplet"
+name: "Test on DigitalOcean Droplets"
 
 on:
   push
 
 jobs:
   run_on_droplet:
-    name: "Run in DigitalOcean Droplet with ${{ matrix.os_config.os_name }}"
+    name: "Test Droplet with ${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }}"
     runs-on: ubuntu-latest
     concurrency: "${{ matrix.os_config.concurrency_group }}-${{ matrix.check_vm.alias }}"
     timeout-minutes: 10
