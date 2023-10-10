@@ -1,0 +1,130 @@
+name: "Test on DigitalOcean Droplet"
+
+on:
+  push
+
+jobs:
+  run_on_droplet:
+    name: "Run in DigitalOcean Droplet with ${{ matrix.os_name }}"
+    runs-on: ubuntu-latest
+    concurrency: "${{ matrix.concurrency_group }}-${{ matrix.check_vm_alias }}";
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+
+        # Check compatibility with all supported OSes.
+        os_config:
+          - os_name: "Debian 11"
+            os_image: "debian-11-x64"
+            droplet_prefix: "aleph-vm-ci-debian-11"
+            package_build_command: "all-podman-debian-11"
+            package_name: "aleph-vm.debian-11.deb"
+            concurrency_group: "droplet-aleph-vm-debian-11"
+
+          - os_name: "Debian 12"
+            os_image: "debian-12-x64"
+            droplet_prefix: "aleph-vm-ci-debian-12"
+            package_build_command: "all-podman-debian-12"
+            package_name: "aleph-vm.debian-12.deb"
+            concurrency_group: "droplet-aleph-vm-debian-12"
+
+          - os_name: "Ubuntu 22.04"
+            os_image: "ubuntu-22-04-x64"
+            droplet_prefix: "aleph-vm-ci-ubuntu-22-04"
+            package_build_command: "all-podman-ubuntu-2204"
+            package_name: "aleph-vm.ubuntu-22.04.deb"
+            concurrency_group: "droplet-aleph-vm-ubuntu-22-04"
+
+        # Check compatibility with all supported runtimes.
+        check_vm:
+          - check_vm_alias: "runtime-6770"  # Old runtime, using Debian 11
+            check_vm_id: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
+          - check_vm_alias: "runtime-3fc0"  # New runtime, using Debian 12
+            check_vm_id: "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Setup SSH private key
+        run: |
+          mkdir ~/.ssh
+          echo $DIGITALOCEAN_SSH_PRIVATE_KEY | base64 --decode > ~/.ssh/id_ed25519
+          chmod 0700 ~/.ssh
+          chmod 0600 ~/.ssh/id_ed25519
+        env:
+          DIGITALOCEAN_SSH_PRIVATE_KEY: ${{ secrets.DIGITALOCEAN_SSH_PRIVATE_KEY }}
+
+      - name: Create the Droplet
+        run: |
+          doctl compute droplet create \
+          --image ${{ matrix.os_image }} \
+          --size c-4 \
+          --region ams3 \
+          --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
+          --enable-ipv6 \
+          --ssh-keys b3:ff:08:7f:57:00:fd:7a:14:00:f2:35:0a:f6:e8:55 \
+          aleph-vm-ci-${{ matrix.os_name }}-${{ matrix.check_vm_alias }} 
+
+      - name: Build Package
+        run: |
+          cd packaging && make ${{ matrix.package_build_command }} && cd ..
+          ls packaging/target
+
+
+      - name: Wait for the system to setup and boot
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.droplet_prefix }}  --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
+        timeout-minutes: 3
+
+      - name: Install Aleph-VM on the Droplet
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
+          
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
+          
+          scp packaging/target/${{ matrix.package_name }} root@${DROPLET_IPV4}:/opt
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/${{ matrix.package_name }}"
+          
+          # Allow some time for IPFS Kubo to start
+          sleep 5
+          
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm_id }} >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> /etc/aleph-vm/supervisor.env"
+          ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
+
+      - name: Test Aleph-VM on the Droplet
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          
+          sleep 3
+          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
+          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
+
+      - name: Schedule an instance on the Droplet by faking a call from the scheduler
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get ${{ matrix.droplet_prefix }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+          curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
+            -H "X-Auth-Signature: test" \
+            -d '{"persistent_vms": [], "instances": ["67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"]}' \
+            "http://${DROPLET_IPV4}:4020/control/allocations"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          doctl compute droplet delete -f ${{ matrix.droplet_prefix }}
