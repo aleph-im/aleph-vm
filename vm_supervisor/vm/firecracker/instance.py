@@ -181,7 +181,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         self.latest_snapshot = snapshot
         return compressed_snapshot
 
-    def _get_vm_hostname(self) -> str:
+    def _get_hostname(self) -> str:
         item_hash_binary: bytes = base64.b16decode(self.vm_hash.encode().upper())
         return base64.b32encode(item_hash_binary).decode().strip("=").lower()
 
@@ -191,7 +191,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
         config: Dict[str, Union[str, bool, List[str]]] = {
-            "hostname": self._get_vm_hostname(),
+            "hostname": self._get_hostname(),
             "disable_root": False,
             "ssh_pwauth": False,
             "ssh_authorized_keys": ssh_authorized_keys,
@@ -243,7 +243,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         metadata = {
             "instance-id": f"iid-instance-{self.vm_id}",
-            "local-hostname": self._get_vm_hostname(),
+            "local-hostname": self._get_hostname(),
         }
 
         return json.dumps(metadata).encode()
