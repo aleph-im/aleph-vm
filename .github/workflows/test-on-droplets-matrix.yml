@@ -7,7 +7,7 @@ jobs:
   run_on_droplet:
     name: "Run in DigitalOcean Droplet with ${{ matrix.os_name }}"
     runs-on: ubuntu-latest
-    concurrency: "${{ matrix.concurrency_group }}-${{ matrix.check_vm_alias }}";
+    concurrency: "${{ matrix.concurrency_group }}-${{ matrix.check_vm_alias }}"
     timeout-minutes: 10
 
     strategy:
