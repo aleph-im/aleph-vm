@@ -127,4 +127,4 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f ${{ matrix.os_config.droplet_prefix }}
+          doctl compute droplet delete -f aleph-vm-ci-${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }}
