@@ -78,6 +78,10 @@ jobs:
 
       - name: Build Package
         run: |
+          echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
+          echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
+          echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
+          echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
           cd packaging && make ${{ matrix.os_config.package_build_command }} && cd ..
           ls packaging/target
 
@@ -102,15 +106,6 @@ jobs:
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt install -y /opt/${{ matrix.os_config.package_name }}"
 
           # Allow some time for IPFS Kubo to start
-          sleep 5
-
-          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> /etc/aleph-vm/supervisor.env"
-          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> /etc/aleph-vm/supervisor.env"
-          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> /etc/aleph-vm/supervisor.env"
-          ssh root@${DROPLET_IPV4} "echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> /etc/aleph-vm/supervisor.env"
-          ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
-
-          # Allow some time for Aleph Supervisor to restart
           sleep 5
 
       - name: Test Aleph-VM on the Droplet
