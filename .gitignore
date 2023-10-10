@@ -16,6 +16,7 @@ node_modules
 /examples/example_http_rust/target/
 /examples/example_django/static/admin/
 /runtimes/aleph-debian-11-python/rootfs/
+/runtimes/aleph-debian-12-python/rootfs/
 /packaging/aleph-vm/opt/
 /packaging/target/
 /packaging/repositories/*/db/
