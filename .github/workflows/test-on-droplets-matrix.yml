@@ -42,7 +42,7 @@ jobs:
             item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
             query_params: "?retro-compatibility=true"
           - alias: "runtime-3fc0"  # New runtime, using Debian 12
-            item_hash: "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+            item_hash: "14c92c9db5820068a1a0232e523209c007a15ed07720bf08867819a13a4ab900"
             query_params: ""
 
     steps:
@@ -84,7 +84,6 @@ jobs:
           echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
           cd packaging && make ${{ matrix.os_config.package_build_command }} && cd ..
           ls packaging/target
-
 
       - name: Wait for the system to setup and boot
         run: |
