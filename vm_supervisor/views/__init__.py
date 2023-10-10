@@ -146,7 +146,9 @@ async def index(request: web.Request):
 
 
 async def status_check_fastapi(request: web.Request):
-    retro_compatibility: bool = request.rel_url.query.get('retro-compatibility', 'false') == 'true'
+    retro_compatibility: bool = (
+        request.rel_url.query.get("retro-compatibility", "false") == "true"
+    )
 
     async with aiohttp.ClientSession() as session:
         result = {
