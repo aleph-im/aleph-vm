@@ -41,8 +41,8 @@ jobs:
           - alias: "runtime-6770"  # Old runtime, using Debian 11
             item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
             query_params: "?retro-compatibility=true"
-          - alias: "runtime-3fc0"  # New runtime, using Debian 12
-            item_hash: "14c92c9db5820068a1a0232e523209c007a15ed07720bf08867819a13a4ab900"
+          - alias: "runtime-3e39"  # New runtime, using Debian 12
+            item_hash: "3e39ead937d6490647b1fb28db7d9ae4522af8da4349a210c06591cc53d6199b"
             query_params: ""
 
     steps:
