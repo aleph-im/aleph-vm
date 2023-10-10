@@ -149,8 +149,8 @@ async def status_check_fastapi(request: web.Request):
     async with aiohttp.ClientSession() as session:
         result = {
             "index": await status.check_index(session),
-            # TODO: lifespan is a new feature that requires a new runtime to be deployed
-            "lifespan": await status.check_lifespan(session),
+            # Retro-compatibility with old diagnostic VM
+            # "lifespan": await status.check_lifespan(session),
             "environ": await status.check_environ(session),
             "messages": await status.check_messages(session),
             "dns": await status.check_dns(session),
@@ -161,7 +161,14 @@ async def status_check_fastapi(request: web.Request):
             "persistent_storage": await status.check_persistent_storage(session),
             "error_handling": await status.check_error_raised(session),
         }
-        return web.json_response(result, status=200 if all(result.values()) else 503)
+
+        if not all(result.values()):
+            return web.json_response(result, status=503)
+
+        # Retro-compatibility with old diagnostic VM
+        result["lifespan"] = await status.check_lifespan(session)
+
+        return web.json_response(result, status=200)
 
 
 async def status_check_version(request: web.Request):
