@@ -25,10 +25,10 @@ jobs:
           sudo chown $(whoami) /opt/packages
 
       - run: |
-          pip3 install aleph-sdk-python
+          pip3 install hatch
 
       - run: |
-           hatch build
+          hatch build
 
       - run: |
           ls
