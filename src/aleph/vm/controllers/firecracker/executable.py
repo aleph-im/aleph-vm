@@ -29,7 +29,15 @@ except ImportError:
     psutil = None  # type: ignore [assignment]
 
 logger = logging.getLogger(__name__)
-set_start_method("spawn")
+
+try:
+    set_start_method("spawn")
+except RuntimeError as error:
+    if error.args == ("context has already been set",):
+        logger.info("Start method has already been set")
+        pass
+    else:
+        raise error
 
 
 class ResourceDownloadError(ClientResponseError):
