@@ -11,6 +11,8 @@ from typing import Any, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
 
+from aleph.vm.orchestrator.utils import is_command_available
+
 logger = logging.getLogger(__name__)
 
 Url = NewType("Url", str)
@@ -273,6 +275,9 @@ class Settings(BaseSettings):
             assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
             assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
             assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
+
+        assert is_command_available("setfacl"), "Command `setfacl` not found, run `apt install acl`"
+        assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
