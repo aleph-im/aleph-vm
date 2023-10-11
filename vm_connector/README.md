@@ -2,7 +2,7 @@
 
 Service to schedule the execution of Aleph VM functions 
 for the [Aleph.im](https://aleph.im/) project and assist 
-[VM Supervisors](../vm_supervisor) with operations related 
+[VM Supervisors](../src/aleph/vm/orchestrator) with operations related 
 to the Aleph network.
 
 ## 1. Supported platforms

@@ -1,7 +1,5 @@
-import os
-
 from django.http import JsonResponse
-from django.views.generic import ListView, FormView, CreateView
+from django.views.generic import CreateView, ListView
 
 from .forms import CommentForm
 from .models import Article
