@@ -21,31 +21,15 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install mypy pytest black isort flake8
+          python3 -m pip install hatch
 
-      - name: Test with Black
+      - name: Test style wth ruff, black and isoort
         run: |
-          black --check ./vm_supervisor
-          black --check ./runtimes/aleph-debian-11-python/init1.py
-          black --check ./examples/example_fastapi/
+          hatch run lint:style
 
-      - name: Test with isort
+      - name: Test typing with Mypy
         run: |
-          isort --check-only --profile=black ./vm_supervisor
-          isort --check-only --profile=black ./runtimes/aleph-debian-11-python/init1.py
-          isort --check-only --profile=black ./examples/example_fastapi/
-
-      - name: Test with MyPy
-        run: |
-          mypy --ignore-missing-imports ./vm_supervisor
-          mypy --ignore-missing-imports ./runtimes/aleph-debian-11-python/init1.py
-          mypy --ignore-missing-imports ./examples/example_fastapi/
-
-      - name: Test with flake8
-        run: |
-          flake8 --extend-ignore E501 ./vm_supervisor
-          flake8 --extend-ignore E501,E402 ./runtimes/aleph-debian-11-python/init1.py
-          flake8 --extend-ignore E501,E402 ./examples/example_fastapi/
+          hatch run lint:typing
 
   code-quality-shell:
     runs-on: ubuntu-22.04
