@@ -6,9 +6,7 @@ debian-package: debian-package-resources debian-package-code
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm
 	mkdir -p ./aleph-vm/opt/aleph-vm
-	cp -r ../vm_supervisor ./aleph-vm/opt/aleph-vm/
-	cp -r ../guest_api ./aleph-vm/opt/aleph-vm/
-	cp -r ../firecracker ./aleph-vm/opt/aleph-vm/
+	cp -r ../src/aleph ./aleph-vm/opt/aleph-vm/
 
 	# Fake data for diagnostic and benchmarks
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/
@@ -49,7 +47,7 @@ download-ipfs-kubo: target-dir build-dir
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
-	python3 ./version_from_git.py --inplace __version__ ../vm_supervisor/version.py
+	python3 ./version_from_git.py --inplace __version__ ../src/aleph/vm/orchestrator/version.py
 
 build-dir:
 	mkdir -p target

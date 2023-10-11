@@ -6,7 +6,7 @@ For production using official Debian packages.
 
 ## 1. Requirements
 
-- A [supported Linux server](../vm_supervisor/README.md#1-supported-platforms)
+- A [supported Linux server](../src/aleph/vm/orchestrator/README.md#1-supported-platforms)
 - A public domain name from a registrar and top level domain you trust. 
 
 In order to run an official Aleph.im Compute Resource Node (CRN), you will also need the following resources:
@@ -34,7 +34,7 @@ sudo apt install -y docker.io
 docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
 ```
 
-Then install the [VM-Supervisor](../vm_supervisor/README.md) using the official Debian package.
+Then install the [VM-Supervisor](../src/aleph/vm/orchestrator/README.md) using the official Debian package.
 The procedure is similar for updates.
 ```shell
 sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.2.9-rc1/aleph-vm.ubuntu-22.04.deb

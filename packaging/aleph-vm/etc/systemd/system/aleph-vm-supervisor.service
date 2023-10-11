@@ -10,7 +10,7 @@ WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
-ExecStart=python3 -m vm_supervisor --print-settings --very-verbose
+ExecStart=python3 -m aleph.vm.orchestrator --print-settings --very-verbose
 Restart=always
 RestartSec=10s
 

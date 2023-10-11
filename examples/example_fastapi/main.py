@@ -10,15 +10,16 @@ from pathlib import Path
 from typing import Dict
 
 import aiohttp
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+from pip._internal.operations.freeze import freeze
+from pydantic import BaseModel
+
 from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
 from aleph.sdk.vm.cache import VmCache
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
-from pip._internal.operations.freeze import freeze
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 logger.debug("imports done")
@@ -83,18 +84,14 @@ async def environ() -> Dict[str, str]:
 async def read_aleph_messages():
     """Read data from Aleph using the Aleph Client library."""
     async with AlephClient() as client:
-        data = await client.get_messages(
-            hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"]
-        )
+        data = await client.get_messages(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
     return {"Messages": data}
 
 
 @app.get("/dns")
 async def resolve_dns_hostname():
     """Check if DNS resolution is working."""
-    info_inet, info_inet6 = socket.getaddrinfo(
-        "example.org", 80, proto=socket.IPPROTO_TCP
-    )
+    info_inet, info_inet6 = socket.getaddrinfo("example.org", 80, proto=socket.IPPROTO_TCP)
     ipv4 = info_inet[4][0]
     ipv6 = info_inet6[4][0]
     return {
@@ -125,9 +122,7 @@ async def connect_ipv6():
     The webserver on that address returns a 404 error, so we accept that response code.
     """
     timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(), timeout=timeout
-    ) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
         async with session.get("https://[2620:fe::fe]") as resp:
             # We expect this endpoint to return a 404 error
             if resp.status != 404:
@@ -139,9 +134,7 @@ async def connect_ipv6():
 async def read_internet():
     """Connect the aleph.im official website to check Internet connectivity."""
     timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(), timeout=timeout
-    ) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
         async with session.get("https://aleph.im/") as resp:
             resp.raise_for_status()
             return {"result": resp.status, "headers": resp.headers}
@@ -151,9 +144,7 @@ async def read_internet():
 async def post_a_message():
     """Post a message on the Aleph network"""
 
-    account = await RemoteAccount.from_crypto_host(
-        host="http://localhost", unix_socket="/tmp/socat-socket"
-    )
+    account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
 
     content = {
         "date": datetime.utcnow().isoformat(),
@@ -269,9 +260,7 @@ def platform_pip_freeze():
 async def aleph_event(event):
     print("aleph_event", event)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
-        async with session.get(
-            "https://official.aleph.cloud/api/v0/info/public.json"
-        ) as resp:
+        async with session.get("https://official.aleph.cloud/api/v0/info/public.json") as resp:
             print("RESP", resp)
             resp.raise_for_status()
     return {"result": "Good"}
