@@ -8,5 +8,4 @@ app = FastAPI()
 async def root():
     data = range(10)
     df = pandas.DataFrame(data)
-    return Response(content=df.to_html(),
-                    media_type='text/html')
+    return Response(content=df.to_html(), media_type="text/html")

@@ -1,14 +1,14 @@
 import json
 import logging
-from typing import Optional, Dict, Union
+from typing import Dict, Optional, Union
 
 import aiohttp
 from aleph_client.asynchronous import create_post
 from aleph_client.chains.common import get_fallback_private_key
 from aleph_client.chains.ethereum import ETHAccount
 from aleph_client.types import StorageEnum
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from .conf import settings
@@ -27,8 +27,7 @@ def read_root():
 async def get_latest_message_amend(ref: str, sender: str) -> Optional[Dict]:
     async with aiohttp.ClientSession() as session:
         url = (
-            f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1"
-            f"&refs={ref}&addresses={sender}"
+            f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1" f"&refs={ref}&addresses={sender}"
         )
         resp = await session.get(url)
         resp.raise_for_status()

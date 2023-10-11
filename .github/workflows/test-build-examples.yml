@@ -19,7 +19,7 @@ jobs:
       - run: |
           sudo apt-get -y update
           sudo apt-get -y upgrade
-          sudo apt-get -y install python3-pip python3-venv squashfs-tools build-essential
+          sudo apt-get -y install python3-pip python3-venv squashfs-tools build-essential python3-nftables
 
           sudo mkdir /opt/packages
           sudo chown $(whoami) /opt/packages
@@ -28,7 +28,7 @@ jobs:
           pip3 install aleph-sdk-python
 
       - run: |
-          ls -la
+           hatch build
 
       - run: |
           ls
