@@ -10,7 +10,7 @@ else
   DOCKER_COMMAND=docker
 fi
 
-$DOCKER_COMMAND build -t alephim/vm-supervisor-dev -f docker/vm_supervisor-dev.dockerfile .
+$DOCKER_COMMAND build -t alephim/vm-supervisor-dev -f docker/orchestrator-dev.dockerfile .
 
 $DOCKER_COMMAND run -ti --rm \
   -v "$(pwd)/runtimes/aleph-debian-11-python/rootfs.squashfs:/opt/aleph-vm/runtimes/aleph-debian-11-python/rootfs.squashfs:ro" \

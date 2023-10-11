@@ -1,0 +1,255 @@
+import asyncio
+import base64
+import json
+import logging
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Optional, Union
+
+import yaml
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.environment import MachineResources
+
+from aleph.vm.hypervisors.firecracker.config import (
+    BootSource,
+    Drive,
+    FirecrackerConfig,
+    MachineConfig,
+    NetworkInterface,
+    Vsock,
+)
+from aleph.vm.hypervisors.firecracker.microvm import setfacl
+from aleph.vm.orchestrator.conf import settings
+from aleph.vm.orchestrator.network.interfaces import TapInterface
+from aleph.vm.orchestrator.snapshots import (
+    CompressedDiskVolumeSnapshot,
+    DiskVolume,
+    DiskVolumeSnapshot,
+)
+from aleph.vm.orchestrator.storage import (
+    NotEnoughDiskSpace,
+    check_disk_space,
+    create_devmapper,
+    create_volume_file,
+)
+from aleph.vm.orchestrator.utils import HostNotFoundError, ping, run_in_subprocess
+
+from .executable import (
+    AlephFirecrackerExecutable,
+    AlephFirecrackerResources,
+    BaseConfiguration,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class AlephInstanceResources(AlephFirecrackerResources):
+    async def download_runtime(self):
+        self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
+        assert self.rootfs_path.is_block_device(), f"Runtime not found on {self.rootfs_path}"
+
+    async def download_all(self):
+        await asyncio.gather(
+            self.download_kernel(),
+            self.download_runtime(),
+            self.download_volumes(),
+        )
+
+
+class AlephFirecrackerInstance(AlephFirecrackerExecutable):
+    vm_configuration: BaseConfiguration
+    resources: AlephInstanceResources
+    latest_snapshot: Optional[DiskVolumeSnapshot]
+    is_instance = True
+
+    def __init__(
+        self,
+        vm_id: int,
+        vm_hash: ItemHash,
+        resources: AlephInstanceResources,
+        enable_networking: bool = False,
+        enable_console: Optional[bool] = None,
+        hardware_resources: MachineResources = MachineResources(),
+        tap_interface: Optional[TapInterface] = None,
+    ):
+        self.latest_snapshot = None
+        super().__init__(
+            vm_id,
+            vm_hash,
+            resources,
+            enable_networking,
+            enable_console,
+            hardware_resources,
+            tap_interface,
+        )
+
+    async def setup(self):
+        logger.debug("instance setup started")
+        await setfacl()
+
+        cloud_init_drive = await self._create_cloud_init_drive()
+
+        self._firecracker_config = FirecrackerConfig(
+            boot_source=BootSource(
+                kernel_image_path=Path(self.fvm.enable_kernel(self.resources.kernel_image_path)),
+                boot_args=BootSource.args(enable_console=self.enable_console, writable=True),
+            ),
+            drives=[
+                Drive(
+                    drive_id="rootfs",
+                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
+                    is_root_device=True,
+                    is_read_only=False,
+                ),
+                cloud_init_drive,
+            ]
+            + [
+                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                for volume in self.resources.volumes
+            ],
+            machine_config=MachineConfig(
+                vcpu_count=self.hardware_resources.vcpus,
+                mem_size_mib=self.hardware_resources.memory,
+            ),
+            vsock=Vsock(),
+            network_interfaces=[NetworkInterface(iface_id="eth0", host_dev_name=self.tap_interface.device_name)]
+            if self.enable_networking
+            else [],
+        )
+
+    async def wait_for_init(self) -> None:
+        """Wait for the init process of the instance to be ready."""
+        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
+
+        ip = self.get_vm_ip()
+        if not ip:
+            msg = "Host IP not available"
+            raise ValueError(msg)
+
+        ip = ip.split("/", 1)[0]
+
+        attempts = 30
+        timeout_seconds = 2.0
+
+        for attempt in range(attempts):
+            try:
+                await ping(ip, packets=1, timeout=timeout_seconds)
+                return
+            except HostNotFoundError:
+                if attempt < (attempts - 1):
+                    continue
+                else:
+                    raise
+
+    async def configure(self):
+        """Configure the VM by sending configuration info to it's init"""
+        # Configuration of instances is sent during `self.setup()` by passing it via a volume.
+        pass
+
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        """Create a VM snapshot"""
+        volume_path = await create_volume_file(self.resources.message_content.rootfs, self.resources.namespace)
+        volume = DiskVolume(path=volume_path)
+
+        if not check_disk_space(volume.size):
+            raise NotEnoughDiskSpace
+
+        snapshot = await volume.take_snapshot()
+        compressed_snapshot = await snapshot.compress(settings.SNAPSHOT_COMPRESSION_ALGORITHM)
+
+        if self.latest_snapshot:
+            self.latest_snapshot.delete()
+
+        self.latest_snapshot = snapshot
+        return compressed_snapshot
+
+    def _get_hostname(self) -> str:
+        item_hash_binary: bytes = base64.b16decode(self.vm_hash.encode().upper())
+        return base64.b32encode(item_hash_binary).decode().strip("=").lower()
+
+    def _encode_user_data(self) -> bytes:
+        """Creates user data configuration file for cloud-init tool"""
+
+        ssh_authorized_keys = self.resources.message_content.authorized_keys or []
+
+        config: dict[str, Union[str, bool, list[str]]] = {
+            "hostname": self._get_hostname(),
+            "disable_root": False,
+            "ssh_pwauth": False,
+            "ssh_authorized_keys": ssh_authorized_keys,
+            # Avoid the resize error because we already do it on the VM disk creation stage
+            "resize_rootfs": False,
+        }
+
+        cloud_config_header = "#cloud-config\n"
+        config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
+
+        return (cloud_config_header + config_output).encode()
+
+    def _create_network_file(self) -> bytes:
+        """Creates network configuration file for cloud-init tool"""
+
+        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
+
+        ip = self.get_vm_ip()
+        route = self.get_vm_route()
+        ipv6 = self.get_vm_ipv6()
+        ipv6_gateway = self.get_vm_ipv6_gateway()
+
+        network = {
+            "ethernets": {
+                "eth0": {
+                    "dhcp4": False,
+                    "dhcp6": False,
+                    "addresses": [ip, ipv6],
+                    "gateway4": route,
+                    "gateway6": ipv6_gateway,
+                    "nameservers": {
+                        "addresses": settings.DNS_NAMESERVERS,
+                    },
+                },
+            },
+            "version": 2,
+        }
+
+        return yaml.safe_dump(network, default_flow_style=False, sort_keys=False).encode()
+
+    def _create_metadata_file(self) -> bytes:
+        """Creates metadata configuration file for cloud-init tool"""
+
+        metadata = {
+            "instance-id": f"iid-instance-{self.vm_id}",
+            "local-hostname": self._get_hostname(),
+        }
+
+        return json.dumps(metadata).encode()
+
+    async def _create_cloud_init_drive(self) -> Drive:
+        """Creates the cloud-init volume to configure and setup the VM"""
+
+        disk_image_path = settings.EXECUTION_ROOT / f"cloud-init-{self.vm_hash}.img"
+
+        with NamedTemporaryFile() as user_data_config_file:
+            user_data = self._encode_user_data()
+            user_data_config_file.write(user_data)
+            user_data_config_file.flush()
+            with NamedTemporaryFile() as network_config_file:
+                network_config = self._create_network_file()
+                network_config_file.write(network_config)
+                network_config_file.flush()
+                with NamedTemporaryFile() as metadata_config_file:
+                    metadata_config = self._create_metadata_file()
+                    metadata_config_file.write(metadata_config)
+                    metadata_config_file.flush()
+
+                    await run_in_subprocess(
+                        [
+                            "cloud-localds",
+                            f"--network-config={network_config_file.name}",
+                            str(disk_image_path),
+                            user_data_config_file.name,
+                            metadata_config_file.name,
+                        ]
+                    )
+
+        return self.fvm.enable_drive(disk_image_path, read_only=True)

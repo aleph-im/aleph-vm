@@ -1,4 +1,4 @@
-# This is mainly a copy of the installation instructions from [vm_supervisor/README.md]
+# This is mainly a copy of the installation instructions from [orchestrator/README.md]
 
 FROM debian:bullseye
 

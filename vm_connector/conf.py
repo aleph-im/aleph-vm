@@ -24,8 +24,7 @@ class ConnectorSettings(BaseSettings):
 
     def display(self) -> str:
         return "\n".join(
-            f"{annotation:<17} = {getattr(self, annotation)}"
-            for annotation, value in self.__annotations__.items()
+            f"{annotation:<17} = {getattr(self, annotation)}" for annotation, value in self.__annotations__.items()
         )
 
     class Config:

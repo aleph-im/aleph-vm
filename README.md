@@ -25,7 +25,7 @@ Install Aleph-VM to run an Aleph.im Compute Resource Node easily from official p
 For development and testing, install Aleph-VM from source.
 
 1. Install the [VM-Connector](./vm_connector/README.md)
-2. Install the [VM-Supervisor](./vm_supervisor/README.md).
+2. Install the [VM-Supervisor](src/aleph/vm/orchestrator/README.md).
 3. Install and [configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
 
 ## 3. Create and run an Aleph Program 
@@ -43,7 +43,7 @@ The rest of this document focuses on how to run an Aleph-VM node that hosts and 
 
 Actually runs the programs in a secure environment on virtualization enabled systems. 
 
-See [vm_supervisor/README.md](./vm_supervisor/README.md).
+See [vm_supervisor/README.md](src/aleph/vm/orchestrator/README.md).
 
 ### VM Connector
 

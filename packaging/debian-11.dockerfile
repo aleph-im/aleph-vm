@@ -9,9 +9,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-COPY ../vm_supervisor ./vm_supervisor
-COPY ../guest_api ./guest_api
-COPY ../firecracker ./firecracker
+COPY ../src/aleph/ ./src/aleph
 COPY ../packaging ./packaging
 COPY ../kernels ./kernels
 

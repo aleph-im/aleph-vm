@@ -144,9 +144,7 @@ def setup_network(
 
     # Forward compatibility with future supervisors that pass the mask with the IP.
     if ipv4 and ("/" not in ipv4):
-        logger.warning(
-            "Not passing the mask with the IP is deprecated and will be unsupported"
-        )
+        logger.warning("Not passing the mask with the IP is deprecated and will be unsupported")
         ipv4 = f"{ipv4}/24"
 
     addresses = [ip for ip in [ipv4, ipv6] if ip]
@@ -233,9 +231,7 @@ async def wait_for_lifespan_event_completion(
         )
 
 
-async def setup_code_asgi(
-    code: bytes, encoding: Encoding, entrypoint: str
-) -> ASGIApplication:
+async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
     # Allow importing packages from /opt/packages, give it priority
     sys.path.insert(0, "/opt/packages")
 
@@ -273,9 +269,7 @@ async def setup_code_asgi(
     return ASGIApplication(app)
 
 
-def setup_code_executable(
-    code: bytes, encoding: Encoding, entrypoint: str
-) -> subprocess.Popen:
+def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> subprocess.Popen:
     logger.debug("Extracting code")
     if encoding == Encoding.squashfs:
         path = f"/opt/code/{entrypoint}"
@@ -312,20 +306,14 @@ async def setup_code(
     interface: Interface,
 ) -> Union[ASGIApplication, subprocess.Popen]:
     if interface == Interface.asgi:
-        return await setup_code_asgi(
-            code=code, encoding=encoding, entrypoint=entrypoint
-        )
+        return await setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
     elif interface == Interface.executable:
-        return setup_code_executable(
-            code=code, encoding=encoding, entrypoint=entrypoint
-        )
+        return setup_code_executable(code=code, encoding=encoding, entrypoint=entrypoint)
     else:
         raise ValueError("Invalid interface. This should never happen.")
 
 
-async def run_python_code_http(
-    application: ASGIApplication, scope: dict
-) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+async def run_python_code_http(application: ASGIApplication, scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
@@ -334,11 +322,7 @@ async def run_python_code_http(
         scope_body: bytes = scope.pop("body")
 
         async def receive():
-            type_ = (
-                "http.request"
-                if scope["type"] in ("http", "websocket")
-                else "aleph.message"
-            )
+            type_ = "http.request" if scope["type"] in ("http", "websocket") else "aleph.message"
             return {"type": type_, "body": scope_body, "more_body": False}
 
         send_queue: asyncio.Queue = asyncio.Queue()
@@ -389,9 +373,7 @@ async def make_request(session, scope):
         data=scope.get("body", None),
     ) as resp:
         headers = {
-            "headers": [
-                (a.encode("utf-8"), b.encode("utf-8")) for a, b in resp.headers.items()
-            ],
+            "headers": [(a.encode("utf-8"), b.encode("utf-8")) for a, b in resp.headers.items()],
             "status": resp.status,
         }
         body = {"body": await resp.content.read()}
@@ -450,9 +432,7 @@ async def process_instruction(
             logger.debug("Application terminated")
             # application.communicate()
         else:
-            await wait_for_lifespan_event_completion(
-                application=application, event="shutdown"
-            )
+            await wait_for_lifespan_event_completion(application=application, event="shutdown")
         yield b"STOP\n"
         logger.debug("Supervisor informed of halt")
         raise ShutdownException
@@ -460,9 +440,7 @@ async def process_instruction(
         # Execute shell commands in the form `!ls /`
         msg = instruction[1:].decode()
         try:
-            process_output = subprocess.check_output(
-                msg, stderr=subprocess.STDOUT, shell=True
-            )
+            process_output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
             yield process_output
         except subprocess.CalledProcessError as error:
             yield str(error).encode() + b"\n" + error.output
@@ -485,9 +463,7 @@ async def process_instruction(
                     application=application, scope=payload.scope
                 )
             elif interface == Interface.executable:
-                headers, body, output, output_data = await run_executable_http(
-                    scope=payload.scope
-                )
+                headers, body, output, output_data = await run_executable_http(scope=payload.scope)
             else:
                 raise ValueError("Unknown interface. This should never happen")
 
@@ -604,9 +580,7 @@ async def main() -> None:
             logger.debug(f"<<<\n\n{data_to_print}\n\n>>>")
 
         try:
-            async for result in process_instruction(
-                instruction=data, interface=config.interface, application=app
-            ):
+            async for result in process_instruction(instruction=data, interface=config.interface, application=app):
                 writer.write(result)
                 await writer.drain()
 
