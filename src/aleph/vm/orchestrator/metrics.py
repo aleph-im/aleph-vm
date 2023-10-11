@@ -14,7 +14,6 @@ except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
 
-
 from .conf import make_db_url, settings
 
 Session: sessionmaker
