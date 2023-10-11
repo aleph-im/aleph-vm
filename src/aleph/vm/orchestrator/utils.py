@@ -98,6 +98,14 @@ async def run_in_subprocess(command: list[str], check: bool = True, stdin_input:
     return stdout
 
 
+def is_command_available(command):
+    try:
+        subprocess.check_output(["which", command], stderr=subprocess.STDOUT)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def fix_message_validation(message: dict) -> dict:
     """Patch a fake message program to pass validation."""
     message["item_content"] = json.dumps(message["content"])
