@@ -114,7 +114,7 @@ jobs:
           export FASTAPI_URL="http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
 
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
-          if curl --retry 5 --max-time 10 --fail ${FASTAPI_URL}
+          if $(curl --retry 5 --max-time 10 --fail ${FASTAPI_URL}); then
           else
             # If the first execution fails, restart supervisor and try again
             ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
@@ -122,8 +122,6 @@ jobs:
 
             curl --retry 5 --max-time 10 --fail ${FASTAPI_URL}
           fi
-          
-          
 
       - name: Schedule an instance on the Droplet by faking a call from the scheduler
         run: |
