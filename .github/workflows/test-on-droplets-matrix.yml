@@ -120,6 +120,8 @@ jobs:
       - name: Test Aleph-VM on the Droplet again restarting the server first
         if: steps.test-aleph-vm.outcome == 'failure'
         run: |
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+
           # If the first execution fails, restart supervisor and try again
           ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
           sleep 5
