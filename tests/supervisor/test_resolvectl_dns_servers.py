@@ -1,6 +1,7 @@
 # Avoid failures linked to nftables when initializing the global VmPool object
 import os
 from unittest import mock
+
 from aleph.vm.orchestrator.conf import (
     resolvectl_dns_servers,
     resolvectl_dns_servers_ipv4,
