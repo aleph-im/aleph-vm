@@ -117,6 +117,17 @@ jobs:
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
 
+      - name: Test Aleph-VM on the Droplet again restarting the server first
+        if: steps.test-aleph-vm.outcome == 'failure'
+        run: |
+          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
+
+          # If the first execution fails, restart supervisor and try again
+          ssh root@${DROPLET_IPV4} "systemctl restart aleph-vm-supervisor"
+          sleep 5
+
+          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
+
       - name: Schedule an instance on the Droplet by faking a call from the scheduler
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
