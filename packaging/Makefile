@@ -43,7 +43,7 @@ vmlinux:
 
 download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
-	curl -fsSL https://dist.ipfs.tech/kubo/v0.21.0/kubo_v0.21.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
