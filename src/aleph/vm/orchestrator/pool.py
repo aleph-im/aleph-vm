@@ -6,10 +6,11 @@ from typing import Optional
 from aleph_message.models import ExecutableMessage, ItemHash
 from aleph_message.models.execution.instance import InstanceContent
 
-from .conf import settings
+from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+
+from ..conf import settings
+from ..network.hostnetwork import Network, make_ipv6_allocator
 from .models import ExecutableContent, VmExecution
-from .network.hostnetwork import Network, make_ipv6_allocator
-from .snapshot_manager import SnapshotManager
 from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from typing import Any, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
 
-from aleph.vm.orchestrator.utils import is_command_available
+from aleph.vm.utils import is_command_available
 
 logger = logging.getLogger(__name__)
 

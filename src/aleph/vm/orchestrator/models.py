@@ -21,16 +21,16 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
-from .conf import settings
+from ..conf import settings
 from .metrics import ExecutionRecord, save_execution_data, save_record
-from .network.interfaces import TapInterface
 from .pubsub import PubSub
-from .utils import create_task_log_exceptions, dumps_for_json
 from .vm import AlephFirecrackerInstance
 
 if TYPE_CHECKING:
-    from .snapshot_manager import SnapshotManager
+    from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 
 
 logger = logging.getLogger(__name__)

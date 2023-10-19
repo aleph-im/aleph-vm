@@ -14,6 +14,7 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from pydantic import ValidationError
 
+from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import (
     ResourceDownloadError,
     VmSetupError,
@@ -21,18 +22,17 @@ from aleph.vm.controllers.firecracker.executable import (
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
 from aleph.vm.orchestrator import status
-from aleph.vm.orchestrator.conf import settings
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation
 from aleph.vm.orchestrator.run import pool, run_code_on_request, start_persistent_vm
-from aleph.vm.orchestrator.utils import (
+from aleph.vm.orchestrator.version import __version__
+from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
     dumps_for_json,
     get_ref_from_dns,
 )
-from aleph.vm.orchestrator.version import __version__
 from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
