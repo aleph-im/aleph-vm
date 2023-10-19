@@ -15,6 +15,7 @@ from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import MachineResources
 
+from aleph.vm.conf import settings
 from aleph.vm.hypervisors.firecracker.config import (
     BootSource,
     Drive,
@@ -24,10 +25,9 @@ from aleph.vm.hypervisors.firecracker.config import (
     Vsock,
 )
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration, setfacl
-from aleph.vm.orchestrator.conf import settings
-from aleph.vm.orchestrator.network.interfaces import TapInterface
-from aleph.vm.orchestrator.storage import get_code_path, get_data_path, get_runtime_path
-from aleph.vm.orchestrator.utils import MsgpackSerializable
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.storage import get_code_path, get_data_path, get_runtime_path
+from aleph.vm.utils import MsgpackSerializable
 
 from .executable import (
     AlephFirecrackerExecutable,

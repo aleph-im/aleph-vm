@@ -5,7 +5,7 @@ from typing import Optional, Protocol
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.orchestrator.conf import IPv6AllocationPolicy
+from aleph.vm.conf import IPv6AllocationPolicy
 from aleph.vm.orchestrator.vm.vm_type import VmType
 
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables

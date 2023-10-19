@@ -7,7 +7,7 @@ from typing import Any
 
 from aiohttp import ClientResponseError, ClientSession
 
-from .conf import settings
+from ..conf import settings
 
 logger = logging.getLogger(__name__)
 

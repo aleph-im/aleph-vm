@@ -8,6 +8,7 @@ from base64 import b16encode, b32decode
 from collections.abc import Coroutine
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
+from shutil import disk_usage
 from typing import Any, Optional
 
 import aiodns
@@ -126,3 +127,12 @@ async def ping(host: str, packets: int, timeout: float):
         await run_in_subprocess(["ping", "-c", str(packets), "-W", str(timeout), host], check=True)
     except subprocess.CalledProcessError as err:
         raise HostNotFoundError() from err
+
+
+def check_disk_space(bytes_to_use: int) -> bool:
+    host_disk_usage = disk_usage("/")
+    return host_disk_usage.free >= bytes_to_use
+
+
+class NotEnoughDiskSpace(OSError):
+    pass

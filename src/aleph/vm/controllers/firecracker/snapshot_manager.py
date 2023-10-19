@@ -7,8 +7,9 @@ from typing import Optional
 from aleph_message.models import ItemHash
 from schedule import Job, Scheduler
 
-from .conf import settings
-from .models import VmExecution
+from aleph.vm.conf import settings
+from aleph.vm.orchestrator.models import VmExecution
+
 from .snapshots import CompressedDiskVolumeSnapshot
 
 logger = logging.getLogger(__name__)

@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from shutil import copy2, disk_usage, make_archive
+from shutil import copy2, make_archive
 from typing import Union
 
 import aiohttp
@@ -29,16 +29,11 @@ from aleph_message.models.execution.volume import (
     VolumePersistence,
 )
 
-from .conf import SnapshotCompressionAlgorithm, settings
-from .utils import fix_message_validation, run_in_subprocess
+from aleph.vm.conf import SnapshotCompressionAlgorithm, settings
+from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
-
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
-
-
-class NotEnoughDiskSpace(OSError):
-    pass
 
 
 async def chown_to_jailman(path: Path) -> None:
@@ -353,8 +348,3 @@ async def compress_volume_snapshot(
     )
 
     return new_path
-
-
-def check_disk_space(bytes_to_use: int) -> bool:
-    host_disk_usage = disk_usage("/")
-    return host_disk_usage.free >= bytes_to_use

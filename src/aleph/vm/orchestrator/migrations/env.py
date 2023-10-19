@@ -1,7 +1,7 @@
 from alembic import context
 from sqlalchemy import create_engine
 
-from aleph.vm.orchestrator.conf import make_db_url
+from aleph.vm.conf import make_db_url
 
 # Auto-generate migrations
 from aleph.vm.orchestrator.metrics import Base
