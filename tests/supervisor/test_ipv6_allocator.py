@@ -1,6 +1,6 @@
 import os
 
-from aleph.vm.orchestrator.network.hostnetwork import StaticIPv6Allocator
+from aleph.vm.network.hostnetwork import StaticIPv6Allocator
 from aleph.vm.orchestrator.vm.vm_type import VmType
 
 # Avoid failures linked to settings when initializing the global VmPool object

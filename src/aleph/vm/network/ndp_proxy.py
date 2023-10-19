@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ipaddress import IPv6Network
 from pathlib import Path
 
-from aleph.vm.orchestrator.utils import run_in_subprocess
+from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
 

@@ -20,8 +20,8 @@ import alembic.command
 import alembic.config
 from aleph_message.models import ItemHash
 
+from ..conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from . import metrics, supervisor
-from .conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
 

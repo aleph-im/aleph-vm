@@ -15,13 +15,13 @@ from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
+from aleph.vm.conf import settings
+from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
-from aleph.vm.orchestrator.conf import settings
-from aleph.vm.orchestrator.network.firewall import teardown_nftables_for_vm
-from aleph.vm.orchestrator.network.interfaces import TapInterface
-from aleph.vm.orchestrator.snapshots import CompressedDiskVolumeSnapshot
-from aleph.vm.orchestrator.storage import get_volume_path
+from aleph.vm.network.firewall import teardown_nftables_for_vm
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.storage import get_volume_path
 
 try:
     import psutil  # type: ignore [no-redef]

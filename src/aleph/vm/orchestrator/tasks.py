@@ -12,11 +12,12 @@ from aiohttp import web
 from aleph_message.models import AlephMessage, ItemHash, ProgramMessage, parse_message
 from yarl import URL
 
-from .conf import settings
+from aleph.vm.utils import create_task_log_exceptions
+
+from ..conf import settings
 from .messages import load_updated_message
 from .pubsub import PubSub
 from .reactor import Reactor
-from .utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 

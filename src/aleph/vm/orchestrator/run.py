@@ -15,13 +15,13 @@ from aleph.vm.controllers.firecracker.program import (
     VmSetupError,
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
+from aleph.vm.utils import HostNotFoundError
 
-from .conf import settings
+from ..conf import settings
 from .messages import load_updated_message
 from .models import VmExecution
 from .pool import VmPool
 from .pubsub import PubSub
-from .utils import HostNotFoundError
 
 logger = logging.getLogger(__name__)
 
