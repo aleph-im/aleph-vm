@@ -12,8 +12,8 @@ from typing import Callable
 
 from aiohttp import web
 
-from . import metrics
-from .conf import settings
+from ..conf import settings
+from .metrics import create_tables, setup_engine
 from .resources import about_system_usage
 from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
@@ -85,8 +85,8 @@ def run():
     app["secret_token"] = secret_token
     print(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
-    engine = metrics.setup_engine()
-    metrics.create_tables(engine)
+    engine = setup_engine()
+    create_tables(engine)
 
     try:
         if settings.WATCH_FOR_MESSAGES:

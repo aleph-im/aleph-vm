@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy import create_engine
 from sqlalchemy.engine import reflection
 
-from aleph.vm.orchestrator.conf import make_db_url
+from aleph.vm.conf import make_db_url
 
 revision = "bbb12a12372e"
 down_revision = None

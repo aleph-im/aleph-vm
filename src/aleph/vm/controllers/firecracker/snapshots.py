@@ -4,8 +4,8 @@ from typing import Optional
 
 from aleph_message.models import ItemHash
 
-from .conf import SnapshotCompressionAlgorithm
-from .storage import compress_volume_snapshot, create_volume_snapshot
+from aleph.vm.conf import SnapshotCompressionAlgorithm
+from aleph.vm.storage import compress_volume_snapshot, create_volume_snapshot
 
 logger = logging.getLogger(__name__)
 

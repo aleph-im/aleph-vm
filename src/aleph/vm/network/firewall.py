@@ -4,7 +4,7 @@ from functools import lru_cache
 
 from nftables import Nftables
 
-from aleph.vm.orchestrator.conf import settings
+from aleph.vm.conf import settings
 
 from .interfaces import TapInterface
 

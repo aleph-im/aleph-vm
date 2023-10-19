@@ -10,6 +10,7 @@ import yaml
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
+from aleph.vm.conf import settings
 from aleph.vm.hypervisors.firecracker.config import (
     BootSource,
     Drive,
@@ -19,26 +20,22 @@ from aleph.vm.hypervisors.firecracker.config import (
     Vsock,
 )
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
-from aleph.vm.orchestrator.conf import settings
-from aleph.vm.orchestrator.network.interfaces import TapInterface
-from aleph.vm.orchestrator.snapshots import (
-    CompressedDiskVolumeSnapshot,
-    DiskVolume,
-    DiskVolumeSnapshot,
-)
-from aleph.vm.orchestrator.storage import (
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.utils import (
+    HostNotFoundError,
     NotEnoughDiskSpace,
     check_disk_space,
-    create_devmapper,
-    create_volume_file,
+    ping,
+    run_in_subprocess,
 )
-from aleph.vm.orchestrator.utils import HostNotFoundError, ping, run_in_subprocess
 
+from ...storage import create_devmapper, create_volume_file
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
     BaseConfiguration,
 )
+from .snapshots import CompressedDiskVolumeSnapshot, DiskVolume, DiskVolumeSnapshot
 
 logger = logging.getLogger(__name__)
 
