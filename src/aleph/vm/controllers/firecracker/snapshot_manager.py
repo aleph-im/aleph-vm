@@ -100,15 +100,14 @@ class SnapshotManager:
             msg = "Snapshots are not implemented for programs."
             raise NotImplementedError(msg)
 
-        if not frequency:
-            frequency = settings.SNAPSHOT_FREQUENCY
+        default_frequency = frequency or settings.SNAPSHOT_FREQUENCY
 
         vm_hash = execution.vm_hash
         snapshot_execution = SnapshotExecution(
             scheduler=self._scheduler,
             vm_hash=vm_hash,
             execution=execution,
-            frequency=frequency,
+            frequency=default_frequency,
         )
         self.executions[vm_hash] = snapshot_execution
         await snapshot_execution.start()
