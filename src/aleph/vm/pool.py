@@ -9,7 +9,7 @@ from aleph_message.models.execution.instance import InstanceContent
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-from aleph.vm.orchestrator.vm.vm_type import VmType
+from aleph.vm.vm_type import VmType
 
 from .models import ExecutableContent, VmExecution
 
