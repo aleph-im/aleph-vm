@@ -18,8 +18,8 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
 from aleph.vm.utils import HostNotFoundError
 
 from ..conf import settings
-from ..pool import VmPool
 from ..models import VmExecution
+from ..pool import VmPool
 from .messages import load_updated_message
 from .pubsub import PubSub
 

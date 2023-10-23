@@ -14,6 +14,7 @@ from aleph_message.models import (
     ProgramContent,
 )
 
+from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
 from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
 from aleph.vm.controllers.firecracker.program import (
@@ -22,12 +23,14 @@ from aleph.vm.controllers.firecracker.program import (
     AlephProgramResources,
 )
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
-
-from aleph.vm.conf import settings
-from aleph.vm.orchestrator.metrics import ExecutionRecord, save_execution_data, save_record
+from aleph.vm.orchestrator.metrics import (
+    ExecutionRecord,
+    save_execution_data,
+    save_record,
+)
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
+from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
