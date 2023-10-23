@@ -108,7 +108,9 @@ def main():
     global pool
     args = parse_args(sys.argv[1:])
 
-    pool = VmPool(initialize_network_settings=args.initialize_network_settings)
+    pool = VmPool()
+    if args.initialize_network_settings:
+        pool.setup()
 
     config_path = Path(args.config_path)
     if not config_path.is_file():
