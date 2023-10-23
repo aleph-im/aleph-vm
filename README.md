@@ -26,7 +26,7 @@ For development and testing, install Aleph-VM from source.
 
 1. Install the [VM-Connector](./vm_connector/README.md)
 2. Install the [VM-Supervisor](src/aleph/vm/orchestrator/README.md).
-3. Install and [configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
+3. Install and configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
 
 ## 3. Create and run an Aleph Program 
 
