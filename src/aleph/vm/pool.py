@@ -6,12 +6,12 @@ from typing import Optional
 from aleph_message.models import ExecutableMessage, ItemHash
 from aleph_message.models.execution.instance import InstanceContent
 
+from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
+from aleph.vm.orchestrator.vm.vm_type import VmType
 
-from ..conf import settings
-from ..network.hostnetwork import Network, make_ipv6_allocator
 from .models import ExecutableContent, VmExecution
-from .vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class VmPool:
 
         # Start VM snapshots automatically
         if isinstance(message, InstanceContent):
-            await self.snapshot_manager.start_for(execution=execution)
+            await self.snapshot_manager.start_for(vm=execution.vm)
 
         return execution
 
