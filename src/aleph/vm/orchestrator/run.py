@@ -19,8 +19,8 @@ from aleph.vm.utils import HostNotFoundError
 
 from ..conf import settings
 from ..pool import VmPool
+from ..models import VmExecution
 from .messages import load_updated_message
-from .models import VmExecution
 from .pubsub import PubSub
 
 logger = logging.getLogger(__name__)
