@@ -1,7 +1,6 @@
 from . import (
     messages,
     metrics,
-    models,
     pool,
     pubsub,
     reactor,
@@ -20,7 +19,6 @@ __version__ = version.__version__
 __all__ = (
     "messages",
     "metrics",
-    "models",
     "pool",
     "pubsub",
     "reactor",
