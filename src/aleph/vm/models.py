@@ -24,10 +24,10 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
-from ..conf import settings
-from .metrics import ExecutionRecord, save_execution_data, save_record
-from .pubsub import PubSub
-from .vm import AlephFirecrackerInstance
+from aleph.vm.conf import settings
+from aleph.vm.orchestrator.metrics import ExecutionRecord, save_execution_data, save_record
+from aleph.vm.orchestrator.pubsub import PubSub
+from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager

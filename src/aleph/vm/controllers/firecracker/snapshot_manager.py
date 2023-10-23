@@ -8,31 +8,31 @@ from aleph_message.models import ItemHash
 from schedule import Job, Scheduler
 
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.models import VmExecution
 
+from .executable import AlephFirecrackerExecutable
 from .snapshots import CompressedDiskVolumeSnapshot
 
 logger = logging.getLogger(__name__)
 
 
-def wrap_async_snapshot(execution):
-    asyncio.run(do_execution_snapshot(execution))
+def wrap_async_snapshot(vm):
+    asyncio.run(do_vm_snapshot(vm))
 
 
-def run_threaded_snapshot(execution):
-    job_thread = threading.Thread(target=wrap_async_snapshot, args=(execution,))
+def run_threaded_snapshot(vm):
+    job_thread = threading.Thread(target=wrap_async_snapshot, args=(vm,))
     job_thread.start()
 
 
-async def do_execution_snapshot(execution: VmExecution) -> CompressedDiskVolumeSnapshot:
+async def do_vm_snapshot(vm: AlephFirecrackerExecutable) -> CompressedDiskVolumeSnapshot:
     try:
-        logger.debug(f"Starting new snapshot for VM {execution.vm_hash}")
-        assert execution.vm, "VM execution not set"
+        logger.debug(f"Starting new snapshot for VM {vm.vm_hash}")
+        assert vm, "VM execution not set"
 
-        snapshot = await execution.vm.create_snapshot()
+        snapshot = await vm.create_snapshot()
         await snapshot.upload()
 
-        logger.debug(f"New snapshots for VM {execution.vm_hash} created in {snapshot.path}")
+        logger.debug(f"New snapshots for VM {vm.vm_hash} created in {snapshot.path}")
         return snapshot
     except ValueError:
         msg = "Something failed taking an snapshot"
@@ -47,7 +47,7 @@ def infinite_run_scheduler_jobs(scheduler: Scheduler) -> None:
 
 class SnapshotExecution:
     vm_hash: ItemHash
-    execution: VmExecution
+    execution: AlephFirecrackerExecutable
     frequency: int
     _scheduler: Scheduler
     _job: Job
@@ -56,7 +56,7 @@ class SnapshotExecution:
         self,
         scheduler: Scheduler,
         vm_hash: ItemHash,
-        execution: VmExecution,
+        execution: AlephFirecrackerExecutable,
         frequency: int,
     ):
         self.vm_hash = vm_hash
@@ -95,18 +95,18 @@ class SnapshotManager:
         )
         job_thread.start()
 
-    async def start_for(self, execution: VmExecution, frequency: Optional[int] = None) -> None:
-        if not execution.is_instance:
+    async def start_for(self, vm: AlephFirecrackerExecutable, frequency: Optional[int] = None) -> None:
+        if not vm.is_instance:
             msg = "Snapshots are not implemented for programs."
             raise NotImplementedError(msg)
 
         default_frequency = frequency or settings.SNAPSHOT_FREQUENCY
 
-        vm_hash = execution.vm_hash
+        vm_hash = vm.vm_hash
         snapshot_execution = SnapshotExecution(
             scheduler=self._scheduler,
             vm_hash=vm_hash,
-            execution=execution,
+            execution=vm,
             frequency=default_frequency,
         )
         self.executions[vm_hash] = snapshot_execution
