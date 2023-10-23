@@ -1,7 +1,7 @@
 import os
 
 from aleph.vm.network.hostnetwork import StaticIPv6Allocator
-from aleph.vm.orchestrator.vm.vm_type import VmType
+from aleph.vm.vm_type import VmType
 
 # Avoid failures linked to settings when initializing the global VmPool object
 os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
