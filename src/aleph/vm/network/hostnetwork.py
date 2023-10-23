@@ -134,7 +134,7 @@ class Network:
         self.network_size = vm_network_size
         self.external_interface = external_interface
 
-        if initialize_settings:
+        if not initialize_network_settings:
             return
 
         self.enable_ipv4_forwarding()

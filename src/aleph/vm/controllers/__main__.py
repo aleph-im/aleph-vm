@@ -54,8 +54,8 @@ def parse_args(args):
     )
     parser.add_argument(
         "-i",
-        "--initial-pool-settings",
-        dest="initial_pool_settings",
+        "--initialize-network-settings",
+        dest="initialize_network_settings",
         action="store_true",
         default=False,
     )
@@ -108,7 +108,7 @@ def main():
     global pool
     args = parse_args(sys.argv[1:])
 
-    pool = VmPool(initialize_network_settings=args.initial_pool_settings)
+    pool = VmPool(initialize_network_settings=args.initialize_network_settings)
 
     config_path = Path(args.config_path)
     if not config_path.is_file():
