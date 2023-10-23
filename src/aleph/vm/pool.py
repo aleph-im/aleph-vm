@@ -31,7 +31,7 @@ class VmPool:
     network: Optional[Network]
     snapshot_manager: SnapshotManager
 
-    def __init__(self):
+    def __init__(self, initialize_network_settings: bool = True):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
 
@@ -47,6 +47,7 @@ class VmPool:
                 ),
                 use_ndp_proxy=settings.USE_NDP_PROXY,
                 ipv6_forwarding_enabled=settings.IPV6_FORWARDING_ENABLED,
+                initialize_network_settings=initialize_network_settings
             )
             if settings.ALLOW_VM_NETWORKING
             else None

@@ -123,6 +123,7 @@ class Network:
         ipv6_allocator: IPv6Allocator,
         use_ndp_proxy: bool,
         ipv6_forwarding_enabled: bool = True,
+        initialize_network_settings: bool = True,
     ) -> None:
         """Sets up the Network class with some information it needs so future function calls work as expected"""
         self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
@@ -132,6 +133,9 @@ class Network:
 
         self.network_size = vm_network_size
         self.external_interface = external_interface
+
+        if initialize_settings:
+            return
 
         self.enable_ipv4_forwarding()
         if ipv6_forwarding_enabled:
