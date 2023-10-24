@@ -55,7 +55,7 @@ class TapInterface:
         logger.debug("Create network interface")
 
         ip_command = shutil.which("ip")
-        run([ip_command, "tuntap", "add", self.device_name, "mode", "tap"])
+        run([ip_command, "tuntap", "add", self.device_name, "mode", "tap"], check=True)
         run(
             [
                 ip_command,
@@ -64,7 +64,8 @@ class TapInterface:
                 str(self.host_ip.with_prefixlen),
                 "dev",
                 self.device_name,
-            ]
+            ],
+            check=True,
         )
         ipv6_gateway = self.host_ipv6
         run(
@@ -75,9 +76,10 @@ class TapInterface:
                 str(ipv6_gateway),
                 "dev",
                 self.device_name,
-            ]
+            ],
+            check=True,
         )
-        run([ip_command, "link", "set", self.device_name, "up"])
+        run([ip_command, "link", "set", self.device_name, "up"], check=True)
         if self.ndp_proxy:
             await self.ndp_proxy.add_range(self.device_name, ipv6_gateway.network)
         logger.debug(f"Network interface created: {self.device_name}")
@@ -89,4 +91,4 @@ class TapInterface:
         await asyncio.sleep(0.1)  # Avoids Device/Resource busy bug
         if self.ndp_proxy:
             await self.ndp_proxy.delete_range(self.device_name)
-        run(["ip", "tuntap", "del", self.device_name, "mode", "tap"])
+        run(["ip", "tuntap", "del", self.device_name, "mode", "tap"], check=False)
