@@ -107,10 +107,13 @@ def make_ipv6_allocator(
 class Network:
     ipv4_forward_state_before_setup: Optional[int] = None
     ipv6_forward_state_before_setup: Optional[int] = None
+    external_interface: str
+    ipv4_forwarding_enabled: bool
+    ipv6_forwarding_enabled: bool
+    use_ndp_proxy: bool
     ipv4_address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
     ipv6_address_pool: IPv6Network
     network_size: int
-    external_interface: str
     ndp_proxy: Optional[NdpProxy] = None
 
     IPV6_SUBNET_PREFIX: int = 124
@@ -122,25 +125,43 @@ class Network:
         external_interface: str,
         ipv6_allocator: IPv6Allocator,
         use_ndp_proxy: bool,
+        ipv4_forwarding_enabled: bool = True,
         ipv6_forwarding_enabled: bool = True,
     ) -> None:
-        """Sets up the Network class with some information it needs so future function calls work as expected"""
+        """Initialize the Network class with the relevant configuration."""
         self.ipv4_address_pool = IPv4NetworkWithInterfaces(vm_ipv4_address_pool_range)
-        if not self.ipv4_address_pool.is_private:
-            logger.warning(f"Using a network range that is not private: {self.ipv4_address_pool}")
         self.ipv6_allocator = ipv6_allocator
 
         self.network_size = vm_network_size
         self.external_interface = external_interface
+        self.network_interface = external_interface
+        self.ipv4_forwarding_enabled = ipv4_forwarding_enabled
+        self.ipv6_forwarding_enabled = ipv6_forwarding_enabled
+        self.use_ndp_proxy = use_ndp_proxy
 
-        self.enable_ipv4_forwarding()
-        if ipv6_forwarding_enabled:
+        if not self.ipv4_address_pool.is_private:
+            logger.warning(f"Using a network range that is not private: {self.ipv4_address_pool}")
+
+    def setup(self) -> None:
+        """Set up the network for use by the VMs"""
+        logger.debug("Enabling IPv4 forwarding")
+        if self.ipv4_forwarding_enabled:
+            self.enable_ipv4_forwarding()
+        else:
+            logger.warning("IPv4 forwarding is disabled, VMs will not have internet access on IPv4")
+        logger.debug("Enabling IPv6 forwarding")
+        if self.ipv6_forwarding_enabled:
             self.enable_ipv6_forwarding()
+        else:
+            logger.warning("IPv6 forwarding is disabled, VMs will not have internet access on IPv6")
 
-        if use_ndp_proxy:
-            self.ndp_proxy = NdpProxy(host_network_interface=external_interface)
+        logger.debug("Enabling NDP proxy")
+        if self.use_ndp_proxy:
+            self.ndp_proxy = NdpProxy(host_network_interface=self.external_interface)
 
+        logger.debug("Initializing nftables")
         initialize_nftables()
+        logger.debug("Network setup complete")
 
     def get_network_for_tap(self, vm_id: int) -> IPv4NetworkWithInterfaces:
         subnets = list(self.ipv4_address_pool.subnets(new_prefix=self.network_size))
