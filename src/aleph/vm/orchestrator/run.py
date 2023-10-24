@@ -25,9 +25,6 @@ from .pubsub import PubSub
 
 logger = logging.getLogger(__name__)
 
-pool = VmPool()
-pool.setup()
-
 
 async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
     # ASGI mandates lowercase header names
@@ -49,7 +46,7 @@ async def build_event_scope(event) -> dict[str, Any]:
     }
 
 
-async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
+async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
@@ -87,9 +84,9 @@ async def create_vm_execution(vm_hash: ItemHash) -> VmExecution:
     return execution
 
 
-async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash) -> VmExecution:
+async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
     try:
-        return await create_vm_execution(vm_hash=vm_hash)
+        return await create_vm_execution(vm_hash=vm_hash, pool=pool)
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
@@ -110,7 +107,7 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash) -> VmExecut
         raise HTTPInternalServerError(reason="Host did not respond to ping")
 
 
-async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request) -> web.Response:
+async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
@@ -118,7 +115,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -207,7 +204,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
             await execution.stop()
 
 
-async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
+async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPool):
     """
     Execute code in response to an event.
     """
@@ -215,7 +212,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash)
+        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -252,17 +249,17 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub):
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=pubsub)
-            execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
+async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub, pool: VmPool) -> VmExecution:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(vm_hash=vm_hash)
+        execution = await create_vm_execution(vm_hash=vm_hash, pool=pool)
 
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
@@ -277,7 +274,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub) -> VmExecution:
     return execution
 
 
-async def stop_persistent_vm(vm_hash: ItemHash) -> Optional[VmExecution]:
+async def stop_persistent_vm(vm_hash: ItemHash, pool: VmPool) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = await pool.get_running_vm(vm_hash)
 
