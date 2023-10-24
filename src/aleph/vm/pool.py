@@ -55,6 +55,16 @@ class VmPool:
         logger.debug("Initializing SnapshotManager ...")
         self.snapshot_manager.run_snapshots()
 
+    def setup(self) -> None:
+        """Set up the VM pool and the network."""
+        if self.network:
+            self.network.setup()
+
+    def teardown(self) -> None:
+        """Stop the VM pool and the network properly."""
+        if self.network:
+            self.network.teardown()
+
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
     ) -> VmExecution:

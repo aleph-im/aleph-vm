@@ -26,6 +26,7 @@ from .pubsub import PubSub
 logger = logging.getLogger(__name__)
 
 pool = VmPool()
+pool.setup()
 
 
 async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
