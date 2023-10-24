@@ -121,7 +121,7 @@ async def about_config(request: web.Request) -> web.Response:
     )
 
 
-async def about_execution_records(request: web.Request):
+async def about_execution_records(_: web.Request):
     records = await get_execution_records()
     return web.json_response(
         records,

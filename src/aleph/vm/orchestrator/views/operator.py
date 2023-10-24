@@ -42,11 +42,11 @@ def verify_wallet_signature(signature, message, address):
     return computed_address.lower() == address.lower()
 
 
-def get_json_from_hex(str: str):
+def get_json_from_hex(string: str):
     """
     Converts a hex string to a json object
     """
-    return json.loads(bytes.fromhex(str).decode("utf-8"))
+    return json.loads(bytes.fromhex(string).decode("utf-8"))
 
 
 async def authenticate_jwk(request: web.Request):
