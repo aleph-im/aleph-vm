@@ -66,7 +66,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         resources: AlephInstanceResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
-        hardware_resources: MachineResources = MachineResources(),
+        hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
     ):
         self.latest_snapshot = None
@@ -76,7 +76,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             resources,
             enable_networking,
             enable_console,
-            hardware_resources,
+            hardware_resources or MachineResources(),
             tap_interface,
         )
 
