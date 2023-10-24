@@ -105,4 +105,4 @@ def run():
             raise
     finally:
         if settings.ALLOW_VM_NETWORKING:
-            pool.network.teardown()
+            pool.teardown()
