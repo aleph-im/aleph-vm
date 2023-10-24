@@ -285,12 +285,12 @@ async def update_allocations(request: web.Request):
     # Schedule the start of instances:
     for instance_hash in allocation.instances:
         logger.info(f"Starting instance '{instance_hash}'")
+        instance_item_hash = ItemHash(instance_hash)
         try:
-            instance_hash = ItemHash(instance_hash)
-            await start_persistent_vm(instance_hash, pubsub, pool)
+            await start_persistent_vm(instance_item_hash, pubsub, pool)
         except vm_creation_exceptions as error:
             logger.exception(error)
-            scheduling_errors[instance_hash] = error
+            scheduling_errors[instance_item_hash] = error
 
     # Log unsupported features
     if allocation.on_demand_vms:
