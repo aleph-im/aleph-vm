@@ -254,7 +254,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub, pool: VmPool) -> VmExecution:
+async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool: VmPool) -> VmExecution:
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
@@ -268,7 +268,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub, pool: VmPool) -
 
     await execution.becomes_ready()
 
-    if settings.WATCH_FOR_UPDATES:
+    if pubsub and settings.WATCH_FOR_UPDATES:
         execution.start_watching_for_updates(pubsub=pubsub)
 
     return execution

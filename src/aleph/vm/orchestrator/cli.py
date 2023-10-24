@@ -239,9 +239,9 @@ async def start_instance(item_hash: ItemHash) -> None:
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
     # Watching for updates on this instance will therefore not work.
-    dummy_pubsub = PubSub()
+    pubsub = None
 
-    await start_persistent_vm(item_hash, dummy_pubsub, pool)
+    await start_persistent_vm(item_hash, pubsub, pool)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
