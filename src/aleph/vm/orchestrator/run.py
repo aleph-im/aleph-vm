@@ -4,7 +4,11 @@ from typing import Any, Optional
 
 import msgpack
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
+from aiohttp.web_exceptions import (
+    HTTPBadGateway,
+    HTTPBadRequest,
+    HTTPInternalServerError,
+)
 from aleph_message.models import ItemHash
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
@@ -138,7 +142,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
             await execution.stop()
 
             return web.Response(
-                status=502,
+                status=HTTPBadGateway.status_code,
                 reason="No response from VM",
                 text="VM did not respond and was shut down",
             )
@@ -148,7 +152,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         return web.HTTPGatewayTimeout(body="Program did not respond within `resource.seconds`")
     except UnpackValueError as error:
         logger.exception(error)
-        return web.Response(status=502, reason="Invalid response from VM")
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
 
     try:
         result = msgpack.loads(result_raw, raw=False)
@@ -169,7 +173,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
                 logger.warning(result["traceback"])
 
             return web.Response(
-                status=500,
+                status=HTTPInternalServerError.status_code,
                 reason="Error in VM execution",
                 body=result["traceback"],
                 content_type="text/plain",
@@ -198,7 +202,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         )
     except UnpackValueError as error:
         logger.exception(error)
-        return web.Response(status=502, reason="Invalid response from VM")
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
@@ -227,7 +231,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
         result_raw: bytes = await execution.run_code(scope=scope)
     except UnpackValueError as error:
         logger.exception(error)
-        return web.Response(status=502, reason="Invalid response from VM")
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
 
     try:
         result = msgpack.loads(result_raw, raw=False)
@@ -237,7 +241,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
         if "traceback" in result:
             logger.warning(result["traceback"])
             return web.Response(
-                status=500,
+                status=HTTPInternalServerError.status_code,
                 reason="Error in VM execution",
                 body=result["traceback"],
                 content_type="text/plain",
@@ -248,7 +252,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
 
     except UnpackValueError as error:
         logger.exception(error)
-        return web.Response(status=502, reason="Invalid response from VM")
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
     finally:
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
