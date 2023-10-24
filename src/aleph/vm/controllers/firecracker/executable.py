@@ -130,7 +130,7 @@ class VmSetupError(Exception):
     pass
 
 
-class VmInitNotConnected(Exception):
+class VmInitNotConnectedError(Exception):
     pass
 
 

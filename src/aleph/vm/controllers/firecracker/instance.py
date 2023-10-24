@@ -24,7 +24,7 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import create_devmapper, create_volume_file
 from aleph.vm.utils import (
     HostNotFoundError,
-    NotEnoughDiskSpace,
+    NotEnoughDiskSpaceError,
     check_disk_space,
     ping,
     run_in_subprocess,
@@ -149,7 +149,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         volume = DiskVolume(path=volume_path)
 
         if not check_disk_space(volume.size):
-            raise NotEnoughDiskSpace
+            raise NotEnoughDiskSpaceError
 
         snapshot = await volume.take_snapshot()
         compressed_snapshot = await snapshot.compress(settings.SNAPSHOT_COMPRESSION_ALGORITHM)
