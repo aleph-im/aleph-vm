@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from aiohttp import ClientResponseError, ClientSession
+from aiohttp.web_exceptions import HTTPBadGateway, HTTPInternalServerError, HTTPOk
 
 from ..conf import settings
 
@@ -94,7 +95,7 @@ async def check_ipv6(session: ClientSession) -> bool:
 async def check_internet(session: ClientSession) -> bool:
     try:
         result: dict = await get_json_from_vm(session, "/internet")
-        assert result["result"] == 200
+        assert result["result"] == HTTPOk.status_code
         assert "Server" in result["headers"]
         return True
     except ClientResponseError:
@@ -132,7 +133,7 @@ async def check_error_raised(session: ClientSession) -> bool:
     try:
         async with session.get(f"{CHECK_VM_URL}/raise") as resp:
             text = await resp.text()
-            return resp.status == 500 and "Traceback" in text
+            return resp.status == HTTPInternalServerError.status_code and "Traceback" in text
     except ClientResponseError:
         return False
 
@@ -140,7 +141,7 @@ async def check_error_raised(session: ClientSession) -> bool:
 async def check_crash_and_restart(session: ClientSession) -> bool:
     # Crash the VM init.
     async with session.get(f"{CHECK_VM_URL}/crash") as resp:
-        if resp.status != 502:
+        if resp.status != HTTPBadGateway.status_code:
             return False
 
     # Try loading the index page. A new execution should be created.
