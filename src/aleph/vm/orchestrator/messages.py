@@ -12,11 +12,11 @@ async def try_get_message(ref: str) -> ExecutableMessage:
     """Get the message or raise an aiohttp HTTP error"""
     try:
         return await get_message(ref)
-    except ClientConnectorError:
-        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
+    except ClientConnectorError as error:
+        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable") from error
     except ClientResponseError as error:
-        if error.status == 404:
-            raise HTTPNotFound(reason="Hash not found", text=f"Hash not found: {ref}")
+        if error.status == HTTPNotFound.status_code:
+            raise HTTPNotFound(reason="Hash not found", text=f"Hash not found: {ref}") from error
         else:
             raise
 
@@ -24,11 +24,11 @@ async def try_get_message(ref: str) -> ExecutableMessage:
 async def get_latest_ref(item_hash: str) -> str:
     try:
         return await get_latest_amend(item_hash)
-    except ClientConnectorError:
-        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable")
+    except ClientConnectorError as error:
+        raise HTTPServiceUnavailable(reason="Aleph Connector unavailable") from error
     except ClientResponseError as error:
-        if error.status == 404:
-            raise HTTPNotFound(reason="Hash not found", text=f"Hash not found: {item_hash}")
+        if error.status == HTTPNotFound.status_code:
+            raise HTTPNotFound(reason="Hash not found", text=f"Hash not found: {item_hash}") from error
         else:
             raise
 
