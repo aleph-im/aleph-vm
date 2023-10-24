@@ -390,9 +390,9 @@ class MicroVM:
         try:
             self.runtime_config = await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as error:
             logger.warning("Never received signal from init")
-            raise MicroVMFailedInit()
+            raise MicroVMFailedInit() from error
 
     async def shutdown(self) -> None:
         logger.debug(f"Shutdown vm={self.vm_id}")

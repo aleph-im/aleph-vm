@@ -191,7 +191,7 @@ class AlephProgramResources(AlephFirecrackerResources):
         try:
             self.code_path = await get_code_path(code_ref)
         except ClientResponseError as error:
-            raise ResourceDownloadError(error)
+            raise ResourceDownloadError(error) from error
         assert self.code_path.is_file(), f"Code not found on '{self.code_path}'"
 
     async def download_runtime(self) -> None:
@@ -199,7 +199,7 @@ class AlephProgramResources(AlephFirecrackerResources):
         try:
             self.rootfs_path = await get_runtime_path(runtime_ref)
         except ClientResponseError as error:
-            raise ResourceDownloadError(error)
+            raise ResourceDownloadError(error) from error
         assert self.rootfs_path.is_file(), f"Runtime not found on {self.rootfs_path}"
 
     async def download_data(self) -> None:
@@ -209,7 +209,7 @@ class AlephProgramResources(AlephFirecrackerResources):
                 data_path = await get_data_path(data_ref)
                 self.data_path = data_path
             except ClientResponseError as error:
-                raise ResourceDownloadError(error)
+                raise ResourceDownloadError(error) from error
             assert data_path.is_file(), f"Data not found on {data_path}"
         else:
             self.data_path = None
@@ -420,9 +420,9 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
 
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
-        except ConnectionRefusedError:
+        except ConnectionRefusedError as error:
             msg = "MicroVM may have crashed"
-            raise VmInitNotConnected(msg)
+            raise VmInitNotConnected(msg) from error
         try:
             return await asyncio.wait_for(
                 communicate(reader, writer, scope),

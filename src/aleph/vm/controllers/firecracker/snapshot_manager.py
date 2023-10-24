@@ -34,9 +34,9 @@ async def do_vm_snapshot(vm: AlephFirecrackerExecutable) -> CompressedDiskVolume
 
         logger.debug(f"New snapshots for VM {vm.vm_hash} created in {snapshot.path}")
         return snapshot
-    except ValueError:
+    except ValueError as error:
         msg = "Something failed taking an snapshot"
-        raise ValueError(msg)
+        raise ValueError(msg) from error
 
 
 def infinite_run_scheduler_jobs(scheduler: Scheduler) -> None:
