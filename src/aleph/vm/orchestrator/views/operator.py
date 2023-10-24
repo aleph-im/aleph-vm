@@ -59,29 +59,29 @@ async def authenticate_jwk(request: web.Request):
         payload = keypair_dict.get("payload")
         signature = keypair_dict.get("signature")
     except (json.JSONDecodeError, KeyError):
-        raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format")
+        raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format") from None
 
     try:
         json_payload = get_json_from_hex(payload)
-    except json.JSONDecodeError:
-        raise web.HTTPBadRequest(reason="")
+    except json.JSONDecodeError as error:
+        raise web.HTTPBadRequest(reason="") from error
 
     if not verify_wallet_signature(signature, payload, json_payload.get("address")):
-        raise web.HTTPUnauthorized(reason="Invalid signature")
+        raise web.HTTPUnauthorized(reason="Invalid signature") from None
 
     expires = json_payload.get("expires")
     if not expires or not is_token_still_valid(expires):
-        raise web.HTTPUnauthorized(reason="Token expired")
+        raise web.HTTPUnauthorized(reason="Token expired") from None
 
     signed_operation = request.headers.get("X-SignedOperation")
     if not signed_operation:
-        raise web.HTTPBadRequest(reason="Missing X-SignedOperation header")
+        raise web.HTTPBadRequest(reason="Missing X-SignedOperation header") from None
 
     json_web_key = Jwk(json_payload.get("pubkey"))
     try:
         payload = json.loads(signed_operation)
     except json.JSONDecodeError:
-        raise web.HTTPBadRequest(reason="Could not decode X-SignedOperation")
+        raise web.HTTPBadRequest(reason="Could not decode X-SignedOperation") from None
 
     # The signature is not part of the signed payload, remove it
     payload_signature = payload.pop("signature")
@@ -94,7 +94,7 @@ async def authenticate_jwk(request: web.Request):
     ):
         logger.debug("Signature verified")
     else:
-        raise web.HTTPUnauthorized(reason="Signature could not verified")
+        raise web.HTTPUnauthorized(reason="Signature could not verified") from None
 
 
 def require_jwk_authentication(handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
@@ -113,12 +113,12 @@ def require_jwk_authentication(handler: Callable[[web.Request], Awaitable[web.St
 def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
     try:
         ref = match_info["ref"]
-    except KeyError:
-        raise aiohttp.web_exceptions.HTTPBadRequest(body="Missing field: 'ref'")
+    except KeyError as error:
+        raise aiohttp.web_exceptions.HTTPBadRequest(body="Missing field: 'ref'") from error
     try:
         return ItemHash(ref)
-    except UnknownHashError:
-        raise aiohttp.web_exceptions.HTTPBadRequest(body=f"Invalid ref: '{ref}'")
+    except UnknownHashError as error:
+        raise aiohttp.web_exceptions.HTTPBadRequest(body=f"Invalid ref: '{ref}'") from error
 
 
 def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
