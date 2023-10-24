@@ -9,7 +9,7 @@ from aiohttp import web
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
-from ..conf import settings
+from aleph.vm.conf import settings
 
 
 class Period(BaseModel):

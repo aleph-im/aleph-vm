@@ -15,8 +15,8 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from jwskate import Jwk
 
-from ...models import VmExecution
-from ...pool import VmPool
+from aleph.vm.models import VmExecution
+from aleph.vm.pool import VmPool
 
 logger = logging.getLogger(__name__)
 
