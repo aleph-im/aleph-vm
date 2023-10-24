@@ -4,6 +4,7 @@ import logging
 import os.path
 import shutil
 import string
+import sys
 import traceback
 from asyncio import Task
 from asyncio.base_events import Server
@@ -261,7 +262,12 @@ class MicroVM:
         if self.use_jailer:
             kernel_filename = kernel_image_path.name
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
-            kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+
+            if sys.version_info >= (3, 10):
+                Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
+            else:
+                kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+
             return Path(jailer_kernel_image_path)
         else:
             return kernel_image_path
@@ -325,7 +331,10 @@ class MicroVM:
         if self.use_jailer:
             drive_filename = drive_path.name
             jailer_path_on_host = f"/opt/{drive_filename}"
-            drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+            if sys.version_info >= (3, 10):
+                Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
+            else:
+                drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
             drive_path = Path(jailer_path_on_host)
 
         drive = Drive(
