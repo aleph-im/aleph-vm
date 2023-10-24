@@ -109,7 +109,6 @@ async def check_cache(session: ClientSession) -> bool:
         result2: int = await get_json_from_vm(session, "/cache/get/a")
         assert result2 == "42"
         keys: list[str] = await get_json_from_vm(session, "/cache/keys")
-        print("KEYS", keys)
         assert "a" in keys
         return True
     except ClientResponseError:
