@@ -134,5 +134,5 @@ def check_disk_space(bytes_to_use: int) -> bool:
     return host_disk_usage.free >= bytes_to_use
 
 
-class NotEnoughDiskSpace(OSError):
+class NotEnoughDiskSpaceError(OSError):
     pass
