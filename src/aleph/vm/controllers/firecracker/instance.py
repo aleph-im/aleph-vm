@@ -21,6 +21,7 @@ from aleph.vm.hypervisors.firecracker.config import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.storage import create_devmapper, create_volume_file
 from aleph.vm.utils import (
     HostNotFoundError,
     NotEnoughDiskSpace,
@@ -29,7 +30,6 @@ from aleph.vm.utils import (
     run_in_subprocess,
 )
 
-from ...storage import create_devmapper, create_volume_file
 from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,

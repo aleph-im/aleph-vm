@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import sys
 import uuid
 from asyncio import Task
 from dataclasses import dataclass
