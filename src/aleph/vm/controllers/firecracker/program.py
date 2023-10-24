@@ -33,7 +33,7 @@ from .executable import (
     AlephFirecrackerExecutable,
     AlephFirecrackerResources,
     ResourceDownloadError,
-    VmInitNotConnected,
+    VmInitNotConnectedError,
     VmSetupError,
     Volume,
 )
@@ -422,7 +422,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
         except ConnectionRefusedError as error:
             msg = "MicroVM may have crashed"
-            raise VmInitNotConnected(msg) from error
+            raise VmInitNotConnectedError(msg) from error
         try:
             return await asyncio.wait_for(
                 communicate(reader, writer, scope),

@@ -19,7 +19,7 @@ from aleph.vm.controllers.firecracker.program import (
     ResourceDownloadError,
     VmSetupError,
 )
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
+from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import HostNotFoundError
@@ -72,7 +72,7 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except MicroVMFailedInit as error:
+    except MicroVMFailedInitError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
@@ -101,7 +101,7 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except MicroVMFailedInit as error:
+    except MicroVMFailedInitError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
