@@ -8,7 +8,7 @@ from typing import Any
 from aiohttp import ClientResponseError, ClientSession
 from aiohttp.web_exceptions import HTTPBadGateway, HTTPInternalServerError, HTTPOk
 
-from ..conf import settings
+from aleph.vm.conf import settings
 
 logger = logging.getLogger(__name__)
 
