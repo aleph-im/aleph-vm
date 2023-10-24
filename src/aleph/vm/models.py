@@ -188,12 +188,8 @@ class VmExecution:
             logger.debug("VM already has a timeout. Extending it.")
             self.expire_task.cancel()
 
-        if sys.version_info.major >= 3 and sys.version_info.minor >= 8:
-            # Task can be named
-            vm_id: str = str(self.vm.vm_id if self.vm else None)
-            self.expire_task = create_task_log_exceptions(self.expire(timeout), name=f"expire {vm_id}")
-        else:
-            self.expire_task = create_task_log_exceptions(self.expire(timeout))
+        vm_id: str = str(self.vm.vm_id if self.vm else None)
+        self.expire_task = create_task_log_exceptions(self.expire(timeout), name=f"expire {vm_id}")
         return self.expire_task
 
     async def expire(self, timeout: float) -> None:
