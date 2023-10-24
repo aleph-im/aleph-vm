@@ -134,7 +134,6 @@ class Network:
 
         self.network_size = vm_network_size
         self.external_interface = external_interface
-        self.network_interface = external_interface
         self.ipv4_forwarding_enabled = ipv4_forwarding_enabled
         self.ipv6_forwarding_enabled = ipv6_forwarding_enabled
         self.use_ndp_proxy = use_ndp_proxy
