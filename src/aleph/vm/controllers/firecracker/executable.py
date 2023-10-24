@@ -158,7 +158,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: Optional[bool] = None,
-        hardware_resources: MachineResources = MachineResources(),
+        hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
@@ -168,7 +168,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
-        self.hardware_resources = hardware_resources
+        self.hardware_resources = hardware_resources or MachineResources()
         self.tap_interface = tap_interface
 
         self.fvm = MicroVM(
