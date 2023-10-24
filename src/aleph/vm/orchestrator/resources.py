@@ -36,9 +36,9 @@ class CoreFrequencies(BaseModel):
 
     @classmethod
     def from_psutil(cls, psutil_freq: psutil._common.scpufreq):
-        min = psutil_freq.min or psutil_freq.current
-        max = psutil_freq.max or psutil_freq.current
-        return cls(min=min, max=max)
+        min_ = psutil_freq.min or psutil_freq.current
+        max_ = psutil_freq.max or psutil_freq.current
+        return cls(min=min_, max=max_)
 
 
 class CpuUsage(BaseModel):

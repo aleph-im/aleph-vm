@@ -107,7 +107,7 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         return list(resolvectl_dns_servers_ipv4(interface=network_interface))
 
     else:
-        assert "No DNS resolve defined, this should never happen."
+        assert False, "No DNS resolve defined, this should never happen."
 
 
 class Settings(BaseSettings):
