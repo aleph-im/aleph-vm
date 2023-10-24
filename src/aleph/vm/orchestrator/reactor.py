@@ -4,9 +4,9 @@ from collections.abc import Coroutine
 from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
+from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from ..pool import VmPool
 from .pubsub import PubSub
 from .run import run_code_on_event
 

@@ -12,10 +12,10 @@ from aiohttp import web
 from aleph_message.models import AlephMessage, ItemHash, ProgramMessage, parse_message
 from yarl import URL
 
+from aleph.vm.conf import settings
+from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from ..conf import settings
-from ..pool import VmPool
 from .messages import load_updated_message
 from .pubsub import PubSub
 from .reactor import Reactor
