@@ -93,12 +93,12 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         # "Failed to get global data: Unit dbus-org.freedesktop.resolve1.service not found."
         try:
             return list(resolvectl_dns_servers_ipv4(interface=network_interface))
-        except (FileNotFoundError, CalledProcessError):
+        except (FileNotFoundError, CalledProcessError) as error:
             if Path("/etc/resolv.conf").exists():
                 return list(etc_resolv_conf_dns_servers())
             else:
                 msg = "No DNS resolver found"
-                raise FileNotFoundError(msg)
+                raise FileNotFoundError(msg) from error
 
     elif dns_resolver == DnsResolver.resolv_conf:
         return list(etc_resolv_conf_dns_servers())

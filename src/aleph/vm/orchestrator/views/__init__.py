@@ -81,8 +81,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             try:
                 message_ref = ItemHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
-            except aiodns.error.DNSError:
-                raise HTTPNotFound(reason="Invalid message reference")
+            except aiodns.error.DNSError as error:
+                raise HTTPNotFound(reason="Invalid message reference") from error
 
     pool = request.app["vm_pool"]
     return await run_code_on_request(message_ref, path, pool, request)
@@ -177,12 +177,12 @@ async def status_check_version(request: web.Request):
     try:
         reference = Version(reference_str)
     except InvalidVersion as error:
-        raise web.HTTPBadRequest(text=error.args[0])
+        raise web.HTTPBadRequest(text=error.args[0]) from error
 
     try:
         current = Version(__version__)
     except InvalidVersion as error:
-        raise web.HTTPServiceUnavailable(text=error.args[0])
+        raise web.HTTPServiceUnavailable(text=error.args[0]) from error
 
     if current >= reference:
         return web.Response(status=200, text=f"Up-to-date: version {current} >= {reference}")

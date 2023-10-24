@@ -61,21 +61,21 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason="Code, runtime or data not available")
+        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0])
+        raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during vm initialisation")
+        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
     except MicroVMFailedInit as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation")
+        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     except HostNotFoundError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Host did not respond to ping")
+        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
 
     if not execution.vm:
         msg = "The VM has not been created"
@@ -90,25 +90,25 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason="Code, runtime or data not available")
+        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0])
+        raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during vm initialisation")
+        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
     except MicroVMFailedInit as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation")
+        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     except HostNotFoundError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Host did not respond to ping")
+        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
     except Exception as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="unhandled error during initialisation") from error
+        raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
 
 
 async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
