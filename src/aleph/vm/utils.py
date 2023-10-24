@@ -32,10 +32,10 @@ class MsgpackSerializable:
             raise TypeError(msg)
 
 
-def b32_to_b16(hash: str) -> bytes:
+def b32_to_b16(string: str) -> bytes:
     """Convert base32 encoded bytes to base16 encoded bytes."""
     # Add padding
-    hash_b32: str = hash.upper() + "=" * (56 - len(hash))
+    hash_b32: str = string.upper() + "=" * (56 - len(string))
     hash_bytes: bytes = b32decode(hash_b32.encode())
     return b16encode(hash_bytes).lower()
 
