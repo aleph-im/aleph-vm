@@ -26,7 +26,7 @@ JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
 DEVICE_BASE_DIRECTORY = "/dev/mapper"
 
 
-class MicroVMFailedInit(Exception):
+class MicroVMFailedInitError(Exception):
     pass
 
 
@@ -401,7 +401,7 @@ class MicroVM:
             logger.debug("...signal from init received")
         except asyncio.TimeoutError as error:
             logger.warning("Never received signal from init")
-            raise MicroVMFailedInit() from error
+            raise MicroVMFailedInitError() from error
 
     async def shutdown(self) -> None:
         logger.debug(f"Shutdown vm={self.vm_id}")

@@ -20,7 +20,7 @@ from aleph.vm.controllers.firecracker.executable import (
     VmSetupError,
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
+from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import status
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.pubsub import PubSub
@@ -266,7 +266,7 @@ async def update_allocations(request: web.Request):
         ResourceDownloadError,
         FileTooLargeError,
         VmSetupError,
-        MicroVMFailedInit,
+        MicroVMFailedInitError,
         HostNotFoundError,
     )
 
