@@ -13,9 +13,9 @@ from typing import Callable
 from aiohttp import web
 
 from ..conf import settings
+from ..pool import VmPool
 from .metrics import create_tables, setup_engine
 from .resources import about_system_usage
-from .run import pool
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
 from .version import __version__
 from .views import (
@@ -70,19 +70,25 @@ app.add_routes(
 
 
 async def stop_all_vms(app: web.Application):
+    pool: VmPool = app["vm_pool"]
     await pool.stop()
 
 
 def run():
     """Run the VM Supervisor."""
     settings.check()
+    pool = VmPool()
+    pool.setup()
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
 
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
+    # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
+    app["vm_pool"] = pool
+
     print(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     engine = setup_engine()

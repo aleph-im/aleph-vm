@@ -15,6 +15,7 @@ from yarl import URL
 from aleph.vm.utils import create_task_log_exceptions
 
 from ..conf import settings
+from ..pool import VmPool
 from .messages import load_updated_message
 from .pubsub import PubSub
 from .reactor import Reactor
@@ -103,7 +104,8 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
-    reactor = Reactor(pubsub)
+    pool: VmPool = app["vm_pool"]
+    reactor = Reactor(pubsub, pool)
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions

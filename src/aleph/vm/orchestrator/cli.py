@@ -21,6 +21,7 @@ import alembic.config
 from aleph_message.models import ItemHash
 
 from ..conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
+from ..pool import VmPool
 from . import metrics, supervisor
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
@@ -189,6 +190,9 @@ async def benchmark(runs: int):
 
     bench: list[float] = []
 
+    pool = VmPool()
+    pool.setup()
+
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False
     settings.WATCH_FOR_UPDATES = False
@@ -207,7 +211,7 @@ async def benchmark(runs: int):
         "/cache/keys",
     ):
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code_on_request(vm_hash=ref, path=path, request=fake_request)
+        response: Response = await run_code_on_request(vm_hash=ref, path=path, pool=pool, request=fake_request)
         assert response.status == 200
 
     # Disable VM timeout to exit benchmark properly
@@ -216,7 +220,7 @@ async def benchmark(runs: int):
     for _run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response2: Response = await run_code_on_request(vm_hash=ref, path=path, request=fake_request)
+        response2: Response = await run_code_on_request(vm_hash=ref, path=path, pool=pool, request=fake_request)
         assert response2.status == 200
         bench.append(time.time() - t0)
 
@@ -224,19 +228,20 @@ async def benchmark(runs: int):
     logger.info(bench)
 
     event = None
-    result = await run_code_on_event(vm_hash=ref, event=event, pubsub=PubSub())
+    result = await run_code_on_event(vm_hash=ref, event=event, pubsub=PubSub(), pool=pool)
     print("Event result", result)
 
 
 async def start_instance(item_hash: ItemHash) -> None:
     """Run an instance from an InstanceMessage."""
+    pool = VmPool()
 
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
     # Watching for updates on this instance will therefore not work.
-    dummy_pubsub = PubSub()
+    pubsub = None
 
-    await start_persistent_vm(item_hash, dummy_pubsub)
+    await start_persistent_vm(item_hash, pubsub, pool)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
