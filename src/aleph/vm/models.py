@@ -4,7 +4,7 @@ import sys
 import uuid
 from asyncio import Task
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Union
 
 from aleph_message.models import (
@@ -109,7 +109,7 @@ class VmExecution:
         self.vm_hash = vm_hash
         self.message = message
         self.original = original
-        self.times = VmExecutionTimes(defined_at=datetime.now())
+        self.times = VmExecutionTimes(defined_at=datetime.now(tz=timezone.utc))
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
@@ -127,7 +127,7 @@ class VmExecution:
 
     async def prepare(self):
         """Download VM required files"""
-        self.times.preparing_at = datetime.now()
+        self.times.preparing_at = datetime.now(tz=timezone.utc)
         if self.is_program:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
         elif self.is_instance:
@@ -136,14 +136,14 @@ class VmExecution:
             msg = "Unknown executable message type"
             raise ValueError(msg)
         await resources.download_all()
-        self.times.prepared_at = datetime.now()
+        self.times.prepared_at = datetime.now(tz=timezone.utc)
         self.resources = resources
 
     async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephFirecrackerExecutable:
         if not self.resources:
             msg = "Execution resources must be configured first"
             raise ValueError(msg)
-        self.times.starting_at = datetime.now()
+        self.times.starting_at = datetime.now(tz=timezone.utc)
 
         vm: Union[AlephFirecrackerProgram, AlephFirecrackerInstance]
         if self.is_program:
@@ -172,7 +172,7 @@ class VmExecution:
             await vm.start()
             await vm.configure()
             await vm.start_guest_api()
-            self.times.started_at = datetime.now()
+            self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             return vm
         except Exception:
@@ -227,10 +227,10 @@ class VmExecution:
                 logger.debug(f"VM={self.vm.vm_id} already stopped")
                 return
             await self.all_runs_complete()
-            self.times.stopping_at = datetime.now()
+            self.times.stopping_at = datetime.now(tz=timezone.utc)
             await self.record_usage()
             await self.vm.teardown()
-            self.times.stopped_at = datetime.now()
+            self.times.stopped_at = datetime.now(tz=timezone.utc)
             self.cancel_expiration()
             self.cancel_update()
 

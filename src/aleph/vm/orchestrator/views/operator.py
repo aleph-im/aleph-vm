@@ -3,7 +3,7 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import aiohttp.web_exceptions
@@ -26,8 +26,8 @@ def is_token_still_valid(timestamp):
     Checks if a token has exprired based on its timestamp
     """
     timestamp = int(timestamp)
-    current_datetime = datetime.now()
-    target_datetime = datetime.fromtimestamp(timestamp)
+    current_datetime = datetime.now(tz=timezone.utc)
+    target_datetime = datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
     return target_datetime > current_datetime
 

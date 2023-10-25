@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
 from typing import Union
@@ -326,7 +326,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
 
 
 async def create_volume_snapshot(path: Path) -> Path:
-    new_path = Path(f"{path}.{datetime.today().strftime('%d%m%Y-%H%M%S')}.bak")
+    new_path = Path(f"{path}.{datetime.now(tz=timezone.utc).date().strftime('%d%m%Y-%H%M%S')}.bak")
     copy2(path, new_path)
     return new_path
 
