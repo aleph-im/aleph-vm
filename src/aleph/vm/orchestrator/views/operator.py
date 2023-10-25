@@ -15,8 +15,8 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from jwskate import Jwk
 
-from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.run import pool
+from ...models import VmExecution
+from ...pool import VmPool
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
         raise aiohttp.web_exceptions.HTTPBadRequest(body=f"Invalid ref: '{ref}'")
 
 
-def get_execution_or_404(ref: ItemHash) -> VmExecution:
+def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
     """Return the execution corresponding to the ref or raise an HTTP 404 error."""
     execution = pool.executions.get(ref)
     if execution:
@@ -134,7 +134,8 @@ def get_execution_or_404(ref: ItemHash) -> VmExecution:
 async def stream_logs(request: web.Request):
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
-    execution = get_execution_or_404(vm_hash)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
 
     if execution.vm is None:
         raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
@@ -170,7 +171,8 @@ async def operate_expire(request: web.Request):
     if not 0 < timeout < timedelta(days=10).total_seconds():
         return web.HTTPBadRequest(body="Invalid timeout duration")
 
-    execution = get_execution_or_404(vm_hash)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
 
     logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
     await execution.expire(timeout=timeout)
@@ -185,8 +187,9 @@ async def operate_stop(request: web.Request):
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
 
+    pool: VmPool = request.app["vm_pool"]
     logger.debug(f"Iterating through running executions... {pool.executions}")
-    execution = get_execution_or_404(vm_hash)
+    execution = get_execution_or_404(vm_hash, pool=pool)
 
     if execution.is_running:
         logger.info(f"Stopping {execution.vm_hash}")
@@ -203,7 +206,8 @@ async def operate_reboot(request: web.Request):
     Reboots the virtual machine, smoothly if possible.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    execution = get_execution_or_404(vm_hash)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
 
     # TODO: implement this endpoint
     logger.info(f"Rebooting {execution.vm_hash}")
@@ -216,7 +220,8 @@ async def operate_erase(request: web.Request):
     Stop the virtual machine first if needed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    execution = get_execution_or_404(vm_hash)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
 
     logger.info(f"Erasing {execution.vm_hash}")
 
