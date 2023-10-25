@@ -10,6 +10,8 @@ from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
 from pydantic import BaseSettings, Field
+from pydantic.env_settings import DotenvType, env_file_sentinel
+from pydantic.typing import StrPath
 
 from aleph.vm.utils import is_command_available
 
@@ -173,24 +175,24 @@ class Settings(BaseSettings):
     CONNECTOR_URL = Url("http://localhost:4021")
 
     CACHE_ROOT = Path("/var/cache/aleph/vm")
-    MESSAGE_CACHE: Optional[Path] = Field(
+    MESSAGE_CACHE: Path = Field(
         None,
         description="Default to CACHE_ROOT/message",
     )
-    CODE_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/code")
-    RUNTIME_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/runtime")
-    DATA_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/data")
+    CODE_CACHE: Path = Field(None, description="Default to CACHE_ROOT/code")
+    RUNTIME_CACHE: Path = Field(None, description="Default to CACHE_ROOT/runtime")
+    DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT = Path("/var/lib/aleph/vm")
-    EXECUTION_DATABASE: Optional[Path] = Field(
+    EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
     EXECUTION_LOG_ENABLED = False
-    EXECUTION_LOG_DIRECTORY: Optional[Path] = Field(
+    EXECUTION_LOG_DIRECTORY: Path = Field(
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Optional[Path] = Field(
+    PERSISTENT_VOLUMES_DIR: Path = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
 
@@ -289,25 +291,12 @@ class Settings(BaseSettings):
         assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
 
     def setup(self):
-        if not self.MESSAGE_CACHE:
-            self.MESSAGE_CACHE = self.CACHE_ROOT / "message"
-        if not self.CODE_CACHE:
-            self.CODE_CACHE = self.CACHE_ROOT / "code"
-        if not self.RUNTIME_CACHE:
-            self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
-        if not self.DATA_CACHE:
-            self.DATA_CACHE = self.CACHE_ROOT / "data"
-
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
         os.makedirs(self.DATA_CACHE, exist_ok=True)
 
         os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
-        if not self.PERSISTENT_VOLUMES_DIR:
-            self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
-        if not self.EXECUTION_LOG_DIRECTORY:
-            self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
 
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
@@ -335,6 +324,28 @@ class Settings(BaseSettings):
                 attributes[attr] = getattr(self, attr)
 
         return "\n".join(f"{attribute:<27} = {value}" for attribute, value in attributes.items())
+
+    def __init__(
+        self,
+        _env_file: Optional[DotenvType] = env_file_sentinel,
+        _env_file_encoding: Optional[str] = None,
+        _env_nested_delimiter: Optional[str] = None,
+        _secrets_dir: Optional[StrPath] = None,
+        **values: Any,
+    ) -> None:
+        super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)
+        if not self.MESSAGE_CACHE:
+            self.MESSAGE_CACHE = self.CACHE_ROOT / "message"
+        if not self.CODE_CACHE:
+            self.CODE_CACHE = self.CACHE_ROOT / "code"
+        if not self.RUNTIME_CACHE:
+            self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
+        if not self.DATA_CACHE:
+            self.DATA_CACHE = self.CACHE_ROOT / "data"
+        if not self.PERSISTENT_VOLUMES_DIR:
+            self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
+        if not self.EXECUTION_LOG_DIRECTORY:
+            self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
 
     class Config:
         env_prefix = "ALEPH_VM_"
