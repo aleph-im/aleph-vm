@@ -21,19 +21,16 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
-from aleph.vm.orchestrator import status
-from aleph.vm.orchestrator.metrics import get_execution_records
-from aleph.vm.orchestrator.pubsub import PubSub
-from aleph.vm.orchestrator.resources import Allocation
-from aleph.vm.orchestrator.run import pool, run_code_on_request, start_persistent_vm
-from aleph.vm.orchestrator.version import __version__
-from aleph.vm.utils import (
-    HostNotFoundError,
-    b32_to_b16,
-    dumps_for_json,
-    get_ref_from_dns,
-)
 from packaging.version import InvalidVersion, Version
+
+from ...pool import VmPool
+from ...utils import HostNotFoundError, b32_to_b16, dumps_for_json, get_ref_from_dns
+from .. import status
+from ..metrics import get_execution_records
+from ..pubsub import PubSub
+from ..resources import Allocation
+from ..run import run_code_on_request, start_persistent_vm
+from ..version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +45,8 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = path if path.startswith("/") else f"/{path}"
 
     message_ref = ItemHash(request.match_info["ref"])
-    return run_code_on_request(message_ref, path, request)
+    pool: VmPool = request.app["vm_pool"]
+    return run_code_on_request(message_ref, path, pool, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -82,7 +80,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             except aiodns.error.DNSError:
                 raise HTTPNotFound(reason="Invalid message reference")
 
-    return await run_code_on_request(message_ref, path, request)
+    pool = request.app["vm_pool"]
+    return await run_code_on_request(message_ref, path, pool, request)
 
 
 def authenticate_request(request: web.Request) -> None:
@@ -103,6 +102,7 @@ async def about_login(request: web.Request) -> web.Response:
 
 async def about_executions(request: web.Request) -> web.Response:
     authenticate_request(request)
+    pool: VmPool = request.app["vm_pool"]
     return web.json_response(
         [dict(pool.executions.items())],
         dumps=dumps_for_json,
@@ -208,6 +208,7 @@ async def update_allocations(request: web.Request):
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
+    pool: VmPool = request.app["vm_pool"]
 
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
@@ -237,7 +238,7 @@ async def update_allocations(request: web.Request):
         try:
             logger.info(f"Starting long running VM '{vm_hash}'")
             vm_hash = ItemHash(vm_hash)
-            await start_persistent_vm(vm_hash, pubsub)
+            await start_persistent_vm(vm_hash, pubsub, pool)
         except vm_creation_exceptions as error:
             logger.exception(error)
             scheduling_errors[vm_hash] = error
@@ -247,7 +248,7 @@ async def update_allocations(request: web.Request):
         logger.info(f"Starting instance '{instance_hash}'")
         try:
             instance_hash = ItemHash(instance_hash)
-            await start_persistent_vm(instance_hash, pubsub)
+            await start_persistent_vm(instance_hash, pubsub, pool)
         except vm_creation_exceptions as error:
             logger.exception(error)
             scheduling_errors[instance_hash] = error
