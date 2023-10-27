@@ -47,6 +47,7 @@ def get_existing_nftables_ruleset() -> dict:
 
     if return_code != 0:
         logger.error(f"Unable to get nftables ruleset: {error}")
+        return {"nftables": []}
 
     nft_ruleset = json.loads(output)
     return nft_ruleset
