@@ -377,7 +377,8 @@ class MicroVM:
             await queue.put(runtime_config)
 
         self._unix_socket = await asyncio.start_unix_server(unix_client_connected, path=f"{self.vsock_path}_52")
-        system(f"chown jailman:jailman {self.vsock_path}_52")
+        if self.use_jailer:
+            system(f"chown jailman:jailman {self.vsock_path}_52")
         try:
             self.runtime_config = await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")

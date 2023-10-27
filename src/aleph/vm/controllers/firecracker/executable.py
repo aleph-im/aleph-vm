@@ -21,7 +21,7 @@ from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.storage import get_volume_path
+from aleph.vm.storage import get_volume_path, chown_to_jailman
 
 try:
     import psutil  # type: ignore [no-redef]
@@ -280,7 +280,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         self.guest_api_process.start()
         while not exists(vsock_path):
             await asyncio.sleep(0.01)
-        subprocess.run(f"chown jailman:jailman {vsock_path}", shell=True, check=True)
+        await chown_to_jailman(Path(vsock_path))
         logger.debug(f"started guest API for {self.vm_id}")
 
     async def stop_guest_api(self):
