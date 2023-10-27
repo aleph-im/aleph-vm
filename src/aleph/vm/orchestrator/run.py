@@ -108,7 +108,7 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
     except Exception as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="unhandled error during initialisation")
+        raise HTTPInternalServerError(reason="unhandled error during initialisation") from error
 
 
 async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
