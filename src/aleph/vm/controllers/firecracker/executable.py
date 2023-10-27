@@ -250,9 +250,11 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
             logger.debug("setup done")
         except Exception:
             # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
+            logger.error("VM startup failed, cleaning up network")
             await self.fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
+            if self.tap_interface:
+                await self.tap_interface.delete()
             raise
 
         if self.enable_console:
@@ -291,7 +293,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         if self.fvm:
             await self.fvm.teardown()
             teardown_nftables_for_vm(self.vm_id)
-            await self.tap_interface.delete()
+            if self.tap_interface:
+                await self.tap_interface.delete()
         await self.stop_guest_api()
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
