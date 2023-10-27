@@ -136,6 +136,8 @@ class MicroVM:
         }
 
     def prepare_jailer(self):
+        if not self.use_jailer:
+            return False
         system(f"rm -fr {self.jailer_path}")
 
         # system(f"rm -fr {self.jailer_path}/run/")
