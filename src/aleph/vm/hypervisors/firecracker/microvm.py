@@ -4,6 +4,7 @@ import logging
 import os.path
 import shutil
 import string
+import traceback
 from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
@@ -40,7 +41,12 @@ class JSONBytesEncoder(json.JSONEncoder):
 
 def system(command):
     logger.debug(f"shell {command}")
-    return os.system(command)
+    ret = os.system(command)
+    if ret != 0:
+        logger.warning(f"Failed shell `{command}`: return code {ret}")
+        # print trace so we know who called this
+        traceback.print_stack()
+    return ret
 
 
 async def setfacl():
