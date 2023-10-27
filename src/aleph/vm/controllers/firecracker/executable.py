@@ -21,7 +21,7 @@ from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.storage import get_volume_path, chown_to_jailman
+from aleph.vm.storage import chown_to_jailman, get_volume_path
 
 try:
     import psutil  # type: ignore [no-redef]
