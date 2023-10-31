@@ -11,6 +11,8 @@ from typing import Callable
 
 from aiohttp.web import Request, Response
 
+from aleph.vm.version import get_version_from_apt, get_version_from_git
+
 try:
     import sentry_sdk
 except ImportError:
@@ -312,6 +314,13 @@ def main():
                 # of transactions for performance monitoring.
                 # We recommend adjusting this value in production.
                 traces_sample_rate=1.0,
+            )
+            sentry_sdk.set_context(
+                "version",
+                {
+                    "git": get_version_from_git(),
+                    "apt": get_version_from_apt(),
+                },
             )
         else:
             logger.debug("Sentry SDK found with no DSN configured.")
