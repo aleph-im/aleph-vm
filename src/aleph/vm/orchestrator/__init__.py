@@ -1,3 +1,5 @@
+from aleph.vm.version import __version__
+
 from . import (
     messages,
     metrics,
@@ -8,14 +10,12 @@ from . import (
     status,
     supervisor,
     tasks,
-    version,
     views,
     vm,
 )
 
-__version__ = version.__version__
-
 __all__ = (
+    "__version__",
     "messages",
     "metrics",
     "pubsub",
@@ -25,7 +25,6 @@ __all__ = (
     "status",
     "supervisor",
     "tasks",
-    "version",
     "views",
     "vm",
 )
