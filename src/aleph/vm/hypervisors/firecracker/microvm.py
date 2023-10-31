@@ -4,6 +4,7 @@ import logging
 import os.path
 import shutil
 import string
+import traceback
 from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
@@ -40,7 +41,12 @@ class JSONBytesEncoder(json.JSONEncoder):
 
 def system(command):
     logger.debug(f"shell {command}")
-    return os.system(command)
+    ret = os.system(command)
+    if ret != 0:
+        logger.warning(f"Failed shell `{command}`: return code {ret}")
+        # print trace so we know who called this
+        traceback.print_stack()
+    return ret
 
 
 async def setfacl():
@@ -130,6 +136,8 @@ class MicroVM:
         }
 
     def prepare_jailer(self):
+        if not self.use_jailer:
+            return False
         system(f"rm -fr {self.jailer_path}")
 
         # system(f"rm -fr {self.jailer_path}/run/")
@@ -377,7 +385,8 @@ class MicroVM:
             await queue.put(runtime_config)
 
         self._unix_socket = await asyncio.start_unix_server(unix_client_connected, path=f"{self.vsock_path}_52")
-        system(f"chown jailman:jailman {self.vsock_path}_52")
+        if self.use_jailer:
+            system(f"chown jailman:jailman {self.vsock_path}_52")
         try:
             self.runtime_config = await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")
