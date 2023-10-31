@@ -8,6 +8,8 @@ import aioredis
 from aiohttp import web
 from setproctitle import setproctitle
 
+from aleph.vm.version import get_version_from_apt, get_version_from_git
+
 try:
     import sentry_sdk
 except ImportError:
@@ -167,6 +169,13 @@ def run_guest_api(
             # of transactions for performance monitoring.
             # We recommend adjusting this value in production.
             traces_sample_rate=1.0,
+        )
+        sentry_sdk.set_context(
+            "version",
+            {
+                "git": get_version_from_git(),
+                "apt": get_version_from_apt(),
+            },
         )
 
     setproctitle(f"aleph-vm guest_api on {unix_socket_path}")

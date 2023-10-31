@@ -12,12 +12,13 @@ from typing import Callable
 
 from aiohttp import web
 
+from aleph.vm.version import __version__
+
 from ..conf import settings
 from ..pool import VmPool
 from .metrics import create_tables, setup_engine
 from .resources import about_system_usage
 from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
-from .version import __version__
 from .views import (
     about_config,
     about_execution_records,
