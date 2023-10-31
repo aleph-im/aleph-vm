@@ -288,7 +288,8 @@ class Settings(BaseSettings):
             assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
 
         assert is_command_available("setfacl"), "Command `setfacl` not found, run `apt install acl`"
-        assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
+        if self.USE_NDP_PROXY:
+            assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
