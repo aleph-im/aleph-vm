@@ -65,7 +65,7 @@
     firecracker
     nftables
     (
-      python310.withPackages(ps: with ps; [
+      python311.withPackages(ps: with ps; [
         aiohttp
         msgpack
         aiodns
@@ -81,14 +81,14 @@
         (
           buildPythonPackage rec {
             pname = "aleph-message";
-            version = "0.4.0a1";
+            version = "0.4.0";
             src = fetchPypi {
               inherit pname version;
-              sha256 = "sha256-owxMgV99SONtzykgNfwbbRLalhiGWfL49pNXv2YFBpk=";
+              sha256 = "sha256-a1yyiRUjcaER2JXxPAKPLQMoVlpWq3SbXB+XzBbvDvU=";
             };
             doCheck = false;
             propagatedBuildInputs = [
-              pkgs.python3Packages.pydantic
+              pkgs.python311Packages.pydantic
             ];
           }
         )
