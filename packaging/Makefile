@@ -47,7 +47,7 @@ download-ipfs-kubo: target-dir build-dir
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
-	python3 ./version_from_git.py --inplace __version__ ../src/aleph/vm/orchestrator/version.py
+	python3 ./version_from_git.py --inplace __version__ ../src/aleph/vm/version.py
 
 build-dir:
 	mkdir -p target
