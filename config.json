@@ -1,0 +1,52 @@
+{
+  "settings": {
+    "PRINT_SYSTEM_LOGS": true,
+    "DOMAIN_NAME": "vm.example.org",
+    "SUPERVISOR_HOST": "0.0.0.0"
+  },
+  "instance_configuration": {
+    "address": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+    "allow_amend": false,
+    "variables": {
+      "VM_CUSTOM_NUMBER": "32"
+    },
+    "environment": {
+      "reproducible": true,
+      "internet": true,
+      "aleph_api": true,
+      "shared_cache": true
+    },
+    "resources": {
+      "vcpus": 1,
+      "memory": 512,
+      "seconds": 30
+    },
+    "rootfs": {
+      "parent": {
+        "ref": "549ec451d9b099cad112d4aaa2c00ac40fb6729a92ff252ff22eef0b5c3cb613",
+        "use_latest": true
+      },
+      "persistence": "host",
+      "size_mib": 5000
+    },
+    "authorized_keys": [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHlGJRaIv/EzNT0eNqNB5DiGEbii28Fb2zCjuO/bMu7y amolinsdiaz@gmail.com"
+    ],
+    "volumes": [
+      {
+        "mount": "/opt/venv",
+        "ref": "5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51",
+        "use_latest": false
+      },
+      {
+        "comment": "Working data persisted on the VM supervisor, not available on other nodes",
+        "mount": "/var/lib/example",
+        "name": "data",
+        "persistence": "host",
+        "size_mib": 5
+      }
+    ],
+    "replaces": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+    "time": 1619017773.8950517
+  }
+}
