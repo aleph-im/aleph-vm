@@ -19,6 +19,7 @@ class AlephControllerInterface(ABC):
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
+    support_snapshot: bool
 
     def get_vm_ip(self) -> Optional[str]:
         if self.tap_interface:
@@ -34,7 +35,6 @@ class AlephControllerInterface(ABC):
         if self.tap_interface:
             return self.tap_interface.guest_ipv6.with_prefixlen
         return None
-
 
     def get_vm_ipv6_gateway(self) -> Optional[str]:
         if self.tap_interface:

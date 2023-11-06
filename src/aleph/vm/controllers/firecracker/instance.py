@@ -58,6 +58,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     resources: AlephInstanceResources
     latest_snapshot: Optional[DiskVolumeSnapshot]
     is_instance = True
+    support_snapshot = False
 
     def __init__(
         self,

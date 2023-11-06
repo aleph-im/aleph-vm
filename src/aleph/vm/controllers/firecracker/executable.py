@@ -150,6 +150,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
     guest_api_process: Optional[Process] = None
     is_instance: bool
     _firecracker_config: Optional[FirecrackerConfig] = None
+    support_snapshot: bool
 
     def __init__(
         self,

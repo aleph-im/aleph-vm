@@ -78,6 +78,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
     # vm_configuration: Optional[ConfigurationType]
     # guest_api_process: Optional[Process] = None
     is_instance: bool
+    support_snapshot = False
 
     # _firecracker_config: Optional[FirecrackerConfig] = None
 
