@@ -21,8 +21,7 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
-from aleph.vm.controllers.qemu import AlephQemuResources
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,

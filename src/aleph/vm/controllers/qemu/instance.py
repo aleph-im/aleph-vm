@@ -1,10 +1,16 @@
 import asyncio
 import logging
+import os
 import shutil
 import sys
+from pathlib import Path
 from typing import Generic, Optional
 
 import psutil
+
+from aleph.vm.controllers.qemu import logger
+from aleph.vm.utils import run_in_subprocess
+
 from aleph.vm.orchestrator.vm.vm_type import VmType
 
 from aleph.vm.network.hostnetwork import make_ipv6_allocator
@@ -12,15 +18,52 @@ from aleph.vm.network.hostnetwork import make_ipv6_allocator
 from aleph.vm.network.ipaddresses import IPv4NetworkWithInterfaces
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import ConfigurationType
-from aleph.vm.controllers.qemu import AlephQemuResources
+from aleph.vm.controllers.firecracker.executable import ConfigurationType, AlephFirecrackerResources
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
+from aleph_message.models.execution.instance import RootfsVolume
+from aleph_message.models.execution.volume import PersistentVolume
 
 logger = logging.getLogger(__name__)
+
+
+class AlephQemuResources(AlephFirecrackerResources):
+    async def download_all(self):
+        volume = self.message_content.rootfs
+        # self.namespace
+        # image_path = get_rootfs_base_path(volume.parent.ref)
+        if settings.USE_FAKE_INSTANCE_BASE and settings.FAKE_INSTANCE_BASE:
+            logger.debug("Using fake instance base")
+
+            base_image_path = Path(settings.FAKE_INSTANCE_BASE)
+
+            self.rootfs_path = await self.make_writable_volume(base_image_path, volume)
+
+        return
+
+    async def make_writable_volume(self, qcow2_file_path, volume: PersistentVolume | RootfsVolume):
+        qemu_img_path = shutil.which("qemu-img")
+        volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
+
+        dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        await run_in_subprocess(
+            [
+                qemu_img_path,
+                "create",
+                "-f",
+                "qcow2",
+                "-F",
+                "qcow2",
+                "-b",
+                str(qcow2_file_path),
+                str(dest_path),
+            ]
+        )
+        return dest_path
 
 
 class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
@@ -30,7 +73,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    # tap_interface: Optional[TapInterface] = None
+    tap_interface: Optional[TapInterface] = None
     # fvm: MicroVM
     # vm_configuration: Optional[ConfigurationType]
     # guest_api_process: Optional[Process] = None
@@ -42,14 +85,14 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
         return f"<AlephQemuInstance {self.vm_id}>"
 
     def __init__(
-            self,
-            vm_id: int,
-            vm_hash: ItemHash,
-            resources: AlephQemuResources,
-            enable_networking: bool = False,
-            enable_console: Optional[bool] = None,
-            hardware_resources: MachineResources = MachineResources(),
-            tap_interface: Optional[TapInterface] = None,
+        self,
+        vm_id: int,
+        vm_hash: ItemHash,
+        resources: AlephQemuResources,
+        enable_networking: bool = False,
+        enable_console: Optional[bool] = None,
+        hardware_resources: MachineResources = MachineResources(),
+        tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -108,57 +151,56 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
 
         qemu_path = shutil.which("qemu-system-x86_64")
-        args = []
-        if not self.enable_networking:
-            self.enable_networking = True
-            self.tap_interface = TapInterface(device_name='tap0',
-                                              ip_network=IPv4NetworkWithInterfaces('172.16.0.0/30'),
-                                              ipv6_network=make_ipv6_allocator(
-                                                  allocation_policy=settings.IPV6_ALLOCATION_POLICY,
-                                                  address_pool=settings.IPV6_ADDRESS_POOL,
-                                                  subnet_prefix=settings.IPV6_SUBNET_PREFIX,
-                                              ).allocate_vm_ipv6_subnet(self.vm_id, self.vm_hash, VmType.instance),
-                                              ndp_proxy=None,
-                                              )
-        if self.tap_interface:
-            interface_name = self.tap_interface.device_name
-            # script=no, downscript=no are there so qemu don't try to set up the network itself
-            args += ['-net', 'nic,model=virtio',
-                     '-net', f'tap,ifname={interface_name},script=no,downscript=no']
+        image_path = self.resources.rootfs_path
         vcpu_count = self.hardware_resources.vcpus
         mem_size_mib = self.hardware_resources.memory
         mem_size_mb = int(mem_size_mib / 1024 / 1024 * 1000 * 1000)
+
+        # make the snapshot image
+        args = [
+            qemu_path,
+            "-enable-kvm",
+            "-m",
+            str(mem_size_mb),
+            "-smp",
+            str(vcpu_count),
+            "-fda",
+            "",
+            # "-snapshot",  # Do not save anything to disk
+            "-drive",
+            f"file={image_path},media=disk,if=virtio",
+            "-display",
+            "none",  # Comment for debug
+        ]
+        if not self.enable_networking:
+            self.enable_networking = True
+            self.tap_interface = TapInterface(
+                device_name="tap0",
+                ip_network=IPv4NetworkWithInterfaces("172.16.0.0/30"),
+                ipv6_network=make_ipv6_allocator(
+                    allocation_policy=settings.IPV6_ALLOCATION_POLICY,
+                    address_pool=settings.IPV6_ADDRESS_POOL,
+                    subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+                ).allocate_vm_ipv6_subnet(self.vm_id, self.vm_hash, VmType.instance),
+                ndp_proxy=None,
+            )
+        if self.tap_interface:
+            interface_name = self.tap_interface.device_name
+            # script=no, downscript=no are there so qemu don't try to set up the network itself
+            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={interface_name},script=no,downscript=no"]
+
         # TODO implement published ports?
         # seconds -> only for microvm
-
-        # TODO : make a snapshot of the image, based on the base image
-        # image_path='/home/olivier/Projects/qemu-quickstart/alpine.qcow2'
-        image_path = self.resources.rootfs_path
 
         # FIXME local HACK
 
         cloud_init_drive = await self._create_cloud_init_drive()
         if cloud_init_drive:
-            args += ['-cdrom', f'{cloud_init_drive.path_on_host}']
+            args += ["-cdrom", f"{cloud_init_drive.path_on_host}"]
 
         try:
-            print(qemu_path,
-                  "-enable-kvm",
-                  '-m', str(mem_size_mb),
-                  '-smp', str(vcpu_count),
-                  '-drive', f'file={image_path},media=disk,if=virtio',
-                  '-display', 'none',
-
-                  *args)
+            print(*args)
             proc = await asyncio.create_subprocess_exec(
-                qemu_path,
-                "-enable-kvm",
-                '-m', str(mem_size_mb),
-                '-smp', str(vcpu_count),
-                '-fda',             "",
-                '-snapshot', # Do not save anythong to disk
-                '-drive', f'file={image_path},media=disk,if=virtio',
-                '-display', 'none', # Comment for debug
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -217,6 +259,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
     async def teardown(self):
         logger.info("Tearing down {self}")
         pass
+
     #     if self.fvm:
     #         await self.fvm.teardown()
     #         teardown_nftables_for_vm(self.vm_id)
