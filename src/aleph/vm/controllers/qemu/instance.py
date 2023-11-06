@@ -103,7 +103,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
 
     async def start(self):
         logger.debug(f"Starting Qemu: {self} ")
-        # # qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
+        # Based on the command
+        #  qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
 
         qemu_path = shutil.which("qemu-system-x86_64")
@@ -134,12 +135,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
         # image_path='/home/olivier/Projects/qemu-quickstart/alpine.qcow2'
         image_path = self.resources.rootfs_path
 
-        # TODO implement cloud init
         # FIXME local HACK
 
         cloud_init_drive = await self._create_cloud_init_drive()
         if cloud_init_drive:
-            # args += ['-drive', f'file={cloud_init_drive.path_on_host},format=raw,media=disk,if=virtio,index=1']
             args += ['-cdrom', f'{cloud_init_drive.path_on_host}']
 
         try:
@@ -149,25 +148,23 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
                   '-smp', str(vcpu_count),
                   '-drive', f'file={image_path},media=disk,if=virtio',
                   '-display', 'none',
+
                   *args)
             proc = await asyncio.create_subprocess_exec(
                 qemu_path,
                 "-enable-kvm",
                 '-m', str(mem_size_mb),
                 '-smp', str(vcpu_count),
+                '-fda',             "",
+                '-snapshot', # Do not save anythong to disk
                 '-drive', f'file={image_path},media=disk,if=virtio',
-                '-display', 'none',
+                '-display', 'none', # Comment for debug
                 *args,
-                # stdin=asyncio.subprocess.PIPE,
-                # stdout=asyncio.subprocess.PIPE,
-                # stderr=asyncio.subprocess.PIPE,
-                # stdin=asyncio.subprocess.PIPE,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
             )
-            print(proc)
 
-            logger.debug(f"setup done {self}")
+            logger.debug(f"setup done {self}, {proc}")
             stdout, stderr = await proc.communicate()
             print(stdout, stderr)
         except Exception:
