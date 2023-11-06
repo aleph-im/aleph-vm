@@ -48,10 +48,11 @@ class CloudInitMixin(AlephControllerInterface):
         route = self.get_vm_route()
         ipv6 = self.get_vm_ipv6()
         ipv6_gateway = self.get_vm_ipv6_gateway()
-
+        # TODO : had to change from eth0 -> ens3 for qemu
+        # check for portable solution
         network = {
             "ethernets": {
-                "eth0": {
+                "ens3": {
                     "dhcp4": False,
                     "dhcp6": False,
                     "addresses": [ip, ipv6],
