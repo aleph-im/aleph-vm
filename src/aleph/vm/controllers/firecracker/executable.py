@@ -18,7 +18,7 @@ from aleph_message.models.execution.environment import MachineResources
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.guest_api.__main__ import run_guest_api
-from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
+from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM, save_configuration_file
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman, get_volume_path
@@ -246,7 +246,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
             raise ValueError(msg)
 
         try:
-            await self.fvm.start(self._firecracker_config)
+            firecracker_config_path = await save_configuration_file(self._firecracker_config)
+            await self.fvm.start(firecracker_config_path)
             logger.debug("setup done")
         except Exception:
             # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
