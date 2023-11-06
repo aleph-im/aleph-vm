@@ -2,40 +2,39 @@ import argparse
 import asyncio
 import logging
 import json
+
 import sys
 from pathlib import Path
 
 from pydantic import BaseModel
+
+from aleph.vm.network.hostnetwork import make_ipv6_allocator, Network
 
 try:
     import sentry_sdk
 except ImportError:
     sentry_sdk = None
 
-from aiohttp.web_exceptions import HTTPBadRequest, HTTPInternalServerError
-
-from aleph_message.models import ItemHash, InstanceContent
-
-from aleph.vm.controllers.firecracker.program import (
-    FileTooLargeError,
-    ResourceDownloadError,
-    VmSetupError,
-)
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInit
+from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
 from aleph.vm.conf import settings, Settings
-from aleph.vm.pool import VmPool
-from aleph.vm.utils import HostNotFoundError
 
 logger = logging.getLogger(__name__)
 
-pool: VmPool
+
+class VMConfiguration(BaseModel):
+    use_jailer: bool
+    firecracker_bin_path: Path
+    jailer_bin_path: Path
+    config_file_path: Path
+    init_timeout: float
+    mounted_rootfs: Path
 
 
 class Configuration(BaseModel):
-    vm_hash: ItemHash
-    instance_configuration: InstanceContent
+    vm_id: int
     settings: Settings
+    vm_configuration: VMConfiguration
 
 
 def configuration_from_file(path: Path):
@@ -70,47 +69,22 @@ def parse_args(args):
 
 
 async def run_instance(config: Configuration):
-    global pool
-    vm_hash = config.vm_hash
-    try:
-        execution = await pool.create_a_vm(
-            vm_hash=vm_hash,
-            message=config.instance_configuration,
-            original=config.instance_configuration,
-        )
-    except ResourceDownloadError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason="Code, runtime or data not available")
-    except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0])
-    except VmSetupError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during vm initialisation")
-    except MicroVMFailedInit as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation")
-    except HostNotFoundError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Host did not respond to ping")
+    execution = MicroVM(
+        vm_id=config.vm_id,
+        firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
+        use_jailer=config.vm_configuration.use_jailer,
+        jailer_bin_path=config.vm_configuration.jailer_bin_path,
+        init_timeout=config.vm_configuration.init_timeout,
+    )
+    execution.prepare_jailer()
 
-    if not execution.vm:
-        msg = "The VM has not been created"
-        raise ValueError(msg)
+    await execution.start(config.vm_configuration.config_file_path)
 
     return execution
 
 
 def main():
-    global pool
     args = parse_args(sys.argv[1:])
-
-    pool = VmPool()
-    if args.initialize_network_settings:
-        pool.setup()
 
     config_path = Path(args.config_path)
     if not config_path.is_file():
@@ -132,5 +106,23 @@ def main():
         print(settings.display())
 
     settings.check()
+
+    network = Network(
+        vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
+        vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+        external_interface=settings.NETWORK_INTERFACE,
+        ipv6_allocator=make_ipv6_allocator(
+            allocation_policy=settings.IPV6_ALLOCATION_POLICY,
+            address_pool=settings.IPV6_ADDRESS_POOL,
+            subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+        ),
+        use_ndp_proxy=settings.USE_NDP_PROXY,
+        ipv6_forwarding_enabled=settings.IPV6_FORWARDING_ENABLED,
+    )
+
+    # pool = VmPool()
+    if args.initialize_network_settings:
+        # pool.setup()
+        network.setup()
 
     asyncio.run(run_instance(config))
