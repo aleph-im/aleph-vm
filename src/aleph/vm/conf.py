@@ -291,6 +291,9 @@ class Settings(BaseSettings):
         if self.USE_NDP_PROXY:
             assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
 
+        # Necessary for cloud-init customisation of instance
+        assert is_command_available('cloud-localds'),  "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
+
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
