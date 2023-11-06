@@ -21,6 +21,8 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
+from aleph.vm.controllers.qemu import AlephQemuResources
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
@@ -33,7 +35,6 @@ from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
-
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class VmExecution:
     original: ExecutableContent
     message: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[AlephFirecrackerExecutable] = None
+    vm: Optional[AlephFirecrackerExecutable | AlephQemuInstance] = None
 
     times: VmExecutionTimes
 
@@ -98,11 +99,11 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-        self,
-        vm_hash: ItemHash,
-        message: ExecutableContent,
-        original: ExecutableContent,
-        snapshot_manager: "SnapshotManager",
+            self,
+            vm_hash: ItemHash,
+            message: ExecutableContent,
+            original: ExecutableContent,
+            snapshot_manager: "SnapshotManager",
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -129,8 +130,15 @@ class VmExecution:
         self.times.preparing_at = datetime.now(tz=timezone.utc)
         if self.is_program:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
+
         elif self.is_instance:
-            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+            if self.message.backend == 'firecracker':
+                resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+            elif self.message.backend == 'qemu':
+                resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+            else:
+                raise Exception('Unknown backend')
+
         else:
             msg = "Unknown executable message type"
             raise ValueError(msg)
@@ -144,7 +152,7 @@ class VmExecution:
             raise ValueError(msg)
         self.times.starting_at = datetime.now(tz=timezone.utc)
 
-        vm: Union[AlephFirecrackerProgram, AlephFirecrackerInstance]
+        vm: Union[AlephFirecrackerProgram, AlephFirecrackerInstance, AlephQemuInstance]
         if self.is_program:
             assert isinstance(self.resources, AlephProgramResources)
             self.vm = vm = AlephFirecrackerProgram(
@@ -157,15 +165,29 @@ class VmExecution:
             )
         else:
             assert self.is_instance
-            assert isinstance(self.resources, AlephInstanceResources)
-            self.vm = vm = AlephFirecrackerInstance(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
-                resources=self.resources,
-                enable_networking=self.message.environment.internet,
-                hardware_resources=self.message.resources,
-                tap_interface=tap_interface,
-            )
+            if self.message.backend == 'firecracker':
+                assert isinstance(self.resources, AlephInstanceResources)
+                self.vm = vm = AlephFirecrackerInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.message.environment.internet,
+                    hardware_resources=self.message.resources,
+                    tap_interface=tap_interface,
+                )
+            elif self.message.backend == 'qemu':
+                assert isinstance(self.resources, AlephQemuResources)
+                self.vm = vm = AlephQemuInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.message.environment.internet,
+                    hardware_resources=self.message.resources,
+                    tap_interface=tap_interface,
+                )
+            else:
+                raise Exception('Unknown VM')
+
         try:
             await vm.setup()
             await vm.start()
@@ -174,7 +196,8 @@ class VmExecution:
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             return vm
-        except Exception:
+        except Exception as exception:
+            print(exception)
             await vm.teardown()
             raise
 
