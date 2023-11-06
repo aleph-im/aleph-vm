@@ -73,6 +73,14 @@ class RuntimeConfiguration:
         return self.version != "1.0.0"
 
 
+async def save_configuration_file(config: FirecrackerConfig) -> Path:
+    with NamedTemporaryFile(delete=False) as config_file:
+        config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
+        config_file.flush()
+        os.chmod(config_file.name, 0o644)
+        return Path(config_file.name)
+
+
 class MicroVM:
     vm_id: int
     use_jailer: bool
@@ -163,23 +171,17 @@ class MicroVM:
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
 
-    async def start(self, config: FirecrackerConfig) -> asyncio.subprocess.Process:
+    async def start(self, config_path: Path) -> asyncio.subprocess.Process:
         if self.use_jailer:
-            return await self.start_jailed_firecracker(config)
+            return await self.start_jailed_firecracker(config_path)
         else:
-            return await self.start_firecracker(config)
+            return await self.start_firecracker(config_path)
 
-    async def start_firecracker(self, config: FirecrackerConfig) -> asyncio.subprocess.Process:
+    async def start_firecracker(self, config_path: Path) -> asyncio.subprocess.Process:
         if os.path.exists(VSOCK_PATH):
             os.remove(VSOCK_PATH)
         if os.path.exists(self.socket_path):
             os.remove(self.socket_path)
-
-        with NamedTemporaryFile(delete=False) as config_file:
-            config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
-            config_file.flush()
-            os.chmod(config_file.name, 0o644)
-            self.config_file_path = Path(config_file.name)
 
         logger.debug(
             " ".join(
@@ -188,7 +190,7 @@ class MicroVM:
                     "--api-sock",
                     str(self.socket_path),
                     "--config-file",
-                    config_file.name,
+                    config_path.name,
                 )
             )
         )
@@ -198,53 +200,28 @@ class MicroVM:
             "--api-sock",
             self.socket_path,
             "--config-file",
-            config_file.name,
+            config_path.name,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         return self.proc
 
-    async def start_jailed_firecracker(self, config: FirecrackerConfig) -> asyncio.subprocess.Process:
+    async def start_jailed_firecracker(self, config_path: Path) -> asyncio.subprocess.Process:
         if not self.jailer_bin_path:
             msg = "Jailer binary path is missing"
             raise ValueError(msg)
         uid = str(getpwnam("jailman").pw_uid)
         gid = str(getpwnam("jailman").pw_gid)
 
-        with open(f"{self.jailer_path}/tmp/config.json", "wb") as config_file:
-            config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
-            config_file.flush()
-            os.chmod(config_file.name, 0o644)
-            self.config_file_path = Path(config_file.name)
+        self.config_file_path = config_path
 
-        logger.debug(
-            " ".join(
-                (
-                    str(self.jailer_bin_path),
-                    "--id",
-                    str(self.vm_id),
-                    "--exec-file",
-                    str(self.firecracker_bin_path),
-                    "--uid",
-                    uid,
-                    "--gid",
-                    gid,
-                    "--chroot-base-dir",
-                    JAILER_BASE_DIRECTORY,
-                    "--",
-                    "--config-file",
-                    "/tmp/" + os.path.basename(config_file.name),
-                )
-            )
-        )
-
-        self.proc = await asyncio.create_subprocess_exec(
-            self.jailer_bin_path,
+        options = (
+            str(self.jailer_bin_path),
             "--id",
             str(self.vm_id),
             "--exec-file",
-            self.firecracker_bin_path,
+            str(self.firecracker_bin_path),
             "--uid",
             uid,
             "--gid",
@@ -253,7 +230,17 @@ class MicroVM:
             JAILER_BASE_DIRECTORY,
             "--",
             "--config-file",
-            "/tmp/" + os.path.basename(config_file.name),
+            "/tmp/" + str(self.config_file_path.name),
+        )
+
+        logger.debug(
+            " ".join(
+                *options
+            )
+        )
+
+        self.proc = await asyncio.create_subprocess_exec(
+            *options,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
