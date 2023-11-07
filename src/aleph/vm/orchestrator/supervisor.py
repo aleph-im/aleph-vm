@@ -50,6 +50,20 @@ async def server_version_middleware(
 
 app = web.Application(middlewares=[server_version_middleware])
 
+
+async def allow_cors_on_endpoint(request: web.Request):
+    """Allow CORS on endpoints that VM owners use to control their machine."""
+    return web.Response(
+        status=200,
+        headers={
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Origin": "*",
+            "Allow": "POST",
+        },
+    )
+
+
 app.add_routes(
     [
         web.get("/about/login", about_login),
@@ -62,6 +76,10 @@ app.add_routes(
         web.post("/control/machine/{ref}/expire", operate_expire),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
+        web.options(
+            "/control/machine/{ref}/*",
+            allow_cors_on_endpoint,
+        ),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
