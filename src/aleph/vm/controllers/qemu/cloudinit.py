@@ -36,11 +36,11 @@ def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
     return content
 
 
-def create_metadata_file(vm_hash, vm_id) -> bytes:
+def create_metadata_file(hostname, vm_id) -> bytes:
     """Creates metadata configuration file for cloud-init tool"""
     metadata = {
         "instance-id": f"iid-instance-{vm_id}",
-        "local-hostname": get_hostname_from_hash(vm_hash),
+        "local-hostname": hostname,
     }
     return json.dumps(metadata).encode()
 
@@ -83,7 +83,7 @@ async def create_cloud_init_drive_image(
         network_config_file.write(network_config)
         network_config_file.flush()
 
-        metadata_config = create_metadata_file(hash, vm_id)
+        metadata_config = create_metadata_file(hostname, vm_id)
         metadata_config_file.write(metadata_config)
         metadata_config_file.flush()
 
