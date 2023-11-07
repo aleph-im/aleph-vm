@@ -2,7 +2,7 @@ import os
 
 from aiohttp import web
 
-from aleph.vm.orchestrator.views.operator import authenticate_jwk
+from aleph.vm.orchestrator.views.authentication import authenticate_jwk
 
 # Avoid failures linked to settings when initializing the global VmPool object
 os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
