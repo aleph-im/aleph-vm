@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, Union
 
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import (
     ExecutableContent,
     InstanceContent,
@@ -145,13 +146,13 @@ class VmExecution:
         self.times.prepared_at = datetime.now(tz=timezone.utc)
         self.resources = resources
 
-    async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephFirecrackerExecutable:
+    async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
             raise ValueError(msg)
         self.times.starting_at = datetime.now(tz=timezone.utc)
 
-        vm: Union[AlephFirecrackerProgram, AlephFirecrackerInstance, AlephQemuInstance]
+        vm: AlephControllerInterface
         if self.is_program:
             assert isinstance(self.resources, AlephProgramResources)
             self.vm = vm = AlephFirecrackerProgram(

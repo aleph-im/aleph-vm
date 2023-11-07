@@ -4,7 +4,6 @@ This module contains abstract class for executables (programs and instances) run
 
 import asyncio
 import logging
-import subprocess
 from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
@@ -12,16 +11,17 @@ from pathlib import Path
 from typing import Generic, Optional, TypeVar
 
 from aiohttp import ClientResponseError
-from aleph_message.models import ExecutableContent, ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman, get_volume_path
+from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models.execution.environment import MachineResources
 
 try:
     import psutil  # type: ignore [no-redef]
@@ -137,7 +137,7 @@ class VmInitNotConnectedError(Exception):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-class AlephFirecrackerExecutable(Generic[ConfigurationType]):
+class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephFirecrackerResources
@@ -186,25 +186,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         self.guest_api_process = None
         self._firecracker_config = None
 
-    def get_vm_ip(self) -> Optional[str]:
-        if self.tap_interface:
-            return self.tap_interface.guest_ip.with_prefixlen
-        return None
-
-    def get_vm_route(self) -> Optional[str]:
-        if self.tap_interface:
-            return str(self.tap_interface.host_ip).split("/", 1)[0]
-        return None
-
-    def get_vm_ipv6(self) -> Optional[str]:
-        if self.tap_interface:
-            return self.tap_interface.guest_ipv6.with_prefixlen
-        return None
-
-    def get_vm_ipv6_gateway(self) -> Optional[str]:
-        if self.tap_interface:
-            return str(self.tap_interface.host_ipv6.ip)
-        return None
 
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""

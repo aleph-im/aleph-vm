@@ -8,7 +8,7 @@ import yaml
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu import AlephControllerInterface
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph.vm.hypervisors.firecracker.config import Drive
 from aleph.vm.utils import is_command_available, run_in_subprocess
 

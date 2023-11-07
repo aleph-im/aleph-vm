@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Generic, Optional
 
 import psutil
+
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
@@ -16,7 +18,6 @@ from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     ConfigurationType,
 )
-from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.hostnetwork import make_ipv6_allocator
@@ -64,7 +65,7 @@ class AlephQemuResources(AlephFirecrackerResources):
         return dest_path
 
 
-class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
+class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephQemuResources
@@ -73,9 +74,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
     hardware_resources: MachineResources
     tap_interface: Optional[TapInterface] = None
     vm_configuration: Optional[ConfigurationType]
-    # guest_api_process: Optional[Process] = None
     is_instance: bool
-    qemu_process: Process
+    qemu_process: Optional[Process]
     support_snapshot = False
 
     def __str__(self):
@@ -229,13 +229,3 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin):
     async def stop_guest_api(self):
         pass
 
-    async def teardown(self):
-        logger.info("Tearing down {self}")
-        if self.enable_networking:
-            teardown_nftables_for_vm(self.vm_id)
-            if self.tap_interface:
-                await self.tap_interface.delete()
-        # await self.stop_guest_api()
-
-    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
-        raise NotImplementedError()
