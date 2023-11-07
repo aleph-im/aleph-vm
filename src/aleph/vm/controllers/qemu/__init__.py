@@ -1,10 +1,11 @@
 import logging
 from typing import Optional
 
-from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
-from aleph.vm.network.interfaces import TapInterface
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
+
+from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
+from aleph.vm.network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
 

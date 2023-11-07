@@ -5,15 +5,12 @@ from tempfile import NamedTemporaryFile
 from typing import Union
 
 import yaml
-from aleph.vm.conf import settings
-
-from aleph.vm.utils import run_in_subprocess, is_command_available
-
-from aleph.vm.hypervisors.firecracker.config import Drive
-
-from aleph.vm.controllers.qemu import AlephControllerInterface
 from aleph_message.models import ItemHash
 
+from aleph.vm.conf import settings
+from aleph.vm.controllers.qemu import AlephControllerInterface
+from aleph.vm.hypervisors.firecracker.config import Drive
+from aleph.vm.utils import is_command_available, run_in_subprocess
 
 # https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html
 
