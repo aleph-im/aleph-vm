@@ -13,15 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 class AlephControllerInterface(ABC):
-    tap_interface: Optional[TapInterface] = None
-    resources: Any
     vm_id: int
+    "id in the VMPool, attributed at execution"
     vm_hash: ItemHash
+    "identifier for the VM definition, linked to an Aleph Message"
+    resources: Any
+    "local resource for the machine"
     enable_console: bool
     enable_networking: bool
+    "enable networking for this VM"
     hardware_resources: MachineResources
     support_snapshot: bool
+    "Does this controller support snapshotting"
     guest_api_process: Optional[Process] = None
+    tap_interface: Optional[TapInterface] = None
+    "Network interface used for this VM"
 
     def get_vm_ip(self) -> Optional[str]:
         if self.tap_interface:
@@ -48,17 +54,20 @@ class AlephControllerInterface(ABC):
         raise NotImplementedError()
 
     async def setup(self):
+        """Configuration done before the VM process is started"""
         raise NotImplementedError()
 
     async def start(self):
+        """Start the VM process"""
         raise NotImplementedError()
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the virtual machine to be ready.
         May be empty."""
-        raise NotImplementedError()
+        pass
 
-    async def configure(self):
+    async def configure(self) -> None:
+        """Configuration done after the VM process is started"""
         raise NotImplementedError()
 
     async def start_guest_api(self):
