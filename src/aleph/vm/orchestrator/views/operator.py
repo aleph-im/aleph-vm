@@ -64,9 +64,11 @@ async def authenticate_jwk(request: web.Request):
     try:
         json_payload = get_json_from_hex(payload)
     except json.JSONDecodeError:
-        raise web.HTTPBadRequest(reason="")
+        raise web.HTTPBadRequest(reason="Not valid JSON payload")
 
-    if not verify_wallet_signature(signature, payload, json_payload.get("address")):
+    wallet_address: str = json_payload.get("address")
+
+    if not verify_wallet_signature(signature, payload, wallet_address):
         raise web.HTTPUnauthorized(reason="Invalid signature")
 
     expires = json_payload.get("expires")
@@ -93,6 +95,7 @@ async def authenticate_jwk(request: web.Request):
         alg="ES256",
     ):
         logger.debug("Signature verified")
+        return wallet_address
     else:
         raise web.HTTPUnauthorized(reason="Signature could not verified")
 
@@ -101,11 +104,16 @@ def require_jwk_authentication(handler: Callable[[web.Request], Awaitable[web.St
     @functools.wraps(handler)
     async def wrapper(request):
         try:
-            await authenticate_jwk(request)
+            authenticated_sender: str = await authenticate_jwk(request)
         except web.HTTPException as e:
             return web.json_response(data={"error": e.reason}, status=e.status)
 
-        return await handler(request)
+        # TODO: Check if the request.host must be in an authorized list ?
+
+        response = await handler(request, authenticated_sender)
+        # Allow browser clients to access the body of the response
+        response.headers.update({"Access-Control-Allow-Origin": request.headers.get("Origin", "")})
+        return response
 
     return wrapper
 
@@ -182,7 +190,7 @@ async def operate_expire(request: web.Request):
 
 
 @require_jwk_authentication
-async def operate_stop(request: web.Request):
+async def operate_stop(request: web.Request, authenticated_sender: str) -> web.Response:
     """Stop the virtual machine, smoothly if possible."""
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
@@ -190,6 +198,11 @@ async def operate_stop(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
     logger.debug(f"Iterating through running executions... {pool.executions}")
     execution = get_execution_or_404(vm_hash, pool=pool)
+
+    # TODO: Check if this should be execution.message.address or execution.message.content.address?
+    if execution.message.address != authenticated_sender:
+        logger.debug(f"Unauthorized sender {authenticated_sender} for {vm_hash}")
+        return web.Response(status=401, body="Unauthorized sender")
 
     if execution.is_running:
         logger.info(f"Stopping {execution.vm_hash}")
