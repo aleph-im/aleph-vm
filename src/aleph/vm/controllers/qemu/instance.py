@@ -192,6 +192,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
             )
+            self.enable_networking=False #HACK
+
 
             logger.debug(f"setup done {self}, {proc}")
             stdout, stderr = await proc.communicate() # FIXME: should not be there
@@ -199,11 +201,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         except Exception:
             # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
             logger.error("VM startup failed, cleaning up network")
-            # await self.fvm.teardown()
-            # if self.enable_networking:
-            #     teardown_nftables_for_vm(self.vm_id)
-            # if self.tap_interface:
-            #     await self.tap_interface.delete()
+            if self.enable_networking:
+                teardown_nftables_for_vm(self.vm_id)
+            if self.tap_interface:
+                await self.tap_interface.delete()
             raise
 
         if self.enable_console:
@@ -229,3 +230,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
     async def stop_guest_api(self):
         pass
 
+    async def teardown(self):
+        if self.enable_networking:
+            teardown_nftables_for_vm(self.vm_id)
+            if self.tap_interface:
+                    await self.tap_interface.delete()
+        await self.stop_guest_api()
