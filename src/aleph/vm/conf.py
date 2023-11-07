@@ -66,8 +66,6 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
         yield server.strip()
 
 
-
-
 def get_default_interface() -> Optional[str]:
     """Returns the default network interface"""
     with open("/proc/net/route") as f:
@@ -162,8 +160,10 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: Optional[DnsResolver] = Field(default=DnsResolver.detect,
-                                                  description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.")
+    DNS_RESOLUTION: Optional[DnsResolver] = Field(
+        default=DnsResolver.detect,
+        description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
+    )
     DNS_NAMESERVERS: Optional[list[str]] = None
     DNS_NAMESERVERS_IPV4: list[str]
     DNS_NAMESERVERS_IPV6: list[str]
