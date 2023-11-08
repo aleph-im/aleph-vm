@@ -78,7 +78,7 @@ app.add_routes(
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.options(
-            "/control/machine/{ref}/*",
+            "/control/machine/{ref}/{view:.*}",
             allow_cors_on_endpoint,
         ),
         web.get("/status/check/fastapi", status_check_fastapi),
