@@ -79,6 +79,8 @@ async def run_instance(config: Configuration):
 
     process = await execution.start(config.vm_configuration.config_file_path)
 
+    await process.wait()
+
     return execution
 
 
