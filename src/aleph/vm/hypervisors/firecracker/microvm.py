@@ -164,9 +164,9 @@ class MicroVM:
             config_file = tmp_config_file if not self.use_jailer else tmp_jailer_config_file
             config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
             config_file.flush()
-            os.chmod(config_file.name, 0o644)
-            print(config_file.name)
-            return Path(config_file.name)
+            config_file_path = Path(config_file.name)
+            config_file_path.chmod(0o644)
+            return config_file_path
 
     async def start(self, config_path: Path) -> asyncio.subprocess.Process:
         if self.use_jailer:
