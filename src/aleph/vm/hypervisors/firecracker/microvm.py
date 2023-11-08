@@ -362,7 +362,10 @@ class MicroVM:
         while True:
             stdout = await self.proc.stdout.readline()
             for queue in self.log_queues:
-                await queue.put(("stdout", stdout))
+                if queue.full():
+                    logger.warning("Log queue is full")
+                else:
+                    await queue.put(("stdout", stdout))
             if stdout:
                 print(stdout.decode().strip())
             else:
@@ -374,7 +377,10 @@ class MicroVM:
         while True:
             stderr = await self.proc.stderr.readline()
             for queue in self.log_queues:
-                await queue.put(("stderr", stderr))
+                if queue.full():
+                    logger.warning("Log queue is full")
+                else:
+                    await queue.put(("stderr", stderr))
             if stderr:
                 print(stderr.decode().strip())
             else:
