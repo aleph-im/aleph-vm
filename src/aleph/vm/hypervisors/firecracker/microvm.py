@@ -185,7 +185,7 @@ class MicroVM:
             "--api-sock",
             str(self.socket_path),
             "--config-file",
-            config_path,
+            str(config_path),
         )
 
         logger.debug(" ".join(options))
