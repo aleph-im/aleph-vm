@@ -78,6 +78,8 @@ async def run_instance(config: Configuration):
     )
 
     process = await execution.start(config.vm_configuration.config_file_path)
+    if config.settings.PRINT_SYSTEM_LOGS:
+        execution.start_printing_logs()
 
     await process.wait()
 
