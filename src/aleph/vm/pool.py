@@ -88,7 +88,7 @@ class VmPool:
         await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
         # Start VM snapshots automatically
-        if isinstance(message, InstanceContent):
+        if execution.vm.support_snapshot:
             await self.snapshot_manager.start_for(vm=execution.vm)
 
         return execution
