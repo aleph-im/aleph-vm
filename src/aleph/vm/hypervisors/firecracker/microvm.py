@@ -168,11 +168,7 @@ class MicroVM:
             NamedTemporaryFile(delete=False) as tmp_config_file,
             open(f"{self.jailer_path}/tmp/config.json", "wb") as tmp_jailer_config_file,
         ):
-            if not self.use_jailer:
-                config_file = tmp_config_file
-            else:
-                config_file = tmp_jailer_config_file
-
+            config_file = tmp_config_file if not self.use_jailer else tmp_jailer_config_file
             config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
             config_file.flush()
             os.chmod(config_file.name, 0o644)
