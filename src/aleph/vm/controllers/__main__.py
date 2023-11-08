@@ -1,23 +1,21 @@
 import argparse
 import asyncio
-import logging
 import json
-
+import logging
 import sys
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from aleph.vm.network.hostnetwork import make_ipv6_allocator, Network
+from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 try:
     import sentry_sdk
 except ImportError:
     sentry_sdk = None
 
+from aleph.vm.conf import Settings, settings
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
-
-from aleph.vm.conf import settings, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +42,7 @@ def configuration_from_file(path: Path):
 
 def parse_args(args):
     parser = argparse.ArgumentParser(prog="instance", description="Aleph.im Instance Client")
-    parser.add_argument(
-        "-c",
-        "--config",
-        dest="config_path",
-        required=True
-    )
+    parser.add_argument("-c", "--config", dest="config_path", required=True)
     parser.add_argument(
         "-i",
         "--initialize-network-settings",
