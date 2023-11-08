@@ -4,7 +4,7 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional
 
 from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import (
@@ -12,6 +12,7 @@ from aleph_message.models import (
     InstanceContent,
     ItemHash,
     ProgramContent,
+    MessageType,
 )
 
 from aleph.vm.conf import settings
@@ -99,11 +100,11 @@ class VmExecution:
         return self.vm.vm_id if self.vm else None
 
     def __init__(
-            self,
-            vm_hash: ItemHash,
-            message: ExecutableContent,
-            original: ExecutableContent,
-            snapshot_manager: "SnapshotManager",
+        self,
+        vm_hash: ItemHash,
+        message: ExecutableContent,
+        original: ExecutableContent,
+        snapshot_manager: "SnapshotManager",
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -132,12 +133,12 @@ class VmExecution:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
 
         elif self.is_instance:
-            if self.message.backend == 'firecracker':
+            if self.message.type == MessageType.instance:
                 resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-            elif self.message.backend == 'qemu':
+            elif self.message.type == MessageType.qemu_instance:
                 resources = AlephQemuResources(self.message, namespace=self.vm_hash)
             else:
-                raise Exception('Unknown backend')
+                raise Exception("Unknown backend")
 
         else:
             msg = "Unknown executable message type"
@@ -165,7 +166,7 @@ class VmExecution:
             )
         else:
             assert self.is_instance
-            if self.message.backend == 'firecracker':
+            if self.message.type == MessageType.instance:
                 assert isinstance(self.resources, AlephInstanceResources)
                 self.vm = vm = AlephFirecrackerInstance(
                     vm_id=vm_id,
@@ -175,7 +176,7 @@ class VmExecution:
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
                 )
-            elif self.message.backend == 'qemu':
+            elif self.message.type == MessageType.qemu_instance:
                 assert isinstance(self.resources, AlephQemuResources)
                 self.vm = vm = AlephQemuInstance(
                     vm_id=vm_id,
@@ -186,7 +187,7 @@ class VmExecution:
                     tap_interface=tap_interface,
                 )
             else:
-                raise Exception('Unknown VM')
+                raise Exception("Unknown VM")
 
         try:
             await vm.setup()

@@ -383,7 +383,6 @@ class MicroVM:
                     await queue.put(("stderr", line))
                 await queue.put(("stderr", line))
             print(self, line.decode().strip(), file=sys.stderr)
-
     def start_printing_logs(self) -> tuple[Task, Task]:
         loop = asyncio.get_running_loop()
         self.stdout_task = loop.create_task(self.print_logs())
