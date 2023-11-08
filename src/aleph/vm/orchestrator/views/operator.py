@@ -27,9 +27,8 @@ def is_token_still_valid(timestamp):
     """
     Checks if a token has exprired based on its timestamp
     """
-    timestamp = int(timestamp)
     current_datetime = datetime.now(tz=timezone.utc)
-    target_datetime = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    target_datetime = datetime.fromisoformat(timestamp, tz=timezone.utc)
 
     return target_datetime > current_datetime
 
@@ -78,7 +77,7 @@ class SignedPubKeyPayload(BaseModel):
     # alg: Literal["ECDSA"]
     domain: str
     address: str
-    expires: float  # timestamp  # TODO: move to ISO 8601
+    expires: str 
 
     @property
     def json_web_key(self) -> Jwk:
