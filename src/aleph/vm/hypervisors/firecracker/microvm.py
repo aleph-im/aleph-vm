@@ -157,8 +157,10 @@ class MicroVM:
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
 
     async def save_configuration_file(self, config: FirecrackerConfig) -> Path:
-        with (NamedTemporaryFile(delete=False) as tmp_config_file,
-              open(f"{self.jailer_path}/tmp/config.json", "wb") as tmp_jailer_config_file):
+        with (
+            NamedTemporaryFile(delete=False) as tmp_config_file,
+            open(f"{self.jailer_path}/tmp/config.json", "wb") as tmp_jailer_config_file,
+        ):
             if not self.use_jailer:
                 config_file = tmp_config_file
             else:
@@ -169,8 +171,6 @@ class MicroVM:
             os.chmod(config_file.name, 0o644)
             print(config_file.name)
             return Path(config_file.name)
-
-
 
     async def start(self, config_path: Path) -> asyncio.subprocess.Process:
         if self.use_jailer:
@@ -192,9 +192,7 @@ class MicroVM:
             config_path,
         )
 
-        logger.debug(
-            " ".join(options)
-        )
+        logger.debug(" ".join(options))
 
         self.proc = await asyncio.create_subprocess_exec(
             *options,
@@ -230,9 +228,7 @@ class MicroVM:
             "/tmp/" + str(self.config_file_path.name),
         )
 
-        logger.debug(
-            " ".join(options)
-        )
+        logger.debug(" ".join(options))
 
         self.proc = await asyncio.create_subprocess_exec(
             *options,
