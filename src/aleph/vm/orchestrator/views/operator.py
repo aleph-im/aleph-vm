@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Awaitable
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Literal, Dict, Any, Union
 
 import aiohttp.web_exceptions
 from aiohttp import web
@@ -14,6 +14,7 @@ from aleph_message.models import ItemHash
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from jwskate import Jwk
+from pydantic.main import BaseModel
 
 from ...models import VmExecution
 from ...pool import VmPool
@@ -49,29 +50,60 @@ def get_json_from_hex(str: str):
     return json.loads(bytes.fromhex(str).decode("utf-8"))
 
 
-async def authenticate_jwk(request: web.Request):
-    signed_keypair = request.headers.get("X-SignedPubKey")
-    if not signed_keypair:
+class SignedPubKeyHeader(BaseModel):
+    signature: str  # hexadecimal
+    payload: str  # hexadecimal of SignedPubKeyPayload
+
+
+class SignedPubKeyPayload(BaseModel):
+    """This payload is signed by the wallet of the user to authorize an ephemeral key to act on his behalf."""
+    # pubkey: Jwk
+    pubkey: Dict[str, Any]
+    # {'pubkey': {'alg': 'ES256', 'crv': 'P-256', 'ext': True, 'key_ops': ['verify'], 'kty': 'EC', 'x': '4blJBYpltvQLFgRvLE-2H7dsMr5O0ImHkgOnjUbG2AU', 'y': '5VHnq_hUSogZBbVgsXMs0CjrVfMy4Pa3Uv2BEBqfrN4'}
+    # alg: Literal["ECDSA"]
+    domain: str
+    address: str
+    expires: float  # timestamp  # TODO: move to ISO 8601
+
+
+class SignedOperation(BaseModel):
+    """This payload is signed by the ephemeral key authorized above."""
+    signature: str  # hexadecimal
+    payload: str  # hexadecimal of SignedOperationPayload
+
+
+class SignedOperationPayload(BaseModel):
+    time: datetime
+    method: Union[Literal["POST"], Literal["GET"]]
+    path: str
+    # body_sha256: str  # disabled since there is no body
+
+
+async def authenticate_jwk(request: web.Request) -> str:
+    # The ephemeral public key that is signed by the wallet.
+    signed_pubkey = request.headers.get("X-SignedPubKey")
+    if not signed_pubkey:
         raise web.HTTPBadRequest(reason="Missing X-SignedPubKey header")
 
+    # Check that the header is a valid JSON object and deserialize it
     try:
-        keypair_dict = json.loads(signed_keypair)
-        payload = keypair_dict.get("payload")
-        signature = keypair_dict.get("signature")
+        pubkey_dict = json.loads(signed_pubkey)
+        pubkey_body = SignedPubKeyHeader.parse_obj(pubkey_dict)
     except (json.JSONDecodeError, KeyError):
         raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format")
 
+    # Deserialize the payload from the header
     try:
-        json_payload = get_json_from_hex(payload)
+        json_payload = SignedPubKeyPayload.parse_obj(get_json_from_hex(pubkey_body.payload))
     except json.JSONDecodeError:
         raise web.HTTPBadRequest(reason="Not valid JSON payload")
 
-    wallet_address: str = json_payload.get("address")
+    wallet_address: str = json_payload.address
 
-    if not verify_wallet_signature(signature, payload, wallet_address):
+    if not verify_wallet_signature(pubkey_body.signature, pubkey_body.payload, wallet_address):
         raise web.HTTPUnauthorized(reason="Invalid signature")
 
-    expires = json_payload.get("expires")
+    expires = json_payload.expires
     if not expires or not is_token_still_valid(expires):
         raise web.HTTPUnauthorized(reason="Token expired")
 
@@ -79,19 +111,16 @@ async def authenticate_jwk(request: web.Request):
     if not signed_operation:
         raise web.HTTPBadRequest(reason="Missing X-SignedOperation header")
 
-    json_web_key = Jwk(json_payload.get("pubkey"))
+    json_web_key = Jwk(json_payload.pubkey)
     try:
-        payload = json.loads(signed_operation)
+        payload_json = json.loads(signed_operation)
+        request_object = SignedOperation.parse_obj(payload_json)
     except json.JSONDecodeError:
         raise web.HTTPBadRequest(reason="Could not decode X-SignedOperation")
 
-    # The signature is not part of the signed payload, remove it
-    payload_signature = payload.pop("signature")
-    signed_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
     if json_web_key.verify(
-        data=signed_payload,
-        signature=bytes.fromhex(payload_signature),
+        data=bytes.fromhex(request_object.payload),
+        signature=bytes.fromhex(request_object.signature),
         alg="ES256",
     ):
         logger.debug("Signature verified")
@@ -139,7 +168,7 @@ def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
 
 
 @require_jwk_authentication
-async def stream_logs(request: web.Request):
+async def stream_logs(request: web.Request, authenticated_sender: str):
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
     pool: VmPool = request.app["vm_pool"]
@@ -147,6 +176,10 @@ async def stream_logs(request: web.Request):
 
     if execution.vm is None:
         raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
+
+    if execution.message.address != authenticated_sender:
+        logger.debug(f"Unauthorized sender {authenticated_sender} for {vm_hash}")
+        return web.Response(status=401, body="Unauthorized sender")
 
     queue: asyncio.Queue = asyncio.Queue()
     try:
@@ -169,7 +202,7 @@ async def stream_logs(request: web.Request):
 
 
 @require_jwk_authentication
-async def operate_expire(request: web.Request):
+async def operate_expire(request: web.Request, authenticated_sender: str):
     """Stop the virtual machine, smoothly if possible.
 
     A timeout may be specified to delay the action."""
@@ -181,6 +214,10 @@ async def operate_expire(request: web.Request):
 
     pool: VmPool = request.app["vm_pool"]
     execution = get_execution_or_404(vm_hash, pool=pool)
+
+    if execution.message.address != authenticated_sender:
+        logger.debug(f"Unauthorized sender {authenticated_sender} for {vm_hash}")
+        return web.Response(status=401, body="Unauthorized sender")
 
     logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
     await execution.expire(timeout=timeout)
@@ -214,7 +251,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
 
 
 @require_jwk_authentication
-async def operate_reboot(request: web.Request):
+async def operate_reboot(request: web.Request, authenticated_sender: str):
     """
     Reboots the virtual machine, smoothly if possible.
     """
@@ -222,19 +259,27 @@ async def operate_reboot(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
     execution = get_execution_or_404(vm_hash, pool=pool)
 
+    if execution.message.address != authenticated_sender:
+        logger.debug(f"Unauthorized sender {authenticated_sender} for {vm_hash}")
+        return web.Response(status=401, body="Unauthorized sender")
+
     # TODO: implement this endpoint
     logger.info(f"Rebooting {execution.vm_hash}")
     return web.Response(status=200, body=f"Rebooted {execution.vm_hash}")
 
 
 @require_jwk_authentication
-async def operate_erase(request: web.Request):
+async def operate_erase(request: web.Request, authenticated_sender: str):
     """Delete all data stored by a virtual machine.
     Stop the virtual machine first if needed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     pool: VmPool = request.app["vm_pool"]
     execution = get_execution_or_404(vm_hash, pool=pool)
+
+    if execution.message.address != authenticated_sender:
+        logger.debug(f"Unauthorized sender {authenticated_sender} for {vm_hash}")
+        return web.Response(status=401, body="Unauthorized sender")
 
     logger.info(f"Erasing {execution.vm_hash}")
 
