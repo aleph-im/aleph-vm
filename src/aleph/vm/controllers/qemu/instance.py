@@ -1,8 +1,11 @@
 import asyncio
 import logging
 import shutil
+import sys
+from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
+from sys import stderr
 from typing import Generic, Optional
 
 import psutil
@@ -192,8 +195,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             self.enable_networking = False  # HACK
+
 
             logger.debug(f"setup done {self}, {proc}")
 
@@ -213,8 +218,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             raise
 
         if self.enable_console:
-            pass
-            # self.fvm.start_printing_logs()
+            # not only print log but also does the fanout for the WebSocket streaming the log
+            self.start_printing_logs()
 
         await self.wait_for_init()
         logger.debug(f"started qemu vm {self}")
@@ -235,9 +240,46 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
     async def stop_guest_api(self):
         pass
 
+    stdout_task: Optional[Task] = None
+    stderr_task: Optional[Task] = None
+    log_queues: list[asyncio.Queue] = []
+
     async def teardown(self):
+        if self.stdout_task:
+            self.stdout_task.cancel()
+        if self.stderr_task:
+            self.stderr_task.cancel()
+
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
             if self.tap_interface:
-                    await self.tap_interface.delete()
+                await self.tap_interface.delete()
         await self.stop_guest_api()
+
+    async def print_logs(self):
+        while not self.qemu_process:
+            await asyncio.sleep(0.01)  # Todo: Use signal here
+        while True:
+            stdout = await self.qemu_process.stdout.readline()
+            if not stdout: # FD is closed nothing more will come
+                return
+            for queue in self.log_queues:
+                await queue.put(("stdout", stdout))
+            print(self, stderr, stdout.decode().strip())
+
+    async def print_logs_stderr(self):
+        while not self.qemu_process:
+            await asyncio.sleep(0.01)  # Todo: Use signal here
+        while True:
+            stderr = await self.qemu_process.stderr.readline()
+            if not stderr:  # FD is closed nothing more will come
+                return
+            for queue in self.log_queues:
+                await queue.put(("stderr", stderr))
+            print(self, 'stderr', stderr.decode().strip(), file=sys.stderr)
+
+    def start_printing_logs(self) -> tuple[Task, Task]:
+        loop = asyncio.get_running_loop()
+        self.stdout_task = loop.create_task(self.print_logs())
+        self.stderr_task = loop.create_task(self.print_logs_stderr())
+        return self.stdout_task, self.stderr_task
