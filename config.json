@@ -1,22 +1,21 @@
 {
-  "vm_id": 4,
+  "vm_id": 5,
   "settings": {
     "PRINT_SYSTEM_LOGS": true,
     "IPV4_ADDRESS_POOL": "172.16.0.0/12",
     "IPV4_NETWORK_PREFIX_LENGTH": 24,
-    "NETWORK_INTERFACE": "eth0",
+    "NETWORK_INTERFACE": "enp5s0",
     "IPV6_ALLOCATION_POLICY": "static",
     "IPV6_ADDRESS_POOL": "fc00:1:2:3::/64",
     "IPV6_SUBNET_PREFIX": 124,
     "USE_NDP_PROXY": true,
-    "IPV6_FORWARDING_ENABLED": true
+    "IPV6_FORWARDING_ENABLED": false
   },
   "vm_configuration": {
     "use_jailer": true,
-    "firecracker_bin_path": "",
-    "jailer_bin_path": "",
-    "config_file_path": "",
-    "init_timeout": 30,
-    "mounted_rootfs": ""
+    "firecracker_bin_path": "/opt/firecracker/firecracker",
+    "jailer_bin_path": "/opt/firecracker/jailer",
+    "config_file_path": "/var/lib/aleph/vm/config.json",
+    "init_timeout": 30
   }
 }

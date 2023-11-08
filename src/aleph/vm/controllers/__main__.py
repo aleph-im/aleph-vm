@@ -28,7 +28,6 @@ class VMConfiguration(BaseModel):
     jailer_bin_path: Path
     config_file_path: Path
     init_timeout: float
-    mounted_rootfs: Path
 
 
 class Configuration(BaseModel):
@@ -65,6 +64,14 @@ def parse_args(args):
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "-vv",
+        "--very-verbose",
+        dest="loglevel",
+        help="set loglevel to DEBUG",
+        action="store_const",
+        const=logging.DEBUG,
+    )
     return parser.parse_args(args)
 
 
@@ -76,9 +83,8 @@ async def run_instance(config: Configuration):
         jailer_bin_path=config.vm_configuration.jailer_bin_path,
         init_timeout=config.vm_configuration.init_timeout,
     )
-    execution.prepare_jailer()
 
-    await execution.start(config.vm_configuration.config_file_path)
+    process = await execution.start(config.vm_configuration.config_file_path)
 
     return execution
 
@@ -99,30 +105,29 @@ def main():
         format=log_format,
     )
 
-    settings.update(**config.settings)
-
-    settings.setup()
     if args.print_settings:
-        print(settings.display())
+        print(config.settings.display())
 
-    settings.check()
+    config.settings.check()
 
-    network = Network(
-        vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
-        vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
-        external_interface=settings.NETWORK_INTERFACE,
-        ipv6_allocator=make_ipv6_allocator(
-            allocation_policy=settings.IPV6_ALLOCATION_POLICY,
-            address_pool=settings.IPV6_ADDRESS_POOL,
-            subnet_prefix=settings.IPV6_SUBNET_PREFIX,
-        ),
-        use_ndp_proxy=settings.USE_NDP_PROXY,
-        ipv6_forwarding_enabled=settings.IPV6_FORWARDING_ENABLED,
-    )
-
-    # pool = VmPool()
     if args.initialize_network_settings:
-        # pool.setup()
+        network = Network(
+            vm_ipv4_address_pool_range=config.settings.IPV4_ADDRESS_POOL,
+            vm_network_size=config.settings.IPV4_NETWORK_PREFIX_LENGTH,
+            external_interface=config.settings.NETWORK_INTERFACE,
+            ipv6_allocator=make_ipv6_allocator(
+                allocation_policy=config.settings.IPV6_ALLOCATION_POLICY,
+                address_pool=config.settings.IPV6_ADDRESS_POOL,
+                subnet_prefix=config.settings.IPV6_SUBNET_PREFIX,
+            ),
+            use_ndp_proxy=config.settings.USE_NDP_PROXY,
+            ipv6_forwarding_enabled=config.settings.IPV6_FORWARDING_ENABLED,
+        )
+
         network.setup()
 
     asyncio.run(run_instance(config))
+
+
+if __name__ == "__main__":
+    main()
