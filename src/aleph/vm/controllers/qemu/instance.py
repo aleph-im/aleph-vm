@@ -166,19 +166,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             "none",
             "--no-reboot",  # Rebooting from inside the VM shuts down the machine
         ]
-        # FIXME local HACK
-        if not self.enable_networking:
-            self.enable_networking = True
-            self.tap_interface = TapInterface(
-                device_name="tap0",
-                ip_network=IPv4NetworkWithInterfaces("172.16.0.0/30"),
-                ipv6_network=make_ipv6_allocator(
-                    allocation_policy=settings.IPV6_ALLOCATION_POLICY,
-                    address_pool=settings.IPV6_ADDRESS_POOL,
-                    subnet_prefix=settings.IPV6_SUBNET_PREFIX,
-                ).allocate_vm_ipv6_subnet(self.vm_id, self.vm_hash, VmType.instance),
-                ndp_proxy=None,
-            )
         if self.tap_interface:
             interface_name = self.tap_interface.device_name
             # script=no, downscript=no tell qemu not to try to set up the network itself
@@ -196,7 +183,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            self.enable_networking = False  # HACK
 
             logger.debug(f"setup done {self}, {proc}")
 
