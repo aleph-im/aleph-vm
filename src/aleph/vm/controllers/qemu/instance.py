@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 class AlephQemuResources(AlephFirecrackerResources):
     async def download_all(self):
         volume = self.message_content.rootfs
-        # self.namespace
         # image_path = get_rootfs_base_path(volume.parent.ref)
         if settings.USE_FAKE_INSTANCE_BASE and settings.FAKE_INSTANCE_BASE:
             logger.debug("Using fake instance base")
@@ -160,8 +159,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             # "-snapshot",  # Do not save anything to disk
             "-drive",
             f"file={image_path},media=disk,if=virtio",
+            # Comment for debug
             "-display",
-            "none",  # Comment for debug
+            "none",
+            "--no-reboot",  # Rebooting from inside the VM shuts down the machine
         ]
         # FIXME local HACK
         if not self.enable_networking:
@@ -192,12 +193,16 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
             )
-            self.enable_networking=False #HACK
-
+            self.enable_networking = False  # HACK
 
             logger.debug(f"setup done {self}, {proc}")
-            stdout, stderr = await proc.communicate() # FIXME: should not be there
-            print(stdout, stderr)
+
+            async def handle_termination(proc: Process):
+                await proc.wait()
+                logger.info(f"{self} Process terminated with {proc.returncode} : {str(args)}")
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(handle_termination(proc))
         except Exception:
             # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
             logger.error("VM startup failed, cleaning up network")
