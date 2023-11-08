@@ -360,31 +360,30 @@ class MicroVM:
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
-            stdout = await self.proc.stdout.readline()
+            line = await self.proc.stdout.readline()
+            if not line:  # EOF, FD is closed nothing more will come
+                return
             for queue in self.log_queues:
                 if queue.full():
                     logger.warning("Log queue is full")
                 else:
-                    await queue.put(("stdout", stdout))
-            if stdout:
-                print(stdout.decode().strip())
-            else:
-                await asyncio.sleep(0.001)
+                    await queue.put(("stdout", line))
+            print(self, line.decode().strip())
 
     async def print_logs_stderr(self):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
-            stderr = await self.proc.stderr.readline()
+            line = await self.proc.stderr.readline()
+            if not line:  # EOF, FD is closed nothing more will come
+                return
             for queue in self.log_queues:
                 if queue.full():
                     logger.warning("Log queue is full")
                 else:
-                    await queue.put(("stderr", stderr))
-            if stderr:
-                print(stderr.decode().strip())
-            else:
-                await asyncio.sleep(0.001)
+                    await queue.put(("stderr", line))
+                await queue.put(("stderr", line))
+            print(self, line.decode().strip(), file=sys.stderr)
 
     def start_printing_logs(self) -> tuple[Task, Task]:
         loop = asyncio.get_running_loop()
