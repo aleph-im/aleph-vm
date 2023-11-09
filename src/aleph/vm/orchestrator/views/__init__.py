@@ -190,6 +190,41 @@ async def status_check_version(request: web.Request):
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
 
 
+async def status_public_config(request: web.Request):
+    """Expose the public fields from the configuration"""
+    return web.json_response(
+        {
+            "DOMAIN_NAME": settings.DOMAIN_NAME,
+            "version": __version__,
+            "references": {
+                "API_SERVER": settings.API_SERVER,
+                "CHECK_FASTAPI_VM_ID": settings.CHECK_FASTAPI_VM_ID,
+                "CONNECTOR_URL": settings.CONNECTOR_URL,
+            },
+            "security": {
+                "USE_JAILER": settings.USE_JAILER,
+                "PRINT_SYSTEM_LOGS": settings.PRINT_SYSTEM_LOGS,
+                "WATCH_FOR_UPDATES": settings.WATCH_FOR_UPDATES,
+                "ALLOW_VM_NETWORKING": settings.ALLOW_VM_NETWORKING,
+                "USE_DEVELOPER_SSH_KEYS": bool(settings.USE_DEVELOPER_SSH_KEYS),
+            },
+            "networking": {
+                "IPV6_ADDRESS_POOL": settings.IPV6_ADDRESS_POOL,
+                "IPV6_ALLOCATION_POLICY": str(settings.IPV6_ALLOCATION_POLICY),
+                "IPV6_SUBNET_PREFIX": settings.IPV6_SUBNET_PREFIX,
+                "IPV6_FORWARDING_ENABLED": settings.IPV6_FORWARDING_ENABLED,
+                "USE_NDP_PROXY": settings.USE_NDP_PROXY,
+            },
+            "debug": {
+                "SENTRY_DSN_CONFIGURED": bool(settings.SENTRY_DSN),
+                "DEBUG_ASYNCIO": settings.DEBUG_ASYNCIO,
+                "EXECUTION_LOG_ENABLED": settings.EXECUTION_LOG_ENABLED,
+            },
+        },
+        dumps=dumps_for_json,
+    )
+
+
 def authenticate_api_request(request: web.Request) -> bool:
     """Authenticate an API request to update the VM allocations."""
     signature: bytes = request.headers.get("X-Auth-Signature", "").encode()

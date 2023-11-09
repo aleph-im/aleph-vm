@@ -28,6 +28,7 @@ from .views import (
     run_code_from_path,
     status_check_fastapi,
     status_check_version,
+    status_public_config,
     update_allocations,
 )
 from .views.operator import operate_erase, operate_expire, operate_stop, stream_logs
@@ -64,6 +65,7 @@ app.add_routes(
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
+        web.get("/status/config", status_public_config),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]
