@@ -13,7 +13,7 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from jwskate import Jwk
+from jwcrypto import jwk, jws
 from pydantic import root_validator, validator
 from pydantic.main import BaseModel
 
@@ -77,12 +77,12 @@ class SignedPubKeyPayload(BaseModel):
     # alg: Literal["ECDSA"]
     domain: str
     address: str
-    expires: str 
+    expires: str
 
     @property
-    def json_web_key(self) -> Jwk:
+    def json_web_key(self) -> jwk.JWK:
         """Return the ephemeral public key as Json Web Key"""
-        return Jwk(self.pubkey)
+        return jwk.JWK.from_json(self.pubkey)
 
 
 class SignedPubKeyHeader(BaseModel):
@@ -188,12 +188,9 @@ def get_signed_operation(request: web.Request) -> SignedOperation:
 async def authenticate_jwk(request: web.Request) -> str:
     signed_pubkey = get_signed_pubkey(request)
     signed_operation = get_signed_operation(request)
+    jws = jws.JWSCore(alg="ES256", key=signed_pubkey.content.json_web_key, payload=signed_operation.payload)
 
-    if signed_pubkey.content.json_web_key.verify(
-        data=signed_operation.payload,
-        signature=signed_operation.signature,
-        alg="ES256",
-    ):
+    if jws.verify(signature=signed_operation.signature):
         logger.debug("Signature verified")
         return signed_pubkey.content.address
     else:
