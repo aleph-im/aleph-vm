@@ -14,7 +14,7 @@
             height: 0.5em;
         }
 
-        #loader-container{
+        .loader-container{
             text-align:center;
             padding:20px;
             height:80px;
@@ -29,15 +29,15 @@
             background:#207AC9;
         }
         @keyframes move {
-            0%   {height:20px;}
-            50%  {height:10px;}
-            100% {height:20px;}
+            0%   {height:12px;}
+            50%  {height:6px;}
+            100% {height:12px;}
         }
 
         @keyframes move2 {
-            0%   {height:10px;}
-            50%  {height:20px;}
-            100% {height:10px;}
+            0%   {height:6px;}
+            50%  {height:12px;}
+            100% {height:6px;}
         }
         #loader-one{
             animation-name: move;
@@ -95,7 +95,7 @@
         Virtualization is
         <span id="check">
             ...
-            <span id="loader-container">
+            <span class="loader-container">
                 <span id="loader-one" class="loader"></span>
                 <span id="loader-two" class="loader"></span>
                 <span id="loader-three" class="loader"></span>
@@ -106,6 +106,17 @@
     <p>
         <a href="/status/check/fastapi">Diagnostics checks</a> |
         <a href="/vm/$check_fastapi_vm_id">Open diagnostic VM</a>
+    </p>
+    <p>
+        Egress IPv6
+        <span id="check_ipv6">
+            is ...
+            <span class="loader-container">
+                <span id="loader-one" class="loader"></span>
+                <span id="loader-two" class="loader"></span>
+                <span id="loader-three" class="loader"></span>
+            </span>
+        </span>
     </p>
 </section>
 <section>
@@ -138,7 +149,7 @@
 -->
 
 <script>
-    async function fetchMoviesJSON() {
+    async function fetchDiagnostic() {
         const response = await fetch('/status/check/fastapi');
         if (response.ok) {
             document.getElementById("check").innerHTML = "working properly &#10004;&#65039;";
@@ -160,7 +171,26 @@
         }
         return response.status;
     }
-    fetchMoviesJSON();
+    fetchDiagnostic();
+
+    async function fetchIPv6Available() {
+        const response = await fetch('/vm/$check_fastapi_vm_id/ip/6');
+        if (response.ok) {
+            document.getElementById("check_ipv6").innerHTML = "is working &#10004;&#65039;";
+        }
+        else if (response.status === 503) {
+            document.getElementById("check_ipv6").innerHTML = "fails to be tested &#10060; ";
+        }
+        else if (response.status === 500) {
+            document.getElementById("check_ipv6").innerHTML = "is not available &#9932;";
+        }
+        else {
+            document.getElementById("check_ipv6").innerText = response.status;
+        }
+        return response.status;
+    }
+
+    fetchIPv6Available();
 
     async function fetchLatestRelease() {
         const response = await fetch('https://api.github.com/repos/aleph-im/aleph-vm/releases/latest');
