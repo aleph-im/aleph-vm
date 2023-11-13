@@ -7,6 +7,7 @@ evolve in the future.
 """
 import logging
 from collections.abc import Awaitable
+from pathlib import Path
 from secrets import token_urlsafe
 from typing import Callable
 
@@ -64,6 +65,7 @@ app.add_routes(
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
+        web.static("/static", Path(__file__).parent / "static"),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]
