@@ -22,21 +22,23 @@ async function fetchApiStatus () {
 
 const buildQueryParams = (params) => Object.entries(params).reduce((acc, [k, v]) => acc + `${k}=${v}&`, '?').slice(0, -1);
 
-const fetchLatestRelease = async () => {
+const isLatestRelease = async () => {
     const q = await fetch('https://api.github.com/repos/aleph-im/aleph-vm/releases/latest');
     if(q.ok){
-        return await q.json();
+        const res = await q.json();
+        return res.tag_name
     }
+    throw new Error('Failed to fetch latest release');
 }
 
-const buildMetricViewset = (metricsMsg, crnId, metricsResult) => {
-    const thisNode = metricsMsg.content.metrics.crn.find(node => node.node_id === crnId)
+const buildMetricViewset = (metricsMsg, hostname, metricsResult) => {
+    const thisNode = metricsMsg.content.metrics.crn.find(node => node.url === hostname)
     const factory = keyName => ({ time: thisNode.measured_at, value: thisNode[keyName] * 100 })
     const keys = ['base_latency', 'base_latency_ipv4', 'diagnostic_vm_latency', 'full_check_latency']
     keys.map(key => metricsResult[key].push(factory(key)))
 }
 
-async function* fetchLatestMetrics (crnId, fromDate) {
+async function* fetchLatestMetrics (hostname, fromDate) {
     const defaultWindowSize = 50;
     const API_URL = 'https://api2.aleph.im/api/v0/posts.json';
 
@@ -67,7 +69,7 @@ async function* fetchLatestMetrics (crnId, fromDate) {
         const q = await fetch(API_URL + buildQueryParams({...qp, page: currentPage + 1}));
         if(q.ok){
             const res = await q.json();
-            res.posts.map(post => buildMetricViewset(post, crnId, data));
+            res.posts.map(post => buildMetricViewset(post, hostname, data));
             currentPage++;
         }
         yield {
