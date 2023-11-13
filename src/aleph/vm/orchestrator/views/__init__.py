@@ -137,6 +137,7 @@ async def index(request: web.Request):
         public_url=f"https://{settings.DOMAIN_NAME}/",
         multiaddr_dns4=f"/dns4/{settings.DOMAIN_NAME}/tcp/443/https",
         multiaddr_dns6=f"/dns6/{settings.DOMAIN_NAME}/tcp/443/https",
+        node_id="unknown",
         check_fastapi_vm_id=settings.CHECK_FASTAPI_VM_ID,
         version=__version__,
     )
