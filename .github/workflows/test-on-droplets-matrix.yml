@@ -95,6 +95,12 @@ jobs:
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
+          
+          # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our comands:
+          sleep 5
+          
+          # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
+          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
