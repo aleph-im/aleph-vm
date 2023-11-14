@@ -63,23 +63,31 @@ async function* fetchLatestMetrics (hostname, fromDate) {
     if(totalDataPoints === 0)
         throw new Error('No metrics found');
 
-    if(!countRes?.content?.metrics?.crn?.find(node => node.url === hostname))
+    if(!countRes?.posts[0]?.content?.metrics?.crn?.find(node => node.url === hostname))
         throw new Error('Hostname not found in metrics');
     
 
     const totalPages = Math.ceil(totalDataPoints / qp.pagination);
     let currentPage = 0;
+    let retries = 0;
+    const RETRY_THRESHOLD = 5;
 
     while(currentPage < totalPages){
+        if(retries > RETRY_THRESHOLD)
+            throw new Error('Network error: too many retries')
+
         const q = await fetch(API_URL + buildQueryParams({...qp, page: currentPage + 1}));
         if(q.ok){
             const res = await q.json();
             res.posts.map(post => buildMetricViewset(post, hostname, data));
             currentPage++;
+            yield {
+                progress: currentPage / totalPages,
+                data
+            };
         }
-        yield {
-            progress: currentPage / totalPages,
-            data
-        };
+        else{
+            retries++;
+        }
     }
 }
