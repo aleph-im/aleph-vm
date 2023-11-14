@@ -67,7 +67,7 @@ app.add_routes(
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/version", status_check_version),
         web.get("/status/config", status_public_config),
-        web.static("/static", Path(__file__).parent / "static"),
+        web.static("/static", Path(__file__).parent / "views/static"),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]
