@@ -40,6 +40,51 @@
         </section>
 
         <hr/>
+    <section>
+    <h2>Diagnostic</h2>
+    <p>
+        Virtualization is
+        <span id="check">
+            ...
+            <span class="loader-container">
+                <span id="loader-one" class="loader"></span>
+                <span id="loader-two" class="loader"></span>
+                <span id="loader-three" class="loader"></span>
+            </span>
+        </span>
+    </p>
+    <pre id="checks"></pre>
+    <p>
+        <a href="/status/check/fastapi">Diagnostics checks</a> |
+        <a href="/vm/$check_fastapi_vm_id">Open diagnostic VM</a>
+    </p>
+    <p>
+        Egress IPv6
+        <span id="check_ipv6">
+            is ...
+            <span class="loader-container">
+                <span id="loader-one" class="loader"></span>
+                <span id="loader-two" class="loader"></span>
+                <span id="loader-three" class="loader"></span>
+            </span>
+        </span>
+    </p>
+</section>
+<section>
+    <h2>Version</h2>
+    <p>
+        Running version <i>$version</i>.
+    </p>
+    <p>
+        <button id="status_check_button" onclick="fetchLatestRelease()">Check if this is the latest release</button>
+        <span id="status_latest_version" style="display: none">This is the latest release &#10004;&#65039;</span>
+        <span id="status_outdated_version" style="display: none">
+            The latest release is <a href="https://github.com/aleph-im/aleph-vm/releases/latest"></a> &#10060;
+        </span>
+        <p id="status_error_version" style="display: none">Your browser could not fetch the latest release:
+            <span id="status_error_version_reason"></span>
+        </p>
+    </p>
 
         <section>
             <h2>Diagnostic</h2>
@@ -136,7 +181,6 @@
             })
         })();
 
-
         (async () => {
             let data, chart
 
@@ -208,6 +252,29 @@
             })
 
         })();
+
+    (async () => {
+        try{
+            const response = await fetch('/vm/$check_fastapi_vm_id/ip/6');
+            if (response.ok) {
+                document.getElementById("check_ipv6").innerHTML = "is working &#10004;&#65039;";
+            }
+            else if (response.status === 503) {
+                document.getElementById("check_ipv6").innerHTML = "fails to be tested &#10060; ";
+            }
+            else if (response.status === 500) {
+                document.getElementById("check_ipv6").innerHTML = "is not available &#9932;";
+            }
+            else {
+                document.getElementById("check_ipv6").innerText = response.status;
+            }
+        }
+        catch(err){
+            console.error(err);
+            document.getElementById("check_ipv6").innerHTML = "fails to be tested &#10060; ";
+        }
+    })();
+
     </script>
 </body>
 </html>
