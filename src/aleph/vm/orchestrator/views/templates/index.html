@@ -193,7 +193,7 @@
                     for await (const release of fetchLatestMetrics(NODE_HOSTNAME, ONE_WEEK_AGO, false)) {
                         data = release.data
                         document.getElementById('progress-bar').value = release.progress * 100;
-                        document.getElementById('progress-bar-text').innerHTML = `${release.progress * 100 | 0}%`;
+                        document.getElementById('progress-bar-text').innerHTML = (release.progress * 100 | 0) + '%';
                     }
                     createChart(displayedMetrics);
                 }
@@ -208,7 +208,7 @@
                     const cb = document.createElement('input')
                     cb.type = 'checkbox'
                     cb.checked = true
-                    cb.id = `toggle_${field}_checkbox`
+                    cb.id = 'toggle_' + field + '_checkbox';
                     const label = document.createElement('label')
                     label.htmlFor = cb.id
                     label.innerHTML = field.replace('_', ' ')
