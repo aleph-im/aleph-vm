@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
+from subprocess import CalledProcessError
 from typing import Union
 
 import aiohttp
@@ -34,6 +35,10 @@ from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
+
+
+class CorruptedFilesystemError(Exception):
+    """Raised when a file containing a filesystem is corrupted."""
 
 
 async def chown_to_jailman(path: Path) -> None:
@@ -154,14 +159,29 @@ async def get_data_path(ref: str) -> Path:
     return cache_path
 
 
+async def check_squashfs_integrity(path: Path) -> None:
+    """Check that the squashfs file is not corrupted."""
+    try:
+        await run_in_subprocess(["unsquashfs", "-stat", "-no-progress", str(path)], check=True)
+    except CalledProcessError as error:
+        msg = f"Corrupted squashfs file: {path}"
+        raise CorruptedFilesystemError(msg) from error
+
+
 async def get_runtime_path(ref: str) -> Path:
     """Obtain the runtime used for the rootfs of a program."""
     if settings.FAKE_DATA_PROGRAM:
+        await check_squashfs_integrity(Path(settings.FAKE_DATA_RUNTIME))
         return Path(settings.FAKE_DATA_RUNTIME)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
-    await download_file(url, cache_path)
+
+    if not cache_path.is_file():
+        # File does not exist, download it
+        await download_file(url, cache_path)
+
+    await check_squashfs_integrity(cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
 
