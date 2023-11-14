@@ -59,8 +59,13 @@ async function* fetchLatestMetrics (hostname, fromDate) {
         throw new Error('Failed to fetch metrics');
     const countRes = await count.json();
     const totalDataPoints = countRes.pagination_total;
+
     if(totalDataPoints === 0)
-    return [];
+        throw new Error('No metrics found');
+
+    if(!countRes?.content?.metrics?.crn?.find(node => node.url === hostname))
+        throw new Error('Hostname not found in metrics');
+    
 
     const totalPages = Math.ceil(totalDataPoints / qp.pagination);
     let currentPage = 0;

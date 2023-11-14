@@ -113,13 +113,13 @@
 
         (async () => {
             try {
-                const { status, detail } = await fetchApiStatus();
+                const { status, details } = await fetchApiStatus();
                 document.getElementById('check').innerHTML = status;
                 const _checksDiv = document.getElementById("checks");
-                if(detail.length > 0){
-                    const detailDiv = document.createElement('div');
-                    detailDiv.innerHTML = detail;
-                    _checksDiv.appendChild(detailDiv);
+                if(details.length > 0){
+                    const detailsDiv = document.createElement('div');
+                    detailsDiv.innerHTML = details;
+                    _checksDiv.appendChild(detailsDiv);
                 }
             } catch (err) {
                 console.error('Could not fetch api status', err);
@@ -189,12 +189,18 @@
             document.getElementById('metrics_chart_button').addEventListener('click', async () => {
                 document.getElementById('chart-wrapper').style.display = "block";
                 document.getElementById('metrics_chart_button').disabled = true;
-                for await (const release of fetchLatestMetrics(NODE_HOSTNAME, ONE_WEEK_AGO, false)) {
-                    data = release.data
-                    document.getElementById('progress-bar').value = release.progress * 100;
-                    document.getElementById('progress-bar-text').innerHTML = `${release.progress * 100 | 0}%`;
+                try{
+                    for await (const release of fetchLatestMetrics(NODE_HOSTNAME, ONE_WEEK_AGO, false)) {
+                        data = release.data
+                        document.getElementById('progress-bar').value = release.progress * 100;
+                        document.getElementById('progress-bar-text').innerHTML = `${release.progress * 100 | 0}%`;
+                    }
+                    createChart(displayedMetrics);
                 }
-                createChart(displayedMetrics);
+                catch(err){
+                    console.error(err);
+                    document.getElementById('chart-wrapper').innerHTML = err;
+                }
                 
                 // Creates checkboxes to disable/enable metrics
                 Object.keys(displayedMetrics).map(field => {
