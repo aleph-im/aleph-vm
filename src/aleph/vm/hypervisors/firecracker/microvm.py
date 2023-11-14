@@ -263,10 +263,13 @@ class MicroVM:
             kernel_filename = kernel_image_path.name
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
 
-            if sys.version_info >= (3, 10):
-                Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
-            else:
-                kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+            try:
+                if sys.version_info >= (3, 10):
+                    Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
+                else:
+                    kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+            except FileExistsError:
+                logger.debug(f"File {jailer_kernel_image_path} already exists")
 
             return Path(jailer_kernel_image_path)
         else:
@@ -289,7 +292,10 @@ class MicroVM:
         if self.use_jailer:
             rootfs_filename = Path(path_on_host).name
             jailer_path_on_host = f"/opt/{rootfs_filename}"
-            os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+            try:
+                os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+            except FileExistsError:
+                logger.debug(f"File {jailer_path_on_host} already exists")
             return Path(jailer_path_on_host)
         else:
             return path_on_host
@@ -331,10 +337,14 @@ class MicroVM:
         if self.use_jailer:
             drive_filename = drive_path.name
             jailer_path_on_host = f"/opt/{drive_filename}"
-            if sys.version_info >= (3, 10):
-                Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
-            else:
-                drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+
+            try:
+                if sys.version_info >= (3, 10):
+                    Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
+                else:
+                    drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+            except FileExistsError:
+                logger.debug(f"File {jailer_path_on_host} already exists")
             drive_path = Path(jailer_path_on_host)
 
         drive = Drive(
