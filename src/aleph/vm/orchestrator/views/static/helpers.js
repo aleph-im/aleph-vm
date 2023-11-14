@@ -7,14 +7,16 @@ async function fetchApiStatus () {
     if(q.ok){
         res.status = "working properly &#9989;";
     }
-    switch(Number(q.status)){
-        case 503:
-            res.status = "not working properly &#10060;";
-            res.details = await q.json();
-        case 500:
-            res.status = "&#10060; Failed";
-        default:
-            res.status = q.status;
+    else {
+        switch(Number(q.status)){
+            case 503:
+                res.status = "not working properly &#10060;";
+                res.details = await q.json();
+            case 500:
+                res.status = "&#10060; Failed";
+            default:
+                res.status = q.status;
+        }
     }
 
     return res;
