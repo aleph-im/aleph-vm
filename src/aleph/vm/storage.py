@@ -4,6 +4,7 @@ This module is in charge of providing the source code corresponding to a 'code i
 In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
+import asyncio
 import json
 import logging
 import re
@@ -50,39 +51,72 @@ async def chown_to_jailman(path: Path) -> None:
         await run_in_subprocess(["chown", "jailman:jailman", str(path)])
 
 
+async def file_downloaded_by_another_task(final_path: Path) -> None:
+    """Wait for a file to be downloaded by another task in parallel."""
+
+    # Wait for the file to be created
+    while not final_path.is_file():
+        await asyncio.sleep(0.1)
+
+
+async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(url)
+        resp.raise_for_status()
+
+        with open(tmp_path, "wb") as cache_file:
+            counter = 0
+            while True:
+                chunk = await resp.content.read(65536)
+                if not chunk:
+                    break
+                cache_file.write(chunk)
+                counter += 1
+                if not (counter % 20):
+                    sys.stdout.write("")
+                    sys.stdout.flush()
+
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
 async def download_file(url: str, local_path: Path) -> None:
     # TODO: Limit max size of download to the message specification
     if local_path.is_file():
         logger.debug(f"File already exists: {local_path}")
         return
 
+    # Avoid partial downloads and incomplete files by only moving the file when it's complete.
     tmp_path = Path(f"{local_path}.part")
+
+    # Ensure the file is not being downloaded by another task in parallel.
+    try:
+        tmp_path.touch(exist_ok=False)
+    except FileExistsError:
+        # Another task is already downloading the file
+        # Use `asyncio.timeout` manager after dropping support for Python 3.10
+        await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=300)
+
     logger.debug(f"Downloading {url} -> {tmp_path}")
-    async with aiohttp.ClientSession() as session:
-        resp = await session.get(url)
-        resp.raise_for_status()
+    download_attempts = 3
+    for attempt in range(download_attempts):
         try:
-            with open(tmp_path, "wb") as cache_file:
-                counter = 0
-                while True:
-                    chunk = await resp.content.read(65536)
-                    if not chunk:
-                        break
-                    cache_file.write(chunk)
-                    counter += 1
-                    if not (counter % 20):
-                        sys.stdout.write("")
-                        sys.stdout.flush()
-
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
+            await download_file_in_chunks(url, tmp_path)
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
-        except Exception:
-            # Ensure no partial file is left
+        except (
+            aiohttp.ClientConnectionError,
+            aiohttp.ClientResponseError,
+            aiohttp.ClientPayloadError,
+        ) as error:
+            if attempt < (download_attempts - 1):
+                logger.warning(f"Download failed, retrying attempt {attempt + 1}/3...")
+                continue
+            else:
+                raise error
+        finally:
+            # Ensure no partial file is left behind
             tmp_path.unlink(missing_ok=True)
-            raise
 
 
 async def get_latest_amend(item_hash: str) -> str:
