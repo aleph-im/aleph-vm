@@ -2,11 +2,10 @@
     "chain": "ETH",
     "item_hash": "fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash",
     "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
-    "type": "INSTANCE",
+    "type": "QEMU_INSTANCE",
     "channel": "Fun-dApps",
     "confirmed": true,
     "content": {
-        "backend": "qemu",
         "address": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
         "allow_amend": false,
         "variables": {

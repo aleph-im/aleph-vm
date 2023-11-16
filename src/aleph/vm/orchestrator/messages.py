@@ -55,7 +55,7 @@ async def update_message(message: ExecutableMessage):
             *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
         )
     else:
-        assert message.type == MessageType.instance
+        assert message.type in (MessageType.instance, MessageType.qemu_instance)
         await asyncio.gather(
             update_with_latest_ref(message.content.rootfs.parent),
             *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),

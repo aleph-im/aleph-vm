@@ -1,6 +1,6 @@
 from enum import Enum
 
-from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
+from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent, QemuContent
 
 
 class VmType(Enum):
@@ -10,7 +10,7 @@ class VmType(Enum):
 
     @staticmethod
     def from_message_content(content: ExecutableContent) -> "VmType":
-        if isinstance(content, InstanceContent):
+        if isinstance(content, (InstanceContent, QemuContent)):
             return VmType.instance
 
         elif isinstance(content, ProgramContent):

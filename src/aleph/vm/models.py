@@ -13,6 +13,7 @@ from aleph_message.models import (
     ItemHash,
     ProgramContent,
     MessageType,
+    QemuContent,
 )
 
 from aleph.vm.conf import settings
@@ -92,6 +93,10 @@ class VmExecution:
         return isinstance(self.message, InstanceContent)
 
     @property
+    def is_qemu_instance(self):
+        return isinstance(self.message, QemuContent)
+
+    @property
     def becomes_ready(self):
         return self.ready_event.wait
 
@@ -133,16 +138,12 @@ class VmExecution:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
 
         elif self.is_instance:
-            if self.message.type == MessageType.instance:
-                resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-            elif self.message.type == MessageType.qemu_instance:
-                resources = AlephQemuResources(self.message, namespace=self.vm_hash)
-            else:
-                raise Exception("Unknown backend")
-
+            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+        elif self.is_qemu_instance:
+            resources = AlephQemuResources(self.message, namespace=self.vm_hash)
         else:
             msg = "Unknown executable message type"
-            raise ValueError(msg)
+            raise ValueError(msg, repr(self.message))
         await resources.download_all()
         self.times.prepared_at = datetime.now(tz=timezone.utc)
         self.resources = resources
@@ -164,30 +165,28 @@ class VmExecution:
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
             )
+        elif self.is_instance:
+            assert isinstance(self.resources, AlephInstanceResources)
+            self.vm = vm = AlephFirecrackerInstance(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
+        elif self.is_qemu_instance:
+            assert isinstance(self.resources, AlephQemuResources)
+            self.vm = vm = AlephQemuInstance(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                resources=self.resources,
+                enable_networking=self.message.environment.internet,
+                hardware_resources=self.message.resources,
+                tap_interface=tap_interface,
+            )
         else:
-            assert self.is_instance
-            if self.message.type == MessageType.instance:
-                assert isinstance(self.resources, AlephInstanceResources)
-                self.vm = vm = AlephFirecrackerInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=self.message.environment.internet,
-                    hardware_resources=self.message.resources,
-                    tap_interface=tap_interface,
-                )
-            elif self.message.type == MessageType.qemu_instance:
-                assert isinstance(self.resources, AlephQemuResources)
-                self.vm = vm = AlephQemuInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=self.message.environment.internet,
-                    hardware_resources=self.message.resources,
-                    tap_interface=tap_interface,
-                )
-            else:
-                raise Exception("Unknown VM")
+            raise Exception("Unknown VM")
 
         try:
             await vm.setup()
@@ -261,7 +260,7 @@ class VmExecution:
             self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
-        if self.is_instance:
+        if self.is_instance or self.is_qemu_instance:
             await pubsub.msubscribe(
                 *(volume.ref for volume in (self.original.volumes or []) if hasattr(volume, "ref")),
             )
