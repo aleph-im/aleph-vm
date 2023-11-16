@@ -73,7 +73,7 @@ async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
                 cache_file.write(chunk)
                 counter += 1
                 if not (counter % 20):
-                    sys.stdout.write("")
+                    sys.stdout.write(".")
                     sys.stdout.flush()
 
         sys.stdout.write("\n")
