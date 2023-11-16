@@ -181,6 +181,7 @@ class Settings(BaseSettings):
     )
     CODE_CACHE: Path = Field(None, description="Default to CACHE_ROOT/code")
     RUNTIME_CACHE: Path = Field(None, description="Default to CACHE_ROOT/runtime")
+    INSTANCE_ROOTFS_CACHE: Path = Field(None, description="Default to CACHE_ROOT/rootfs")
     DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT = Path("/var/lib/aleph/vm")
@@ -341,6 +342,8 @@ class Settings(BaseSettings):
             self.CODE_CACHE = self.CACHE_ROOT / "code"
         if not self.RUNTIME_CACHE:
             self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
+        if not self.INSTANCE_ROOTFS_CACHE:
+            self.INSTANCE_ROOTFS_CACHE = self.CACHE_ROOT / "instance_rootfs"
         if not self.DATA_CACHE:
             self.DATA_CACHE = self.CACHE_ROOT / "data"
         if not self.PERSISTENT_VOLUMES_DIR:

@@ -226,7 +226,7 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         logger.debug("Using fake instance base")
         return Path(settings.FAKE_INSTANCE_BASE)
 
-    cache_path = Path(settings.RUNTIME_CACHE) / ref
+    cache_path = Path(settings.INSTANCE_ROOTFS_CACHE) / ref
     url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
