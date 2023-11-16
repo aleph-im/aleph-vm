@@ -143,14 +143,12 @@ async def stream_logs(request: web.Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
     try:
         ws = web.WebSocketResponse()
+        await ws.prepare(request)
         try:
-            await ws.prepare(request)
-
             # Limit the number of queues per VM
             if len(execution.vm.fvm.log_queues) > 20:
                 logger.warning("Too many log queues, dropping the oldest one")
                 execution.vm.fvm.log_queues.pop(0)
-
             execution.vm.fvm.log_queues.append(queue)
 
             while True:
@@ -161,7 +159,8 @@ async def stream_logs(request: web.Request):
         finally:
             await ws.close()
     finally:
-        execution.vm.fvm.log_queues.remove(queue)
+        if queue in execution.vm.fvm.log_queues:
+            execution.vm.fvm.log_queues.remove(queue)
         queue.empty()
 
 
