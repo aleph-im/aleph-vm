@@ -253,7 +253,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 return
             for queue in self.log_queues:
                 await queue.put(("stdout", line))
-            print(self, line, line.decode().strip())
+            print(self, "stdout", line.decode().strip())
 
     async def _process_stderr(self):
         while not self.qemu_process:
