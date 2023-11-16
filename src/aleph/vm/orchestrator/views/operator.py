@@ -143,9 +143,8 @@ async def stream_logs(request: web.Request):
     queue: asyncio.Queue = asyncio.Queue()
     try:
         ws = web.WebSocketResponse()
+        await ws.prepare(request)
         try:
-            await ws.prepare(request)
-
             execution.vm.fvm.log_queues.append(queue)
 
             while True:
@@ -156,7 +155,8 @@ async def stream_logs(request: web.Request):
         finally:
             await ws.close()
     finally:
-        execution.vm.fvm.log_queues.remove(queue)
+        if queue in execution.vm.fvm.log_queues:
+            execution.vm.fvm.log_queues.remove(queue)
         queue.empty()
 
 
