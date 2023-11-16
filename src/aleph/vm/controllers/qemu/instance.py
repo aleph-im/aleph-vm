@@ -250,6 +250,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         while True:
             line = await self.qemu_process.stdout.readline()
             if not line:  # FD is closed nothing more will come
+                print(self, "EOF")
                 return
             for queue in self.log_queues:
                 await queue.put(("stdout", line))
@@ -261,6 +262,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         while True:
             line = await self.qemu_process.stderr.readline()
             if not line:  # FD is closed nothing more will come
+                print(self, "EOF")
                 return
             for queue in self.log_queues:
                 await queue.put(("stderr", line))
