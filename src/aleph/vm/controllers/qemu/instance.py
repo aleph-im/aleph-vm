@@ -148,6 +148,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
 
+        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
+
         args = [
             qemu_path,
             "-enable-kvm",
@@ -165,6 +167,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             "-display",
             "none",
             "--no-reboot",  # Rebooting from inside the VM shuts down the machine
+            "-monitor",
+            f"unix:{monitor_socket_path},server,nowait",
+            # "-serial", "telnet:localhost:4321,server,nowait",
         ]
         if self.tap_interface:
             interface_name = self.tap_interface.device_name
