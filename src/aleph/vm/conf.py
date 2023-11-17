@@ -294,7 +294,7 @@ class Settings(BaseSettings):
         # Necessary for cloud-init customisation of instance
         assert is_command_available('cloud-localds'),  "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
         # Qemu support
-        assert is_command_available('qemu-img'),  "Command `qemu-img` not found, run `apt install cloud-image-utils`"
+        assert is_command_available('qemu-img'),  "Command `qemu-img` not found, run `apt install qemu-utils`"
         assert is_command_available('qemu-system-x86_64'),  "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
     def setup(self):
