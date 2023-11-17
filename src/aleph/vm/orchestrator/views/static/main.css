@@ -13,7 +13,7 @@ progress {
     height: 0.5em;
 }
 
-.loader-wrapper {
+.virtualization-wrapper {
     height: 30px;
     display: flex;
     align-items: end;
