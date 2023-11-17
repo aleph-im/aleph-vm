@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Generic, Optional
 
 import psutil
+import qmp
 
 from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import ItemHash
@@ -78,6 +79,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
     is_instance: bool
     qemu_process: Optional[Process]
     support_snapshot = False
+    qmp_socket_path = None
 
     def __str__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -149,6 +151,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         # hardware_resources.seconds -> only for microvm
 
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
+        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
 
         args = [
             qemu_path,
@@ -169,6 +172,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             "--no-reboot",  # Rebooting from inside the VM shuts down the machine
             "-monitor",
             f"unix:{monitor_socket_path},server,nowait",
+            "-qmp",
+            f"unix:{qmp_socket_path},server,nowait",
+            # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
         ]
         if self.tap_interface:
@@ -238,6 +244,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         if self.stderr_task:
             self.stderr_task.cancel()
 
+        self._shutdown()
+
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
             if self.tap_interface:
@@ -278,3 +286,19 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         self.stdout_task = loop.create_task(self._process_stdout())
         self.stderr_task = loop.create_task(self._process_stderr())
         return self.stdout_task, self.stderr_task
+
+    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
+        if not self.qmp_socket_path:
+            return None
+        client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
+        client.connect()
+        return client
+
+    def _shutdown(self):
+        client = self._get_qmpclient()
+        if client:
+            resp = client.command("system_powerdown")
+            if not resp == {}:
+                logger.warning("unexpected answer from VM", resp)
+            client.close()
+            self.qmp_socket_path = None

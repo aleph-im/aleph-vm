@@ -42,6 +42,7 @@ dependencies = [
   "msgpack~=1.0.7",
   "packaging~=23.2",
   "jsonschema==4.19.1",
+  "qmp==0.0.1"
 ]
 
 [project.urls]
