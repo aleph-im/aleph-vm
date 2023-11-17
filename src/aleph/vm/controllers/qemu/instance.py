@@ -4,13 +4,10 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from pathlib import Path
 from typing import Generic, Optional
 
 import psutil
 import qmp
-
-from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
@@ -21,12 +18,11 @@ from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     ConfigurationType,
 )
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
-from aleph.vm.network.hostnetwork import make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.network.ipaddresses import IPv4NetworkWithInterfaces
-from aleph.vm.orchestrator.vm.vm_type import VmType
+from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -35,17 +31,12 @@ logger = logging.getLogger(__name__)
 class AlephQemuResources(AlephFirecrackerResources):
     async def download_all(self):
         volume = self.message_content.rootfs
-        # image_path = get_rootfs_base_path(volume.parent.ref)
-        if settings.USE_FAKE_INSTANCE_BASE and settings.FAKE_INSTANCE_BASE:
-            logger.debug("Using fake instance base")
-
-            base_image_path = Path(settings.FAKE_INSTANCE_BASE)
-
-            self.rootfs_path = await self.make_writable_volume(base_image_path, volume)
-
+        image_path = get_rootfs_base_path(volume.parent.ref)
+        self.rootfs_path = await self.make_writable_volume(image_path, volume)
         return
 
     async def make_writable_volume(self, qcow2_file_path, volume: PersistentVolume | RootfsVolume):
+        "Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"
         qemu_img_path = shutil.which("qemu-img")
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
