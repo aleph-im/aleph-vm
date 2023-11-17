@@ -101,7 +101,7 @@ async def create_cloud_init_drive_image(
 class CloudInitMixin(AlephControllerInterface):
     async def _create_cloud_init_drive(self) -> Drive:
         """Creates the cloud-init volume to configure and setup the VM"""
-        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
+        # assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
         ip = self.get_vm_ip()
         route = self.get_vm_route()
