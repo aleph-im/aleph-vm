@@ -51,6 +51,10 @@ def system(command):
 
 
 async def setfacl():
+    """Give current user permission to access /dev/kvm via acl"""
+    if os.access('/dev/kvm', os.R_OK | os.W_OK):
+        return
+
     user = getuid()
     cmd = f"sudo setfacl -m u:{user}:rw /dev/kvm"
     proc = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
