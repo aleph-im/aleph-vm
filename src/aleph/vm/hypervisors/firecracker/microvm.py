@@ -88,6 +88,9 @@ class MicroVM:
     mounted_rootfs: Optional[Path] = None
     _unix_socket: Optional[Server] = None
 
+    def __str__(self):
+        return f"<MicroVM {self.vm_id}>"
+
     @property
     def namespace_path(self):
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
