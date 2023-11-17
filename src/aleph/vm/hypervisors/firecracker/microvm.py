@@ -88,8 +88,11 @@ class MicroVM:
     mounted_rootfs: Optional[Path] = None
     _unix_socket: Optional[Server] = None
 
-    def __str__(self):
+    def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
+
+    def __str__(self):
+        return f"vm-{self.vm_id}"
 
     @property
     def namespace_path(self):
