@@ -252,7 +252,7 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if isinstance(self.message, InstanceContent):
+            if self.vm.support_snapshot:
                 await self.snapshot_manager.stop_for(self.vm_hash)
 
     def start_watching_for_updates(self, pubsub: PubSub):

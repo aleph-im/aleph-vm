@@ -180,7 +180,7 @@ class AlephProgramResources(AlephFirecrackerResources):
     code_encoding: Encoding
     code_entrypoint: str
     data_path: Path | None
-    support_snapshot = False
+
 
     def __init__(self, message_content: ExecutableContent, namespace: str):
         super().__init__(message_content, namespace)
@@ -259,6 +259,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
     vm_configuration: ProgramVmConfiguration | None
     resources: AlephProgramResources
     is_instance = False
+    support_snapshot = False
 
     def __init__(
         self,
