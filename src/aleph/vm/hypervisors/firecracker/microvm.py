@@ -160,10 +160,10 @@ class MicroVM:
         if not self.use_jailer:
             return False
 
-        system(f"rm -fr {self.jailer_path}/net/")
-        system(f"rm -fr {self.jailer_path}/run/")
+        system(f"rm -fr {self.jailer_path}/dev/net/")
         system(f"rm -fr {self.jailer_path}/dev/kvm")
         system(f"rm -fr {self.jailer_path}/dev/urandom")
+        system(f"rm -fr {self.jailer_path}/run/")
 
         if os.path.exists(path=self.vsock_path):
             os.remove(path=self.vsock_path)
