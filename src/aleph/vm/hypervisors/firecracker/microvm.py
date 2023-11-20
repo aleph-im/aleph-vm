@@ -156,6 +156,18 @@ class MicroVM:
         # system(f"cp disks/rootfs.ext4 {self.jailer_path}/opt")
         # system(f"cp hello-vmlinux.bin {self.jailer_path}/opt")
 
+    def prepare_start(self):
+        if not self.use_jailer:
+            return False
+
+        system(f"rm -fr {self.jailer_path}/net/")
+        system(f"rm -fr {self.jailer_path}/run/")
+        system(f"rm -fr {self.jailer_path}/dev/kvm")
+        system(f"rm -fr {self.jailer_path}/dev/urandom")
+
+        if os.path.exists(path=self.vsock_path):
+            os.remove(path=self.vsock_path)
+
     async def save_configuration_file(self, config: FirecrackerConfig) -> Path:
         with (
             NamedTemporaryFile(delete=False) as tmp_config_file,

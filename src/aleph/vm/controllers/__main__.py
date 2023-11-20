@@ -77,6 +77,7 @@ async def run_instance(config: Configuration):
         init_timeout=config.vm_configuration.init_timeout,
     )
 
+    await execution.prepare_start()
     process = await execution.start(config.vm_configuration.config_file_path)
     if config.settings.PRINT_SYSTEM_LOGS:
         execution.start_printing_logs()
