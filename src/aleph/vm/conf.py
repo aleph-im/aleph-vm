@@ -212,6 +212,8 @@ class Settings(BaseSettings):
     # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
+    ENABLE_QEMU_SUPPORT: bool = Field(default=False)
+
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
@@ -292,10 +294,16 @@ class Settings(BaseSettings):
             assert is_command_available("ndppd"), "Command `ndppd` not found, run `apt install ndppd`"
 
         # Necessary for cloud-init customisation of instance
-        assert is_command_available('cloud-localds'),  "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
-        # Qemu support
-        assert is_command_available('qemu-img'),  "Command `qemu-img` not found, run `apt install qemu-utils`"
-        assert is_command_available('qemu-system-x86_64'),  "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
+        assert is_command_available(
+            "cloud-localds"
+        ), "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
+
+        if settings.ENABLE_QEMU_SUPPORT:
+            # Qemu support
+            assert is_command_available("qemu-img"), "Command `qemu-img` not found, run `apt install qemu-utils`"
+            assert is_command_available(
+                "qemu-system-x86_64"
+            ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
