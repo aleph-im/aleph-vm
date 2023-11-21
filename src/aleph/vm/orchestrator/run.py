@@ -269,12 +269,12 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash, pool=pool)
 
+    await execution.becomes_ready()
+
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
     execution.persistent = True
     execution.cancel_expiration()
-
-    await execution.becomes_ready()
 
     if pubsub and settings.WATCH_FOR_UPDATES:
         execution.start_watching_for_updates(pubsub=pubsub)
