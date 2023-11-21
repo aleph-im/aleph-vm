@@ -54,5 +54,13 @@ Accept: application/json
 
 
 # TODO
-* snapshot
-* fix logs
+- [x] Launch
+- [x] Message format
+- [x] Network
+- [x] Cloud init
+- [x] Download ressource
+- [ ] snapshot
+- [ ] Multi volume
+- [ ] fix logs
+- [ ] Testing
+- [x] Support raw format for base image

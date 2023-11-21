@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 class AlephQemuResources(AlephFirecrackerResources):
     async def download_all(self):
         volume = self.message_content.rootfs
-        image_path = get_rootfs_base_path(volume.parent.ref)
-        self.rootfs_path = await self.make_writable_volume(image_path, volume)
+        parent_image_path = await get_rootfs_base_path(volume.parent.ref)
+        self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
         return
 
-    async def make_writable_volume(self, qcow2_file_path, volume: PersistentVolume | RootfsVolume):
+    async def make_writable_volume(self, parent_image_path, volume: PersistentVolume | RootfsVolume):
         "Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"
         qemu_img_path = shutil.which("qemu-img")
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
@@ -46,12 +46,13 @@ class AlephQemuResources(AlephFirecrackerResources):
             [
                 qemu_img_path,
                 "create",
-                "-f",
+                "-f",  # Format
                 "qcow2",
-                "-F",
-                "qcow2",
+                # disabled so it will autodetect the backing format
+                # "-F",
+                # "qcow2",
                 "-b",
-                str(qcow2_file_path),
+                str(parent_image_path),
                 str(dest_path),
             ]
         )
