@@ -5,15 +5,15 @@ async function fetchApiStatus () {
         details: []
     }
     if(q.ok){
-        res.status = "working properly &#9989;";
+        res.status = " is working properly &#9989;";
     }
     else {
         switch(Number(q.status)){
             case 503:
-                res.status = "not working properly &#10060;";
+                res.status = " is not working properly &#10060;";
                 res.details = await q.json();
             case 500:
-                res.status = "&#10060; Failed";
+                res.status = " &#10060; Failed";
             default:
                 res.status = q.status;
         }
@@ -67,7 +67,7 @@ async function* fetchLatestMetrics (hostname, fromDate) {
 
     if(!countRes?.posts[0]?.content?.metrics?.crn?.find(node => node.url === hostname))
         throw new Error('Hostname not found in metrics');
-    
+
 
     const totalPages = Math.ceil(totalDataPoints / qp.pagination);
     let currentPage = 0;

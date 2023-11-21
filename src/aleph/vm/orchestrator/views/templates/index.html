@@ -45,7 +45,7 @@
         <h2>Diagnostic</h2>
 
         <p class="virtualization-wrapper">
-            Virtualization is
+            Virtualization&nbsp;
             <span class="virtualization-wrapper" id="check">
                 ...&nbsp;
                 <span class="loader-container">
@@ -116,7 +116,7 @@
 
     <script src="/static/helpers.js"></script>
     <script>
-        const NODE_HOSTNAME = '$public_url';       
+        const NODE_HOSTNAME = '$public_url';
         const NODE_VERSION = '$version';
 
         (async () => {
@@ -209,7 +209,7 @@
                     console.error(err);
                     document.getElementById('chart-wrapper').innerHTML = err;
                 }
-                
+
                 // Creates checkboxes to disable/enable metrics
                 Object.keys(displayedMetrics).map(field => {
                     const wrapperDiv = document.createElement('div')
@@ -223,7 +223,7 @@
                     wrapperDiv.appendChild(cb)
                     wrapperDiv.appendChild(label)
                     document.getElementById('checkboxes-wrapper').appendChild(wrapperDiv)
-    
+
                     cb.addEventListener('change', e => {
                         chart.remove()
                         displayedMetrics[field] = e.target.checked
