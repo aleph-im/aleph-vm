@@ -163,6 +163,14 @@ class VmExecution:
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
             )
+            try:
+                await vm.setup()
+                await vm.start()
+                await vm.configure()
+            except Exception:
+                await vm.teardown()
+                raise
+
         else:
             assert self.is_instance
             assert isinstance(self.resources, AlephInstanceResources)
@@ -174,10 +182,16 @@ class VmExecution:
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
             )
+
+            try:
+                await vm.setup()
+                # Avoid VM start() method because it's only for programs, for instances we will use SystemD manager
+                await vm.configure()
+            except Exception:
+                await vm.teardown()
+                raise
+
         try:
-            await vm.setup()
-            await vm.start()
-            await vm.configure()
             await vm.start_guest_api()
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
