@@ -130,10 +130,12 @@ def initialize_nftables() -> None:
             raise NotImplementedError(msg)
         base_chains[hook] = chains.pop()["chain"]
 
-    add_chain(
-        "ip",
-        base_chains["postrouting"]["table"],
-        f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
+    commands.append(
+        _make_add_chain_command(
+            "ip",
+            base_chains["postrouting"]["table"],
+            f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
+        )
     )
     commands.append(
         {
@@ -148,10 +150,12 @@ def initialize_nftables() -> None:
         }
     )
 
-    add_chain(
-        "ip",
-        base_chains["forward"]["table"],
-        f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+    commands.append(
+        _make_add_chain_command(
+            "ip",
+            base_chains["forward"]["table"],
+            f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+        )
     )
     commands.append(
         {
@@ -200,18 +204,20 @@ def teardown_nftables() -> None:
 def add_chain(family: str, table: str, name: str) -> int:
     """Helper function to quickly create a new chain in the nftables ruleset
     Returns the exit code from executing the nftables commands"""
-    commands = [
-        {
-            "add": {
-                "chain": {
-                    "family": family,
-                    "table": table,
-                    "name": name,
-                }
+    commands = [_make_add_chain_command(family, table, name)]
+    return execute_json_nft_commands(commands)
+
+
+def _make_add_chain_command(family: str, table: str, name: str) -> dict:
+    return {
+        "add": {
+            "chain": {
+                "family": family,
+                "table": table,
+                "name": name,
             }
         }
-    ]
-    return execute_json_nft_commands(commands)
+    }
 
 
 def remove_chain(name: str) -> int:
