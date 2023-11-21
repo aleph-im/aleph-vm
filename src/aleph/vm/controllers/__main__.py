@@ -13,6 +13,7 @@ except ImportError:
     sentry_sdk = None
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
+from .configuration import Configuration
 
 from .configuration import Configuration
 
