@@ -112,6 +112,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
 
@@ -126,17 +127,22 @@ class VmExecution:
 
     async def prepare(self):
         """Download VM required files"""
-        self.times.preparing_at = datetime.now(tz=timezone.utc)
-        if self.is_program:
-            resources = AlephProgramResources(self.message, namespace=self.vm_hash)
-        elif self.is_instance:
-            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-        else:
-            msg = "Unknown executable message type"
-            raise ValueError(msg)
-        await resources.download_all()
-        self.times.prepared_at = datetime.now(tz=timezone.utc)
-        self.resources = resources
+        async with self.preparation_pending_lock:
+            if self.resources:
+                # Already prepared
+                return
+
+            self.times.preparing_at = datetime.now(tz=timezone.utc)
+            if self.is_program:
+                resources = AlephProgramResources(self.message, namespace=self.vm_hash)
+            elif self.is_instance:
+                resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+            else:
+                msg = "Unknown executable message type"
+                raise ValueError(msg)
+            await resources.download_all()
+            self.times.prepared_at = datetime.now(tz=timezone.utc)
+            self.resources = resources
 
     async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephFirecrackerExecutable:
         if not self.resources:
