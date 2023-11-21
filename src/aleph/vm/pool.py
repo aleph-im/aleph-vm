@@ -10,6 +10,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.vm_type import VmType
+from aleph.vm.systemd import SystemDManager
 
 from .models import ExecutableContent, VmExecution
 
@@ -30,6 +31,7 @@ class VmPool:
     message_cache: dict[str, ExecutableMessage] = {}
     network: Optional[Network]
     snapshot_manager: SnapshotManager
+    systemd_manager: SystemDManager
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -51,6 +53,7 @@ class VmPool:
             if settings.ALLOW_VM_NETWORKING
             else None
         )
+        self.systemd_manager = SystemDManager()
         self.snapshot_manager = SnapshotManager()
         logger.debug("Initializing SnapshotManager ...")
         self.snapshot_manager.run_snapshots()
@@ -95,9 +98,10 @@ class VmPool:
 
             await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
-            assert execution.vm
             # Start VM snapshots automatically
             if execution.vm.support_snapshot:
+                controller_service_name = f"aleph-vm-controller@${vm_hash}.service"
+                self.systemd_manager.enable_and_start(controller_service_name)
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
@@ -169,10 +173,16 @@ class VmPool:
         except KeyError:
             pass
 
+    def stop_persistent_executions(self):
+        """Stop persistent VMs in the pool."""
+        for execution in self.get_persistent_executions():
+            controller_service_name = f"aleph-vm@${execution.vm_hash}.service"
+            self.systemd_manager.stop_and_disable(controller_service_name)
+
     async def stop(self):
         """Stop all VMs in the pool."""
-
         # Stop executions in parallel:
+        self.stop_persistent_executions()
         await asyncio.gather(*(execution.stop() for vm_hash, execution in self.executions.items()))
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
