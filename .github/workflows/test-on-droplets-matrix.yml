@@ -139,7 +139,7 @@ jobs:
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
             -H "X-Auth-Signature: test" \
-            -d '{"persistent_vms": [], "instances": ["67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"]}' \
+            -d '{"persistent_vms": [], "instances": ["${{ matrix.check_vm.item_hash }}"]}' \
             "http://${DROPLET_IPV4}:4020/control/allocations"
 
       - name: Cleanup
