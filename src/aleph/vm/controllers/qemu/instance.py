@@ -294,3 +294,17 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 logger.warning("unexpected answer from VM", resp)
             client.close()
             self.qmp_socket_path = None
+
+    async def get_log_queue(self) -> asyncio.Queue:
+        queue = asyncio.Queue(maxsize=1000)
+        # Limit the number of queues per VM
+        if len(self.log_queues) > 20:
+            logger.warning("Too many log queues, dropping the oldest one")
+            self.log_queues.pop(0)
+        self.log_queues.append(queue)
+        return queue
+
+    async def unregister_queue(self, queue: asyncio.Queue):
+        if queue in self.log_queues:
+            self.log_queues.remove(queue)
+        queue.empty()

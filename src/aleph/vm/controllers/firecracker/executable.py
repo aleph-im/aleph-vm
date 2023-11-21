@@ -186,7 +186,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephControllerInte
         self.guest_api_process = None
         self._firecracker_config = None
 
-
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.fvm.proc and psutil:
@@ -282,3 +281,18 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephControllerInte
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         raise NotImplementedError()
+
+    async def get_log_queue(self) -> asyncio.Queue:
+        queue = asyncio.Queue(maxsize=1000)
+        # Limit the number of queues per VM
+
+        if len(self.fvm.log_queues) > 20:
+            logger.warning("Too many log queues, dropping the oldest one")
+            self.fvm.log_queues.pop(0)
+        self.fvm.log_queues.append(queue)
+        return queue
+
+    async def unregister_queue(self, queue: asyncio.Queue):
+        if queue in self.fvm.log_queues:
+            self.fvm.log_queues.remove(queue)
+        queue.empty()

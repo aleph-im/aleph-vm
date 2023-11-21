@@ -139,17 +139,12 @@ async def stream_logs(request: web.Request):
 
     if execution.vm is None:
         raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
-
-    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    queue = None
     try:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         try:
-            # Limit the number of queues per VM
-            if len(execution.vm.fvm.log_queues) > 20:
-                logger.warning("Too many log queues, dropping the oldest one")
-                execution.vm.fvm.log_queues.pop(0)
-            execution.vm.fvm.log_queues.append(queue)
+            queue = await execution.vm.get_log_queue()
 
             while True:
                 log_type, message = await queue.get()
@@ -159,9 +154,9 @@ async def stream_logs(request: web.Request):
         finally:
             await ws.close()
     finally:
-        if queue in execution.vm.fvm.log_queues:
-            execution.vm.fvm.log_queues.remove(queue)
-        queue.empty()
+        if queue:
+            await execution.vm.unregister_queue(queue)
+
 
 
 @require_jwk_authentication

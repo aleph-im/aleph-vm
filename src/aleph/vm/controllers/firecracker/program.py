@@ -181,7 +181,6 @@ class AlephProgramResources(AlephFirecrackerResources):
     code_entrypoint: str
     data_path: Path | None
 
-
     def __init__(self, message_content: ExecutableContent, namespace: str):
         super().__init__(message_content, namespace)
         self.code_encoding = message_content.code.encoding

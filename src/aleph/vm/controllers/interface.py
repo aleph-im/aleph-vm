@@ -1,13 +1,13 @@
+import asyncio
 import logging
 from abc import ABC
 from asyncio.subprocess import Process
 from typing import Any, Optional, Coroutine
 
-from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
-
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.environment import MachineResources
 
 logger = logging.getLogger(__name__)
 
@@ -81,4 +81,10 @@ class AlephControllerInterface(ABC):
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         "Must be implement if self.support_snapshot is True"
+        raise NotImplementedError()
+
+    async def get_log_queue(self) -> asyncio.Queue:
+        raise NotImplementedError()
+
+    async def unregister_queue(self, queue: asyncio.Queue):
         raise NotImplementedError()
