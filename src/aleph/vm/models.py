@@ -13,7 +13,6 @@ from aleph_message.models import (
     ItemHash,
     ProgramContent,
     MessageType,
-    QemuContent,
 )
 
 from aleph.vm.conf import settings
@@ -34,6 +33,7 @@ from aleph.vm.orchestrator.metrics import (
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
+from aleph_message.models.execution.environment import HypervisorType
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
@@ -93,8 +93,9 @@ class VmExecution:
         return isinstance(self.message, InstanceContent)
 
     @property
-    def is_qemu_instance(self):
-        return isinstance(self.message, QemuContent)
+    def hypervisor(self):
+        # default to firecracker for retro compat
+        return getattr(self.message.environment, "hypervisor", HypervisorType.firecracker)
 
     @property
     def becomes_ready(self):
@@ -134,14 +135,16 @@ class VmExecution:
     async def prepare(self):
         """Download VM required files"""
         self.times.preparing_at = datetime.now(tz=timezone.utc)
+        resources = None
         if self.is_program:
             resources = AlephProgramResources(self.message, namespace=self.vm_hash)
-
         elif self.is_instance:
-            resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-        elif self.is_qemu_instance:
-            resources = AlephQemuResources(self.message, namespace=self.vm_hash)
-        else:
+            if self.hypervisor == HypervisorType.firecracker:
+                resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+            elif self.hypervisor == HypervisorType.qemu:
+                resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+
+        if not resources:
             msg = "Unknown executable message type"
             raise ValueError(msg, repr(self.message))
         await resources.download_all()
@@ -166,25 +169,28 @@ class VmExecution:
                 tap_interface=tap_interface,
             )
         elif self.is_instance:
-            assert isinstance(self.resources, AlephInstanceResources)
-            self.vm = vm = AlephFirecrackerInstance(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
-                resources=self.resources,
-                enable_networking=self.message.environment.internet,
-                hardware_resources=self.message.resources,
-                tap_interface=tap_interface,
-            )
-        elif self.is_qemu_instance:
-            assert isinstance(self.resources, AlephQemuResources)
-            self.vm = vm = AlephQemuInstance(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
-                resources=self.resources,
-                enable_networking=self.message.environment.internet,
-                hardware_resources=self.message.resources,
-                tap_interface=tap_interface,
-            )
+            if self.hypervisor == HypervisorType.firecracker:
+                assert isinstance(self.resources, AlephInstanceResources)
+                self.vm = vm = AlephFirecrackerInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.message.environment.internet,
+                    hardware_resources=self.message.resources,
+                    tap_interface=tap_interface,
+                )
+            elif self.hypervisor == HypervisorType.qemu:
+                assert isinstance(self.resources, AlephQemuResources)
+                self.vm = vm = AlephQemuInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.message.environment.internet,
+                    hardware_resources=self.message.resources,
+                    tap_interface=tap_interface,
+                )
+            else:
+                raise Exception("Unknown VM")
         else:
             raise Exception("Unknown VM")
 
@@ -260,7 +266,7 @@ class VmExecution:
             self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
-        if self.is_instance or self.is_qemu_instance:
+        if self.is_instance:
             await pubsub.msubscribe(
                 *(volume.ref for volume in (self.original.volumes or []) if hasattr(volume, "ref")),
             )
@@ -305,7 +311,7 @@ class VmExecution:
                     io_write_bytes=pid_info["process"]["io_counters"][3],
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else '',
+                    network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
                 )
             )
         else:

@@ -2,7 +2,7 @@
     "chain": "ETH",
     "item_hash": "fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash",
     "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
-    "type": "QEMU_INSTANCE",
+    "type": "INSTANCE",
     "channel": "Fun-dApps",
     "confirmed": true,
     "content": {
@@ -15,7 +15,8 @@
             "reproducible": true,
             "internet": true,
             "aleph_api": true,
-            "shared_cache": true
+            "shared_cache": true,
+            "hypervisor": "qemu"
         },
         "resources": {
             "vcpus": 1,

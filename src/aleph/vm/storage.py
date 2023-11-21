@@ -21,7 +21,6 @@ from aleph_message.models import (
     ItemHash,
     ProgramMessage,
     parse_message,
-    QemuMessage,
 )
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.program import Encoding
@@ -152,7 +151,7 @@ async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
             msg = fix_message_validation(msg)
 
         result = parse_message(message_dict=msg)
-        assert isinstance(result, (InstanceMessage, ProgramMessage, QemuMessage)), "Parsed message is not executable"
+        assert isinstance(result, (InstanceMessage, ProgramMessage)), "Parsed message is not executable"
         return result
 
 
