@@ -15,6 +15,7 @@ from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import Configuration
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
@@ -150,6 +151,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     guest_api_process: Optional[Process] = None
     is_instance: bool
     _firecracker_config: Optional[FirecrackerConfig] = None
+    controller_configuration: Optional[Configuration] = None
     support_snapshot: bool
 
     def __init__(
@@ -225,6 +227,10 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
         if not self.fvm:
             msg = "No VM found. Call setup() before start()"
+            raise ValueError(msg)
+
+        if self.is_instance:
+            msg = "VM should be started using SystemD Manager class"
             raise ValueError(msg)
 
         try:
