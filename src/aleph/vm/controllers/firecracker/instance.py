@@ -11,6 +11,7 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import Configuration, VMConfiguration
 from aleph.vm.hypervisors.firecracker.config import (
     BootSource,
     Drive,
@@ -61,14 +62,14 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     support_snapshot = False
 
     def __init__(
-        self,
-        vm_id: int,
-        vm_hash: ItemHash,
-        resources: AlephInstanceResources,
-        enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
-        hardware_resources: Optional[MachineResources] = None,
-        tap_interface: Optional[TapInterface] = None,
+            self,
+            vm_id: int,
+            vm_hash: ItemHash,
+            resources: AlephInstanceResources,
+            enable_networking: bool = False,
+            enable_console: Optional[bool] = None,
+            hardware_resources: Optional[MachineResources] = None,
+            tap_interface: Optional[TapInterface] = None,
     ):
         self.latest_snapshot = None
         super().__init__(
@@ -80,6 +81,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             hardware_resources or MachineResources(),
             tap_interface,
         )
+
+    async def prepare_controller_config(self):
+        print("Test")
 
     async def setup(self):
         logger.debug("instance setup started")
@@ -93,18 +97,18 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 boot_args=BootSource.args(enable_console=self.enable_console, writable=True),
             ),
             drives=[
-                Drive(
-                    drive_id="rootfs",
-                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
-                    is_root_device=True,
-                    is_read_only=False,
-                ),
-                cloud_init_drive,
-            ]
-            + [
-                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
-                for volume in self.resources.volumes
-            ],
+                       Drive(
+                           drive_id="rootfs",
+                           path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
+                           is_root_device=True,
+                           is_read_only=False,
+                       ),
+                       cloud_init_drive,
+                   ]
+                   + [
+                       self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                       for volume in self.resources.volumes
+                   ],
             machine_config=MachineConfig(
                 vcpu_count=self.hardware_resources.vcpus,
                 mem_size_mib=self.hardware_resources.memory,
@@ -139,10 +143,31 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 else:
                     raise
 
+    def save_controller_configuration(self):
+        with (open(f"{self.fvm.vm_path}/${self.vm_hash}-controller.json", "wb") as controller_config_file):
+            controller_config_file.write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode())
+            controller_config_file.flush()
+            config_file_path = Path(controller_config_file.name)
+            config_file_path.chmod(0o644)
+            return config_file_path
+
     async def configure(self):
-        """Configure the VM by sending configuration info to it's init"""
-        # Configuration of instances is sent during `self.setup()` by passing it via a volume.
-        pass
+        """Configure the VM by saving controller service configuration"""
+        firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
+        vm_configuration = VMConfiguration(
+            vm_id=self.vm_id,
+            firecracker_bin_path=self.fvm.firecracker_bin_path,
+            use_jailer=self.fvm.use_jailer,
+            jailer_bin_path=self.fvm.jailer_bin_path,
+            init_timeout=self.fvm.init_timeout,
+            config_file_path=firecracker_config_path,
+        )
+        configuration = Configuration(
+            settings=settings,
+            vm_configuration=vm_configuration,
+        )
+        self.controller_configuration = configuration
+        self.save_controller_configuration()
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         """Create a VM snapshot"""
