@@ -155,7 +155,7 @@ class Settings(BaseSettings):
         description="IPv6 subnet prefix for VMs. Made configurable for testing.",
     )
     IPV6_FORWARDING_ENABLED: bool = Field(
-        default=True,
+        default=False,
         description="Enable IPv6 forwarding on the host. Required for IPv6 connectivity in VMs.",
     )
     NFTABLES_CHAIN_PREFIX = "aleph"
