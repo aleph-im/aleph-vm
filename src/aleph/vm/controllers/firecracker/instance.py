@@ -144,7 +144,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                     raise
 
     def save_controller_configuration(self):
-        with (open(f"{settings.EXECUTION_ROOT}/${self.vm_hash}-controller.json", "wb") as controller_config_file):
+        with (open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file):
             controller_config_file.write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode())
             controller_config_file.flush()
             config_file_path = Path(controller_config_file.name)
@@ -155,7 +155,6 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         """Configure the VM by saving controller service configuration"""
         firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
         vm_configuration = VMConfiguration(
-            vm_id=self.vm_id,
             firecracker_bin_path=self.fvm.firecracker_bin_path,
             use_jailer=self.fvm.use_jailer,
             jailer_bin_path=self.fvm.jailer_bin_path,
@@ -163,6 +162,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             config_file_path=firecracker_config_path,
         )
         configuration = Configuration(
+            vm_id=self.vm_id,
             settings=settings,
             vm_configuration=vm_configuration,
         )
