@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 
 def is_token_still_valid(timestamp):
     """
-    Checks if a token has exprired based on its timestamp
+    Checks if a token has expired based on its expiry timestamp
     """
     current_datetime = datetime.now(tz=timezone.utc)
-    target_datetime = datetime.fromisoformat(timestamp)
+    expiry_datetime = datetime.fromisoformat(timestamp)
 
-    return target_datetime > current_datetime
+    return expiry_datetime > current_datetime
 
 
 def verify_wallet_signature(signature, message, address):
