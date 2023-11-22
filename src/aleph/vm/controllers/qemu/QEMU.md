@@ -6,7 +6,7 @@ Commands : qemu, cloud-ds, qemu-img
 These are installable via 
 `apt install cloud-image-utils qemu-utils qemu-system-x86`
 
-At this moment this branch depends on branch `olethanh-qemu-message-format`  of aleph-message which add the new temporary format.
+At this moment this branch depends on branch `olethanh-qemu-message-format`  of aleph-message which add the new temporary format.  https://github.com/olethanh/aleph-message/tree/olethanh-qemu-message-format
 
 The easiest way is to check it out locally and install it in your venv using `pip install -e .`
 
@@ -87,3 +87,5 @@ Cloud init support for settings the ssh key in the VM image is required, this is
 - [ ] Document for user how to build their own images
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
+- [ ] Output the whole serial console in logs
+- [ ] Test code for websocket logs

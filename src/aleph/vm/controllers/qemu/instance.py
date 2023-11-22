@@ -164,7 +164,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             # "-snapshot",  # Do not save anything to disk
             "-drive",
             f"file={image_path},media=disk,if=virtio",
-            # Comment for debug
+            # To debug you can pass gtk or curses instead
             "-display",
             "none",
             "--no-reboot",  # Rebooting from inside the VM shuts down the machine
