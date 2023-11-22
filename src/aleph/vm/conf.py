@@ -184,6 +184,7 @@ class Settings(BaseSettings):
     DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT = Path("/var/lib/aleph/vm")
+    JAILER_BASE_DIRECTORY = EXECUTION_ROOT / "jailer"
     EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )

@@ -143,7 +143,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                     raise
 
     def save_controller_configuration(self):
-        with (open(f"{self.fvm.vm_path}/${self.vm_hash}-controller.json", "wb") as controller_config_file):
+        with (open(f"{settings.EXECUTION_ROOT}/${self.vm_hash}-controller.json", "wb") as controller_config_file):
             controller_config_file.write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode())
             controller_config_file.flush()
             config_file_path = Path(controller_config_file.name)
