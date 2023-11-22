@@ -13,7 +13,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
       - name: PR Difficulty Rating
-        uses: rate-my-pr/rate@v1
+        uses: rate-my-pr/difficulty@v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLAMA_URL: ${{ secrets.LLAMA_URL }}
