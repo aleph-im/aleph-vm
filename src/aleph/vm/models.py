@@ -120,6 +120,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
 
@@ -134,22 +135,27 @@ class VmExecution:
 
     async def prepare(self):
         """Download VM required files"""
-        self.times.preparing_at = datetime.now(tz=timezone.utc)
-        resources = None
-        if self.is_program:
-            resources = AlephProgramResources(self.message, namespace=self.vm_hash)
-        elif self.is_instance:
-            if self.hypervisor == HypervisorType.firecracker:
-                resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
-            elif self.hypervisor == HypervisorType.qemu:
-                resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+        async with self.preparation_pending_lock:
+            if self.resources:
+                # Already prepared
+                return
 
-        if not resources:
-            msg = "Unknown executable message type"
-            raise ValueError(msg, repr(self.message))
-        await resources.download_all()
-        self.times.prepared_at = datetime.now(tz=timezone.utc)
-        self.resources = resources
+            self.times.preparing_at = datetime.now(tz=timezone.utc)
+            resources = None
+            if self.is_program:
+                resources = AlephProgramResources(self.message, namespace=self.vm_hash)
+            elif self.is_instance:
+                if self.hypervisor == HypervisorType.firecracker:
+                    resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
+                elif self.hypervisor == HypervisorType.qemu:
+                    resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+
+            if not resources:
+                msg = "Unknown executable message type"
+                raise ValueError(msg, repr(self.message))
+            await resources.download_all()
+            self.times.prepared_at = datetime.now(tz=timezone.utc)
+            self.resources = resources
 
     async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephControllerInterface:
         if not self.resources:
