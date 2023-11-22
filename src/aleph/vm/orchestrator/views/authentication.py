@@ -205,7 +205,7 @@ async def authenticate_jwk(request: web.Request) -> str:
     return verify_signed_operation(signed_operation, signed_pubkey)
 
 
-async def authenicate_websocket_message(message) -> str:
+async def authenticate_websocket_message(message) -> str:
     """Authenticate a websocket message since JS cannot configure headers on WebSockets."""
     signed_pubkey = SignedPubKeyHeader.parse_obj(message["X-SignedPubKey"])
     signed_operation = SignedOperation.parse_obj(message["X-SignedOperation"])

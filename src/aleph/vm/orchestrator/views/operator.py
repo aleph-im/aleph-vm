@@ -12,7 +12,7 @@ from aleph_message.models.execution import BaseExecutableContent
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution
 from aleph.vm.orchestrator.views.authentication import (
-    authenicate_websocket_message,
+    authenticate_websocket_message,
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
@@ -71,7 +71,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             # Authentication
             first_message = await ws.receive_json()
             credentials = first_message["auth"]
-            authenticated_sender = await authenicate_websocket_message(credentials)
+            authenticated_sender = await authenticate_websocket_message(credentials)
 
             if not is_sender_authorized(authenticated_sender, execution.message):
                 logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
