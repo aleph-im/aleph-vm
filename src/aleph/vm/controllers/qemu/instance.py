@@ -214,7 +214,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             self.process_logs()
 
         await self.wait_for_init()
-        logger.debug(f"started qemu vm {self}")
+        logger.debug(f"started qemu vm {self} on {self.get_vm_ip()}")
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the virtual machine to be ready.
