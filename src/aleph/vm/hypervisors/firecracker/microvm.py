@@ -16,13 +16,13 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Optional
 
 import msgpack
+from aleph.vm.conf import settings
 
 from .config import Drive, FirecrackerConfig
 
 logger = logging.getLogger(__name__)
 
 VSOCK_PATH = "/tmp/v.sock"
-JAILER_BASE_DIRECTORY = "/var/lib/aleph/vm/jailer"
 DEVICE_BASE_DIRECTORY = "/dev/mapper"
 
 
@@ -95,9 +95,13 @@ class MicroVM:
         return f"vm-{self.vm_id}"
 
     @property
-    def namespace_path(self):
+    def jailer_base_directory(self) -> Path:
+        return settings.EXECUTION_ROOT / "jailer"
+
+    @property
+    def namespace_path(self) -> str:
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
-        return f"{JAILER_BASE_DIRECTORY}/{firecracker_bin_name}/{self.vm_id}"
+        return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_id))
 
     @property
     def jailer_path(self):
@@ -237,7 +241,7 @@ class MicroVM:
             "--gid",
             gid,
             "--chroot-base-dir",
-            JAILER_BASE_DIRECTORY,
+            self.jailer_base_directory,
             "--",
             "--config-file",
             "/tmp/" + str(self.config_file_path.name),
@@ -492,7 +496,8 @@ class MicroVM:
         logger.debug("Removing files")
         if self.config_file_path:
             self.config_file_path.unlink(missing_ok=True)
-        system(f"rm -fr {self.namespace_path}")
+        if Path(self.namespace_path).exists():
+            system(f"rm -fr {self.namespace_path}")
 
     def __del__(self):
         try:
