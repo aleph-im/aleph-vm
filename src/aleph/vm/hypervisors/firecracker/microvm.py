@@ -18,6 +18,7 @@ from typing import Any, Optional
 import msgpack
 
 from .config import Drive, FirecrackerConfig
+from aleph.vm.conf import settings
 
 logger = logging.getLogger(__name__)
 
