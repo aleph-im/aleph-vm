@@ -16,7 +16,6 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Optional
 
 import msgpack
-from aleph.vm.conf import settings
 
 from .config import Drive, FirecrackerConfig
 
@@ -96,7 +95,7 @@ class MicroVM:
 
     @property
     def jailer_base_directory(self) -> Path:
-        return settings.EXECUTION_ROOT / "jailer"
+        return self.execution_root_folder / "jailer"
 
     @property
     def namespace_path(self) -> str:
@@ -125,12 +124,15 @@ class MicroVM:
         self,
         vm_id: int,
         firecracker_bin_path: Path,
+        execution_root_folder: Path,
         use_jailer: bool = True,
         jailer_bin_path: Optional[Path] = None,
+
         init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
+        self.execution_root_folder = execution_root_folder
         self.firecracker_bin_path = firecracker_bin_path
         self.jailer_bin_path = jailer_bin_path
         self.drives = []
