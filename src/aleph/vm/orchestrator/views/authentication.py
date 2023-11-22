@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 
 def is_token_still_valid(timestamp):
     """
-    Checks if a token has exprired based on its timestamp
+    Checks if a token has expired based on its expiry timestamp
     """
     current_datetime = datetime.now(tz=timezone.utc)
-    target_datetime = datetime.fromisoformat(timestamp)
+    expiry_datetime = datetime.fromisoformat(timestamp)
 
-    return target_datetime > current_datetime
+    return expiry_datetime > current_datetime
 
 
 def verify_wallet_signature(signature, message, address):
@@ -205,7 +205,7 @@ async def authenticate_jwk(request: web.Request) -> str:
     return verify_signed_operation(signed_operation, signed_pubkey)
 
 
-async def authenicate_websocket_message(message) -> str:
+async def authenticate_websocket_message(message) -> str:
     """Authenticate a websocket message since JS cannot configure headers on WebSockets."""
     signed_pubkey = SignedPubKeyHeader.parse_obj(message["X-SignedPubKey"])
     signed_operation = SignedOperation.parse_obj(message["X-SignedOperation"])
