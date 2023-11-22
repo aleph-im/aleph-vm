@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shutil
 import sys
@@ -40,17 +41,24 @@ class AlephQemuResources(AlephFirecrackerResources):
         qemu_img_path = shutil.which("qemu-img")
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
+        # detect the image format
+        out_json =  await   run_in_subprocess([qemu_img_path, 'info', str(parent_image_path), '--output=json'])
+        out = json.loads(out_json)
+        parent_format = out.get('format', '')
+
+
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
         dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+
         await run_in_subprocess(
             [
                 qemu_img_path,
                 "create",
                 "-f",  # Format
                 "qcow2",
-                # disabled so it will autodetect the backing format
-                # "-F",
-                # "qcow2",
+                "-F",
+                parent_format,
                 "-b",
                 str(parent_image_path),
                 str(dest_path),
