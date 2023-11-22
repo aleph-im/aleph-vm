@@ -180,10 +180,14 @@ class VmPool:
             self.systemd_manager.stop_and_disable(controller_service_name)
 
     async def stop(self):
-        """Stop all VMs in the pool."""
+        """Stop ephemeral VMs in the pool."""
         # Stop executions in parallel:
-        self.stop_persistent_executions()
-        await asyncio.gather(*(execution.stop() for vm_hash, execution in self.executions.items()))
+        await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
+
+    def get_ephemeral_executions(self) -> Iterable[VmExecution]:
+        for _vm_hash, execution in self.executions.items():
+            if not execution.persistent and execution.is_running:
+                yield execution
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for _vm_hash, execution in self.executions.items():
