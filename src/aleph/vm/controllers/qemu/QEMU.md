@@ -59,7 +59,18 @@ Accept: application/json
 ```
 (you might need to comment @require_jwk_authentication)
 
+# Connecting to the VM via your own ssh key
+In local development, if you want to connect via ssh to the VM and you don't have your
+a key included in you base image or inside the aleph message, you can configure it in the following way.
 
+First set your key in the environment variable ALEPH_VM_DEVELOPER_SSH_KEYS in the json format. You can add it directly in the `.env` file
+```env
+ALEPH_VM_DEVELOPER_SSH_KEYS=["ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDj95BHGUx0/z2G/tTrEi8o49i70xvjcEUdSs3j4A33jE7pAphrfRVbuFMgFubcm8n9r5ftd/H8SjjTL4hY9YvWV5ZuMf92GUga3n4wgevvPlBszYZCy/idxFl0vtHYC1CcK9v4tVb9onhDt8FOJkf2m6PmDyvC+6tl6LwoerXTeeiKr5VnTB4KOBkammtFmix3d1X1SZd/cxdwZIHcQ7BNsqBm2w/YzVba6Z4ZnFUelBkQtMQqNs2aV51O1pFFqtZp2mM71D5d8vn9pOtqJ5QmY5IW6NypcyqKJZg5o6QguK5rdXLkc7AWro27BiaHIENl3w0wazp9EDO9zPAGJ6lz olivier@lanius"]
+```
+
+Then pass the `--developer-ssh-keys` as an argument when starting the supervisor.
+
+Cloud init support for settings the ssh key in the VM image is required, this is the same mechanism and settings as for firecracker program, of course this is not for production use.
 
 # TODO
 - [x] Launch
@@ -74,5 +85,5 @@ Accept: application/json
 - [x] Support raw format for base image
 - [ ] More testing with different Distro
 - [ ] Document for user how to build their own images
-- [ ] Allow ssh developer key
+- [x] Allow ssh developer key
 - [ ] Automated testing in CI
