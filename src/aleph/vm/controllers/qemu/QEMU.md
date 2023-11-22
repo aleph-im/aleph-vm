@@ -19,6 +19,9 @@ Launch aleph.vm.orchestrator with the following environment variables
 ALEPH_VM_FAKE_INSTANCE_BASE=/home/olivier/Projects/qemu-quickstart/jammy-server-cloudimg-amd64.img
 ALEPH_VM_FAKE_INSTANCE_MESSAGE=/home/olivier/Projects/aleph/aleph-vm/examples/qemu_message_from_aleph.json
 ALEPH_VM_USE_FAKE_INSTANCE_BASE=1
+# set test as the allocation password
+ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+
 ```
 
 Where `ALEPH_VM_FAKE_INSTANCE_BASE` is the path to the base disk image. You can get the Ubuntu one via:
@@ -36,14 +39,16 @@ Or launching the whole supervisor server (no params), then launch the VM via htt
 
 ```http request
 ### Start fake VM
-GET http://localhost:4020/vm/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/
+POST http://localhost:4020/control/allocations
+Content-Type: application/json
+X-Auth-Signature: test
 Accept: application/json
 
+
+{"persistent_vms": [], "instances": ["decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"]}
 ```
-caveat This will return a 502 status code since we can't execute code in an instance vm, but it will still start the VM.
 
 You can then stop the VM using
-
 ```http request
 ### Stop the VM
 POST http://localhost:4020/control/machine/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/stop
