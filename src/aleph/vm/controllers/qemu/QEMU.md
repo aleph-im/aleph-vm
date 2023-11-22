@@ -48,6 +48,9 @@ Accept: application/json
 {"persistent_vms": [], "instances": ["decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"]}
 ```
 
+After a minutes or two you should be able to SSH into the VM. Check in the log for the VM ip. 
+If you used an Ubuntu image the username should be ubuntu
+
 You can then stop the VM using
 ```http request
 ### Stop the VM
@@ -62,10 +65,14 @@ Accept: application/json
 - [x] Launch
 - [x] Message format
 - [x] Network
-- [x] Cloud init
+- [x] Cloud init support
 - [x] Download ressource
 - [ ] snapshot
 - [ ] Multi volume
-- [ ] fix logs
+- [x] fix logs
 - [ ] Testing
 - [x] Support raw format for base image
+- [ ] More testing with different Distro
+- [ ] Document for user how to build their own images
+- [ ] Allow ssh developer key
+- [ ] Automated testing in CI
