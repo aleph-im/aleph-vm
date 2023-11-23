@@ -283,7 +283,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephControllerInte
         raise NotImplementedError()
 
     async def get_log_queue(self) -> asyncio.Queue:
-        queue = asyncio.Queue(maxsize=1000)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         # Limit the number of queues per VM
 
         if len(self.fvm.log_queues) > 20:

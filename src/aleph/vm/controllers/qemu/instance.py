@@ -5,7 +5,7 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Generic, Optional
+from typing import Generic, Optional, TypeVar
 
 import psutil
 import qmp
@@ -15,10 +15,7 @@ from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import (
-    AlephFirecrackerResources,
-    ConfigurationType,
-)
+from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
 from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
@@ -63,6 +60,9 @@ class AlephQemuResources(AlephFirecrackerResources):
             ]
         )
         return dest_path
+
+
+ConfigurationType = TypeVar("ConfigurationType")
 
 
 class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControllerInterface):
@@ -308,7 +308,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             self.qmp_socket_path = None
 
     async def get_log_queue(self) -> asyncio.Queue:
-        queue = asyncio.Queue(maxsize=1000)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         # Limit the number of queues per VM
         if len(self.log_queues) > 20:
             logger.warning("Too many log queues, dropping the oldest one")
