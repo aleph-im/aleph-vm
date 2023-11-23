@@ -167,7 +167,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
         await pool.stop_vm(vm_hash)
-        pool.forget_vm(vm_hash)
+
         await create_vm_execution(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:

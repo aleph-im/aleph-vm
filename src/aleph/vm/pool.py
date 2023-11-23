@@ -98,6 +98,12 @@ class VmPool:
         if isinstance(message, InstanceContent):
             await self.snapshot_manager.start_for(vm=execution.vm)
 
+        async def forget_on_stop(stop_event: asyncio.Event):
+            await stop_event.wait()
+            self.forget_vm(vm_hash)
+
+        asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+
         return execution
 
     def get_unique_vm_id(self) -> int:
