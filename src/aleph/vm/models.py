@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph_message.models import (
     ExecutableContent,
     InstanceContent,
     ItemHash,
-    ProgramContent,
     MessageType,
+    ProgramContent,
 )
+from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
@@ -23,6 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
+from aleph.vm.controllers.interface import AlephControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
@@ -33,7 +34,6 @@ from aleph.vm.orchestrator.metrics import (
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
-from aleph_message.models.execution.environment import HypervisorType
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Generic, Optional, TypeVar
 
 from aiohttp import ClientResponseError
+from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
@@ -20,8 +22,6 @@ from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman, get_volume_path
-from aleph_message.models import ExecutableContent, ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 try:
     import psutil  # type: ignore [no-redef]

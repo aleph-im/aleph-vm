@@ -2,12 +2,13 @@ import asyncio
 import logging
 from abc import ABC
 from asyncio.subprocess import Process
-from typing import Any, Optional, Coroutine
+from typing import Any, Coroutine, Optional
+
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
-from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 logger = logging.getLogger(__name__)
 
