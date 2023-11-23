@@ -8,7 +8,7 @@ These are installable via
 
 At this moment this branch depends on branch `olethanh-qemu-message-format`  of aleph-message which add the new temporary format.  https://github.com/olethanh/aleph-message/tree/olethanh-qemu-message-format
 
-The easiest way is to check it out locally and install it in your venv using `pip install -e .`
+The easiest way is to check the branch locally and install it in your venv using `pip install -e .`
 
 ## To test launching a VM instance
 
@@ -44,7 +44,6 @@ Content-Type: application/json
 X-Auth-Signature: test
 Accept: application/json
 
-
 {"persistent_vms": [], "instances": ["decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"]}
 ```
 
@@ -57,11 +56,11 @@ You can then stop the VM using
 POST http://localhost:4020/control/machine/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/stop
 Accept: application/json
 ```
-(you might need to comment @require_jwk_authentication)
+(you will need to comment @require_jwk_authentication)
 
 # Connecting to the VM via your own ssh key
 In local development, if you want to connect via ssh to the VM and you don't have your
-a key included in you base image or inside the aleph message, you can configure it in the following way.
+ key already included in you base image or inside the aleph message, you can configure it in the following way.
 
 First set your key in the environment variable ALEPH_VM_DEVELOPER_SSH_KEYS in the json format. You can add it directly in the `.env` file
 ```env
@@ -83,7 +82,7 @@ Cloud init support for settings the ssh key in the VM image is required, this is
 - [x] fix logs
 - [ ] Testing
 - [x] Support raw format for base image
-- [ ] More testing with different Distro
+- [ ] More testing with different Distro: Fedora, debian, alpine
 - [ ] Document for user how to build their own images
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
