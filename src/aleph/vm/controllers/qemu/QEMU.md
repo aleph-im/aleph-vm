@@ -71,6 +71,48 @@ Then pass the `--developer-ssh-keys` as an argument when starting the supervisor
 
 Cloud init support for settings the ssh key in the VM image is required, this is the same mechanism and settings as for firecracker program, of course this is not for production use.
 
+# Check the log via Websocket
+You can stream the logs from the VM using, the following python example script. 
+Caveat: This requires to temporarly disable auth on this endpoint, you need the print system log settings to be active `ALEPH_VM_PRINT_SYSTEM_LOGS=1`. The system only stream new log content from the VM not the old one.
+```python
+import json
+import sys
+
+import asyncio
+import aiohttp
+
+
+def on_message(content):
+    try:
+        msg = json.loads(content)
+        fd = sys.stderr if msg["type"] == "stderr" else sys.stdout
+        print("<", msg["message"], file=fd, end="")
+    except:
+        print("unable to parse", content)
+
+
+async def tail_websocket(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url) as ws:
+            print(f"connected to {url}")
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    on_message(msg.data)
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    print("closed")
+                    break
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    print("Error", msg)
+                    break
+
+
+vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+url = f"ws://localhost:4020/control/machine/{vm_hash}/logs"
+loop = asyncio.get_event_loop()
+loop.run_until_complete(tail_websocket(url))
+```
+
+
 # TODO
 - [x] Launch
 - [x] Message format
@@ -87,4 +129,4 @@ Cloud init support for settings the ssh key in the VM image is required, this is
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
 - [x] Output the whole serial console in logs
-- [ ] Test code for websocket logs
+- [x] Test code for websocket logs
