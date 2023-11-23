@@ -12,7 +12,7 @@ from aleph_message.models.execution import BaseExecutableContent
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution
 from aleph.vm.orchestrator.views.authentication import (
-    authenicate_websocket_message,
+    authenticate_websocket_message,
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
@@ -70,12 +70,12 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             # Authentication
             first_message = await ws.receive_json()
             credentials = first_message["auth"]
-            authenticated_sender = await authenicate_websocket_message(credentials)
+            authenticated_sender = await authenticate_websocket_message(credentials)
 
             if not is_sender_authorized(authenticated_sender, execution.message):
                 logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
                 await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-                return web.Response(status=401, body="Unauthorized sender")
+                return web.Response(status=403, body="Unauthorized sender")
             else:
                 logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
 
@@ -112,7 +112,7 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
     execution = get_execution_or_404(vm_hash, pool=pool)
 
     if not is_sender_authorized(authenticated_sender, execution.message):
-        return web.Response(status=401, body="Unauthorized sender")
+        return web.Response(status=403, body="Unauthorized sender")
 
     logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
     await execution.expire(timeout=timeout)
@@ -132,10 +132,10 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
     execution = get_execution_or_404(vm_hash, pool=pool)
 
     if not is_sender_authorized(authenticated_sender, execution.message):
-        return web.Response(status=401, body="Unauthorized sender")
+        return web.Response(status=403, body="Unauthorized sender")
 
     if not is_sender_authorized(authenticated_sender, execution.message):
-        return web.Response(status=401, body="Unauthorized sender")
+        return web.Response(status=403, body="Unauthorized sender")
 
     if execution.is_running:
         logger.info(f"Stopping {execution.vm_hash}")
@@ -156,7 +156,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     execution = get_execution_or_404(vm_hash, pool=pool)
 
     if not is_sender_authorized(authenticated_sender, execution.message):
-        return web.Response(status=401, body="Unauthorized sender")
+        return web.Response(status=403, body="Unauthorized sender")
 
     if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
@@ -178,7 +178,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
     execution = get_execution_or_404(vm_hash, pool=pool)
 
     if not is_sender_authorized(authenticated_sender, execution.message):
-        return web.Response(status=401, body="Unauthorized sender")
+        return web.Response(status=403, body="Unauthorized sender")
 
     logger.info(f"Erasing {execution.vm_hash}")
 
