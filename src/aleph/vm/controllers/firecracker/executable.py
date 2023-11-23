@@ -174,7 +174,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         self.fvm = MicroVM(
             vm_id=self.vm_id,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
-            execution_root_folder=settings.EXECUTION_ROOT,
+            jailer_base_directory=settings.JAILER_BASE_DIR,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,

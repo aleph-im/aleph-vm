@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     PERSISTENT_VOLUMES_DIR: Path = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
+    JAILER_BASE_DIR: Path = Field(
+        None
+    )
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
@@ -347,6 +350,9 @@ class Settings(BaseSettings):
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
         if not self.EXECUTION_LOG_DIRECTORY:
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
+        if not self.JAILER_BASE_DIR:
+            self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
+
 
     class Config:
         env_prefix = "ALEPH_VM_"

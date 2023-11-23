@@ -94,10 +94,6 @@ class MicroVM:
         return f"vm-{self.vm_id}"
 
     @property
-    def jailer_base_directory(self) -> Path:
-        return self.execution_root_folder / "jailer"
-
-    @property
     def namespace_path(self) -> str:
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
         return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_id))
@@ -124,15 +120,14 @@ class MicroVM:
         self,
         vm_id: int,
         firecracker_bin_path: Path,
-        execution_root_folder: Path,
+        jailer_base_directory: Path,
         use_jailer: bool = True,
         jailer_bin_path: Optional[Path] = None,
-
         init_timeout: float = 5.0,
     ):
         self.vm_id = vm_id
         self.use_jailer = use_jailer
-        self.execution_root_folder = execution_root_folder
+        self.jailer_base_directory = jailer_base_directory
         self.firecracker_bin_path = firecracker_bin_path
         self.jailer_bin_path = jailer_bin_path
         self.drives = []

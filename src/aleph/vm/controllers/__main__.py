@@ -72,7 +72,7 @@ async def run_instance(config: Configuration):
     execution = MicroVM(
         vm_id=config.vm_id,
         firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
-        execution_root_folder=config.settings.EXECUTION_ROOT,
+        jailer_base_directory=config.settings.JAILER_BASE_DIR,
         use_jailer=config.vm_configuration.use_jailer,
         jailer_bin_path=config.vm_configuration.jailer_bin_path,
         init_timeout=config.vm_configuration.init_timeout,
