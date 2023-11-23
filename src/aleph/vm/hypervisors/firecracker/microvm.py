@@ -181,10 +181,10 @@ class MicroVM:
 
     async def save_configuration_file(self, config: FirecrackerConfig) -> Path:
         with (
-            NamedTemporaryFile(delete=False) as tmp_config_file,
-            open(f"{self.jailer_path}/tmp/config.json", "wb") as tmp_jailer_config_file,
+            NamedTemporaryFile(delete=False)
+            if not self.use_jailer
+            else open(f"{self.jailer_path}/tmp/config.json", "wb") as config_file
         ):
-            config_file = tmp_config_file if not self.use_jailer else tmp_jailer_config_file
             config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
             config_file.flush()
             config_file_path = Path(config_file.name)

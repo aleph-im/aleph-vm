@@ -136,6 +136,15 @@ class VmPool:
         else:
             return None
 
+    async def stop_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+        """Stop a VM."""
+        execution = self.executions.get(vm_hash)
+        if execution:
+            await execution.stop()
+            return execution
+        else:
+            return None
+
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
 
