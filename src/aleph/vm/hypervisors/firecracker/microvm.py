@@ -238,7 +238,7 @@ class MicroVM:
             "--gid",
             gid,
             "--chroot-base-dir",
-            self.jailer_base_directory,
+            str(self.jailer_base_directory),
             "--",
             "--config-file",
             "/tmp/" + str(self.config_file_path.name),
