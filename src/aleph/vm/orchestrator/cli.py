@@ -253,7 +253,7 @@ async def run_instances(instances: list[ItemHash]) -> None:
 
     await asyncio.gather(*[start_instance(item_hash=instance_id) for instance_id in instances])
     await asyncio.Event().wait()  # wait forever
-    #TODO : should we really wait forever?
+    # TODO : should we really wait forever?
 
 
 @contextlib.contextmanager
