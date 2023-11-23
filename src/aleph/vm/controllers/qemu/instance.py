@@ -168,10 +168,16 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             "-display",
             "none",
             "--no-reboot",  # Rebooting from inside the VM shuts down the machine
+            # Listen for commands on this socket
             "-monitor",
             f"unix:{monitor_socket_path},server,nowait",
+            # Listen for commands on this socket (QMP protocol in json). Supervisor use it to send shutdown or start
+            # command
             "-qmp",
             f"unix:{qmp_socket_path},server,nowait",
+            # Tell to put the output to std fd, so we can include them in the log
+            "-serial",
+            "stdio",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
         ]
@@ -188,7 +194,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
             print(*args)
             self.qemu_process = proc = await asyncio.create_subprocess_exec(
                 *args,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

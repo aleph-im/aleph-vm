@@ -86,5 +86,5 @@ Cloud init support for settings the ssh key in the VM image is required, this is
 - [ ] Document for user how to build their own images
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
-- [ ] Output the whole serial console in logs
+- [x] Output the whole serial console in logs
 - [ ] Test code for websocket logs
