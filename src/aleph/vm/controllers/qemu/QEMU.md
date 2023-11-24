@@ -71,7 +71,7 @@ Then pass the `--developer-ssh-keys` as an argument when starting the supervisor
 
 Cloud init support for settings the ssh key in the VM image is required, this is the same mechanism and settings as for firecracker program, of course this is not for production use.
 
-## Using the CENTOS distro for your VM
+## Using the CentOS distro for your VM
 Qemu support has also been tested with CentOS 7
 
 To test it locally
@@ -83,6 +83,15 @@ To test it locally
 (either via --fake-instance base parameter or the  ALEPH_VM_FAKE_INSTANCE_BASE environment)
 4. Launch it as per instruction aboce
 5. To ssh use the user: `centos` 
+
+## Using the Debian distro for your VM
+Debian QEMU Support has been tested with Debian 12 bookworm. Download the image from https://cloud.debian.org/images/cloud/
+
+Use the AMD64 `genericcloud` image. The `generic` should work too but `genericcloud` is smaller as it doesn't contain unnecessary hardware drivers.
+
+e.g `wget https://cloud.debian.org/images/cloud/bookworm/20231013-1532/debian-12-genericcloud-amd64-20231013-1532.qcow2`
+
+See instruction above for the rest. The default user is `root`
 
 # Check the log via Websocket
 You can stream the logs from the VM using, the following python example script. 
@@ -139,10 +148,11 @@ loop.run_until_complete(tail_websocket(url))
 - [x] Support raw format for base image
 - [x] More testing with different Distro:
   - [x] Centos
-  - [ ] debian
+  - [x] Debian
   - [x] Alpine (do not support centos no cloud)
 - [ ] Document for user how to build their own images
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
 - [x] Output the whole serial console in logs
 - [x] Test code for websocket logs
+- [ ] Multi Layer Qcow image?
