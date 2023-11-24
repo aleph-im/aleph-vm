@@ -72,6 +72,7 @@ class VmExecution:
     concurrent_runs: int
     runs_done_event: asyncio.Event
     stop_pending_lock: asyncio.Lock
+    stop_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
 
@@ -112,6 +113,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.stop_event = asyncio.Event()  #  triggered when the VM is stopped
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
@@ -237,6 +239,7 @@ class VmExecution:
 
             if isinstance(self.message, InstanceContent):
                 await self.snapshot_manager.stop_for(self.vm_hash)
+            self.stop_event.set()
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
