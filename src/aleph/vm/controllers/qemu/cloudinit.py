@@ -47,33 +47,22 @@ def create_metadata_file(hostname, vm_id) -> bytes:
 
 def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
     """Creates network configuration file for cloud-init tool"""
-    # TODO : had to change from eth0 -> ens3 for qemu
-    # check for portable solution
-
     network = {
         "ethernets": {
-            "ens3": {
-                "dhcp4": False,
-                "dhcp6": False,
+            "eth0": {
+                # Math the config to the `virtio` driver since the network interface name is not constant across distro
+                "match": {"driver": "virtio_net"},
                 "addresses": [ip, ipv6],
                 "gateway4": route,
                 "gateway6": ipv6_gateway,
                 "nameservers": {
                     "addresses": nameservers,
                 },
-            },
-            "eth0": {
                 # there is a bug in Centos 7 where it will try DHCP if the key is present, even if set to false
                 # https://stackoverflow.com/questions/59757022/set-static-ip-using-cloud-init-on-centos-7-with-terraform-kvm
                 # so we comment those for now
                 # "dhcp4": False,
                 # "dhcp6": False,
-                "addresses": [ip, ipv6],
-                "gateway4": route,
-                "gateway6": ipv6_gateway,
-                "nameservers": {
-                    "addresses": nameservers,
-                },
             },
         },
         "version": 2,
