@@ -83,7 +83,6 @@ class VmPool:
             )
             self.executions[vm_hash] = execution
 
-        # noinspection PyBroadException
         try:
             await execution.prepare()
             vm_id = self.get_unique_vm_id()
@@ -99,7 +98,7 @@ class VmPool:
             # Start VM snapshots automatically
             if isinstance(message, InstanceContent):
                 await self.snapshot_manager.start_for(vm=execution.vm)
-        except:
+        except Exception:
             # ensure the VM is removed from the pool on creation error
             self.forget_vm(vm_hash)
             raise
