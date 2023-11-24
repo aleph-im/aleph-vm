@@ -83,20 +83,31 @@ class VmPool:
             )
             self.executions[vm_hash] = execution
 
-        await execution.prepare()
-        vm_id = self.get_unique_vm_id()
+        try:
+            await execution.prepare()
+            vm_id = self.get_unique_vm_id()
 
-        if self.network:
-            vm_type = VmType.from_message_content(message)
-            tap_interface = await self.network.create_tap(vm_id, vm_hash, vm_type)
-        else:
-            tap_interface = None
+            if self.network:
+                vm_type = VmType.from_message_content(message)
+                tap_interface = await self.network.create_tap(vm_id, vm_hash, vm_type)
+            else:
+                tap_interface = None
 
-        await execution.create(vm_id=vm_id, tap_interface=tap_interface)
+            await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
-        # Start VM snapshots automatically
-        if isinstance(message, InstanceContent):
-            await self.snapshot_manager.start_for(vm=execution.vm)
+            # Start VM snapshots automatically
+            if isinstance(message, InstanceContent):
+                await self.snapshot_manager.start_for(vm=execution.vm)
+        except Exception:
+            # ensure the VM is removed from the pool on creation error
+            self.forget_vm(vm_hash)
+            raise
+
+        async def forget_on_stop(stop_event: asyncio.Event):
+            await stop_event.wait()
+            self.forget_vm(vm_hash)
+
+        asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
         return execution
 
