@@ -154,6 +154,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         args = [
             qemu_path,
             "-enable-kvm",
+            "-nodefaults",
             "-m",
             str(mem_size_mb),
             "-smp",
