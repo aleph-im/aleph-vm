@@ -71,6 +71,19 @@ Then pass the `--developer-ssh-keys` as an argument when starting the supervisor
 
 Cloud init support for settings the ssh key in the VM image is required, this is the same mechanism and settings as for firecracker program, of course this is not for production use.
 
+## Using the CENTOS distro for your VM
+Qemu support has also been tested with CentOS 7
+
+To test it locally
+1. Download the CentOS cloud image distro:
+`curl -LO -C - http://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud.qcow2.xz`
+2. It is in a compressed format, so you will  need to uncompress it
+```unxz CentOS-7-x86_64-GenericCloud.qcow2.xz```
+3. Set the fake instance base to point to the file `CentOS-7-x86_64-GenericCloud.qcow2
+(either via --fake-instance base parameter or the  ALEPH_VM_FAKE_INSTANCE_BASE environment)
+4. Launch it as per instruction aboce
+5. To ssh use the user: `centos` 
+
 # Check the log via Websocket
 You can stream the logs from the VM using, the following python example script. 
 Caveat: This requires to temporarly disable auth on this endpoint, you need the print system log settings to be active `ALEPH_VM_PRINT_SYSTEM_LOGS=1`. The system only stream new log content from the VM not the old one.
@@ -124,7 +137,10 @@ loop.run_until_complete(tail_websocket(url))
 - [x] fix logs
 - [ ] Testing
 - [x] Support raw format for base image
-- [ ] More testing with different Distro: Fedora, debian, alpine
+- [x] More testing with different Distro:
+  - [x] Centos
+  - [ ] debian
+  - [x] Alpine (do not support centos no cloud)
 - [ ] Document for user how to build their own images
 - [x] Allow ssh developer key
 - [ ] Automated testing in CI
