@@ -82,9 +82,6 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             tap_interface,
         )
 
-    async def prepare_controller_config(self):
-        print("Test")
-
     async def setup(self):
         logger.debug("instance setup started")
         await setfacl()
@@ -161,11 +158,13 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             init_timeout=self.fvm.init_timeout,
             config_file_path=firecracker_config_path,
         )
+
         configuration = Configuration(
             vm_id=self.vm_id,
             settings=settings,
             vm_configuration=vm_configuration,
         )
+
         self.controller_configuration = configuration
         self.save_controller_configuration()
 
@@ -193,7 +192,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
-        ssh_authorized_keys = self.resources.message_content.authorized_keys or []
+        ssh_authorized_keys: list[str] | None
+        if settings.USE_DEVELOPER_SSH_KEYS:
+            ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS
+        else:
+            ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
         config: dict[str, Union[str, bool, list[str]]] = {
             "hostname": self._get_hostname(),
