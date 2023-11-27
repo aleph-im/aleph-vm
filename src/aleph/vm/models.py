@@ -106,6 +106,10 @@ class VmExecution:
     def vm_id(self) -> Optional[int]:
         return self.vm.vm_id if self.vm else None
 
+    @property
+    def controller_service(self) -> str:
+        return f"aleph-vm-controller@${self.vm_hash}.service"
+
     def __init__(
         self,
         vm_hash: ItemHash,
