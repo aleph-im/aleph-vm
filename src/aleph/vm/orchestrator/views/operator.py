@@ -11,6 +11,7 @@ from aleph_message.models.execution import BaseExecutableContent
 
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution
+from aleph.vm.orchestrator.views import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -69,16 +70,18 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
         try:
             # Authentication
-            first_message = await ws.receive_json()
-            credentials = first_message["auth"]
-            authenticated_sender = await authenticate_websocket_message(credentials)
-
-            if not is_sender_authorized(authenticated_sender, execution.message):
-                logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-                await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-                return web.Response(status=403, body="Unauthorized sender")
+            if authenticate_api_request(request):
+                logger.debug(f"Accepted request to access logs via the allocation api key on {vm_hash}")
             else:
-                logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
+                first_message = await ws.receive_json()
+                credentials = first_message["auth"]
+                authenticated_sender = await authenticate_websocket_message(credentials)
+                if not is_sender_authorized(authenticated_sender, execution.message):
+                    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
+                    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+                    return web.Response(status=403, body="Unauthorized sender")
+                else:
+                    logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
 
             await ws.send_json({"status": "connected"})
 
