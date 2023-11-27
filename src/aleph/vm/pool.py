@@ -100,8 +100,7 @@ class VmPool:
 
             # Start VM and snapshots automatically
             if isinstance(message, InstanceContent):
-                controller_service_name = f"aleph-vm-controller@${vm_hash}.service"
-                self.systemd_manager.enable_and_start(controller_service_name)
+                self.systemd_manager.enable_and_start(execution.controller_service)
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
@@ -156,10 +155,17 @@ class VmPool:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if execution:
-            await execution.stop()
+            if execution.persistent:
+                self.stop_persistent_execution(execution)
+            else:
+                await execution.stop()
             return execution
         else:
             return None
+
+    def stop_persistent_execution(self, execution):
+        """Stop persistent VMs in the pool."""
+        self.systemd_manager.stop_and_disable(execution.controller_service)
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
@@ -172,12 +178,6 @@ class VmPool:
             del self.executions[vm_hash]
         except KeyError:
             pass
-
-    def stop_persistent_executions(self):
-        """Stop persistent VMs in the pool."""
-        for execution in self.get_persistent_executions():
-            controller_service_name = f"aleph-vm@${execution.vm_hash}.service"
-            self.systemd_manager.stop_and_disable(controller_service_name)
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
