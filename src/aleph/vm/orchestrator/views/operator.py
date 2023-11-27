@@ -69,20 +69,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         await ws.prepare(request)
 
         try:
-            # Authentication
-            if authenticate_api_request(request):
-                logger.debug(f"Accepted request to access logs via the allocation api key on {vm_hash}")
-            else:
-                first_message = await ws.receive_json()
-                credentials = first_message["auth"]
-                authenticated_sender = await authenticate_websocket_message(credentials)
-                if not is_sender_authorized(authenticated_sender, execution.message):
-                    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-                    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-                    return web.Response(status=403, body="Unauthorized sender")
-                else:
-                    logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
-
+            await authenticate_for_vm_or_403(execution, request, vm_hash, ws)
             await ws.send_json({"status": "connected"})
 
             # Limit the number of queues per VM
@@ -102,6 +89,24 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         if queue in execution.vm.fvm.log_queues:
             execution.vm.fvm.log_queues.remove(queue)
         queue.empty()
+
+
+async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
+    """Allow authentication via HEADER or via websocket"""
+    if authenticate_api_request(request):
+        logger.debug(f"Accepted request to access logs via the allocatioan api key on {vm_hash}")
+        return True
+
+    first_message = await ws.receive_json()
+    credentials = first_message["auth"]
+    authenticated_sender = await authenticate_websocket_message(credentials)
+    if is_sender_authorized(authenticated_sender, execution.message):
+        logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
+        return True
+
+    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
+    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+    raise web.HTTPForbidden(body="Unauthorized sender")
 
 
 @require_jwk_authentication
