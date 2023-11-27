@@ -249,7 +249,10 @@ class Settings(BaseSettings):
     SENTRY_DSN: Optional[str] = None
     DEVELOPER_SSH_KEYS: Optional[list[str]] = []
     # Using an object here forces the value to come from Python code and not from an environment variable.
-    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = False
+    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = Field(
+        exclude=True,
+        default=False
+    )
 
     # Fields
     SENSITIVE_FIELDS: list[str] = Field(
