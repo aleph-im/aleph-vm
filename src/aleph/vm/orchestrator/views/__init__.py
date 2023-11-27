@@ -251,8 +251,9 @@ async def update_allocations(request: web.Request):
 
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
-    for execution in pool.get_persistent_executions():
-        if execution.vm_hash not in allocations:
+    # Make a copy since the pool is modified
+    for execution in list(pool.executions.values()):
+        if execution.vm_hash not in allocations and execution.is_running:
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await execution.stop()
