@@ -108,7 +108,7 @@ class VmExecution:
 
     @property
     def controller_service(self) -> str:
-        return f"aleph-vm-controller@${self.vm_hash}.service"
+        return f"aleph-vm-controller@{self.vm_hash}.service"
 
     def __init__(
         self,
