@@ -2,11 +2,10 @@
 async SystemD Manager implementation.
 """
 
-import sys
-import dbus
-
 import logging
+import sys
 
+import dbus
 from dbus import SystemBus
 from dbus.proxies import Interface
 
@@ -19,8 +18,8 @@ class SystemDManager:
 
     def __init__(self):
         self.bus = dbus.SystemBus()
-        systemd = self.bus.get_object('org.freedesktop.systemd1', '/org/freedesktop/systemd1')
-        self.manager = dbus.Interface(systemd, 'org.freedesktop.systemd1.Manager')
+        systemd = self.bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+        self.manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
 
     def stop_and_disable(self, service: str) -> None:
         try:
@@ -36,15 +35,15 @@ class SystemDManager:
         logger.debug(f"Enabled {service} service")
 
     def start(self, service: str) -> None:
-        self.manager.StartUnit(service, 'replace')
+        self.manager.StartUnit(service, "replace")
         logger.debug(f"Started {service} service")
 
     def stop(self, service: str) -> None:
-        self.manager.StopUnit(service, 'replace')
+        self.manager.StopUnit(service, "replace")
         logger.debug(f"Stopped {service} service")
 
     def restart(self, service: str) -> None:
-        self.manager.RestartUnit(service, 'replace')
+        self.manager.RestartUnit(service, "replace")
         logger.debug(f"Restarted {service} service")
 
     def disable(self, service: str) -> None:
@@ -53,7 +52,7 @@ class SystemDManager:
 
     def is_service_enabled(self, service: str) -> bool:
         try:
-            return self.manager.GetUnitFileState(service) == 'enabled'
+            return self.manager.GetUnitFileState(service) == "enabled"
         except:
             return False
 
