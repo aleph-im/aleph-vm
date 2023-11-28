@@ -195,7 +195,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         ssh_authorized_keys: list[str] | None
         if settings.USE_DEVELOPER_SSH_KEYS:
-            ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS
+            ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS or []
         else:
             ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
