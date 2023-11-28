@@ -156,16 +156,19 @@ class VmPool:
         execution = self.executions.get(vm_hash)
         if execution:
             if execution.persistent:
-                self.stop_persistent_execution(execution)
+                await self.stop_persistent_execution(execution)
             else:
                 await execution.stop()
             return execution
         else:
             return None
 
-    def stop_persistent_execution(self, execution):
+    async def stop_persistent_execution(self, execution):
         """Stop persistent VMs in the pool."""
+        assert execution.persistent, "Execution isn't persistent"
         self.systemd_manager.stop_and_disable(execution.controller_service)
+        await execution.stop()
+        execution.persistent = False
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
