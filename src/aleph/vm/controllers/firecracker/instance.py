@@ -62,14 +62,14 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     support_snapshot = False
 
     def __init__(
-            self,
-            vm_id: int,
-            vm_hash: ItemHash,
-            resources: AlephInstanceResources,
-            enable_networking: bool = False,
-            enable_console: Optional[bool] = None,
-            hardware_resources: Optional[MachineResources] = None,
-            tap_interface: Optional[TapInterface] = None,
+        self,
+        vm_id: int,
+        vm_hash: ItemHash,
+        resources: AlephInstanceResources,
+        enable_networking: bool = False,
+        enable_console: Optional[bool] = None,
+        hardware_resources: Optional[MachineResources] = None,
+        tap_interface: Optional[TapInterface] = None,
     ):
         self.latest_snapshot = None
         super().__init__(
@@ -94,18 +94,18 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 boot_args=BootSource.args(enable_console=self.enable_console, writable=True),
             ),
             drives=[
-                       Drive(
-                           drive_id="rootfs",
-                           path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
-                           is_root_device=True,
-                           is_read_only=False,
-                       ),
-                       cloud_init_drive,
-                   ]
-                   + [
-                       self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
-                       for volume in self.resources.volumes
-                   ],
+                Drive(
+                    drive_id="rootfs",
+                    path_on_host=self.fvm.enable_rootfs(self.resources.rootfs_path),
+                    is_root_device=True,
+                    is_read_only=False,
+                ),
+                cloud_init_drive,
+            ]
+            + [
+                self.fvm.enable_drive(volume.path_on_host, read_only=volume.read_only)
+                for volume in self.resources.volumes
+            ],
             machine_config=MachineConfig(
                 vcpu_count=self.hardware_resources.vcpus,
                 mem_size_mib=self.hardware_resources.memory,
@@ -141,8 +141,10 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                     raise
 
     def save_controller_configuration(self):
-        with (open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file):
-            controller_config_file.write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode())
+        with open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file:
+            controller_config_file.write(
+                self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode()
+            )
             controller_config_file.flush()
             config_file_path = Path(controller_config_file.name)
             config_file_path.chmod(0o644)
