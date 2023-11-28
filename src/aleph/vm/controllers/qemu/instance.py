@@ -21,7 +21,7 @@ from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.utils import run_in_subprocess
+from aleph.vm.utils import run_in_subprocess, HostNotFoundError, ping
 
 logger = logging.getLogger(__name__)
 
@@ -228,10 +228,28 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
         logger.debug(f"started qemu vm {self} on {self.get_vm_ip()}")
 
     async def wait_for_init(self) -> None:
-        """Wait for the init process of the virtual machine to be ready.
-        May be empty."""
+        """Wait for the init process of the instance to be ready."""
+        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
 
-        return
+        ip = self.get_vm_ip()
+        if not ip:
+            msg = "Host IP not available"
+            raise ValueError(msg)
+
+        ip = ip.split("/", 1)[0]
+
+        attempts = 30
+        timeout_seconds = 2.0
+
+        for attempt in range(attempts):
+            try:
+                await ping(ip, packets=1, timeout=timeout_seconds)
+                return
+            except HostNotFoundError:
+                if attempt < (attempts - 1):
+                    continue
+                else:
+                    raise
 
     async def configure(self):
         "Nothing to configure, we do the configuration via cloud init"
