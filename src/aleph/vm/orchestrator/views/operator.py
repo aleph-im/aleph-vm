@@ -11,6 +11,7 @@ from aleph_message.models.execution import BaseExecutableContent
 
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution
+from aleph.vm.orchestrator.views import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -67,18 +68,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         await ws.prepare(request)
 
         try:
-            # Authentication
-            first_message = await ws.receive_json()
-            credentials = first_message["auth"]
-            authenticated_sender = await authenticate_websocket_message(credentials)
-
-            if not is_sender_authorized(authenticated_sender, execution.message):
-                logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-                await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-                return web.Response(status=403, body="Unauthorized sender")
-            else:
-                logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
-
+            await authenticate_for_vm_or_403(execution, request, vm_hash, ws)
             await ws.send_json({"status": "connected"})
 
             queue = await execution.vm.get_log_queue()
@@ -93,6 +83,24 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     finally:
         if queue:
             await execution.vm.unregister_queue(queue)
+
+
+async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
+    """Allow authentication via HEADER or via websocket"""
+    if authenticate_api_request(request):
+        logger.debug(f"Accepted request to access logs via the allocatioan api key on {vm_hash}")
+        return True
+
+    first_message = await ws.receive_json()
+    credentials = first_message["auth"]
+    authenticated_sender = await authenticate_websocket_message(credentials)
+    if is_sender_authorized(authenticated_sender, execution.message):
+        logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
+        return True
+
+    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
+    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+    raise web.HTTPForbidden(body="Unauthorized sender")
 
 
 @require_jwk_authentication
@@ -161,7 +169,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
         await pool.stop_vm(vm_hash)
-        pool.forget_vm(vm_hash)
+
         await create_vm_execution(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:
