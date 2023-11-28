@@ -12,7 +12,7 @@ import qmp
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
-from aleph_message.models.execution.volume import PersistentVolume
+from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
@@ -44,6 +44,10 @@ class AlephQemuResources(AlephFirecrackerResources):
         parent_format = out.get("format", "")
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
+        # Do not override if host asked for persistance.
+        if dest_path.exists() and volume.persistence == VolumePersistence.host:
+            return dest_path
+
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         await run_in_subprocess(
