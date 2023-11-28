@@ -21,7 +21,7 @@ from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.utils import run_in_subprocess, HostNotFoundError, ping
+from aleph.vm.utils import HostNotFoundError, ping, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,11 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
     support_snapshot = False
     qmp_socket_path = None
 
-    def __str__(self):
+    def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
+
+    def __str__(self):
+        return f"vm-{self.vm_id}"
 
     def __init__(
         self,
@@ -289,7 +292,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 return
             for queue in self.log_queues:
                 await queue.put(("stdout", line))
-            print(self, "stdout", line.decode().strip())
+            print(self, line.decode().strip())
 
     async def _process_stderr(self):
         while not self.qemu_process:
@@ -301,7 +304,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControl
                 return
             for queue in self.log_queues:
                 await queue.put(("stderr", line))
-            print(self, "stderr", line.decode().strip(), file=sys.stderr)
+            print(self, line.decode().strip(), file=sys.stderr)
 
     def process_logs(self) -> tuple[Task, Task]:
         """Start two tasks to process the stdout and stderr
