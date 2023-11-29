@@ -6,9 +6,7 @@ Commands : qemu, cloud-ds, qemu-img
 These are installable via 
 `apt install cloud-image-utils qemu-utils qemu-system-x86`
 
-At this moment this branch depends on branch `olethanh-qemu-message-format`  of aleph-message which add the new temporary format.  https://github.com/olethanh/aleph-message/tree/olethanh-qemu-message-format
-
-The easiest way is to check the branch locally and install it in your venv using `pip install -e .`
+This branch depends on the version 0.4.1 of `aleph-message` that add the `hypervisor` field. The easiest way is to install tha version using `pip install -e .`
 
 ## To test launching a VM instance
 
