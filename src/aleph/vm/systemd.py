@@ -24,9 +24,9 @@ class SystemDManager:
     def stop_and_disable(self, service: str) -> None:
         try:
             if self.is_service_active(service):
-                self.start(service)
+                self.stop(service)
             if self.is_service_enabled(service):
-                self.enable(service)
+                self.disable(service)
         except Exception:
             raise
 
