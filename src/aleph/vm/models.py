@@ -125,7 +125,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
-        self.stop_event = asyncio.Event()  #  triggered when the VM is stopped
+        self.stop_event = asyncio.Event()  # triggered when the VM is stopped
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
@@ -221,6 +221,9 @@ class VmExecution:
         except Exception:
             await vm.teardown()
             raise
+
+    async def wait_for_init(self):
+        await self.vm.wait_for_init()
 
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
         if self.persistent:
