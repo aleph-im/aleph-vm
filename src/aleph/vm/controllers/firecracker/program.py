@@ -269,7 +269,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         enable_console: bool | None = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: TapInterface | None = None,
-        persistent: bool | None = None,
+        persistent: bool = False,
     ):
         super().__init__(
             vm_id,
