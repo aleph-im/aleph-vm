@@ -15,20 +15,20 @@ logger = logging.getLogger(__name__)
 
 class AlephVmControllerInterface(ABC):
     vm_id: int
-    "id in the VMPool, attributed at execution"
+    """id in the VMPool, attributed at execution"""
     vm_hash: ItemHash
-    "identifier for the VM definition, linked to an Aleph Message"
+    """identifier for the VM definition, linked to an Aleph Message"""
     resources: Any
-    "local resource for the machine"
+    """local resource for the machine"""
     enable_console: bool
     enable_networking: bool
-    "enable networking for this VM"
+    """enable networking for this VM"""
     hardware_resources: MachineResources
     support_snapshot: bool
-    "Does this controller support snapshotting"
+    """Does this controller support snapshotting"""
     guest_api_process: Optional[Process] = None
     tap_interface: Optional[TapInterface] = None
-    "Network interface used for this VM"
+    """Network interface used for this VM"""
 
     def get_ip(self) -> Optional[str]:
         if self.tap_interface:
@@ -81,7 +81,7 @@ class AlephVmControllerInterface(ABC):
         raise NotImplementedError()
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
-        "Must be implement if self.support_snapshot is True"
+        """Must be implement if self.support_snapshot is True"""
         raise NotImplementedError()
 
     async def get_log_queue(self) -> asyncio.Queue:

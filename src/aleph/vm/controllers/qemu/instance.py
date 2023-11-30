@@ -34,7 +34,7 @@ class AlephQemuResources(AlephFirecrackerResources):
         return
 
     async def make_writable_volume(self, parent_image_path, volume: PersistentVolume | RootfsVolume):
-        "Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"
+        """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
         qemu_img_path = shutil.which("qemu-img")
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
@@ -261,7 +261,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                     raise
 
     async def configure(self):
-        "Nothing to configure, we do the configuration via cloud init"
+        """Nothing to configure, we do the configuration via cloud init"""
         pass
 
     async def start_guest_api(self):
