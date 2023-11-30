@@ -96,7 +96,7 @@ class VmExecution:
     @property
     def hypervisor(self):
         # default to firecracker for retro compat
-        return getattr(self.message.environment, "hypervisor", HypervisorType.firecracker)
+        return self.message.environment.hypervisor or HypervisorType.firecracker
 
     @property
     def becomes_ready(self):
