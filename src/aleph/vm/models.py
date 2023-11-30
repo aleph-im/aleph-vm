@@ -116,6 +116,7 @@ class VmExecution:
         message: ExecutableContent,
         original: ExecutableContent,
         snapshot_manager: "SnapshotManager",
+        persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -129,6 +130,7 @@ class VmExecution:
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
+        self.persistent = persistent
 
     def to_dict(self) -> dict:
         return {
