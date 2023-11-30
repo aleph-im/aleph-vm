@@ -268,6 +268,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         enable_console: bool | None = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: TapInterface | None = None,
+        persistent: bool | None = None,
     ):
         super().__init__(
             vm_id,
@@ -277,6 +278,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             enable_console,
             hardware_resources,
             tap_interface,
+            persistent,
         )
 
     async def setup(self):
@@ -321,6 +323,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
 
     async def configure(self) -> None:
         """Configure the VM by sending configuration info to it's init"""
+        await super().configure()
 
         code: bytes | None
         volumes: list[Volume]

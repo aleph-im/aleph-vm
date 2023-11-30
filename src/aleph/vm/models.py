@@ -166,10 +166,14 @@ class VmExecution:
                 enable_networking=self.message.environment.internet,
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
+                persistent=self.persistent,
             )
             try:
                 await vm.setup()
-                await vm.start()
+                # Avoid VM start() method because it's only for ephemeral programs,
+                # for persistent and instances we will use SystemD manager
+                if not self.persistent:
+                    await vm.start()
                 await vm.configure()
             except Exception:
                 await vm.teardown()
@@ -189,7 +193,8 @@ class VmExecution:
 
             try:
                 await vm.setup()
-                # Avoid VM start() method because it's only for programs, for instances we will use SystemD manager
+                # Avoid VM start() method because it's only for ephemeral programs,
+                # for persistent and instances we will use SystemD manager
                 await vm.configure()
             except Exception:
                 await vm.teardown()

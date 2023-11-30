@@ -58,7 +58,7 @@ class SystemDManager:
 
     def is_service_active(self, service: str) -> bool:
         try:
-            self.manager.GetUnit(self, service)
+            self.manager.GetUnit(service)
             return True
         except:
             return False

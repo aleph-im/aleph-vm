@@ -98,9 +98,12 @@ class VmPool:
 
             await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
+            if execution.persistent:
+                self.systemd_manager.enable_and_start(execution.controller_service)
+                await execution.vm.fvm.wait_for_init()
+
             # Start VM and snapshots automatically
             if isinstance(message, InstanceContent):
-                self.systemd_manager.enable_and_start(execution.controller_service)
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
