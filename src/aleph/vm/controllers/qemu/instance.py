@@ -15,7 +15,7 @@ from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
+from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources, VmSetupError
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
@@ -41,10 +41,14 @@ class AlephQemuResources(AlephFirecrackerResources):
         # detect the image format
         out_json = await run_in_subprocess([qemu_img_path, "info", str(parent_image_path), "--output=json"])
         out = json.loads(out_json)
-        parent_format = out.get("format", "")
+        parent_format = out.get("format", None)
+        if format is None:
+            raise VmSetupError(f"Failed to detect format for {volume}: {out_json}")
+        if format not in ("qcow2", "raw"):
+            raise VmSetupError(f"Format {format} for {volume} unhandled by QEMU hypervisor")
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
-        # Do not override if host asked for persistance.
+        # Do not override if user asked for host persistance.
         if dest_path.exists() and volume.persistence == VolumePersistence.host:
             return dest_path
 
