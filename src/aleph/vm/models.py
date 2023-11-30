@@ -210,8 +210,7 @@ class VmExecution:
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             return vm
-        except Exception as exception:
-            print(exception)
+        except Exception:
             await vm.teardown()
             raise
 
