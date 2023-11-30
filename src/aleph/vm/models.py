@@ -179,6 +179,7 @@ class VmExecution:
                 enable_networking=self.message.environment.internet,
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
+                persistent=self.persistent,
             )
         elif self.is_instance:
             if self.hypervisor == HypervisorType.firecracker:
@@ -208,7 +209,10 @@ class VmExecution:
 
         try:
             await vm.setup()
-            await vm.start()
+            # Avoid VM start() method because it's only for ephemeral programs,
+            # for persistent and instances we will use SystemD manager
+            if not self.persistent:
+                await vm.start()
             await vm.configure()
             await vm.start_guest_api()
             self.times.started_at = datetime.now(tz=timezone.utc)
