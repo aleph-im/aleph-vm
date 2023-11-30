@@ -1,3 +1,17 @@
+"""Generate a cloud-init ISO image for the VM configuration.
+
+This module automates the creation of a cloud-init ISO image, which is utilized for configuring the
+Virtual Machine. The configurations included in this process are the hostname, SSH keys, and network settings.
+
+The generated ISO image, created using the `cloud-localds` command, is intended to be mounted as a CD-ROM inside the
+VM. Upon booting, the VM's cloud-init service detects this CD-ROM and applies the configurations based on the data it
+contains.
+
+Refer to the cloud-init documentation, in particular the NoCloud datasource which is the method we are using.
+https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html
+
+See also the cloud-localds  man page (1)
+"""
 import base64
 import json
 from pathlib import Path
@@ -11,8 +25,6 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.hypervisors.firecracker.config import Drive
 from aleph.vm.utils import is_command_available, run_in_subprocess
-
-# https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html
 
 
 def get_hostname_from_hash(vm_hash: ItemHash) -> str:
@@ -50,7 +62,7 @@ def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
     network = {
         "ethernets": {
             "eth0": {
-                # Math the config to the `virtio` driver since the network interface name is not constant across distro
+                # Match the config to the `virtio` driver since the network interface name is not constant across distro
                 "match": {"driver": "virtio_net"},
                 "addresses": [ip, ipv6],
                 "gateway4": route,
@@ -60,7 +72,7 @@ def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
                 },
                 # there is a bug in Centos 7 where it will try DHCP if the key is present, even if set to false
                 # https://stackoverflow.com/questions/59757022/set-static-ip-using-cloud-init-on-centos-7-with-terraform-kvm
-                # so we comment those for now
+                # Thus theses are commented for now
                 # "dhcp4": False,
                 # "dhcp6": False,
             },
@@ -102,7 +114,7 @@ async def create_cloud_init_drive_image(
 
 class CloudInitMixin(AlephVmControllerInterface):
     async def _create_cloud_init_drive(self) -> Drive:
-        """Creates the cloud-init volume to configure and setup the VM"""
+        """Creates the cloud-init volume to configure and set up the VM"""
         # assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
         if settings.USE_DEVELOPER_SSH_KEYS:
