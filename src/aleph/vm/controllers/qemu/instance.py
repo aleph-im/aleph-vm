@@ -16,7 +16,7 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources
-from aleph.vm.controllers.interface import AlephControllerInterface
+from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
@@ -69,7 +69,7 @@ class AlephQemuResources(AlephFirecrackerResources):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephControllerInterface):
+class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephQemuResources

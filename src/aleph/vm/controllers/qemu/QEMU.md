@@ -8,6 +8,8 @@ These are installable via
 
 This branch depends on the version 0.4.1 of `aleph-message` that add the `hypervisor` field. The easiest way is to install tha version using `pip install -e .`
 
+To create a local venv use the `--system-site-packages` option so it can acess nftables 
+
 ## To test launching a VM instance
 
 Launch aleph.vm.orchestrator with the following environment variables

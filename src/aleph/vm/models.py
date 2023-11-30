@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
-from aleph.vm.controllers.interface import AlephControllerInterface
+from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
@@ -159,13 +159,13 @@ class VmExecution:
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
 
-    async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephControllerInterface:
+    async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephVmControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
             raise ValueError(msg)
         self.times.starting_at = datetime.now(tz=timezone.utc)
 
-        vm: AlephControllerInterface
+        vm: AlephVmControllerInterface
         if self.is_program:
             assert isinstance(self.resources, AlephProgramResources)
             self.vm = vm = AlephFirecrackerProgram(

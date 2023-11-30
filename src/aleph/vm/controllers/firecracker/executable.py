@@ -16,7 +16,7 @@ from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
-from aleph.vm.controllers.interface import AlephControllerInterface
+from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
@@ -137,7 +137,7 @@ class VmInitNotConnectedError(Exception):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephControllerInterface):
+class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephFirecrackerResources

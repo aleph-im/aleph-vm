@@ -8,7 +8,7 @@ import yaml
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.interface import AlephControllerInterface
+from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.hypervisors.firecracker.config import Drive
 from aleph.vm.utils import is_command_available, run_in_subprocess
 
@@ -100,7 +100,7 @@ async def create_cloud_init_drive_image(
         )
 
 
-class CloudInitMixin(AlephControllerInterface):
+class CloudInitMixin(AlephVmControllerInterface):
     async def _create_cloud_init_drive(self) -> Drive:
         """Creates the cloud-init volume to configure and setup the VM"""
         # assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"

@@ -13,7 +13,7 @@ from aleph.vm.network.interfaces import TapInterface
 logger = logging.getLogger(__name__)
 
 
-class AlephControllerInterface(ABC):
+class AlephVmControllerInterface(ABC):
     vm_id: int
     "id in the VMPool, attributed at execution"
     vm_hash: ItemHash
