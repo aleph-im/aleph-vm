@@ -42,10 +42,10 @@ class AlephQemuResources(AlephFirecrackerResources):
         out_json = await run_in_subprocess([qemu_img_path, "info", str(parent_image_path), "--output=json"])
         out = json.loads(out_json)
         parent_format = out.get("format", None)
-        if format is None:
+        if parent_format is None:
             raise VmSetupError(f"Failed to detect format for {volume}: {out_json}")
-        if format not in ("qcow2", "raw"):
-            raise VmSetupError(f"Format {format} for {volume} unhandled by QEMU hypervisor")
+        if parent_format not in ("qcow2", "raw"):
+            raise VmSetupError(f"Format {parent_format} for {volume} unhandled by QEMU hypervisor")
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
         # Do not override if user asked for host persistance.
@@ -53,6 +53,7 @@ class AlephQemuResources(AlephFirecrackerResources):
             return dest_path
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
+        size_in_bytes = int(volume.size_mib * 1024 * 1024)
 
         await run_in_subprocess(
             [
@@ -65,6 +66,7 @@ class AlephQemuResources(AlephFirecrackerResources):
                 "-b",
                 str(parent_image_path),
                 str(dest_path),
+                str(size_in_bytes),
             ]
         )
         return dest_path

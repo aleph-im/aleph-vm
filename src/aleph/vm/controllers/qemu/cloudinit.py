@@ -39,8 +39,7 @@ def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
         "disable_root": False,
         "ssh_pwauth": False,
         "ssh_authorized_keys": ssh_authorized_keys,
-        # Avoid the resize error because we already do it on the VM disk creation stage
-        "resize_rootfs": False,
+        "resize_rootfs": True,
     }
     cloud_config_header = "#cloud-config\n"
     config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
