@@ -234,13 +234,13 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             self.process_logs()
 
         await self.wait_for_init()
-        logger.debug(f"started qemu vm {self} on {self.get_vm_ip()}")
+        logger.debug(f"started qemu vm {self} on {self.get_ip()}")
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the instance to be ready."""
         assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
 
-        ip = self.get_vm_ip()
+        ip = self.get_ip()
         if not ip:
             msg = "Host IP not available"
             raise ValueError(msg)

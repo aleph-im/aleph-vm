@@ -117,10 +117,10 @@ class CloudInitMixin(AlephVmControllerInterface):
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
         if settings.USE_DEVELOPER_SSH_KEYS:
             ssh_authorized_keys += settings.DEVELOPER_SSH_KEYS
-        ip = self.get_vm_ip()
-        route = self.get_vm_route()
-        ipv6 = self.get_vm_ipv6()
-        ipv6_gateway = self.get_vm_ipv6_gateway()
+        ip = self.get_ip()
+        route = self.get_ip_route()
+        ipv6 = self.get_ipv6()
+        ipv6_gateway = self.get_ipv6_gateway()
         vm_id = self.vm_id
         nameservers = settings.DNS_NAMESERVERS
         hostname = get_hostname_from_hash(self.vm_hash)
