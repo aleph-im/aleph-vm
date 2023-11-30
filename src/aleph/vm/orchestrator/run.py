@@ -81,10 +81,6 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Host did not respond to ping") from error
 
-    if not execution.vm:
-        msg = "The VM has not been created"
-        raise ValueError(msg)
-
     return execution
 
 
