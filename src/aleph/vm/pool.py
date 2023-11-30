@@ -69,7 +69,7 @@ class VmPool:
             self.network.teardown()
 
     async def create_a_vm(
-        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
+        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
 
@@ -83,6 +83,7 @@ class VmPool:
                 message=message,
                 original=original,
                 snapshot_manager=self.snapshot_manager,
+                persistent=persistent,
             )
             self.executions[vm_hash] = execution
 
