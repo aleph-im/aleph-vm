@@ -163,7 +163,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         enable_console: Optional[bool] = None,
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
-        persistent: Optional[bool] = None,
+        persistent: bool = False,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash

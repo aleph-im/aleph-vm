@@ -100,7 +100,7 @@ class VmPool:
 
             if execution.persistent:
                 self.systemd_manager.enable_and_start(execution.controller_service)
-                await execution.vm.fvm.wait_for_init()
+                await execution.wait_for_init()
 
             # Start VM and snapshots automatically
             if isinstance(message, InstanceContent):
