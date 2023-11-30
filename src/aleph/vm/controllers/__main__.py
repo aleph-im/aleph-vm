@@ -53,7 +53,7 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-async def run_instance(config: Configuration):
+async def run_persistent_vm(config: Configuration):
     execution = MicroVM(
         vm_id=config.vm_id,
         firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
@@ -110,7 +110,7 @@ def main():
 
         network.setup()
 
-    asyncio.run(run_instance(config))
+    asyncio.run(run_persistent_vm(config))
 
 
 if __name__ == "__main__":
