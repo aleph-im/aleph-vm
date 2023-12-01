@@ -15,7 +15,10 @@ from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import AlephFirecrackerResources, VmSetupError
+from aleph.vm.controllers.firecracker.executable import (
+    AlephFirecrackerResources,
+    VmSetupError,
+)
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
