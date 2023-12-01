@@ -15,6 +15,7 @@ from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import Configuration, VMConfiguration
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
@@ -148,9 +149,12 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     fvm: MicroVM
     vm_configuration: Optional[ConfigurationType]
     guest_api_process: Optional[Process] = None
+    persistent: bool
     is_instance: bool
+
     _firecracker_config: Optional[FirecrackerConfig] = None
     support_snapshot: bool
+    controller_configuration: Optional[Configuration] = None
 
     def __init__(
         self,
@@ -161,6 +165,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         enable_console: Optional[bool] = None,
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
+        persistent: bool = False,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -171,6 +176,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources or MachineResources()
         self.tap_interface = tap_interface
+        self.persistent = persistent
 
         self.fvm = MicroVM(
             vm_id=self.vm_id,
@@ -227,6 +233,10 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             msg = "No VM found. Call setup() before start()"
             raise ValueError(msg)
 
+        if self.is_instance:
+            msg = "VM should be started using SystemD Manager class"
+            raise ValueError(msg)
+
         try:
             firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
             await self.fvm.start(firecracker_config_path)
@@ -251,8 +261,37 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         May be empty."""
         return
 
+    def save_controller_configuration(self):
+        """Save VM configuration to be used by the controller service"""
+        with open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file:
+            controller_config_file.write(
+                self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode()
+            )
+            controller_config_file.flush()
+            config_file_path = Path(controller_config_file.name)
+            config_file_path.chmod(0o644)
+            return config_file_path
+
     async def configure(self):
-        raise NotImplementedError()
+        """Configure the VM by saving controller service configuration"""
+        if self.persistent:
+            firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
+            vm_configuration = VMConfiguration(
+                firecracker_bin_path=self.fvm.firecracker_bin_path,
+                use_jailer=self.fvm.use_jailer,
+                jailer_bin_path=self.fvm.jailer_bin_path,
+                init_timeout=self.fvm.init_timeout,
+                config_file_path=firecracker_config_path,
+            )
+
+            configuration = Configuration(
+                vm_id=self.vm_id,
+                settings=settings,
+                vm_configuration=vm_configuration,
+            )
+
+            self.controller_configuration = configuration
+            self.save_controller_configuration()
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")

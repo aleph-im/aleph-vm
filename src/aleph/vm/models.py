@@ -106,12 +106,17 @@ class VmExecution:
     def vm_id(self) -> Optional[int]:
         return self.vm.vm_id if self.vm else None
 
+    @property
+    def controller_service(self) -> str:
+        return f"aleph-vm-controller@{self.vm_hash}.service"
+
     def __init__(
         self,
         vm_hash: ItemHash,
         message: ExecutableContent,
         original: ExecutableContent,
         snapshot_manager: "SnapshotManager",
+        persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -121,10 +126,11 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
-        self.stop_event = asyncio.Event()  #  triggered when the VM is stopped
+        self.stop_event = asyncio.Event()  # triggered when the VM is stopped
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
+        self.persistent = persistent
 
     def to_dict(self) -> dict:
         return {
@@ -175,7 +181,18 @@ class VmExecution:
                 enable_networking=self.message.environment.internet,
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
+                persistent=self.persistent,
             )
+            try:
+                await vm.setup()
+                # Avoid VM start() method because it's only for ephemeral programs,
+                # for persistent and instances we will use SystemD manager
+                if not self.persistent:
+                    await vm.start()
+                await vm.configure()
+            except Exception:
+                await vm.teardown()
+                raise
         elif self.is_instance:
             if self.hypervisor == HypervisorType.firecracker:
                 assert isinstance(self.resources, AlephInstanceResources)
@@ -187,6 +204,15 @@ class VmExecution:
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
                 )
+                try:
+                    await vm.setup()
+                    # Avoid VM start() method because it's only for ephemeral programs,
+                    # for persistent and instances we will use SystemD manager
+                    await vm.configure()
+                except Exception:
+                    await vm.teardown()
+                    raise
+
             elif self.hypervisor == HypervisorType.qemu:
                 assert isinstance(self.resources, AlephQemuResources)
                 self.vm = vm = AlephQemuInstance(
@@ -197,15 +223,21 @@ class VmExecution:
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
                 )
+                try:
+                    await vm.setup()
+                    await vm.start()
+                    await vm.configure()
+                except Exception:
+                    await vm.teardown()
+                    raise
+
             else:
                 raise Exception("Unknown VM")
+
         else:
             raise Exception("Unknown VM")
 
         try:
-            await vm.setup()
-            await vm.start()
-            await vm.configure()
             await vm.start_guest_api()
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
@@ -213,6 +245,9 @@ class VmExecution:
         except Exception:
             await vm.teardown()
             raise
+
+    async def wait_for_init(self):
+        await self.vm.wait_for_init()
 
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
         if self.persistent:

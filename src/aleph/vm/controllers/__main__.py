@@ -5,8 +5,6 @@ import logging
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 try:
@@ -14,24 +12,11 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from aleph.vm.conf import Settings, settings
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
+from .configuration import Configuration
+
 logger = logging.getLogger(__name__)
-
-
-class VMConfiguration(BaseModel):
-    use_jailer: bool
-    firecracker_bin_path: Path
-    jailer_bin_path: Path
-    config_file_path: Path
-    init_timeout: float
-
-
-class Configuration(BaseModel):
-    vm_id: int
-    settings: Settings
-    vm_configuration: VMConfiguration
 
 
 def configuration_from_file(path: Path):
@@ -68,7 +53,7 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-async def run_instance(config: Configuration):
+async def run_persistent_vm(config: Configuration):
     execution = MicroVM(
         vm_id=config.vm_id,
         firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
@@ -125,7 +110,7 @@ def main():
 
         network.setup()
 
-    asyncio.run(run_instance(config))
+    asyncio.run(run_persistent_vm(config))
 
 
 if __name__ == "__main__":

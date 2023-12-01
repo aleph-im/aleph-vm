@@ -9,6 +9,7 @@ from aleph_message.models.execution.instance import InstanceContent
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
+from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
 from .models import ExecutableContent, VmExecution
@@ -30,6 +31,7 @@ class VmPool:
     message_cache: dict[str, ExecutableMessage] = {}
     network: Optional[Network]
     snapshot_manager: SnapshotManager
+    systemd_manager: SystemDManager
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -51,6 +53,7 @@ class VmPool:
             if settings.ALLOW_VM_NETWORKING
             else None
         )
+        self.systemd_manager = SystemDManager()
         self.snapshot_manager = SnapshotManager()
         logger.debug("Initializing SnapshotManager ...")
         self.snapshot_manager.run_snapshots()
@@ -66,7 +69,7 @@ class VmPool:
             self.network.teardown()
 
     async def create_a_vm(
-        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent
+        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
 
@@ -80,6 +83,7 @@ class VmPool:
                 message=message,
                 original=original,
                 snapshot_manager=self.snapshot_manager,
+                persistent=persistent,
             )
             self.executions[vm_hash] = execution
 
@@ -95,7 +99,10 @@ class VmPool:
 
             await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
-            assert execution.vm
+            if execution.persistent:
+                self.systemd_manager.enable_and_start(execution.controller_service)
+                await execution.wait_for_init()
+
             # Start VM snapshots automatically
             if execution.vm.support_snapshot:
                 await self.snapshot_manager.start_for(vm=execution.vm)
@@ -152,10 +159,20 @@ class VmPool:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if execution:
-            await execution.stop()
+            if execution.persistent:
+                await self.stop_persistent_execution(execution)
+            else:
+                await execution.stop()
             return execution
         else:
             return None
+
+    async def stop_persistent_execution(self, execution):
+        """Stop persistent VMs in the pool."""
+        assert execution.persistent, "Execution isn't persistent"
+        self.systemd_manager.stop_and_disable(execution.controller_service)
+        await execution.stop()
+        execution.persistent = False
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
@@ -170,10 +187,14 @@ class VmPool:
             pass
 
     async def stop(self):
-        """Stop all VMs in the pool."""
-
+        """Stop ephemeral VMs in the pool."""
         # Stop executions in parallel:
-        await asyncio.gather(*(execution.stop() for vm_hash, execution in self.executions.items()))
+        await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
+
+    def get_ephemeral_executions(self) -> Iterable[VmExecution]:
+        for _vm_hash, execution in self.executions.items():
+            if not execution.persistent and execution.is_running:
+                yield execution
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
         for _vm_hash, execution in self.executions.items():

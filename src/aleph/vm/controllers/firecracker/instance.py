@@ -79,6 +79,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             enable_console,
             hardware_resources or MachineResources(),
             tap_interface,
+            True,
         )
 
     async def setup(self):
@@ -139,11 +140,6 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 else:
                     raise
 
-    async def configure(self):
-        """Configure the VM by sending configuration info to it's init"""
-        # Configuration of instances is sent during `self.setup()` by passing it via a volume.
-        pass
-
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         """Create a VM snapshot"""
         volume_path = await create_volume_file(self.resources.message_content.rootfs, self.resources.namespace)
@@ -168,7 +164,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
-        ssh_authorized_keys = self.resources.message_content.authorized_keys or []
+        ssh_authorized_keys: list[str] | None
+        if settings.USE_DEVELOPER_SSH_KEYS:
+            ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS or []
+        else:
+            ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
         config: dict[str, Union[str, bool, list[str]]] = {
             "hostname": self._get_hostname(),

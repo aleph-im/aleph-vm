@@ -30,6 +30,7 @@ class AlephVmControllerInterface(ABC):
     tap_interface: Optional[TapInterface] = None
     """Network interface used for this VM"""
 
+
     def get_ip(self) -> Optional[str]:
         if self.tap_interface:
             return self.tap_interface.guest_ip.with_prefixlen
