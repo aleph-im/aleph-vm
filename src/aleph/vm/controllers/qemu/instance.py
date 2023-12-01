@@ -5,7 +5,7 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Generic, Optional, TypeVar
+from typing import Generic, Optional, TypeVar, Union
 
 import psutil
 import qmp
@@ -36,7 +36,7 @@ class AlephQemuResources(AlephFirecrackerResources):
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
         return
 
-    async def make_writable_volume(self, parent_image_path, volume: PersistentVolume | RootfsVolume):
+    async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
         qemu_img_path = shutil.which("qemu-img")
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
