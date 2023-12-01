@@ -143,7 +143,6 @@ jobs:
             "http://${DROPLET_IPV4}:4020/control/allocations"
 
       - name: Export aleph logs
-        id: test-aleph-vm
         if: always()
         continue-on-error: true
         run: |
