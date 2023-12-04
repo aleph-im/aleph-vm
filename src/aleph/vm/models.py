@@ -4,7 +4,7 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 from aleph_message.models import (
     ExecutableContent,
@@ -67,7 +67,7 @@ class VmExecution:
     original: ExecutableContent
     message: ExecutableContent
     resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[AlephFirecrackerExecutable | AlephQemuInstance] = None
+    vm: Optional[Union[AlephFirecrackerExecutable, AlephQemuInstance]] = None
 
     times: VmExecutionTimes
 
