@@ -175,10 +175,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             str(mem_size_mb),
             "-smp",
             str(vcpu_count),
-            # Disable floppy
-            "-fda",
-            "",
-            # "-snapshot",  # Do not save anything to disk
             "-drive",
             f"file={image_path},media=disk,if=virtio",
             # To debug you can pass gtk or curses instead
@@ -197,6 +193,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             "stdio",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
+            # "-snapshot",  # Do not save anything to disk
         ]
         if self.tap_interface:
             interface_name = self.tap_interface.device_name
