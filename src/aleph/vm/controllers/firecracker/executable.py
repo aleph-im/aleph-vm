@@ -4,7 +4,6 @@ This module contains abstract class for executables (programs and instances) run
 
 import asyncio
 import logging
-import subprocess
 from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
@@ -17,6 +16,7 @@ from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
+from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
@@ -137,7 +137,7 @@ class VmInitNotConnectedError(Exception):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-class AlephFirecrackerExecutable(Generic[ConfigurationType]):
+class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephFirecrackerResources
@@ -150,6 +150,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
     guest_api_process: Optional[Process] = None
     is_instance: bool
     _firecracker_config: Optional[FirecrackerConfig] = None
+    support_snapshot: bool
 
     def __init__(
         self,
@@ -185,26 +186,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
         self.vm_configuration = None
         self.guest_api_process = None
         self._firecracker_config = None
-
-    def get_vm_ip(self) -> Optional[str]:
-        if self.tap_interface:
-            return self.tap_interface.guest_ip.with_prefixlen
-        return None
-
-    def get_vm_route(self) -> Optional[str]:
-        if self.tap_interface:
-            return str(self.tap_interface.host_ip).split("/", 1)[0]
-        return None
-
-    def get_vm_ipv6(self) -> Optional[str]:
-        if self.tap_interface:
-            return self.tap_interface.guest_ipv6.with_prefixlen
-        return None
-
-    def get_vm_ipv6_gateway(self) -> Optional[str]:
-        if self.tap_interface:
-            return str(self.tap_interface.host_ipv6.ip)
-        return None
 
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
@@ -301,3 +282,18 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType]):
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         raise NotImplementedError()
+
+    async def get_log_queue(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        # Limit the number of queues per VM
+
+        if len(self.fvm.log_queues) > 20:
+            logger.warning("Too many log queues, dropping the oldest one")
+            self.fvm.log_queues.pop(0)
+        self.fvm.log_queues.append(queue)
+        return queue
+
+    async def unregister_queue(self, queue: asyncio.Queue):
+        if queue in self.fvm.log_queues:
+            self.fvm.log_queues.remove(queue)
+        queue.empty()
