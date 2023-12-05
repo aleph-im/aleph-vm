@@ -96,7 +96,7 @@ class SnapshotManager:
         job_thread.start()
 
     async def start_for(self, vm: AlephFirecrackerExecutable, frequency: Optional[int] = None) -> None:
-        if not vm.is_instance:
+        if not vm.support_snapshot:
             msg = "Snapshots are not implemented for programs."
             raise NotImplementedError(msg)
 

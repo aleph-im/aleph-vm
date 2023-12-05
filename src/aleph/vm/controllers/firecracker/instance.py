@@ -58,6 +58,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     resources: AlephInstanceResources
     latest_snapshot: Optional[DiskVolumeSnapshot]
     is_instance = True
+    support_snapshot = False
 
     def __init__(
         self,
@@ -118,7 +119,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         """Wait for the init process of the instance to be ready."""
         assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
 
-        ip = self.get_vm_ip()
+        ip = self.get_ip()
         if not ip:
             msg = "Host IP not available"
             raise ValueError(msg)
@@ -188,10 +189,10 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
 
         assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
 
-        ip = self.get_vm_ip()
-        route = self.get_vm_route()
-        ipv6 = self.get_vm_ipv6()
-        ipv6_gateway = self.get_vm_ipv6_gateway()
+        ip = self.get_ip()
+        route = self.get_ip_route()
+        ipv6 = self.get_ipv6()
+        ipv6_gateway = self.get_ipv6_gateway()
 
         network = {
             "ethernets": {
