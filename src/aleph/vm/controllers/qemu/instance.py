@@ -80,7 +80,7 @@ class AlephQemuResources(AlephFirecrackerResources):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, skip_past=False):
+async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, skip_past=True):
     r = journal.Reader()
     r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
