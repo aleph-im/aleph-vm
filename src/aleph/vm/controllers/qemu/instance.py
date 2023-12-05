@@ -9,6 +9,8 @@ from typing import Generic, Optional, TypeVar, Union
 
 import psutil
 import qmp
+from systemd import journal
+
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
@@ -76,6 +78,41 @@ class AlephQemuResources(AlephFirecrackerResources):
 
 
 ConfigurationType = TypeVar("ConfigurationType")
+
+
+async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, skip_past=False):
+    r = journal.Reader()
+    r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
+    r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
+    loop = asyncio.get_event_loop()
+
+    def on_ready():
+        change_type = r.process()  # reset fd status
+        if change_type == journal.APPEND:
+            entry = r.get_next()
+            if entry == {}:
+                # empty entry that don't do anything
+                return
+            asyncio.ensure_future(_handle(entry))
+
+    async def _handle(entry):
+        log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
+        msg = entry["MESSAGE"]
+        return handle_log_message(log_type, msg)
+
+    if skip_past:
+        r.seek_tail()
+    # Quick processing of existing logs to speed up the process
+    for old_entry in r:
+        await _handle(old_entry)
+
+    loop.add_reader(r.fileno(), on_ready)
+
+    try:
+        await asyncio.Future()
+    finally:
+        loop.remove_reader(r.fileno())
+        r.close()
 
 
 class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmControllerInterface):
@@ -150,6 +187,14 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def setup(self):
         pass
 
+    @property
+    def _journal_stdout_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def _journal_stderr_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
     async def start(self):
         logger.debug(f"Starting Qemu: {self} ")
         # Based on the command
@@ -209,11 +254,14 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
         try:
             print(*args)
+
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
             self.qemu_process = proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=journal_stdout,
+                stderr=journal_stderr,
             )
 
             logger.debug(f"setup done {self}, {proc}")
@@ -234,7 +282,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             raise
 
         if self.enable_console:
-            self.process_logs()
+            self.print_logs()
 
         await self.wait_for_init()
         logger.debug(f"started qemu vm {self} on {self.get_ip()}")
@@ -273,16 +321,12 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def stop_guest_api(self):
         pass
 
-    stdout_task: Optional[Task] = None
-    stderr_task: Optional[Task] = None
+    print_task: Optional[Task] = None
     log_queues: list[asyncio.Queue] = []
 
     async def teardown(self):
-        if self.stdout_task:
-            self.stdout_task.cancel()
-        if self.stderr_task:
-            self.stderr_task.cancel()
-
+        if self.print_task:
+            self.print_task.cancel()
         self._shutdown()
 
         if self.enable_networking:
@@ -291,40 +335,18 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 await self.tap_interface.delete()
         await self.stop_guest_api()
 
-    async def _process_stdout(self):
-        while not self.qemu_process:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            line = await self.qemu_process.stdout.readline()
-            if not line:  # FD is closed nothing more will come
-                print(self, "EOF")
-                return
-            for queue in self.log_queues:
-                await queue.put(("stdout", line))
-            print(self, line.decode().strip())
+    async def handle_logs(self, handler):
+        await handle_logs(self._journal_stdout_name, self._journal_stderr_name, handler)
 
-    async def _process_stderr(self):
-        while not self.qemu_process:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            line = await self.qemu_process.stderr.readline()
-            if not line:  # FD is closed nothing more will come
-                print(self, "EOF")
-                return
-            for queue in self.log_queues:
-                await queue.put(("stderr", line))
-            print(self, line.decode().strip(), file=sys.stderr)
+    def print_logs(self) -> None:
+        """Print logs to our output for debugging"""
 
-    def process_logs(self) -> tuple[Task, Task]:
-        """Start two tasks to process the stdout and stderr
-
-        It will stream their content to queues registered on self.log_queues
-        It will also print them"""
+        def _print_log_line(log_type, line):
+            fd = sys.stderr if log_type == "stderr" else sys.stdout
+            print(self, line, file=fd)
 
         loop = asyncio.get_running_loop()
-        self.stdout_task = loop.create_task(self._process_stdout())
-        self.stderr_task = loop.create_task(self._process_stderr())
-        return self.stdout_task, self.stderr_task
+        self.print_task = loop.create_task(self.handle_logs(_print_log_line), name=f'{self}-print-logs')
 
     def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
