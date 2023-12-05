@@ -327,7 +327,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         return self.stdout_task, self.stderr_task
 
     def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
-        if not self.qmp_socket_path:
+        if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
             return None
         client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
         client.connect()
@@ -340,7 +340,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             if not resp == {}:
                 logger.warning("unexpected answer from VM", resp)
             client.close()
-            self.qmp_socket_path = None
+        self.qmp_socket_path = None
 
     async def get_log_queue(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
