@@ -5,16 +5,15 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Generic, Optional, TypeVar, Union
+from typing import Callable, Dict, Generic, Optional, Tuple, TypeVar, Union
 
 import psutil
 import qmp
-from systemd import journal
-
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
+from systemd import journal
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import (
@@ -80,13 +79,11 @@ class AlephQemuResources(AlephFirecrackerResources):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, skip_past=True):
+def handle_logs(stdout_identifier, stderr_identifier, skip_past=True) -> Tuple[asyncio.Queue, Callable]:
     r = journal.Reader()
     r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
-    loop = asyncio.get_event_loop()
-
-    future = asyncio.Future()
+    queue:asyncio.Queue = asyncio.Queue(maxsize=1000)
 
     def on_ready():
         change_type = r.process()  # reset fd status
@@ -97,20 +94,19 @@ async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, 
     def _handle(entry):
         log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
         msg = entry["MESSAGE"]
-        try:
-            asyncio.ensure_future(handle_log_message(log_type, msg))
-        except EOFError:
-            print("END OF FILE")
-            future.set_result("END OF FILE")
+        asyncio.ensure_future(queue.put((log_type, msg)))
 
     if skip_past:
         r.seek_tail()
 
+    loop = asyncio.get_event_loop()
     loop.add_reader(r.fileno(), on_ready)
 
-    await future
-    loop.remove_reader(r.fileno())
-    r.close()
+    def do_cancel():
+        loop.remove_reader(r.fileno())
+        r.close()
+
+    return queue, do_cancel
 
 
 class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmControllerInterface):
@@ -126,6 +122,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     qemu_process: Optional[Process]
     support_snapshot = False
     qmp_socket_path = None
+    _queue_cancellers: Dict[asyncio.Queue, Callable] = {}
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -333,18 +330,21 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 await self.tap_interface.delete()
         await self.stop_guest_api()
 
-    async def handle_logs(self, handler):
-        await handle_logs(self._journal_stdout_name, self._journal_stderr_name, handler)
-
     def print_logs(self) -> None:
         """Print logs to our output for debugging"""
+        queue = self.get_log_queue()
 
-        async def _print_log_line(log_type, line):
-            fd = sys.stderr if log_type == "stderr" else sys.stdout
-            print(self, line, file=fd)
+        async def print_logs():
+            try:
+                while True:
+                    log_type, message = await queue.get()
+                    fd = sys.stderr if log_type == "stderr" else sys.stdout
+                    print(self, message, file=fd)
+            finally:
+                self.unregister_queue(queue)
 
         loop = asyncio.get_running_loop()
-        self.print_task = loop.create_task(self.handle_logs(_print_log_line), name=f"{self}-print-logs")
+        self.print_task = loop.create_task(print_logs(), name=f"{self}-print-logs")
 
     def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
@@ -362,16 +362,19 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             client.close()
         self.qmp_socket_path = None
 
-    async def get_log_queue(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    def get_log_queue(self) -> asyncio.Queue:
+        queue, canceller = handle_logs(self._journal_stdout_name, self._journal_stderr_name)
+        self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM
         if len(self.log_queues) > 20:
             logger.warning("Too many log queues, dropping the oldest one")
-            self.log_queues.pop(0)
+            self.unregister_queue(self.log_queues[1])
         self.log_queues.append(queue)
         return queue
 
-    async def unregister_queue(self, queue: asyncio.Queue):
+    def unregister_queue(self, queue: asyncio.Queue) -> None:
         if queue in self.log_queues:
+            self._queue_cancellers[queue]()
+            del self._queue_cancellers[queue]
             self.log_queues.remove(queue)
         queue.empty()

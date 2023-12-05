@@ -62,27 +62,29 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
     if execution.vm is None:
         raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
+    queue = None
     try:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-
         try:
             await authenticate_for_vm_or_403(execution, request, vm_hash, ws)
             await ws.send_json({"status": "connected"})
 
-            async def handler(log_type, message):
-                try:
-                    await ws.send_json({"type": log_type, "message": message})
-                except ConnectionResetError as e:
-                    print(e)
-                    raise EOFError()
+            queue = execution.vm.get_log_queue()
 
-            await execution.vm.handle_logs(handler)
+            while True:
+                log_type, message = await queue.get()
+                assert log_type in ("stdout", "stderr")
+
+                await ws.send_json({"type": log_type, "message": message})
+
         finally:
             await ws.close()
-            return ws
+            logger.info(f"connection  {ws} closed")
+
     finally:
-        pass
+        if queue:
+            execution.vm.unregister_queue(queue)
 
 
 async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):

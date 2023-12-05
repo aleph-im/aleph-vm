@@ -283,7 +283,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         raise NotImplementedError()
 
-    async def get_log_queue(self) -> asyncio.Queue:
+    def get_log_queue(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         # Limit the number of queues per VM
 
@@ -293,7 +293,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         self.fvm.log_queues.append(queue)
         return queue
 
-    async def unregister_queue(self, queue: asyncio.Queue):
+    def unregister_queue(self, queue: asyncio.Queue):
         if queue in self.fvm.log_queues:
             self.fvm.log_queues.remove(queue)
         queue.empty()
