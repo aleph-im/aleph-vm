@@ -95,8 +95,9 @@ class VmPool:
 
             await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
+            assert execution.vm
             # Start VM snapshots automatically
-            if isinstance(message, InstanceContent):
+            if execution.vm.support_snapshot:
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
