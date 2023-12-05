@@ -104,7 +104,7 @@ class VmPool:
                 self.systemd_manager.enable_and_start(execution.controller_service)
                 await execution.wait_for_init()
 
-            if execution.vm.support_snapshot:
+            if execution.vm and execution.vm.support_snapshot:
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
