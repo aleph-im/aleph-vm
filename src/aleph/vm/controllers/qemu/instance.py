@@ -5,7 +5,8 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
+from pathlib import Path
+from typing import Callable, Dict, Generic, Optional,Tuple, TypedDict, TypeVar, Union
 
 import psutil
 import qmp
@@ -16,6 +17,7 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 from systemd import journal
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import Configuration, QemuVMConfiguration
 from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     VmSetupError,
@@ -142,6 +144,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     qemu_process: Optional[Process]
     support_snapshot = False
     qmp_socket_path = None
+    persistant = True
     _queue_cancellers: Dict[asyncio.Queue, Callable] = {}
 
     def __repr__(self):
@@ -201,6 +204,55 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
     async def setup(self):
         pass
+
+    async def configure(self):
+        """Configure the VM by saving controller service configuration"""
+
+        logger.debug(f"Starting Qemu: {self} ")
+        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
+        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
+        cloud_init_drive = await self._create_cloud_init_drive()
+
+        image_path = self.resources.rootfs_path.name
+        vcpu_count = self.hardware_resources.vcpus
+        mem_size_mib = self.hardware_resources.memory
+        mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
+
+        qemu_bin_path = shutil.which("qemu-system-x86_64")
+        interface_name = None
+        if self.tap_interface:
+            interface_name = self.tap_interface.device_name
+        cloud_init_drive_path = str(cloud_init_drive.path_on_host) if cloud_init_drive else None
+        vm_configuration = QemuVMConfiguration(
+            qemu_bin_path=qemu_bin_path,
+            cloud_init_drive_path=cloud_init_drive_path,
+            image_path=image_path,
+            monitor_socket_path=monitor_socket_path,
+            qmp_socket_path=qmp_socket_path,
+            vcpu_count=vcpu_count,
+            mem_size_mb=mem_size_mb,
+            interface_name=interface_name,
+        )
+
+        configuration = Configuration(
+            vm_id=self.vm_id,
+            settings=settings,
+            vm_configuration=vm_configuration,
+        )
+
+        self.controller_configuration = configuration
+        self.save_controller_configuration()
+
+    def save_controller_configuration(self):
+        """Save VM configuration to be used by the controller service"""
+        with open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file:
+            controller_config_file.write(
+                self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode()
+            )
+            controller_config_file.flush()
+            config_file_path = Path(controller_config_file.name)
+            config_file_path.chmod(0o644)
+            return config_file_path
 
     @property
     def _journal_stdout_name(self) -> str:
@@ -323,9 +375,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 else:
                     raise
 
-    async def configure(self):
-        """Nothing to configure, we do the configuration via cloud init"""
-        pass
 
     async def start_guest_api(self):
         pass
@@ -339,7 +388,11 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def teardown(self):
         if self.print_task:
             self.print_task.cancel()
-        self._shutdown()
+        try:
+            self._shutdown()
+        except Exception as error:
+            logging.error("Could not send shut down signal to {self}", exc_info=error)
+            # Continuing as to disable the network too
 
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
@@ -383,6 +436,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM
+        # TODO : fix
         if len(self.log_queues) > 20:
             logger.warning("Too many log queues, dropping the oldest one")
             self.unregister_queue(self.log_queues[1])

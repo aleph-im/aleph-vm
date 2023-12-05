@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
+from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 try:
@@ -14,7 +15,7 @@ except ImportError:
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
-from .configuration import Configuration
+from .configuration import Configuration, HypervisorType, QemuVMConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +55,23 @@ def parse_args(args):
 
 
 async def run_persistent_vm(config: Configuration):
-    execution = MicroVM(
-        vm_id=config.vm_id,
-        firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
-        jailer_base_directory=config.settings.JAILER_BASE_DIR,
-        use_jailer=config.vm_configuration.use_jailer,
-        jailer_bin_path=config.vm_configuration.jailer_bin_path,
-        init_timeout=config.vm_configuration.init_timeout,
-    )
+    if config.hypervisor == HypervisorType.firecracker:
+        execution = MicroVM(
+            vm_id=config.vm_id,
+            firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
+            jailer_base_directory=config.settings.JAILER_BASE_DIR,
+            use_jailer=config.vm_configuration.use_jailer,
+            jailer_bin_path=config.vm_configuration.jailer_bin_path,
+            init_timeout=config.vm_configuration.init_timeout,
+        )
 
-    execution.prepare_start()
-    process = await execution.start(config.vm_configuration.config_file_path)
+        execution.prepare_start()
+        process = await execution.start(config.vm_configuration.config_file_path)
+    else:
+        assert isinstance(config.vm_configuration, QemuVMConfiguration)
+        execution = QemuVM(config.vm_configuration)
+        process = await execution.start()
+
     if config.settings.PRINT_SYSTEM_LOGS:
         execution.start_printing_logs()
 
