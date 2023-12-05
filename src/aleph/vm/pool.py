@@ -99,13 +99,10 @@ class VmPool:
 
             await execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
+            # Start VM and snapshots automatically
             if execution.persistent:
                 self.systemd_manager.enable_and_start(execution.controller_service)
                 await execution.wait_for_init()
-
-            # Start VM and snapshots automatically
-            if execution.is_instance:
-                self.systemd_manager.enable_and_start(execution.controller_service)
 
             if execution.vm.support_snapshot:
                 await self.snapshot_manager.start_for(vm=execution.vm)
