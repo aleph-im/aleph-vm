@@ -86,33 +86,31 @@ async def handle_logs(stdout_identifier, stderr_identifier, handle_log_message, 
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
     loop = asyncio.get_event_loop()
 
+    future = asyncio.Future()
+
     def on_ready():
         change_type = r.process()  # reset fd status
         if change_type == journal.APPEND:
-            entry = r.get_next()
-            if entry == {}:
-                # empty entry that don't do anything
-                return
-            asyncio.ensure_future(_handle(entry))
+            for entry in r:
+                _handle(entry)
 
-    async def _handle(entry):
+    def _handle(entry):
         log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
         msg = entry["MESSAGE"]
-        return handle_log_message(log_type, msg)
+        try:
+            asyncio.ensure_future(handle_log_message(log_type, msg))
+        except EOFError:
+            print("END OF FILE")
+            future.set_result("END OF FILE")
 
     if skip_past:
         r.seek_tail()
-    # Quick processing of existing logs to speed up the process
-    for old_entry in r:
-        await _handle(old_entry)
 
     loop.add_reader(r.fileno(), on_ready)
 
-    try:
-        await asyncio.Future()
-    finally:
-        loop.remove_reader(r.fileno())
-        r.close()
+    await future
+    loop.remove_reader(r.fileno())
+    r.close()
 
 
 class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmControllerInterface):
@@ -341,12 +339,12 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     def print_logs(self) -> None:
         """Print logs to our output for debugging"""
 
-        def _print_log_line(log_type, line):
+        async def _print_log_line(log_type, line):
             fd = sys.stderr if log_type == "stderr" else sys.stdout
             print(self, line, file=fd)
 
         loop = asyncio.get_running_loop()
-        self.print_task = loop.create_task(self.handle_logs(_print_log_line), name=f'{self}-print-logs')
+        self.print_task = loop.create_task(self.handle_logs(_print_log_line), name=f"{self}-print-logs")
 
     def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
