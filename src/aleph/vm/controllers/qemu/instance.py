@@ -247,7 +247,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     def save_controller_configuration(self):
         """Save VM configuration to be used by the controller service"""
         path = Path(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json")
-        path.open("wb").write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode())
+        path.open("w").write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4))
         path.chmod(0o644)
         return path
 
