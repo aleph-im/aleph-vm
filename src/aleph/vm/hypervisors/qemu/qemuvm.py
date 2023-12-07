@@ -3,6 +3,9 @@ import sys
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
+from typing import Optional
+
+import qmp
 
 from aleph.vm.controllers.qemu.instance import logger
 
@@ -124,3 +127,20 @@ class QemuVM(object):
             for queue in self.log_queues:
                 await queue.put(("stdout", line))
             print(self, line.decode().strip())
+
+    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
+        if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
+            return None
+        client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
+        client.connect()
+        return client
+
+    def send_shutdown_message(self):
+        print('sending shutdown message to vm')
+        client = self._get_qmpclient()
+        if client:
+            resp = client.command("system_powerdown")
+            if not resp == {}:
+                logger.warning("unexpected answer from VM", resp)
+            print('shutdown message sent')
+            client.close()

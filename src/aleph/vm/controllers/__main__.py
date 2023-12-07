@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -71,6 +72,10 @@ async def run_persistent_vm(config: Configuration):
         assert isinstance(config.vm_configuration, QemuVMConfiguration)
         execution = QemuVM(config.vm_configuration)
         process = await execution.start()
+
+        # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
 
     if config.settings.PRINT_SYSTEM_LOGS:
         execution.start_printing_logs()
