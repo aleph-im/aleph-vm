@@ -5,8 +5,6 @@ After=network.target
 [Service]
 Type=simple
 RestartSec=5s
-StandardOutput=syslog
-StandardError=syslog
 PrivateTmp=yes
 NoNewPrivileges=true
 WorkingDirectory=/opt/aleph-vm
