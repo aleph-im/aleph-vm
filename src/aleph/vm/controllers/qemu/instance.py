@@ -337,16 +337,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         client.connect()
         return client
 
-    def _shutdown(self):
-        client = self._get_qmpclient()
-        if client:
-            resp = client.command("system_powerdown")
-            if not resp == {}:
-                logger.warning("unexpected answer from VM", resp)
-            client.close()
-        self.qmp_socket_path = None
-
-    def get_log_queue(self) -> asyncio.Queue:
+    async def get_log_queue(self) -> asyncio.Queue:
         queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM
