@@ -188,7 +188,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
     @property
     def _journal_stderr_name(self) -> str:
-        return f"vm-{self.vm_hash}-stdout"
+        return f"vm-{self.vm_hash}-stderr"
 
     async def start(self):
         logger.debug(f"Starting Qemu: {self} ")
