@@ -2,6 +2,7 @@ import asyncio
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
+from pathlib import Path
 
 from aleph.vm.controllers.qemu.instance import logger
 
@@ -10,11 +11,15 @@ class QemuVM(object):
     qemu_bin_path: str
     cloud_init_drive_path: str | None
     image_path: str
-    monitor_socket_path: str
-    qmp_socket_path: str
+    monitor_socket_path: Path
+    qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
+    qemu_process = None
+
+    def __repr__(self):
+        return f"<QemuVM: {self.qemu_process.pid if  self.qemu_process else 'not running'}>"
 
     def __init__(self, config):
         self.qemu_bin_path = config.qemu_bin_path
@@ -31,7 +36,7 @@ class QemuVM(object):
 
     async def start(
         self,
-    ) -> None:
+    ) -> Process:
         # Based on the command
         #  qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
@@ -71,29 +76,20 @@ class QemuVM(object):
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
-        try:
-            print(*args)
-            self.qemu_process = proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+        print(*args)
+        self.qemu_process = proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
-            logger.debug(f"setup done {self}, {proc}")
-
-            async def handle_termination(proc: Process):
-                await proc.wait()
-                logger.info(f"{self} Process terminated with {proc.returncode} : {str(args)}")
-
-            loop = asyncio.get_running_loop()
-            loop.create_task(handle_termination(proc))
-            logger.debug(f"started qemu vm {self} on {self.get_ip()}")
-        except Exception:
-            raise
+        logger.debug(f"started qemu vm {self}, {proc}")
+        return proc
 
     log_queues: list[asyncio.Queue] = []
 
+    # TODO : convert when merging with log fixing branch
     async def _process_stderr(self):
         while not self.qemu_process:
             await asyncio.sleep(0.01)  # Todo: Use signal here

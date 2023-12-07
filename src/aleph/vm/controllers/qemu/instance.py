@@ -17,7 +17,11 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 from systemd import journal
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import Configuration, QemuVMConfiguration
+from aleph.vm.controllers.configuration import (
+    Configuration,
+    HypervisorType,
+    QemuVMConfiguration,
+)
 from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     VmSetupError,
@@ -174,6 +178,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
 
+    # TODO : wait for andress soltion for pid handling
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.qemu_process and psutil:
@@ -209,12 +214,12 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def configure(self):
         """Configure the VM by saving controller service configuration"""
 
-        logger.debug(f"Starting Qemu: {self} ")
+        logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
         self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
         cloud_init_drive = await self._create_cloud_init_drive()
 
-        image_path = self.resources.rootfs_path.name
+        image_path = str(self.resources.rootfs_path)
         vcpu_count = self.hardware_resources.vcpus
         mem_size_mib = self.hardware_resources.memory
         mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
@@ -236,9 +241,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         )
 
         configuration = Configuration(
-            vm_id=self.vm_id,
-            settings=settings,
-            vm_configuration=vm_configuration,
+            vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
         )
 
         self.controller_configuration = configuration

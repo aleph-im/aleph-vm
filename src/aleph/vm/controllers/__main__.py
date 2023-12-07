@@ -76,6 +76,7 @@ async def run_persistent_vm(config: Configuration):
         execution.start_printing_logs()
 
     await process.wait()
+    logger.info(f"Process terminated with {process.returncode}")
 
     return execution
 
