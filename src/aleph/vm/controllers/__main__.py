@@ -16,7 +16,12 @@ except ImportError:
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
-from .configuration import Configuration, HypervisorType, QemuVMConfiguration, VMConfiguration
+from .configuration import (
+    Configuration,
+    HypervisorType,
+    QemuVMConfiguration,
+    VMConfiguration,
+)
 
 logger = logging.getLogger(__name__)
 
