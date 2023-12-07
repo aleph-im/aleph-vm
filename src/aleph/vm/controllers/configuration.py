@@ -19,8 +19,8 @@ class QemuVMConfiguration(BaseModel):
     qemu_bin_path: str
     cloud_init_drive_path: Optional[str]
     image_path: str
-    monitor_socket_path: str
-    qmp_socket_path: str
+    monitor_socket_path: Path
+    qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: Optional[str]
