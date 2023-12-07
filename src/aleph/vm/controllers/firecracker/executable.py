@@ -138,6 +138,17 @@ class VmInitNotConnectedError(Exception):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
+def save_controller_configuration(vm_hash: str, configuration: Configuration) -> Path:
+    """Save VM configuration to be used by the controller service"""
+    config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
+    with config_file_path.open("w") as controller_config_file:
+        controller_config_file.write(
+            configuration.json(by_alias=True, exclude_none=True, indent=4)
+        )
+    config_file_path.chmod(0o644)
+    return config_file_path
+
+
 class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerInterface):
     vm_id: int
     vm_hash: ItemHash
@@ -260,17 +271,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         May be empty."""
         return
 
-    def save_controller_configuration(self):
-        """Save VM configuration to be used by the controller service"""
-        with open(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json", "wb") as controller_config_file:
-            controller_config_file.write(
-                self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4).encode()
-            )
-            controller_config_file.flush()
-            config_file_path = Path(controller_config_file.name)
-            config_file_path.chmod(0o644)
-            return config_file_path
-
     async def configure(self):
         """Configure the VM by saving controller service configuration"""
         if self.persistent:
@@ -289,8 +289,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
                 vm_configuration=vm_configuration,
             )
 
-            self.controller_configuration = configuration
-            self.save_controller_configuration()
+            save_controller_configuration(self.vm_hash, configuration)
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")

@@ -4,6 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
+RestartSec=5s
+StandardOutput=syslog
+StandardError=syslog
+PrivateTmp=yes
+NoNewPrivileges=true
 WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 ExecStart=/usr/bin/python3 -m aleph.vm.controllers --config=/var/lib/aleph/vm/%i-controller.json
