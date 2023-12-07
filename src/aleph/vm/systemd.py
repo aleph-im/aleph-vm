@@ -6,7 +6,7 @@ import logging
 import sys
 
 import dbus
-from dbus import SystemBus, DBusException
+from dbus import DBusException, SystemBus
 from dbus.proxies import Interface
 
 logger = logging.getLogger(__name__)
@@ -67,4 +67,3 @@ class SystemDManager:
             self.enable(service)
         if not self.is_service_active(service):
             self.start(service)
-
