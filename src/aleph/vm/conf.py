@@ -184,7 +184,7 @@ class Settings(BaseSettings):
     DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT = Path("/var/lib/aleph/vm")
-    JAILER_BASE_DIRECTORY = EXECUTION_ROOT / "jailer"
+    JAILER_BASE_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/jailer")
     EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
@@ -250,7 +250,7 @@ class Settings(BaseSettings):
     SENTRY_TRACES_SAMPLE_RATE: float = Field(ge=0, le=1.0, default=0.1)
     DEVELOPER_SSH_KEYS: Optional[list[str]] = []
     # Using an object here forces the value to come from Python code and not from an environment variable.
-    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = Field(exclude=True, default=False)
+    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = False
 
     # Fields
     SENSITIVE_FIELDS: list[str] = Field(
@@ -360,6 +360,8 @@ class Settings(BaseSettings):
             self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
         if not self.DATA_CACHE:
             self.DATA_CACHE = self.CACHE_ROOT / "data"
+        if not self.JAILER_BASE_DIRECTORY:
+            self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
         if not self.PERSISTENT_VOLUMES_DIR:
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
         if not self.EXECUTION_LOG_DIRECTORY:
