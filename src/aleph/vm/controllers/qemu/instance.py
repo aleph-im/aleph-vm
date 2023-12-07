@@ -5,7 +5,7 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Callable, Dict, Generic, Optional, Tuple, TypeVar, Union, TypedDict
+from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
 
 import psutil
 import qmp
