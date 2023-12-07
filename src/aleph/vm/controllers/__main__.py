@@ -16,7 +16,7 @@ except ImportError:
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
-from .configuration import Configuration, HypervisorType, QemuVMConfiguration
+from .configuration import Configuration, HypervisorType, QemuVMConfiguration, VMConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def parse_args(args):
 
 async def run_persistent_vm(config: Configuration):
     if config.hypervisor == HypervisorType.firecracker:
+        assert isinstance(config.vm_configuration, VMConfiguration)
         execution = MicroVM(
             vm_id=config.vm_id,
             firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
