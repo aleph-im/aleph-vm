@@ -136,11 +136,11 @@ class QemuVM(object):
         return client
 
     def send_shutdown_message(self):
-        print('sending shutdown message to vm')
+        print("sending shutdown message to vm")
         client = self._get_qmpclient()
         if client:
             resp = client.command("system_powerdown")
             if not resp == {}:
                 logger.warning("unexpected answer from VM", resp)
-            print('shutdown message sent')
+            print("shutdown message sent")
             client.close()
