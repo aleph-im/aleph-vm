@@ -5,7 +5,7 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
-from typing import Callable, Dict, Generic, Optional, Tuple, TypeVar, Union
+from typing import Callable, Dict, Generic, Optional, Tuple, TypeVar, Union, TypedDict
 
 import psutil
 import qmp
@@ -79,28 +79,48 @@ class AlephQemuResources(AlephFirecrackerResources):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-def handle_logs(stdout_identifier, stderr_identifier, skip_past=True) -> Tuple[asyncio.Queue, Callable]:
+class EntryDict(TypedDict):
+    SYSLOG_IDENTIFIER: str
+    MESSAGE: str
+
+
+def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> Tuple[asyncio.Queue, Callable[[], None]]:
+    """Create a queue which streams the logs for the process.
+
+    @param stdout_identifier: journald identifier for process stdout
+    @param stderr_identifier: journald identifier for process stderr
+    @param skip_past: Skip past history.
+    @return: queue and function to cancel the queue.
+
+    The consumer is required to call the queue cancel function when it's done consuming the queue.
+
+    Works by creating a journald reader, and using `add_reader` to call a callback when
+    data is available for reading.
+    In the callback we check the message type and fill the queue accordingly
+
+    For more information refer to the sd-journal(3) manpage
+    and systemd.journal module documentation.
+    """
     r = journal.Reader()
     r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
-    queue:asyncio.Queue = asyncio.Queue(maxsize=1000)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    def on_ready():
+    def _ready_for_read():
         change_type = r.process()  # reset fd status
-        if change_type == journal.APPEND:
-            for entry in r:
-                _handle(entry)
-
-    def _handle(entry):
-        log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
-        msg = entry["MESSAGE"]
-        asyncio.ensure_future(queue.put((log_type, msg)))
+        if change_type != journal.APPEND:
+            return
+        entry: EntryDict
+        for entry in r:
+            log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
+            msg = entry["MESSAGE"]
+            asyncio.create_task(queue.put((log_type, msg)))
 
     if skip_past:
         r.seek_tail()
 
     loop = asyncio.get_event_loop()
-    loop.add_reader(r.fileno(), on_ready)
+    loop.add_reader(r.fileno(), _ready_for_read)
 
     def do_cancel():
         loop.remove_reader(r.fileno())
@@ -363,7 +383,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         self.qmp_socket_path = None
 
     def get_log_queue(self) -> asyncio.Queue:
-        queue, canceller = handle_logs(self._journal_stdout_name, self._journal_stderr_name)
+        queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM
         if len(self.log_queues) > 20:
