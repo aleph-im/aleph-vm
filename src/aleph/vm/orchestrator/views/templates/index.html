@@ -16,10 +16,10 @@
                 This is an <a href="https://aleph.im/">Aleph.im</a> compute resource node.
             </p>
             <p>
-                It executes user programs stored on the Aleph network in Virtual Machines.
+                It executes user programs stored on the aleph.im network in Virtual Machines.
             </p>
             <p>
-                See the <a href="https://github.com/aleph-im/aleph-vm">repository</a> for more info.
+                See the <a href="https://github.com/aleph-im/aleph-vm">source code repository</a> for more info.
             </p>
 
         </section>
@@ -44,34 +44,109 @@
         <section>
         <h2>Diagnostic</h2>
 
-        <p class="virtualization-wrapper">
-            Virtualization&nbsp;
-            <span class="virtualization-wrapper" id="check">
-                ...&nbsp;
-                <span class="loader-container">
-                    <span id="loader-one" class="loader"></span>
-                    <span id="loader-two" class="loader"></span>
-                    <span id="loader-three" class="loader"></span>
+        <div id="virtualization-checks">
+            <h3>Virtualization</h3>
+            <p>
+                Virtualization
+                <span id="virtualization-check">
+                ...
+                    <span class="loader-container">
+                        <span id="loader-one" class="loader"></span>
+                        <span id="loader-two" class="loader"></span>
+                        <span id="loader-three" class="loader"></span>
+                    </span>
                 </span>
-            </span>
-        </p>
+            </p>
+            <div class="details">
+                <ul></ul>
+            </div>
+            <div class="help" style="display: none">
+                <p>
+                    ℹ️ <a href="https://docs.aleph.im/nodes/compute/troubleshooting/#virtualization">
+                        Troubleshoot virtualization
+                    </a>
+                </p>
+            </div>
+        </div>
 
-        <pre id="checks"></pre>
-        <p>
-            <a href="/status/check/fastapi">Diagnostics checks</a> |
-            <a href="/vm/$check_fastapi_vm_id">Open diagnostic VM</a>
-        </p>
-        <p>
-            Egress IPv6
-            <span id="check_ipv6">
-                is ...
-                <span class="loader-container">
-                    <span id="loader-one" class="loader"></span>
-                    <span id="loader-two" class="loader"></span>
-                    <span id="loader-three" class="loader"></span>
+        <div id="host-checks">
+            <h3>Host connectivity</h3>
+            <p>
+                Host
+                <span id="host-check">
+                ...
+                    <span class="loader-container">
+                        <span id="loader-one" class="loader"></span>
+                        <span id="loader-two" class="loader"></span>
+                        <span id="loader-three" class="loader"></span>
+                    </span>
                 </span>
-            </span>
-        </p>
+            </p>
+            <div class="details">
+                <h4>IPv4</h4>
+                <ul class="ipv4"></ul>
+                <h4>IPv6</h4>
+                <ul class="ipv6"></ul>
+            </div>
+            <div class="help" style="display: none">
+                <p>
+                    ℹ️ <a href="https://docs.aleph.im/nodes/compute/troubleshooting/#host">
+                        Troubleshoot host
+                    </a>
+                </p>
+            </div>
+        </div>
+
+        <details>
+            <summary>ℹ️ More information</summary>
+
+            <div id="latest-metrics">
+                <h3>Latest metrics</h3>
+                <p>
+                    The aleph.im network measures the performance of all nodes in the network. New metrics are published
+                    every 10 minutes.
+                </p>
+                <p>
+                    🔍 <a href="https://explorer.aleph.im/messages?showAdvancedFilters=1&channels=aleph-scoring&sender=0x4D52380D3191274a04846c89c069E6C3F2Ed94e4&page=1"
+                        >Browse the metrics in the explorer</a>
+                </p>
+                <ul id="latest-metrics"></ul>
+            </div>
+
+            <h3>VM Egress IPv6</h3>
+            <p>
+                VM Egress IPv6 is a test to check if virtual machines are able to connect to the IPv6 internet.
+                Enabling VM IPv6 Egress requires a specific configuration that is not applied automatically. It is not yet
+                required to run virtual machines.
+            </p>
+            <div id="ipv6-egress-checks">
+                <p>
+                    VM Egress IPv6
+                    <span id="ipv6-egress-check">
+                        is ...
+                        <span class="loader-container">
+                            <span id="loader-one" class="loader"></span>
+                            <span id="loader-two" class="loader"></span>
+                            <span id="loader-three" class="loader"></span>
+                        </span>
+                    </span>
+                </p>
+            </div>
+            <h3>APIs</h3>
+            <p>
+                Host status check API: <a href="/status/check/host">/status/check/host</a>
+            </p>
+            <p>
+
+                Virtualization check API: <a href="/status/check/fastapi">/status/check/fastapi</a>
+            </p>
+            <p>
+
+                VM Egress IPv6: <br/>
+                <a href="/vm/$check_fastapi_vm_id/ip/6">/vm/$check_fastapi_vm_id/ip/6</a>
+            </p>
+        </details>
+
         </section>
 
         <section>
@@ -80,7 +155,7 @@
                 Running version <i>$version</i>.
             </p>
 
-            <p>
+            <div>
                 <button id="status_check_button">Check if this is the latest release</button>
                 <span id="status_latest_version" style="display: none">This is the latest release &#10004;&#65039;</span>
                 <span id="status_outdated_version" style="display: none">
@@ -89,7 +164,7 @@
                 <p id="status_error_version" style="display: none">Your browser could not fetch the latest release:
                     <span id="status_error_version_reason"></span>
                 </p>
-            </p>
+            </div>
 
             <div>
                 <button id="metrics_chart_button">Load metrics chart</button>
@@ -121,13 +196,26 @@
 
         (async () => {
             try {
-                const { status, details } = await fetchApiStatus();
-                document.getElementById('check').innerHTML = status;
-                const _checksDiv = document.getElementById("checks");
-                if(details.length > 0){
-                    const detailsDiv = document.createElement('div');
-                    detailsDiv.innerHTML = details;
-                    _checksDiv.appendChild(detailsDiv);
+                const { status, details } = await fetchFastapiCheckStatus();
+                document.getElementById('virtualization-check').innerHTML = status;
+                if(Object.keys(details).length > 0){
+                    const detailsDiv = document.querySelector("#virtualization-checks .details ul");
+                    detailsDiv.innerHTML = objectToString(details);
+                    document.querySelector("#virtualization-checks .help").style.display = "block";
+                }
+            } catch (err) {
+                console.error('Could not fetch api status', err);
+            }
+        })();
+
+        (async () => {
+            try {
+                const { status, details } = await fetchHostCheckStatus();
+                document.getElementById('host-check').innerHTML = status;
+                if(Object.keys(details).length > 0){
+                    document.querySelector("#host-checks .details ul.ipv4").innerHTML = objectToString(details["ipv4"]);
+                    document.querySelector("#host-checks .details ul.ipv6").innerHTML = objectToString(details["ipv6"]);
+                    document.querySelector("#host-checks .help").style.display = "block";
                 }
             } catch (err) {
                 console.error('Could not fetch api status', err);
@@ -238,21 +326,21 @@
         try{
             const response = await fetch('/vm/$check_fastapi_vm_id/ip/6');
             if (response.ok) {
-                document.getElementById("check_ipv6").innerHTML = "is working &#10004;&#65039;";
+                document.getElementById("ipv6-egress-check").innerHTML = "is working &#10004;&#65039;";
             }
             else if (response.status === 503) {
-                document.getElementById("check_ipv6").innerHTML = "fails to be tested &#10060; ";
+                document.getElementById("ipv6-egress-check").innerHTML = "fails to be tested &#10060; ";
             }
             else if (response.status === 500) {
-                document.getElementById("check_ipv6").innerHTML = "is not available &#9932;";
+                document.getElementById("ipv6-egress-check").innerHTML = "is not yet available &#9932;";
             }
             else {
-                document.getElementById("check_ipv6").innerText = response.status;
+                document.getElementById("ipv6-egress-check").innerText = response.status;
             }
         }
         catch(err){
             console.error(err);
-            document.getElementById("check_ipv6").innerHTML = "fails to be tested &#10060; ";
+            document.getElementById("ipv6-egress-check").innerHTML = "fails to be tested &#10060; ";
         }
     })();
 

@@ -1,11 +1,14 @@
 body {
     font-family: IBM Plex Regular, monospace;
+    white-space: normal;
     margin: auto;
+    max-width: 800px;
 }
 
 main {
     width: 90vw;
     margin: 2vh auto;
+    max-width: 800px;
 }
 
 progress {
@@ -36,29 +39,29 @@ progress {
 
 @keyframes move {
     0% {
-        height: 20px;
-    }
-
-    50% {
         height: 10px;
     }
 
+    50% {
+        height: 5px;
+    }
+
     100% {
-        height: 20px;
+        height: 10px;
     }
 }
 
 @keyframes move2 {
     0% {
-        height: 10px;
+        height: 5px;
     }
 
     50% {
-        height: 20px;
+        height: 10px;
     }
 
     100% {
-        height: 10px;
+        height: 5px;
     }
 }
 
