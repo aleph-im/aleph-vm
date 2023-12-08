@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     WATCH_FOR_UPDATES = True
 
     API_SERVER = "https://official.aleph.cloud"
+    # Connect to the Quad9 VPN provider using their IPv4 and IPv6 addresses.
+    CONNECTIVITY_IPV4_URL = "https://9.9.9.9/"
+    CONNECTIVITY_IPV6_URL = "https://[2620:fe::fe]/"
+    CONNECTIVITY_DNS_HOSTNAME = "example.org"
+
     USE_JAILER = True
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
