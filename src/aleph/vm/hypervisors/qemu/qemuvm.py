@@ -24,7 +24,7 @@ class QemuVM(object):
     def __repr__(self):
         return f"<QemuVM: {self.qemu_process.pid if  self.qemu_process else 'not running'}>"
 
-    def __init__(self, config):
+    def __init__(self, config: QemuVMConfiguration):
         self.qemu_bin_path = config.qemu_bin_path
         self.cloud_init_drive_path = config.cloud_init_drive_path
         self.image_path = config.image_path
