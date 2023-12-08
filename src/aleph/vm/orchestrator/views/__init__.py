@@ -26,6 +26,14 @@ from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
+from aleph.vm.orchestrator.views.host_status import (
+    check_dns_ipv4,
+    check_dns_ipv6,
+    check_domain_resolution_ipv4,
+    check_domain_resolution_ipv6,
+    check_host_egress_ipv4,
+    check_host_egress_ipv6,
+)
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import (
     HostNotFoundError,
@@ -167,6 +175,25 @@ async def status_check_fastapi(request: web.Request):
             }
 
         return web.json_response(result, status=200 if all(result.values()) else 503)
+
+
+async def status_check_host(request: web.Request):
+    """Check that the platform is supported and configured correctly"""
+
+    result = {
+        "ipv4": {
+            "egress": await check_host_egress_ipv4(),
+            "dns": await check_dns_ipv4(),
+            "domain": await check_domain_resolution_ipv4(),
+        },
+        "ipv6": {
+            "egress": await check_host_egress_ipv6(),
+            "dns": await check_dns_ipv6(),
+            "domain": await check_domain_resolution_ipv6(),
+        },
+    }
+    result_status = 200 if all(result["ipv4"].values()) and all(result["ipv6"].values()) else 503
+    return web.json_response(result, status=result_status)
 
 
 async def status_check_version(request: web.Request):
