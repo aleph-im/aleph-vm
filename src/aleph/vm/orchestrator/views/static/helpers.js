@@ -1,4 +1,4 @@
-async function fetchApiStatus () {
+async function fetchFastapiCheckStatus () {
     const q = await fetch('/status/check/fastapi');
     let res = {
         status: q.status,
@@ -12,14 +12,46 @@ async function fetchApiStatus () {
             case 503:
                 res.status = " is not working properly &#10060;";
                 res.details = await q.json();
+                break;
             case 500:
                 res.status = " &#10060; Failed";
+                break;
             default:
                 res.status = q.status;
         }
     }
 
     return res;
+}
+
+async function fetchHostCheckStatus () {
+    const q = await fetch('/status/check/host');
+    let res = {
+        status: q.status,
+        details: []
+    }
+    if(q.ok){
+        res.status = " is working properly &#9989;";
+    }
+    else {
+        switch(Number(q.status)){
+            case 503:
+                res.status = " is not working properly &#10060;";
+                res.details = await q.json();
+                break;
+            case 500:
+                res.status = " &#10060; Failed";
+                break;
+            default:
+                res.status = q.status;
+        }
+    }
+
+    return res;
+}
+
+function objectToString (obj) {
+    return Object.entries(obj).reduce((acc, [k, v]) => acc + `<li>${k}: <span style="color: ${v ? 'green' : 'red'}">${v}</span></li>\n`, '');
 }
 
 const buildQueryParams = (params) => Object.entries(params).reduce((acc, [k, v]) => acc + `${k}=${v}&`, '?').slice(0, -1);
