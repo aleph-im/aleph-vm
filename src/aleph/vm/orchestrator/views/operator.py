@@ -66,23 +66,25 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     try:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-
         try:
             await authenticate_for_vm_or_403(execution, request, vm_hash, ws)
             await ws.send_json({"status": "connected"})
 
-            queue = await execution.vm.get_log_queue()
+            queue = execution.vm.get_log_queue()
 
             while True:
                 log_type, message = await queue.get()
                 assert log_type in ("stdout", "stderr")
 
-                await ws.send_json({"type": log_type, "message": message.decode()})
+                await ws.send_json({"type": log_type, "message": message})
+
         finally:
             await ws.close()
+            logger.info(f"connection  {ws} closed")
+
     finally:
         if queue:
-            await execution.vm.unregister_queue(queue)
+            execution.vm.unregister_queue(queue)
 
 
 async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
