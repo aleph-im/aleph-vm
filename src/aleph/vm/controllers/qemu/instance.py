@@ -5,6 +5,7 @@ import shutil
 import sys
 from asyncio import Task
 from asyncio.subprocess import Process
+from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
 
 import psutil
@@ -16,6 +17,12 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 from systemd import journal
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import (
+    Configuration,
+    HypervisorType,
+    QemuVMConfiguration,
+    save_controller_configuration,
+)
 from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     VmSetupError,
@@ -142,7 +149,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     qemu_process: Optional[Process]
     support_snapshot = False
     qmp_socket_path = None
+    persistent = True
     _queue_cancellers: Dict[asyncio.Queue, Callable] = {}
+    controller_configuration: Configuration
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -170,6 +179,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
 
+    # TODO : wait for andress soltion for pid handling
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.qemu_process and psutil:
@@ -202,6 +212,48 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def setup(self):
         pass
 
+    async def configure(self):
+        """Configure the VM by saving controller service configuration"""
+
+        logger.debug(f"Making  Qemu configuration: {self} ")
+        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
+        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
+        cloud_init_drive = await self._create_cloud_init_drive()
+
+        image_path = str(self.resources.rootfs_path)
+        vcpu_count = self.hardware_resources.vcpus
+        mem_size_mib = self.hardware_resources.memory
+        mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
+
+        qemu_bin_path = shutil.which("qemu-system-x86_64")
+        interface_name = None
+        if self.tap_interface:
+            interface_name = self.tap_interface.device_name
+        cloud_init_drive_path = str(cloud_init_drive.path_on_host) if cloud_init_drive else None
+        vm_configuration = QemuVMConfiguration(
+            qemu_bin_path=qemu_bin_path,
+            cloud_init_drive_path=cloud_init_drive_path,
+            image_path=image_path,
+            monitor_socket_path=monitor_socket_path,
+            qmp_socket_path=qmp_socket_path,
+            vcpu_count=vcpu_count,
+            mem_size_mb=mem_size_mb,
+            interface_name=interface_name,
+        )
+
+        configuration = Configuration(
+            vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
+        )
+
+        save_controller_configuration(self.vm_hash, configuration)
+
+    def save_controller_configuration(self):
+        """Save VM configuration to be used by the controller service"""
+        path = Path(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json")
+        path.open("w").write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4))
+        path.chmod(0o644)
+        return path
+
     @property
     def _journal_stdout_name(self) -> str:
         return f"vm-{self.vm_hash}-stdout"
@@ -211,96 +263,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         return f"vm-{self.vm_hash}-stderr"
 
     async def start(self):
-        logger.debug(f"Starting Qemu: {self} ")
-        # Based on the command
-        #  qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
-        # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
-
-        qemu_path = shutil.which("qemu-system-x86_64")
-        image_path = self.resources.rootfs_path
-        vcpu_count = self.hardware_resources.vcpus
-        mem_size_mib = self.hardware_resources.memory
-        mem_size_mb = int(mem_size_mib / 1024 / 1024 * 1000 * 1000)
-        # hardware_resources.published ports -> not implemented at the moment
-        # hardware_resources.seconds -> only for microvm
-
-        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
-        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
-
-        args = [
-            qemu_path,
-            "-enable-kvm",
-            "-nodefaults",
-            "-m",
-            str(mem_size_mb),
-            "-smp",
-            str(vcpu_count),
-            # Disable floppy
-            "-fda",
-            "",
-            # "-snapshot",  # Do not save anything to disk
-            "-drive",
-            f"file={image_path},media=disk,if=virtio",
-            # To debug you can pass gtk or curses instead
-            "-display",
-            "none",
-            "--no-reboot",  # Rebooting from inside the VM shuts down the machine
-            # Listen for commands on this socket
-            "-monitor",
-            f"unix:{monitor_socket_path},server,nowait",
-            # Listen for commands on this socket (QMP protocol in json). Supervisor use it to send shutdown or start
-            # command
-            "-qmp",
-            f"unix:{qmp_socket_path},server,nowait",
-            # Tell to put the output to std fd, so we can include them in the log
-            "-serial",
-            "stdio",
-            # Uncomment for debug
-            # "-serial", "telnet:localhost:4321,server,nowait",
-        ]
-        if self.tap_interface:
-            interface_name = self.tap_interface.device_name
-            # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={interface_name},script=no,downscript=no"]
-
-        cloud_init_drive = await self._create_cloud_init_drive()
-        if cloud_init_drive:
-            args += ["-cdrom", f"{cloud_init_drive.path_on_host}"]
-
-        try:
-            print(*args)
-
-            journal_stdout = journal.stream(self._journal_stdout_name)
-            journal_stderr = journal.stream(self._journal_stderr_name)
-            self.qemu_process = proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=journal_stdout,
-                stderr=journal_stderr,
-            )
-
-            logger.debug(f"setup done {self}, {proc}")
-
-            async def handle_termination(proc: Process):
-                await proc.wait()
-                logger.info(f"{self} Process terminated with {proc.returncode} : {str(args)}")
-
-            loop = asyncio.get_running_loop()
-            loop.create_task(handle_termination(proc))
-        except Exception:
-            # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
-            logger.error("VM startup failed, cleaning up network")
-            if self.enable_networking:
-                teardown_nftables_for_vm(self.vm_id)
-            if self.tap_interface:
-                await self.tap_interface.delete()
-            raise
-
-        if self.enable_console:
-            self.print_logs()
-
-        await self.wait_for_init()
-        logger.debug(f"started qemu vm {self} on {self.get_ip()}")
+        # Start via systemd not here
+        raise NotImplementedError()
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the instance to be ready."""
@@ -326,10 +290,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 else:
                     raise
 
-    async def configure(self):
-        """Nothing to configure, we do the configuration via cloud init"""
-        pass
-
     async def start_guest_api(self):
         pass
 
@@ -342,7 +302,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def teardown(self):
         if self.print_task:
             self.print_task.cancel()
-        self._shutdown()
 
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
@@ -366,26 +325,11 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         loop = asyncio.get_running_loop()
         self.print_task = loop.create_task(print_logs(), name=f"{self}-print-logs")
 
-    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
-        if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
-            return None
-        client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
-        client.connect()
-        return client
-
-    def _shutdown(self):
-        client = self._get_qmpclient()
-        if client:
-            resp = client.command("system_powerdown")
-            if not resp == {}:
-                logger.warning("unexpected answer from VM", resp)
-            client.close()
-        self.qmp_socket_path = None
-
     def get_log_queue(self) -> asyncio.Queue:
         queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM
+        # TODO : fix
         if len(self.log_queues) > 20:
             logger.warning("Too many log queues, dropping the oldest one")
             self.unregister_queue(self.log_queues[1])
