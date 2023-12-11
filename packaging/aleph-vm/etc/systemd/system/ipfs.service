@@ -25,7 +25,7 @@ After=network.target
 
 [Service]
 # hardening
-ReadOnlyPaths="/opt/kubo/"
+ReadOnlyPaths="/opt/kubo/" "/etc/ipfs"
 ReadWritePaths="/var/lib/ipfs/"
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -72,7 +72,7 @@ Type=notify
 User=ipfs
 Group=ipfs
 Environment=IPFS_PATH="/var/lib/ipfs"
-ExecStart=/opt/kubo/ipfs daemon --init --migrate --init-profile=server
+ExecStart=/opt/kubo/ipfs daemon --init --migrate --init-profile=server --config-file /etc/ipfs/kubo.json
 Restart=on-failure
 KillSignal=SIGINT
 
