@@ -35,9 +35,12 @@ const isLatestRelease = async () => {
 
 const buildMetricViewset = (metricsMsg, hostname, metricsResult) => {
     const thisNode = metricsMsg.content.metrics.crn.find(node => node.url === hostname)
-    const factory = keyName => ({ time: thisNode.measured_at, value: thisNode[keyName] * 100 })
-    const keys = ['base_latency', 'base_latency_ipv4', 'diagnostic_vm_latency', 'full_check_latency']
-    keys.map(key => metricsResult[key].push(factory(key)))
+    // Fixes a bug if a node has no metrics for the given timeframe
+    if(thisNode){
+        const factory = keyName => ({ time: thisNode.measured_at, value: thisNode[keyName] * 100 })
+        const keys = ['base_latency', 'base_latency_ipv4', 'diagnostic_vm_latency', 'full_check_latency']
+        keys.map(key => metricsResult[key].push(factory(key)))
+    }
 }
 
 async function* fetchLatestMetrics (hostname, fromDate) {
