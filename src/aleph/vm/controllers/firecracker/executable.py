@@ -15,7 +15,11 @@ from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import Configuration, VMConfiguration
+from aleph.vm.controllers.configuration import (
+    Configuration,
+    VMConfiguration,
+    save_controller_configuration,
+)
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.guest_api.__main__ import run_guest_api
@@ -136,15 +140,6 @@ class VmInitNotConnectedError(Exception):
 
 
 ConfigurationType = TypeVar("ConfigurationType")
-
-
-def save_controller_configuration(vm_hash: str, configuration: Configuration) -> Path:
-    """Save VM configuration to be used by the controller service"""
-    config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
-    with config_file_path.open("w") as controller_config_file:
-        controller_config_file.write(configuration.json(by_alias=True, exclude_none=True, indent=4))
-    config_file_path.chmod(0o644)
-    return config_file_path
 
 
 class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerInterface):

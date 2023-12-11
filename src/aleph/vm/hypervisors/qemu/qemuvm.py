@@ -7,6 +7,7 @@ from typing import Optional
 
 import qmp
 
+from aleph.vm.controllers.configuration import QemuVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
 
 
@@ -112,9 +113,9 @@ class QemuVM(object):
         It will also print them"""
 
         loop = asyncio.get_running_loop()
-        self.stdout_task = loop.create_task(self._process_stdout())
-        self.stderr_task = loop.create_task(self._process_stderr())
-        return self.stdout_task, self.stderr_task
+        stdout_task = loop.create_task(self._process_stdout())
+        stderr_task = loop.create_task(self._process_stderr())
+        return stdout_task, stderr_task
 
     async def _process_stdout(self):
         while not self.qemu_process:

@@ -6,7 +6,7 @@ import sys
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Callable, Dict, Generic, Optional,Tuple, TypedDict, TypeVar, Union
+from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
 
 import psutil
 import qmp
@@ -21,6 +21,7 @@ from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
     QemuVMConfiguration,
+    save_controller_configuration,
 )
 from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
@@ -148,7 +149,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     qemu_process: Optional[Process]
     support_snapshot = False
     qmp_socket_path = None
-    persistant = True
+    persistent = True
     _queue_cancellers: Dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
 
@@ -244,8 +245,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
         )
 
-        self.controller_configuration = configuration
-        self.save_controller_configuration()
+        save_controller_configuration(self.vm_hash, configuration)
 
     def save_controller_configuration(self):
         """Save VM configuration to be used by the controller service"""
@@ -302,11 +302,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def teardown(self):
         if self.print_task:
             self.print_task.cancel()
-        try:
-            self._shutdown()
-        except Exception as error:
-            logging.error("Could not send shut down signal to {self}", exc_info=error)
-            # Continuing as to disable the network too
 
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
@@ -330,14 +325,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         loop = asyncio.get_running_loop()
         self.print_task = loop.create_task(print_logs(), name=f"{self}-print-logs")
 
-    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
-        if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
-            return None
-        client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
-        client.connect()
-        return client
-
-    async def get_log_queue(self) -> asyncio.Queue:
+    def get_log_queue(self) -> asyncio.Queue:
         queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
         # Limit the number of queues per VM

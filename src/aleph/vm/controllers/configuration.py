@@ -4,7 +4,7 @@ from typing import Optional, Union
 
 from pydantic import BaseModel
 
-from aleph.vm.conf import Settings
+from aleph.vm.conf import Settings, settings
 
 
 class VMConfiguration(BaseModel):
@@ -36,3 +36,12 @@ class Configuration(BaseModel):
     settings: Settings
     vm_configuration: Union[QemuVMConfiguration, VMConfiguration]
     hypervisor: HypervisorType = HypervisorType.firecracker
+
+
+def save_controller_configuration(vm_hash: str, configuration: Configuration) -> Path:
+    """Save VM configuration to be used by the controller service"""
+    config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
+    with config_file_path.open("w") as controller_config_file:
+        controller_config_file.write(configuration.json(by_alias=True, exclude_none=True, indent=4))
+    config_file_path.chmod(0o644)
+    return config_file_path
