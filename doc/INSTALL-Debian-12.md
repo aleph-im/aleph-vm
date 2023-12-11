@@ -37,7 +37,7 @@ docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector al
 Then install the [VM-Supervisor](../src/aleph/vm/orchestrator/README.md) using the official Debian package.
 The procedure is similar for updates.
 ```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.3.0/aleph-vm.debian-12.deb
+wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/0.3.1/aleph-vm.debian-12.deb
 apt install /opt/aleph-vm.debian-12.deb
 ```
 
@@ -100,7 +100,7 @@ HTTPS/TLS certificates on time.
 
 First, create a domain name that points to the server on IPv4 (A) and IPv6 (AAAA).
 
-This is a simple configuration. For more options, check [CONFIGURE_CADDY.md](CONFIGURE_CADDY.md).
+This is a simple configuration. For more options, check [CONFIGURE_CADDY.md](/CONFIGURE_CADDY.md).
 
 Again, run these commands as `root`:
 ```shell
