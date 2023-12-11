@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 class SystemDManager:
+    """SystemD Manager class.
+
+    Used to manage the systemd services on the host on Linux.
+    """
+
     bus: SystemBus
     interface: Interface
 

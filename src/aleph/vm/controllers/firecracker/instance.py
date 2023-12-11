@@ -79,7 +79,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             enable_console,
             hardware_resources or MachineResources(),
             tap_interface,
-            True,
+            persistent=True,
         )
 
     async def setup(self):

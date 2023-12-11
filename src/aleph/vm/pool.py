@@ -192,16 +192,13 @@ class VmPool:
         await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
-        for _vm_hash, execution in self.executions.items():
-            if not execution.persistent and execution.is_running:
-                yield execution
+        return (execution for _vm_hash, execution in self.executions.items()
+            if execution.is_running and not execution.persistent)
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
-        for _vm_hash, execution in self.executions.items():
-            if execution.persistent and execution.is_running:
-                yield execution
+        return (execution for _vm_hash, execution in self.executions.items()
+                if execution.is_running and execution.persistent)
 
     def get_instance_executions(self) -> Iterable[VmExecution]:
-        for _vm_hash, execution in self.executions.items():
-            if execution.is_instance and execution.is_running:
-                yield execution
+        return (execution for _vm_hash, execution in self.executions.items()
+                if execution.is_running and execution.is_instance)
