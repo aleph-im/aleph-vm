@@ -1,0 +1,16 @@
+{
+  "AutoNAT": {
+    "ServiceMode": "disabled"
+  },
+  "AddrFilters": [
+  ],
+  "Reprovider": {
+    "Strategy": "roots"
+  },
+  "Swarm": {
+    "EnableHolePunching":false,
+    "RelayService": {
+      "Enabled": false
+    }
+  }
+}
