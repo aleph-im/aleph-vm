@@ -3,6 +3,7 @@
     "ServiceMode": "disabled"
   },
   "AddrFilters": [
+    "/ip4/86.84.0.0/ipcidr/16"
   ],
   "Reprovider": {
     "Strategy": "roots"
