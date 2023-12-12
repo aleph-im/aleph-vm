@@ -8,6 +8,7 @@ import aioredis
 from aiohttp import web
 from setproctitle import setproctitle
 
+from aleph.vm.conf import settings
 from aleph.vm.version import get_version_from_apt, get_version_from_git
 
 try:
@@ -168,7 +169,7 @@ def run_guest_api(
             # Set traces_sample_rate to 1.0 to capture 100%
             # of transactions for performance monitoring.
             # We recommend adjusting this value in production.
-            traces_sample_rate=1.0,
+            traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
         )
         sentry_sdk.set_context(
             "version",
