@@ -103,6 +103,8 @@ class VmPool:
             if execution.persistent:
                 self.systemd_manager.enable_and_start(execution.controller_service)
                 await execution.wait_for_init()
+                if execution.is_program:
+                    await execution.vm.load_configuration()
 
             if execution.vm and execution.vm.support_snapshot:
                 await self.snapshot_manager.start_for(vm=execution.vm)

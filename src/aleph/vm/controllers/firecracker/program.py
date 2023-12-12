@@ -322,10 +322,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         """Wait for the custom init inside the virtual machine to signal it is ready."""
         await self.fvm.wait_for_init()
 
-    async def configure(self) -> None:
-        """Configure the VM by sending configuration info to it's init"""
-        await super().configure()
-
+    async def load_configuration(self):
         code: bytes | None
         volumes: list[Volume]
 
@@ -344,6 +341,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
     ):
         """Set up the VM configuration. The program mode uses a VSOCK connection to the custom init of the virtual
         machine to send this configuration. Other modes may use Cloud-init, ..."""
+        logger.debug("Sending configuration")
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
         ip = self.get_ip()

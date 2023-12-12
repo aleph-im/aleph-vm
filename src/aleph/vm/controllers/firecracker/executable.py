@@ -236,7 +236,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             msg = "No VM found. Call setup() before start()"
             raise ValueError(msg)
 
-        if self.is_instance:
+        if self.is_instance or self.persistent:
             msg = "VM should be started using SystemD Manager class"
             raise ValueError(msg)
 
@@ -258,6 +258,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
         await self.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")
+        await self.load_configuration()
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the virtual machine to be ready.
@@ -283,6 +284,10 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             )
 
             save_controller_configuration(self.vm_hash, configuration)
+
+    async def load_configuration(self):
+        """Load configuration settings for programs."""
+        return
 
     async def start_guest_api(self):
         logger.debug(f"starting guest API for {self.vm_id}")
