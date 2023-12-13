@@ -13,7 +13,7 @@ from aleph.vm.controllers.qemu.instance import logger
 
 class QemuVM(object):
     qemu_bin_path: str
-    cloud_init_drive_path: str | None
+    cloud_init_drive_path: Optional[str]
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
