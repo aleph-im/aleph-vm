@@ -270,6 +270,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: TapInterface | None = None,
         persistent: bool = False,
+        prepare_jailer: bool = True,
     ):
         super().__init__(
             vm_id,
@@ -280,6 +281,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             hardware_resources,
             tap_interface,
             persistent,
+            prepare_jailer,
         )
 
     async def setup(self):
