@@ -50,7 +50,7 @@ async def build_event_scope(event) -> dict[str, Any]:
     }
 
 
-async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
+async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
@@ -61,6 +61,7 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
             vm_hash=vm_hash,
             message=message.content,
             original=original_message.content,
+            persistent=persistent,
         )
     except ResourceDownloadError as error:
         logger.exception(error)
@@ -263,13 +264,12 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool:
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(vm_hash=vm_hash, pool=pool)
+        execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
 
     await execution.becomes_ready()
 
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
-    execution.persistent = True
     execution.cancel_expiration()
 
     if pubsub and settings.WATCH_FOR_UPDATES:
