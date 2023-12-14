@@ -104,16 +104,6 @@ async def delete_record(execution_uuid: str):
         session.close()
 
 
-async def delete_all_records():
-    """Delete all the resource usage in database"""
-    session = Session()  # undefined name 'Session'
-    try:
-        session.query(ExecutionRecord).delete()
-        session.commit()
-    finally:
-        session.close()
-
-
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
     session = Session()  # undefined name 'Session'
