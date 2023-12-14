@@ -1,22 +1,22 @@
 import logging
 import socket
-from typing import Tuple, Callable
+from typing import Any, Awaitable, Callable, Tuple
 
 import aiohttp
 
 from aleph.vm.conf import settings
 
-
 logger = logging.getLogger(__name__)
 
 
-def return_false_on_timeout(func):
-    async def wrapper(*args, **kwargs):
+def return_false_on_timeout(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[bool]]:
+    async def wrapper(*args: Any, **kwargs: Any) -> bool:
         try:
             return await func(*args, **kwargs)
         except TimeoutError:
             logger.warning(f"Timeout while checking {func.__name__}")
             return False
+
     return wrapper
 
 
