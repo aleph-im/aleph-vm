@@ -71,6 +71,10 @@ class AlephVmControllerInterface(ABC):
         """Configuration done after the VM process is started"""
         raise NotImplementedError()
 
+    async def load_configuration(self) -> None:
+        """Load configuration just after the VM process is started"""
+        raise NotImplementedError()
+
     async def start_guest_api(self):
         raise NotImplementedError()
 

@@ -2,11 +2,11 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel
-
+from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 try:
@@ -14,24 +14,16 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from aleph.vm.conf import Settings, settings
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
+from .configuration import (
+    Configuration,
+    HypervisorType,
+    QemuVMConfiguration,
+    VMConfiguration,
+)
+
 logger = logging.getLogger(__name__)
-
-
-class VMConfiguration(BaseModel):
-    use_jailer: bool
-    firecracker_bin_path: Path
-    jailer_bin_path: Path
-    config_file_path: Path
-    init_timeout: float
-
-
-class Configuration(BaseModel):
-    vm_id: int
-    settings: Settings
-    vm_configuration: VMConfiguration
 
 
 def configuration_from_file(path: Path):
@@ -68,22 +60,34 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-async def run_instance(config: Configuration):
-    execution = MicroVM(
-        vm_id=config.vm_id,
-        firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
-        jailer_base_directory=config.settings.JAILER_BASE_DIR,
-        use_jailer=config.vm_configuration.use_jailer,
-        jailer_bin_path=config.vm_configuration.jailer_bin_path,
-        init_timeout=config.vm_configuration.init_timeout,
-    )
+async def run_persistent_vm(config: Configuration):
+    if config.hypervisor == HypervisorType.firecracker:
+        assert isinstance(config.vm_configuration, VMConfiguration)
+        execution = MicroVM(
+            vm_id=config.vm_id,
+            firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
+            jailer_base_directory=config.settings.JAILER_BASE_DIR,
+            use_jailer=config.vm_configuration.use_jailer,
+            jailer_bin_path=config.vm_configuration.jailer_bin_path,
+            init_timeout=config.vm_configuration.init_timeout,
+        )
 
-    execution.prepare_start()
-    process = await execution.start(config.vm_configuration.config_file_path)
+        execution.prepare_start()
+        process = await execution.start(config.vm_configuration.config_file_path)
+    else:
+        assert isinstance(config.vm_configuration, QemuVMConfiguration)
+        execution = QemuVM(config.vm_configuration)
+        process = await execution.start()
+
+        # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
+
     if config.settings.PRINT_SYSTEM_LOGS:
         execution.start_printing_logs()
 
     await process.wait()
+    logger.info(f"Process terminated with {process.returncode}")
 
     return execution
 
@@ -125,7 +129,7 @@ def main():
 
         network.setup()
 
-    asyncio.run(run_instance(config))
+    asyncio.run(run_persistent_vm(config))
 
 
 if __name__ == "__main__":

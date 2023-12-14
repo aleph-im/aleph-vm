@@ -184,6 +184,7 @@ class Settings(BaseSettings):
     DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT = Path("/var/lib/aleph/vm")
+    JAILER_BASE_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/jailer")
     EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
@@ -359,6 +360,8 @@ class Settings(BaseSettings):
             self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
         if not self.DATA_CACHE:
             self.DATA_CACHE = self.CACHE_ROOT / "data"
+        if not self.JAILER_BASE_DIRECTORY:
+            self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
         if not self.PERSISTENT_VOLUMES_DIR:
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
         if not self.EXECUTION_LOG_DIRECTORY:
