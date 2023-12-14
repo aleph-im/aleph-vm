@@ -11,7 +11,7 @@ from aleph_message.models.execution.instance import InstanceContent
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-from aleph.vm.orchestrator.metrics import delete_all_records, get_execution_records
+from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -61,9 +61,10 @@ class VmPool:
         self.snapshot_manager = SnapshotManager()
         logger.debug("Initializing SnapshotManager ...")
         self.snapshot_manager.run_snapshots()
+
         logger.debug("Loading existing executions ...")
-        # asyncio.run(delete_all_records())
-        asyncio.run(self._load_persistent_executions())
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self._load_persistent_executions())
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
