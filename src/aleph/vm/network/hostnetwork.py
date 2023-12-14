@@ -203,8 +203,8 @@ class Network:
         self.reset_ipv4_forwarding_state()
         self.reset_ipv6_forwarding_state()
 
-    async def create_tap(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> TapInterface:
-        """Create TAP interface to be used by VM"""
+    async def prepare_tap(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> TapInterface:
+        """Prepare TAP interface to be used by VM"""
         interface = TapInterface(
             f"vmtap{vm_id}",
             ip_network=self.get_network_for_tap(vm_id),
@@ -215,6 +215,9 @@ class Network:
             ),
             ndp_proxy=self.ndp_proxy,
         )
+        return interface
+
+    async def create_tap(self, vm_id: int, interface: TapInterface):
+        """Create TAP interface to be used by VM"""
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
-        return interface

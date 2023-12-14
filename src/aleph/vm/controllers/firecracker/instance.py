@@ -69,8 +69,10 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         enable_console: Optional[bool] = None,
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
+        prepare_jailer: bool = True,
     ):
         self.latest_snapshot = None
+        persistent = True
         super().__init__(
             vm_id,
             vm_hash,
@@ -79,7 +81,8 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             enable_console,
             hardware_resources or MachineResources(),
             tap_interface,
-            persistent=True,
+            persistent,
+            prepare_jailer,
         )
 
     async def setup(self):
