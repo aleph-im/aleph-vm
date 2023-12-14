@@ -4,7 +4,16 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    create_engine,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -12,7 +21,6 @@ try:
     from sqlalchemy.orm import declarative_base
 except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
-
 
 from aleph.vm.conf import make_db_url, settings
 
@@ -35,10 +43,11 @@ def create_tables(engine: Engine):
 
 
 class ExecutionRecord(Base):
-    __tablename__ = "records"
+    __tablename__ = "executions"
 
     uuid = Column(String, primary_key=True)
     vm_hash = Column(String, nullable=False)
+    vm_id = Column(Integer, nullable=True)
 
     time_defined = Column(DateTime, nullable=False)
     time_prepared = Column(DateTime)
@@ -57,8 +66,12 @@ class ExecutionRecord(Base):
     memory = Column(Integer, nullable=False)
     network_tap = Column(String, nullable=True)
 
+    message = Column(JSON, nullable=True)
+    original_message = Column(JSON, nullable=True)
+    persistent = Column(Boolean, nullable=True)
+
     def __repr__(self):
-        return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash})>"
+        return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash}, vm_id={self.vm_id})>"
 
     def to_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.c}
@@ -76,6 +89,26 @@ async def save_record(record: ExecutionRecord):
     session = Session()  # undefined name 'Session'
     try:
         session.add(record)
+        session.commit()
+    finally:
+        session.close()
+
+
+async def delete_record(execution_uuid: str):
+    """Delete the resource usage in database"""
+    session = Session()  # undefined name 'Session'
+    try:
+        session.query(ExecutionRecord).filter(ExecutionRecord.uuid == execution_uuid).delete()
+        session.commit()
+    finally:
+        session.close()
+
+
+async def delete_all_records():
+    """Delete all the resource usage in database"""
+    session = Session()  # undefined name 'Session'
+    try:
+        session.query(ExecutionRecord).delete()
         session.commit()
     finally:
         session.close()
