@@ -169,6 +169,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
         persistent: bool = False,
+        prepare_jailer: bool = True,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -189,7 +190,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
         )
-        self.fvm.prepare_jailer()
+        if prepare_jailer:
+            self.fvm.prepare_jailer()
 
         # These properties are set later in the setup and configuration.
         self.vm_configuration = None

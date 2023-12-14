@@ -10,7 +10,6 @@ from aleph_message.models import (
     ExecutableContent,
     InstanceContent,
     ItemHash,
-    MessageType,
     ProgramContent,
 )
 from aleph_message.models.execution.environment import HypervisorType
@@ -28,6 +27,7 @@ from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResou
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
+    delete_record,
     save_execution_data,
     save_record,
 )
@@ -37,6 +37,7 @@ from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
 if TYPE_CHECKING:
     from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+    from aleph.vm.systemd import SystemDManager
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,11 @@ class VmExecution:
 
     @property
     def is_running(self):
-        return self.times.starting_at and not self.times.stopping_at
+        return (
+            self.times.starting_at and not self.times.stopping_at
+            if not self.persistent
+            else self.systemd_manager.is_service_active(self.controller_service)
+        )
 
     @property
     def is_program(self):
@@ -116,6 +121,7 @@ class VmExecution:
         message: ExecutableContent,
         original: ExecutableContent,
         snapshot_manager: "SnapshotManager",
+        systemd_manager: "SystemDManager",
         persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
@@ -130,6 +136,7 @@ class VmExecution:
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
+        self.systemd_manager = systemd_manager
         self.persistent = persistent
 
     def to_dict(self) -> dict:
@@ -141,7 +148,7 @@ class VmExecution:
     def to_json(self, indent: Optional[int] = None) -> str:
         return dumps_for_json(self.to_dict(), indent=indent)
 
-    async def prepare(self):
+    async def prepare(self, download: bool = True):
         """Download VM required files"""
         async with self.preparation_pending_lock:
             if self.resources:
@@ -161,15 +168,17 @@ class VmExecution:
             if not resources:
                 msg = "Unknown executable message type"
                 raise ValueError(msg, repr(self.message))
-            await resources.download_all()
+            if download:
+                await resources.download_all()
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
 
-    async def create(self, vm_id: int, tap_interface: Optional[TapInterface] = None) -> AlephVmControllerInterface:
+    def create(
+        self, vm_id: int, tap_interface: Optional[TapInterface] = None, prepare: bool = True
+    ) -> AlephVmControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
             raise ValueError(msg)
-        self.times.starting_at = datetime.now(tz=timezone.utc)
 
         vm: AlephVmControllerInterface
         if self.is_program:
@@ -182,6 +191,7 @@ class VmExecution:
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
                 persistent=self.persistent,
+                prepare_jailer=prepare,
             )
         elif self.is_instance:
             if self.hypervisor == HypervisorType.firecracker:
@@ -193,6 +203,7 @@ class VmExecution:
                     enable_networking=self.message.environment.internet,
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
+                    prepare_jailer=prepare,
                 )
             elif self.hypervisor == HypervisorType.qemu:
                 assert isinstance(self.resources, AlephQemuResources)
@@ -209,19 +220,24 @@ class VmExecution:
         else:
             raise Exception("Unknown VM")
 
+        return vm
+
+    async def start(self):
+        self.times.starting_at = datetime.now(tz=timezone.utc)
+
         try:
-            await vm.setup()
+            await self.vm.setup()
             # Avoid VM start() method because it's only for ephemeral programs,
             # for persistent and instances we will use SystemD manager
             if not self.persistent:
-                await vm.start()
-            await vm.configure()
-            await vm.start_guest_api()
+                await self.vm.start()
+            await self.vm.configure()
+            await self.vm.start_guest_api()
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
-            return vm
+            await self.save()
         except Exception:
-            await vm.teardown()
+            await self.vm.teardown()
             raise
 
     async def wait_for_init(self):
@@ -310,16 +326,15 @@ class VmExecution:
             logger.debug("Stop: waiting for runs to complete...")
             await self.runs_done_event.wait()
 
-    async def record_usage(self):
-        if settings.EXECUTION_LOG_ENABLED:
-            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
+    async def save(self):
         pid_info = self.vm.to_dict()
         # Handle cases when the process cannot be accessed
-        if pid_info and pid_info.get("process"):
+        if not self.persistent and pid_info and pid_info.get("process"):
             await save_record(
                 ExecutionRecord(
                     uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
+                    vm_id=self.vm_id,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
                     time_started=self.times.started_at,
@@ -333,15 +348,18 @@ class VmExecution:
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
                     network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
+                    message=self.message,
+                    original_message=self.original,
+                    persistent=self.persistent,
                 )
             )
         else:
-            # The process cannot be accessed. It has probably already exited
-            # and its metrics are not available anymore.
+            # The process cannot be accessed, or it's a persistent VM.
             await save_record(
                 ExecutionRecord(
                     uuid=str(self.uuid),
                     vm_hash=self.vm_hash,
+                    vm_id=self.vm_id,
                     time_defined=self.times.defined_at,
                     time_prepared=self.times.prepared_at,
                     time_started=self.times.started_at,
@@ -354,8 +372,16 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
+                    message=self.message.json(),
+                    original_message=self.original.json(),
+                    persistent=self.persistent,
                 )
             )
+
+    async def record_usage(self):
+        await delete_record(execution_uuid=str(self.uuid))
+        if settings.EXECUTION_LOG_ENABLED:
+            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
 
     async def run_code(self, scope: Optional[dict] = None) -> bytes:
         if not self.vm:
@@ -365,6 +391,7 @@ class VmExecution:
         if not self.is_program:
             msg = "Code can ony be run on programs"
             raise ValueError(msg)
+
         assert isinstance(self.vm, AlephFirecrackerProgram)
 
         self.concurrent_runs += 1

@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Optional
 
 from aleph_message.models import ExecutableMessage, ItemHash
@@ -9,7 +11,9 @@ from aleph_message.models.execution.instance import InstanceContent
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
+from aleph.vm.orchestrator.metrics import delete_all_records, get_execution_records
 from aleph.vm.systemd import SystemDManager
+from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
 from .models import ExecutableContent, VmExecution
@@ -57,6 +61,9 @@ class VmPool:
         self.snapshot_manager = SnapshotManager()
         logger.debug("Initializing SnapshotManager ...")
         self.snapshot_manager.run_snapshots()
+        logger.debug("Loading existing executions ...")
+        # asyncio.run(delete_all_records())
+        asyncio.run(self._load_persistent_executions())
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
@@ -83,6 +90,7 @@ class VmPool:
                 message=message,
                 original=original,
                 snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
                 persistent=persistent,
             )
             self.executions[vm_hash] = execution
@@ -93,11 +101,13 @@ class VmPool:
 
             if self.network:
                 vm_type = VmType.from_message_content(message)
-                tap_interface = await self.network.create_tap(vm_id, vm_hash, vm_type)
+                tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                await self.network.create_tap(vm_id, tap_interface)
             else:
                 tap_interface = None
 
-            await execution.create(vm_id=vm_id, tap_interface=tap_interface)
+            execution.create(vm_id=vm_id, tap_interface=tap_interface)
+            await execution.start()
 
             # Start VM and snapshots automatically
             if execution.persistent:
@@ -187,6 +197,46 @@ class VmPool:
             del self.executions[vm_hash]
         except KeyError:
             pass
+
+    async def _load_persistent_executions(self):
+        """Load persistent executions from the database."""
+        saved_executions = await get_execution_records()
+        for saved_execution in saved_executions:
+            # Prevent to load the same execution twice
+            if self.executions.get(saved_execution.vm_hash):
+                break
+
+            vm_id = saved_execution.vm_id
+            message_dict = json.loads(saved_execution.message)
+            original_dict = json.loads(saved_execution.original_message)
+            execution = VmExecution(
+                vm_hash=saved_execution.vm_hash,
+                message=get_message_executable_content(message_dict),
+                original=get_message_executable_content(message_dict),
+                snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
+                persistent=saved_execution.persistent,
+            )
+            if execution.is_running:
+                # TODO: Improve the way that we re-create running execution
+                await execution.prepare(download=False)
+                if self.network:
+                    vm_type = VmType.from_message_content(execution.message)
+                    tap_interface = await self.network.prepare_tap(vm_id, execution.vm_hash, vm_type)
+                else:
+                    tap_interface = None
+
+                execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
+                await execution.vm.start_guest_api()
+                execution.ready_event.set()
+                execution.times.started_at = datetime.now(tz=timezone.utc)
+
+                self.executions[execution.vm_hash] = execution
+            else:
+                execution.uuid = saved_execution.uuid
+                await execution.record_usage()
+
+        logger.debug(f"Loaded {len(self.executions)} executions")
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""

@@ -107,6 +107,10 @@ async def stop_all_vms(app: web.Application):
 def run():
     """Run the VM Supervisor."""
     settings.check()
+
+    engine = setup_engine()
+    create_tables(engine)
+
     pool = VmPool()
     pool.setup()
 
@@ -119,10 +123,7 @@ def run():
     app["secret_token"] = secret_token
     app["vm_pool"] = pool
 
-    print(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
-
-    engine = setup_engine()
-    create_tables(engine)
+    logger.debug(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     try:
         if settings.WATCH_FOR_MESSAGES:
