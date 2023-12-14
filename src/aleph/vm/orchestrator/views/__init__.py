@@ -256,8 +256,7 @@ async def update_allocations(request: web.Request):
         if execution.vm_hash not in allocations and execution.is_running:
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
-            await execution.stop()
-            execution.persistent = False
+            await pool.stop_vm(execution.vm_hash)
 
     # Second start persistent VMs and instances sequentially to limit resource usage.
 
