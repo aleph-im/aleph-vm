@@ -9,7 +9,13 @@ from typing import TypeVar
 import aiohttp
 import pydantic
 from aiohttp import web
-from aleph_message.models import AlephMessage, ItemHash, ProgramMessage, parse_message
+from aleph_message.models import (
+    AlephMessage,
+    ItemHash,
+    PaymentType,
+    ProgramMessage,
+    parse_message,
+)
 from yarl import URL
 
 from aleph.vm.conf import settings
@@ -17,6 +23,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
 from .messages import load_updated_message
+from .payment import get_balance, get_required_balance, get_required_flow, get_stream
 from .pubsub import PubSub
 from .reactor import Reactor
 
@@ -127,3 +134,46 @@ async def stop_watch_for_messages_task(app: web.Application):
         await app["messages_listener"]
     except asyncio.CancelledError:
         logger.debug("Task messages_listener is cancelled now")
+
+
+async def monitor_payments(app: web.Application):
+    logger.debug("Monitoring balances")
+    pool: VmPool = app["vm_pool"]
+    while True:
+        await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
+
+        # Check if the balance held in the wallet is sufficient holder tier resources
+        for sender, executions in pool.get_executions_by_sender(payment=PaymentType.hold):
+            balance = await get_balance(sender)
+
+            # Stop executions until the required balance is reached
+            required_balance = await get_required_balance(executions)
+            while balance < required_balance:
+                last_execution = executions.pop(-1)
+                logger.debug(f"Stopping {last_execution} due to insufficient stream")
+                await last_execution.stop()
+                required_balance = await get_required_balance(executions)
+
+        # Check if the balance held in the wallet is sufficient stream tier resources
+        for sender, chain, executions in pool.get_executions_by_sender(payment=PaymentType.stream):
+            stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
+            required_stream = await get_required_flow(executions)
+
+            # Stop executions until the required stream is reached
+            while stream < required_stream:
+                last_execution = executions.pop(-1)
+                logger.debug(f"Stopping {last_execution} due to insufficient stream")
+                await last_execution.stop()
+                required_stream = await get_required_flow(executions)
+
+
+async def start_payment_monitoring_task(app: web.Application):
+    app["payments_monitor"] = create_task_log_exceptions(monitor_payments(app))
+
+
+async def stop_balances_monitoring_task(app: web.Application):
+    app["payments_monitor"].cancel()
+    try:
+        await app["payments_monitor"]
+    except asyncio.CancelledError:
+        logger.debug("Task payments_monitor is cancelled now")
