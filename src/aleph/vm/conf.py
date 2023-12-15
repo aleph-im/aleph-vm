@@ -3,12 +3,14 @@ import logging
 import os
 import re
 from collections.abc import Iterable
+from decimal import Decimal
 from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
+from aleph_message.models import ItemHash
 from pydantic import BaseSettings, Field
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
@@ -205,6 +207,15 @@ class Settings(BaseSettings):
 
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
+
+    PAYMENT_MONITOR_INTERVAL: Decimal = Field(
+        default=60.0,
+        description="Interval in seconds between payment checks",
+    )
+    PAYMENT_RECEIVER_ADDRESS: str = Field(
+        description="Address of the account receiving payments",
+    )
+    PAYMENT_PRICING_AGGREGATE: ItemHash  # TODO: Missing
 
     SNAPSHOT_FREQUENCY: int = Field(
         default=60,
