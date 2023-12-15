@@ -19,7 +19,12 @@ from aleph.vm.version import __version__
 
 from .metrics import create_tables, setup_engine
 from .resources import about_system_usage
-from .tasks import start_watch_for_messages_task, stop_watch_for_messages_task
+from .tasks import (
+    start_payment_monitoring_task,
+    start_watch_for_messages_task,
+    stop_balances_monitoring_task,
+    stop_watch_for_messages_task,
+)
 from .views import (
     about_config,
     about_execution_records,
@@ -127,7 +132,9 @@ def run():
     try:
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
+            app.on_startup.append(start_payment_monitoring_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
+            app.on_cleanup.append(stop_balances_monitoring_task)
             app.on_cleanup.append(stop_all_vms)
 
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
