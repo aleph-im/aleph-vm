@@ -220,7 +220,7 @@ class VmPool:
             )
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
-                await execution.prepare(download=False)
+                await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
                     tap_interface = await self.network.prepare_tap(vm_id, execution.vm_hash, vm_type)

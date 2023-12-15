@@ -148,7 +148,7 @@ class VmExecution:
     def to_json(self, indent: Optional[int] = None) -> str:
         return dumps_for_json(self.to_dict(), indent=indent)
 
-    async def prepare(self, download: bool = True):
+    async def prepare(self):
         """Download VM required files"""
         async with self.preparation_pending_lock:
             if self.resources:
@@ -168,8 +168,7 @@ class VmExecution:
             if not resources:
                 msg = "Unknown executable message type"
                 raise ValueError(msg, repr(self.message))
-            if download:
-                await resources.download_all()
+            await resources.download_all()
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
 
