@@ -3,10 +3,10 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from aleph_message.models import ExecutableMessage, ItemHash
-from aleph_message.models.execution.instance import InstanceContent
+from aleph_message.models.execution.base import PaymentType
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
@@ -264,3 +264,17 @@ class VmPool:
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and execution.is_instance
         )
+
+    def get_executions_by_sender(self, payment_type: PaymentType) -> Iterable[Tuple[str, list[VmExecution]]]:
+        """Return all executions of the given type, grouped by sender and by chain."""
+        executions_by_sender: dict[str, list[VmExecution]] = {}
+        for vm_hash, execution in self.executions.items():
+            if execution.is_stopping or execution.is_stopped:
+                # Ignore the execution that is stopping or not running anymore
+                continue
+            execution_payment_type = execution.message.payment.type if execution.message.payment else PaymentType.hold
+            if execution_payment_type == payment_type:
+                sender = execution.message.sender
+                chain = execution.message.chain
+                executions_by_sender.setdefault(sender, []).append(execution)
+        return executions_by_sender.items()
