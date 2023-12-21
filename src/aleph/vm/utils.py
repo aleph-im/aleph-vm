@@ -8,6 +8,7 @@ from base64 import b16encode, b32decode
 from collections.abc import Coroutine
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
+from pathlib import Path
 from shutil import disk_usage
 from typing import Any, Dict, Optional
 
@@ -147,3 +148,24 @@ def check_disk_space(bytes_to_use: int) -> bool:
 
 class NotEnoughDiskSpaceError(OSError):
     pass
+
+
+def get_path_size(path: Path) -> int:
+    if path.is_dir():
+        return sum([f.stat().st_size for f in path.glob("**/*")])
+    elif path.is_block_device():
+        return get_block_device_size(str(path))
+    elif path.is_file():
+        return path.stat().st_size
+    else:
+        raise NotImplementedError
+
+
+def get_block_device_size(device: str) -> int:
+    output = subprocess.run(
+        ["lsblk", device, "--output", "SIZE", "--bytes", "--noheadings", "--nodeps"],
+        capture_output=True,
+        check=True,
+    )
+    size = int(output.stdout.decode())
+    return size
