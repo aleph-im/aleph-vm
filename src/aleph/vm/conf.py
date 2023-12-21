@@ -215,7 +215,16 @@ class Settings(BaseSettings):
     PAYMENT_RECEIVER_ADDRESS: str = Field(
         description="Address of the account receiving payments",
     )
+    PAYMENT_SUPER_TOKEN: str = Field(
+        default="0x1290248e01ed2f9f863a9752a8aad396ef3a1b00",
+        description="Address of the ALEPH SuperToken on SuperFluid",
+    )
     PAYMENT_PRICING_AGGREGATE: ItemHash  # TODO: Missing
+
+    PAYMENT_RPC_SERVER: Field(
+        default="https://api.avax-test.network/ext/bc/C/rpc",
+        description="Default to Avalanche Testnet RPC",
+    )
 
     SNAPSHOT_FREQUENCY: int = Field(
         default=60,
