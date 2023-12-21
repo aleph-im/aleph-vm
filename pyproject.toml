@@ -45,6 +45,8 @@ dependencies = [
   "qmp==0.0.1",
   "dbus-python==1.3.2",
   "systemd-python==235",
+  "systemd-python==235",
+  "superfluid @ git+https://github.com/Godspower-Eze/superfluid.py#egg=superfluid"
 ]
 
 [project.urls]
