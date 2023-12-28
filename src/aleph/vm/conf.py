@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
 
-    PAYMENT_MONITOR_INTERVAL: Decimal = Field(
+    PAYMENT_MONITOR_INTERVAL: float = Field(
         default=60.0,
         description="Interval in seconds between payment checks",
     )
@@ -219,9 +219,9 @@ class Settings(BaseSettings):
         default="0x1290248e01ed2f9f863a9752a8aad396ef3a1b00",
         description="Address of the ALEPH SuperToken on SuperFluid",
     )
-    PAYMENT_PRICING_AGGREGATE: ItemHash  # TODO: Missing
+    PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
-    PAYMENT_RPC_SERVER: Field(
+    PAYMENT_RPC_SERVER: str = Field(
         default="https://api.avax-test.network/ext/bc/C/rpc",
         description="Default to Avalanche Testnet RPC",
     )

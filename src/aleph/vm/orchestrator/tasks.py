@@ -143,28 +143,33 @@ async def monitor_payments(app: web.Application):
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
 
         # Check if the balance held in the wallet is sufficient holder tier resources
-        for sender, executions in pool.get_executions_by_sender(payment=PaymentType.hold):
-            balance = await get_balance(sender)
+        for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold):
+            for chain, executions in chains.items():
+                balance = await get_balance(sender)
 
-            # Stop executions until the required balance is reached
-            required_balance = await get_required_balance(executions)
-            while balance < required_balance:
-                last_execution = executions.pop(-1)
-                logger.debug(f"Stopping {last_execution} due to insufficient stream")
-                await last_execution.stop()
-                required_balance = await get_required_balance(executions)
+                # Stop executions until the required balance is reached
+                required_balance = get_required_balance(executions)
+                while balance < required_balance:
+                    last_execution = executions.pop(-1)
+                    logger.debug(f"Stopping {last_execution} due to insufficient stream")
+                    await last_execution.stop()
+                    required_balance = get_required_balance(executions)
 
         # Check if the balance held in the wallet is sufficient stream tier resources
-        for sender, chain, executions in pool.get_executions_by_sender(payment=PaymentType.stream):
-            stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
-            required_stream = await get_required_flow(executions)
-
-            # Stop executions until the required stream is reached
-            while stream < required_stream:
-                last_execution = executions.pop(-1)
-                logger.debug(f"Stopping {last_execution} due to insufficient stream")
-                await last_execution.stop()
-                required_stream = await get_required_flow(executions)
+        for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid):
+            for chain, executions in chains.items():
+                stream = get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
+                logger.debug(
+                    f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
+                )
+                required_stream = get_required_flow(executions)
+                logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
+                # Stop executions until the required stream is reached
+                while stream < required_stream:
+                    last_execution = executions.pop(-1)
+                    logger.debug(f"Stopping {last_execution} due to insufficient stream")
+                    await last_execution.stop()
+                    required_stream = get_required_flow(executions)
 
 
 async def start_payment_monitoring_task(app: web.Application):
