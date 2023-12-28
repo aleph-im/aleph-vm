@@ -270,9 +270,9 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
 
-    def get_executions_by_sender(self, payment_type: PaymentType) -> Iterable[Tuple[str, Dict[str, list[VmExecution]]]]:
+    def get_executions_by_sender(self, payment_type: PaymentType) -> Dict[str, Dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
-        executions_by_sender: Tuple[str, Dict[str, list[VmExecution]]] = {}
+        executions_by_sender: Dict[str, Dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
             if not execution.is_running:
                 # Ignore the execution that is stopping or not running anymore
@@ -290,4 +290,4 @@ class VmPool:
                 chain = execution_payment.chain
                 executions_by_sender.setdefault(sender, {})
                 executions_by_sender[sender].setdefault(chain, []).append(execution)
-        return executions_by_sender.items()
+        return executions_by_sender
