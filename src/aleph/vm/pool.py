@@ -1,9 +1,15 @@
 import asyncio
 import logging
 from collections.abc import Iterable
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from aleph_message.models import Chain, ExecutableMessage, ItemHash, PaymentType
+from aleph_message.models import (
+    Chain,
+    ExecutableMessage,
+    ItemHash,
+    Payment,
+    PaymentType,
+)
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.conf import settings
@@ -214,16 +220,24 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
 
-    def get_executions_by_sender(self, payment_type: PaymentType) -> Iterable[Tuple[str, list[VmExecution]]]:
+    def get_executions_by_sender(self, payment_type: PaymentType) -> Iterable[Tuple[str, Dict[str, list[VmExecution]]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
-        executions_by_sender: dict[str, list[VmExecution]] = {}
+        executions_by_sender: Tuple[str, Dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
-            if execution.is_stopping or execution.is_stopped:
+            if not execution.is_running:
                 # Ignore the execution that is stopping or not running anymore
                 continue
-            execution_payment_type = execution.message.payment.type if execution.message.payment else PaymentType.hold
-            if execution_payment_type == payment_type:
-                sender = execution.message.sender
-                chain = execution.message.chain
-                executions_by_sender.setdefault(sender, []).append(execution)
+            if execution.vm_hash == settings.CHECK_FASTAPI_VM_ID:
+                # Ignore Diagnostic VM execution
+                continue
+            execution_payment = (
+                execution.message.payment
+                if execution.message.payment
+                else Payment(chain=Chain.ETH, type=PaymentType.hold)
+            )
+            if execution_payment.type == payment_type:
+                sender = execution.message.address
+                chain = execution_payment.chain
+                executions_by_sender.setdefault(sender, {})
+                executions_by_sender[sender].setdefault(chain, []).append(execution)
         return executions_by_sender.items()
