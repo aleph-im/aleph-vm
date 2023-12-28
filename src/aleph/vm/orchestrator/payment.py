@@ -64,7 +64,7 @@ def to_normalized_address(value: str) -> HexAddress:
 
 def get_required_balance(executions: Iterable[VmExecution]) -> Decimal:
     """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
-    balance = 0
+    balance = Decimal(0)
     for execution in executions:
         balance += compute_execution_hold_cost(execution)
 
@@ -125,7 +125,7 @@ def _get_execution_storage_size(execution: VmExecution) -> int:
 
 def get_required_flow(executions: Iterable[VmExecution]) -> Decimal:
     """Compute the flow required for the resources of the user from the messages and the pricing aggregate"""
-    flow = 0
+    flow = Decimal(0)
     for execution in executions:
         flow += compute_execution_flow_cost(execution)
 
