@@ -127,4 +127,4 @@ class Allocation(BaseModel):
 
 
 class VMNotification(BaseModel):
-    instance: str = None
+    instance: str
