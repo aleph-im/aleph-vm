@@ -24,7 +24,7 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import status
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.pubsub import PubSub
-from aleph.vm.orchestrator.resources import Allocation
+from aleph.vm.orchestrator.resources import Allocation, VMNotification
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import (
@@ -252,8 +252,15 @@ async def update_allocations(request: web.Request):
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
+
     for execution in list(pool.get_persistent_executions()):
-        if execution.vm_hash not in allocations and execution.is_running:
+        if (
+            execution.vm_hash not in allocations
+            and execution.is_running
+            and (
+                not execution.message.payment or (execution.message.payment and not execution.message.payment.is_stream)
+            )
+        ):
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await pool.stop_vm(execution.vm_hash)
@@ -314,6 +321,64 @@ async def update_allocations(request: web.Request):
         data={
             "success": not failing,
             "successful": list(successful),
+            "failing": list(failing),
+            "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
+        },
+        status=status_code,
+    )
+
+
+async def notify_allocation(request: web.Request):
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    try:
+        data = await request.json()
+        vm_notification = VMNotification.parse_obj(data)
+    except ValidationError as error:
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+
+    pubsub: PubSub = request.app["pubsub"]
+    pool: VmPool = request.app["vm_pool"]
+
+    # First free resources from persistent programs and instances that are not scheduled anymore.
+    instance = vm_notification.instance
+
+    # Exceptions that can be raised when starting a VM:
+    vm_creation_exceptions = (
+        UnknownHashError,
+        ResourceDownloadError,
+        FileTooLargeError,
+        VmSetupError,
+        MicroVMFailedInitError,
+        HostNotFoundError,
+    )
+
+    scheduling_errors: dict[ItemHash, Exception] = {}
+
+    instance_item_hash = ItemHash(instance)
+    try:
+        await start_persistent_vm(instance_item_hash, pubsub, pool)
+        successful = True
+    except vm_creation_exceptions as error:
+        logger.exception(error)
+        scheduling_errors[instance_item_hash] = error
+        successful = False
+
+    failing = set(scheduling_errors.keys())
+
+    status_code: int
+    if not failing:
+        status_code = 200  # OK
+    elif not successful:
+        status_code = 503  # Service Unavailable
+    else:
+        status_code = 207  # Multi-Status
+
+    return web.json_response(
+        data={
+            "success": not failing,
+            "successful": successful,
             "failing": list(failing),
             "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
         },
