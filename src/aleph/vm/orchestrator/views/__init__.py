@@ -253,13 +253,7 @@ async def update_allocations(request: web.Request):
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
     for execution in list(pool.executions.values()):
-        if (
-            execution.vm_hash not in allocations
-            and execution.is_running
-            and (
-                not execution.message.payment or (execution.message.payment and not execution.message.payment.is_stream)
-            )
-        ):
+        if execution.vm_hash not in allocations and execution.is_running and not execution.is_payment_stream:
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await pool.stop_vm(execution.vm_hash)
@@ -339,7 +333,6 @@ async def notify_allocation(request: web.Request):
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
 
-    # First free resources from persistent programs and instances that are not scheduled anymore.
     instance = vm_notification.instance
 
     # Exceptions that can be raised when starting a VM:

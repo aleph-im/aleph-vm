@@ -110,6 +110,10 @@ class VmExecution:
     def controller_service(self) -> str:
         return f"aleph-vm-controller@{self.vm_hash}.service"
 
+    @property
+    def is_payment_stream(self) -> bool:
+        return self.message.payment.is_stream if self.message.payment else False
+
     def __init__(
         self,
         vm_hash: ItemHash,
