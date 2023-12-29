@@ -133,7 +133,7 @@ def get_required_flow(executions: Iterable[VmExecution]) -> Decimal:
 
 
 def compute_execution_flow_cost(execution: VmExecution) -> Decimal:
-    compute_unit_cost_hour = 0.011 if execution.persistent else 0.11  # TODO: Get from PAYG aggregate
+    compute_unit_cost_hour = 0.11 if execution.persistent else 0.011  # TODO: Get from PAYG aggregate
     compute_unit_cost_second = compute_unit_cost_hour / Hour
 
     compute_units_required = _get_nb_compute_units(execution)
