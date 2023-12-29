@@ -77,7 +77,7 @@ def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
     compute_units_required = _get_nb_compute_units(execution)
     compute_unit_multiplier = _get_compute_unit_multiplier(execution)
 
-    compute_unit_price = Decimal(compute_units_required) * compute_unit_multiplier * compute_unit_cost
+    compute_unit_price = Decimal(compute_units_required) * Decimal(compute_unit_multiplier) * Decimal(compute_unit_cost)
     price = compute_unit_price + _get_additional_storage_hold_price(execution)
     return Decimal(price)
 
@@ -150,11 +150,13 @@ def compute_execution_flow_cost(execution: VmExecution) -> Decimal:
 
 def _get_additional_storage_flow_price(execution: VmExecution) -> Decimal:
     additional_storage_hour_price = 0.000000977  # TODO: Get from PAYG aggregate
-    additional_storage_second_price = additional_storage_hour_price / Hour
+    additional_storage_second_price = Decimal(additional_storage_hour_price) / Decimal(Hour)
     nb_compute_units = execution.vm.hardware_resources.vcpus
     free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
 
     total_volume_size = _get_execution_storage_size(execution)
-    additional_storage = max(total_volume_size - (free_storage_per_compute_unit * nb_compute_units), 0)
-    price = additional_storage / additional_storage_second_price / MiB
+    additional_storage = max(
+        Decimal(total_volume_size) - (Decimal(free_storage_per_compute_unit) * Decimal(nb_compute_units)), Decimal(0)
+    )
+    price = additional_storage / additional_storage_second_price / Decimal(MiB)
     return Decimal(price)
