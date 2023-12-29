@@ -124,3 +124,7 @@ class Allocation(BaseModel):
     instances: set[str] = Field(default_factory=set)
     on_demand_vms: Optional[set[str]] = None
     jobs: Optional[set[str]] = None
+
+
+class VMNotification(BaseModel):
+    instance: str = None
