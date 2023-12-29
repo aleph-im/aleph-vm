@@ -208,6 +208,7 @@ class Settings(BaseSettings):
         description="Interval in seconds between payment checks",
     )
     PAYMENT_RECEIVER_ADDRESS: str = Field(
+        default="",
         description="Address of the account receiving payments",
     )
     PAYMENT_SUPER_TOKEN: str = Field(
