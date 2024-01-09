@@ -72,7 +72,7 @@ def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
 
 def _get_additional_storage_hold_price(execution: VmExecution) -> Decimal:
     # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
-    nb_compute_units = execution.vm.hardware_resources.vcpus
+    nb_compute_units = _get_nb_compute_units(execution)
     free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
 
     total_volume_size = _get_execution_storage_size(execution)
