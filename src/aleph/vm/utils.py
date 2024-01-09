@@ -14,6 +14,8 @@ from typing import Any, Optional
 
 import aiodns
 import msgpack
+from eth_typing import HexAddress, HexStr
+from eth_utils import hexstr_if_str, is_address, to_hex
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +160,17 @@ def get_block_device_size(device: str) -> int:
     )
     size = int(output.stdout.decode())
     return size
+
+
+def to_normalized_address(value: str) -> HexAddress:
+    """
+    Converts an address to its normalized hexadecimal representation.
+    """
+    try:
+        hex_address = hexstr_if_str(to_hex, value).lower()
+    except AttributeError:
+        raise TypeError("Value must be any string, instead got type {}".format(type(value)))
+    if is_address(hex_address):
+        return HexAddress(HexStr(hex_address))
+    else:
+        raise ValueError("Unknown format {}, attempted to normalize to {}".format(value, hex_address))
