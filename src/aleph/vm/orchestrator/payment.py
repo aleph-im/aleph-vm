@@ -4,15 +4,15 @@ from decimal import Decimal
 from typing import Iterable
 
 import aiohttp
-from eth_typing import HexAddress, HexStr
-from eth_utils import from_wei, hexstr_if_str, is_address, to_hex
+from eth_typing import HexAddress
+from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
 from aleph.vm.constants import GiB, Hour, MiB
 from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.models import VmExecution
-from aleph.vm.utils import get_path_size
+from aleph.vm.utils import get_path_size, to_normalized_address
 
 logger = logging.getLogger(__name__)
 
@@ -44,22 +44,9 @@ def get_stream(sender: str, receiver: str, chain) -> Decimal:
     receiver_address: HexAddress = to_normalized_address(receiver)
 
     flow_data: Web3FlowInfo = superfluid_instance.get_flow(super_token, sender_address, receiver_address)
+    # TODO:
     stream = from_wei(flow_data["flowRate"], "ether")
     return Decimal(stream)
-
-
-def to_normalized_address(value: str) -> HexAddress:
-    """
-    Converts an address to its normalized hexadecimal representation.
-    """
-    try:
-        hex_address = hexstr_if_str(to_hex, value).lower()
-    except AttributeError:
-        raise TypeError("Value must be any string, instead got type {}".format(type(value)))
-    if is_address(hex_address):
-        return HexAddress(HexStr(hex_address))
-    else:
-        raise ValueError("Unknown format {}, attempted to normalize to {}".format(value, hex_address))
 
 
 def get_required_balance(executions: Iterable[VmExecution]) -> Decimal:
@@ -72,6 +59,7 @@ def get_required_balance(executions: Iterable[VmExecution]) -> Decimal:
 
 
 def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
+    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
     compute_unit_cost = 200 if execution.persistent else 2000
 
     compute_units_required = _get_nb_compute_units(execution)
@@ -83,6 +71,7 @@ def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
 
 
 def _get_additional_storage_hold_price(execution: VmExecution) -> Decimal:
+    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
     nb_compute_units = execution.vm.hardware_resources.vcpus
     free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
 
@@ -133,7 +122,8 @@ def get_required_flow(executions: Iterable[VmExecution]) -> Decimal:
 
 
 def compute_execution_flow_cost(execution: VmExecution) -> Decimal:
-    compute_unit_cost_hour = 0.11 if execution.persistent else 0.011  # TODO: Get from PAYG aggregate
+    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
+    compute_unit_cost_hour = 0.11 if execution.persistent else 0.011
     compute_unit_cost_second = compute_unit_cost_hour / Hour
 
     compute_units_required = _get_nb_compute_units(execution)
@@ -149,7 +139,8 @@ def compute_execution_flow_cost(execution: VmExecution) -> Decimal:
 
 
 def _get_additional_storage_flow_price(execution: VmExecution) -> Decimal:
-    additional_storage_hour_price = 0.000000977  # TODO: Get from PAYG aggregate
+    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
+    additional_storage_hour_price = 0.000000977
     additional_storage_second_price = Decimal(additional_storage_hour_price) / Decimal(Hour)
     nb_compute_units = execution.vm.hardware_resources.vcpus
     free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
