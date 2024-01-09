@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -16,7 +16,7 @@ except ImportError:
 
 from aleph.vm.conf import make_db_url, settings
 
-Session: sessionmaker
+AsyncSession: sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,11 @@ Base: Any = declarative_base()
 
 
 def setup_engine():
-    global Session
+    global AsyncSession
     engine = create_engine(make_db_url(), echo=True)
-    Session = sessionmaker(bind=engine)
+    AsyncSession = sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
     return engine
 
 
@@ -73,18 +75,15 @@ async def save_execution_data(execution_uuid: UUID, execution_data: str):
 
 async def save_record(record: ExecutionRecord):
     """Record the resource usage in database"""
-    session = Session()  # undefined name 'Session'
-    try:
+    async with AsyncSession() as session:  # Use AsyncSession in a context manager
         session.add(record)
-        session.commit()
-    finally:
-        session.close()
+        await session.commit()  # Use await for commit
 
 
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
-    session = Session()  # undefined name 'Session'
-    try:
-        return session.query(ExecutionRecord).all()
-    finally:
-        session.close()
+    async with AsyncSession() as session:  # Use AsyncSession in a context manager
+        result = await session.execute(  # Use execute for querying
+            select(ExecutionRecord)
+        )
+        return result.scalars().all()
