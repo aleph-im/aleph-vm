@@ -26,9 +26,7 @@ Base: Any = declarative_base()
 def setup_engine():
     global AsyncSession
     engine = create_engine(make_db_url(), echo=True)
-    AsyncSession = sessionmaker(
-        engine, expire_on_commit=False, class_=AsyncSession
-    )
+    AsyncSession = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine
 
 
@@ -83,7 +81,5 @@ async def save_record(record: ExecutionRecord):
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
     async with AsyncSession() as session:  # Use AsyncSession in a context manager
-        result = await session.execute(  # Use execute for querying
-            select(ExecutionRecord)
-        )
+        result = await session.execute(select(ExecutionRecord))  # Use execute for querying
         return result.scalars().all()
