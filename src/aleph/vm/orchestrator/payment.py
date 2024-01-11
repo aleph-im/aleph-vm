@@ -9,7 +9,7 @@ from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
-from aleph.vm.constants import GiB, HOUR, MiB
+from aleph.vm.constants import HOUR, GiB, MiB
 from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.models import VmExecution
 from aleph.vm.utils import get_path_size, to_normalized_address
