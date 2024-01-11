@@ -117,7 +117,7 @@ class VmExecution:
 
     @property
     def uses_payment_stream(self) -> bool:
-        return self.message.payment.is_stream if self.message.payment else False
+        return self.message.payment and self.message.payment.is_stream
 
     def __init__(
         self,
