@@ -1,5 +1,5 @@
 KiB = 1024
 MiB = 1024 * 1024
 GiB = 1024 * 1024 * 1024
-Hour = 60 * 60
-Minute = 60
+HOUR = 60 * 60
+MINUTE = 60
