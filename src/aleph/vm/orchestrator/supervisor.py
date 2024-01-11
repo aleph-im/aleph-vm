@@ -5,6 +5,7 @@ and API to launch these operations.
 At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
+import asyncio
 import logging
 from collections.abc import Awaitable
 from pathlib import Path
@@ -133,6 +134,9 @@ def run():
     app["vm_pool"] = pool
 
     logger.debug(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
+
+    engine = setup_engine()
+    asyncio.run(create_tables(engine))
 
     try:
         if settings.WATCH_FOR_MESSAGES:

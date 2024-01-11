@@ -10,6 +10,7 @@ from statistics import mean
 from typing import Callable
 
 from aiohttp.web import Request, Response
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.version import get_version_from_apt, get_version_from_git
 
@@ -161,7 +162,7 @@ async def benchmark(runs: int):
     with fake requests.
     """
     engine = metrics.setup_engine()
-    metrics.create_tables(engine)
+    await metrics.create_tables(engine)
 
     ref = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
@@ -266,16 +267,22 @@ def change_dir(directory: Path):
         os.chdir(current_directory)
 
 
-def run_db_migrations():
+def run_db_migrations(connection):
     project_dir = Path(__file__).parent
 
-    db_url = make_db_url()
     alembic_cfg = alembic.config.Config("alembic.ini")
     alembic_cfg.attributes["configure_logger"] = False
+    alembic_cfg.attributes["connection"] = connection
     logging.getLogger("alembic").setLevel(logging.CRITICAL)
 
     with change_dir(project_dir):
-        alembic.command.upgrade(alembic_cfg, "head", tag=db_url)
+        alembic.command.upgrade(alembic_cfg, "head")
+
+
+async def run_async_db_migrations():
+    async_engine = create_async_engine(make_db_url(), echo=True)
+    async with async_engine.begin() as conn:
+        await conn.run_sync(run_db_migrations)
 
 
 def main():
@@ -339,7 +346,7 @@ def main():
     settings.check()
 
     logger.debug("Initialising the DB...")
-    run_db_migrations()
+    asyncio.run(run_async_db_migrations())
     logger.debug("DB up to date.")
 
     if args.benchmark > 0:
