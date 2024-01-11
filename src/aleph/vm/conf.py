@@ -11,7 +11,7 @@ from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
 from aleph_message.models import ItemHash
-from pydantic import BaseSettings, Field
+from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
@@ -211,13 +211,14 @@ class Settings(BaseSettings):
         default="",
         description="Address of the account receiving payments",
     )
+    # This address is the ALEPH SuperToken on SuperFluid Testnet
     PAYMENT_SUPER_TOKEN: str = Field(
         default="0x1290248e01ed2f9f863a9752a8aad396ef3a1b00",
         description="Address of the ALEPH SuperToken on SuperFluid",
     )
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
-    PAYMENT_RPC_SERVER: str = Field(
+    PAYMENT_RPC_API: HttpUrl = Field(
         default="https://api.avax-test.network/ext/bc/C/rpc",
         description="Default to Avalanche Testnet RPC",
     )

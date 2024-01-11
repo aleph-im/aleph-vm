@@ -253,7 +253,7 @@ async def update_allocations(request: web.Request):
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
     for execution in list(pool.get_persistent_executions()):
-        if execution.vm_hash not in allocations and execution.is_running and not execution.is_payment_stream:
+        if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await pool.stop_vm(execution.vm_hash)
@@ -322,6 +322,7 @@ async def update_allocations(request: web.Request):
 
 
 async def notify_allocation(request: web.Request):
+    """Notify instance allocation, only used for Pay as you Go feature"""
     if not authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
