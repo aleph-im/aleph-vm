@@ -4,19 +4,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import sqlalchemy
-from sqlalchemy import (
-    JSON,
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    create_engine,
-    select,
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 try:
@@ -26,7 +16,7 @@ except ImportError:
 
 from aleph.vm.conf import make_db_url, settings
 
-AsyncSession: sessionmaker
+AsyncSessionMaker: sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +24,16 @@ Base: Any = declarative_base()
 
 
 def setup_engine():
-    global AsyncSession
-    engine = create_engine(make_db_url(), echo=True)
-    AsyncSession = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    global AsyncSessionMaker
+    engine = create_async_engine(make_db_url(), echo=True)
+    AsyncSessionMaker = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine
 
 
-def create_tables(engine: Engine):
-    Base.metadata.create_all(engine)
+async def create_tables(engine: Engine):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 
 class ExecutionRecord(Base):
@@ -88,7 +80,7 @@ async def save_execution_data(execution_uuid: UUID, execution_data: str):
 
 async def save_record(record: ExecutionRecord):
     """Record the resource usage in database"""
-    async with AsyncSession() as session:  # Use AsyncSession in a context manager
+    async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
         session.add(record)
         await session.commit()  # Use await for commit
 
@@ -105,6 +97,8 @@ async def delete_record(execution_uuid: str):
 
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
-    async with AsyncSession() as session:  # Use AsyncSession in a context manager
+    async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
         result = await session.execute(select(ExecutionRecord))  # Use execute for querying
-        return result.scalars().all()
+        executions = result.scalars().all()
+        await session.commit()
+        return executions
