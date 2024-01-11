@@ -386,6 +386,8 @@ class Settings(BaseSettings):
             self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
         if not self.PERSISTENT_VOLUMES_DIR:
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
+        if not self.EXECUTION_DATABASE:
+            self.EXECUTION_DATABASE = self.EXECUTION_ROOT / "executions.sqlite3"
         if not self.EXECUTION_LOG_DIRECTORY:
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
         if not self.JAILER_BASE_DIR:
@@ -398,7 +400,7 @@ class Settings(BaseSettings):
 
 
 def make_db_url():
-    return f"sqlite:///{settings.EXECUTION_DATABASE}"
+    return f"sqlite+aiosqlite:///{settings.EXECUTION_DATABASE}"
 
 
 # Settings singleton
