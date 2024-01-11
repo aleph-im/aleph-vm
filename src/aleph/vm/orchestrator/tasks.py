@@ -23,7 +23,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
 from .messages import load_updated_message
-from .payment import get_balance, get_required_balance, get_required_flow, get_stream
+from .payment import get_balance, compute_required_balance, get_required_flow, get_stream
 from .pubsub import PubSub
 from .reactor import Reactor
 
@@ -148,12 +148,12 @@ async def monitor_payments(app: web.Application):
                 balance = await get_balance(sender)
 
                 # Stop executions until the required balance is reached
-                required_balance = get_required_balance(executions)
+                required_balance = await compute_required_balance(executions)
                 while balance < required_balance:
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await last_execution.stop()
-                    required_balance = get_required_balance(executions)
+                    required_balance = await compute_required_balance(executions)
 
         # Check if the balance held in the wallet is sufficient stream tier resources
         for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
@@ -162,14 +162,14 @@ async def monitor_payments(app: web.Application):
                 logger.debug(
                     f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
                 )
-                required_stream = get_required_flow(executions)
+                required_stream = await get_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
                 while stream < required_stream:
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await last_execution.stop()
-                    required_stream = get_required_flow(executions)
+                    required_stream = await get_required_flow(executions)
 
 
 async def start_payment_monitoring_task(app: web.Application):

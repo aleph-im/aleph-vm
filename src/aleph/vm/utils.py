@@ -141,24 +141,25 @@ class NotEnoughDiskSpaceError(OSError):
     pass
 
 
-def get_path_size(path: Path) -> int:
+async def get_path_size(path: Path) -> int:
+    """Get the size in bytes of a given path."""
     if path.is_dir():
         return sum([f.stat().st_size for f in path.glob("**/*")])
     elif path.is_block_device():
-        return get_block_device_size(str(path))
+        return await get_block_device_size(str(path))
     elif path.is_file():
         return path.stat().st_size
     else:
         raise NotImplementedError
 
 
-def get_block_device_size(device: str) -> int:
-    output = subprocess.run(
+async def get_block_device_size(device: str) -> int:
+    """Get the size in bytes of a given device block."""
+    output = await run_in_subprocess(
         ["lsblk", device, "--output", "SIZE", "--bytes", "--noheadings", "--nodeps"],
-        capture_output=True,
         check=True,
     )
-    size = int(output.stdout.decode())
+    size = int(output.strip().decode())
     return size
 
 
