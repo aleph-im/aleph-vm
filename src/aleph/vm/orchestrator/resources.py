@@ -120,6 +120,10 @@ async def about_system_usage(_: web.Request):
 
 
 class Allocation(BaseModel):
+    """An allocation is the set of resources that are currently allocated on this orchestrator.
+    It contains the item_hashes of all persistent VMs, instances, on-demand VMs and jobs.
+    """
+
     persistent_vms: set[str] = Field(default_factory=set)
     instances: set[str] = Field(default_factory=set)
     on_demand_vms: Optional[set[str]] = None
@@ -127,4 +131,8 @@ class Allocation(BaseModel):
 
 
 class VMNotification(BaseModel):
+    """A notification to the orchestrator that a VM has been created or destroyed.
+    This is typically sent by a user that just created a VM in order to quickly ensure the creation of the VM.
+    """
+
     instance: str
