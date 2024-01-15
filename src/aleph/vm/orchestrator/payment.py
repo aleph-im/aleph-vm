@@ -44,7 +44,7 @@ async def get_balance(address: str) -> Decimal:
         return resp_data["balance"]
 
 
-def get_stream(sender: str, receiver: str, chain) -> Decimal:
+async def get_stream(sender: str, receiver: str, chain) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
@@ -57,7 +57,11 @@ def get_stream(sender: str, receiver: str, chain) -> Decimal:
     sender_address: HexAddress = to_normalized_address(sender)
     receiver_address: HexAddress = to_normalized_address(receiver)
 
-    flow_data: Web3FlowInfo = superfluid_instance.get_flow(super_token, sender_address, receiver_address)
+    # Run the network request in a background thread and wait for it to complete.
+    loop = asyncio.get_event_loop()
+    flow_data: Web3FlowInfo = await loop.run_in_executor(
+        None, superfluid_instance.get_flow, super_token, sender_address, receiver_address
+    )
     # TODO: Implement and use the SDK to make the conversion
     stream = from_wei(flow_data["flowRate"], "ether")
     return Decimal(stream)
