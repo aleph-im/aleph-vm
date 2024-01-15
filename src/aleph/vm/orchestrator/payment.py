@@ -18,9 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 async def get_balance(address: str) -> Decimal:
-    """Get the balance of the user from the PyAleph."""
-    # See https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
-    # "/api/v0/addresses/{address}/balance"
+    """
+    Get the balance of the user from the PyAleph API.
+
+    API Endpoint:
+        GET /api/v0/addresses/{address}/balance
+
+    For more details, see the PyAleph API documentation:
+    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
+    """
+
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/{address}/balance"
         resp = await session.get(url)
@@ -33,8 +40,10 @@ async def get_balance(address: str) -> Decimal:
 
 
 def get_stream(sender: str, receiver: str, chain) -> Decimal:
-    # See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
-
+    """
+    Get the stream of the user from the Superfluid API.
+    See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
+    """
     # TODO: Convert chain str to ID
     chain_id = 43113
     superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
