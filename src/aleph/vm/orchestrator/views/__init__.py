@@ -323,9 +323,6 @@ async def update_allocations(request: web.Request):
 
 async def notify_allocation(request: web.Request):
     """Notify instance allocation, only used for Pay as you Go feature"""
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
