@@ -92,6 +92,7 @@ def get_machine_properties() -> MachineProperties:
 
 
 async def about_system_usage(_: web.Request):
+    """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
     usage: MachineUsage = MachineUsage(
