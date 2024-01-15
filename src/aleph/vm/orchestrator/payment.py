@@ -64,11 +64,8 @@ def get_stream(sender: str, receiver: str, chain) -> Decimal:
 
 async def compute_required_balance(executions: Iterable[VmExecution]) -> Decimal:
     """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
-    balance = Decimal(0)
-    for execution in executions:
-        balance += await compute_execution_hold_cost(execution)
-
-    return Decimal(balance)
+    costs = await asyncio.gather(*(compute_execution_hold_cost(execution) for execution in executions))
+    return sum(costs, Decimal(0))
 
 
 async def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
