@@ -32,11 +32,15 @@ async def get_balance(address: str) -> Decimal:
         url = f"{settings.API_SERVER}/api/v0/{address}/balance"
         resp = await session.get(url)
 
-        if not resp.ok:
+        # Consider the balance as null if the address is not found
+        if resp.status == 404:
             return Decimal(0)
 
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
         resp_data = await resp.json()
-        return resp_data["balance"] if resp_data["balance"] else 0
+        return resp_data["balance"]
 
 
 def get_stream(sender: str, receiver: str, chain) -> Decimal:
