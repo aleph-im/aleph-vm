@@ -119,7 +119,7 @@ def run():
     settings.check()
 
     engine = setup_engine()
-    create_tables(engine)
+    asyncio.run(create_tables(engine))
 
     pool = VmPool()
     pool.setup()
@@ -134,9 +134,6 @@ def run():
     app["vm_pool"] = pool
 
     logger.debug(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
-
-    engine = setup_engine()
-    asyncio.run(create_tables(engine))
 
     try:
         if settings.WATCH_FOR_MESSAGES:
