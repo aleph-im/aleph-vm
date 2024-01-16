@@ -6,6 +6,7 @@ from typing import Optional
 import cpuinfo
 import psutil
 from aiohttp import web
+from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
@@ -136,4 +137,4 @@ class VMNotification(BaseModel):
     This is typically sent by a user that just created a VM in order to quickly ensure the creation of the VM.
     """
 
-    instance: str
+    instance: ItemHash
