@@ -161,7 +161,7 @@ async def get_path_size(path: Path) -> int:
     elif path.is_file():
         return path.stat().st_size
     else:
-        raise NotImplementedError
+        raise ValueError(f"Unknown path type for {path}")
 
 
 async def get_block_device_size(device: str) -> int:
