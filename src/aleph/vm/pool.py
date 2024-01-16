@@ -68,8 +68,7 @@ class VmPool:
         self.snapshot_manager.run_snapshots()
 
         logger.debug("Loading existing executions ...")
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(self._load_persistent_executions())
+        asyncio.run(self._load_persistent_executions())
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
