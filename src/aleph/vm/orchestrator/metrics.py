@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, select
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, select, delete
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -89,7 +89,8 @@ async def delete_record(execution_uuid: str):
     """Delete the resource usage in database"""
     async with AsyncSession() as session:
         try:
-            await session.query(ExecutionRecord).filter(ExecutionRecord.uuid == execution_uuid).delete()
+            statement = delete(ExecutionRecord).where(ExecutionRecord.uuid == execution_uuid)
+            await session.execute(statement)
             await session.commit()
         finally:
             await session.close()
