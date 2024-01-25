@@ -92,7 +92,7 @@ app.add_routes(
         web.get("/about/config", about_config),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocations", update_allocations),
-        web.post("/control/allocation", notify_allocation),
+        web.post("/control/allocation/notify", notify_allocation),
         web.get("/control/machine/{ref}/logs", stream_logs),
         web.post("/control/machine/{ref}/expire", operate_expire),
         web.post("/control/machine/{ref}/stop", operate_stop),
@@ -106,6 +106,7 @@ app.add_routes(
         # Allow CORS on endpoints expected to be called from a web browser
         web.options("/about/executions/list", allow_cors_on_endpoint),
         web.options("/about/usage/system", allow_cors_on_endpoint),
+        web.options("/control/allocation/notify", allow_cors_on_endpoint),
         web.options(
             "/control/machine/{ref}/{view:.*}",
             allow_cors_on_endpoint,
