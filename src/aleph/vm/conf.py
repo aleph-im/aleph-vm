@@ -227,6 +227,10 @@ class Settings(BaseSettings):
         default="https://api.avax-test.network/ext/bc/C/rpc",
         description="Default to Avalanche Testnet RPC",
     )
+    PAYMENT_BUFFER: Decimal = Field(
+        default=Decimal("0.0000000001"),
+        description="Buffer to add to the required payment to prevent floating point errors",
+    )
 
     SNAPSHOT_FREQUENCY: int = Field(
         default=60,
