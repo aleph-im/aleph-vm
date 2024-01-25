@@ -83,12 +83,14 @@ async def allow_cors_on_endpoint(request: web.Request):
 
 app.add_routes(
     [
+        # /about APIs return information about the VM Orchestrator
         web.get("/about/login", about_login),
         web.get("/about/executions/list", list_executions),
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
+        # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocations", update_allocations),
         web.post("/control/allocation", notify_allocation),
         web.get("/control/machine/{ref}/logs", stream_logs),
@@ -96,10 +98,7 @@ app.add_routes(
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
-        web.options(
-            "/control/machine/{ref}/{view:.*}",
-            allow_cors_on_endpoint,
-        ),
+        # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/host", status_check_host),
         web.get("/status/check/version", status_check_version),
@@ -115,7 +114,9 @@ app.add_routes(
         web.get("/about/{suffix:.*}", lambda _: web.HTTPNotFound()),
         web.get("/control/{suffix:.*}", lambda _: web.HTTPNotFound()),
         web.get("/status/{suffix:.*}", lambda _: web.HTTPNotFound()),
+        # /static is used to serve static files
         web.static("/static", Path(__file__).parent / "views/static"),
+        # /vm is used to launch VMs on-demand
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
     ]
