@@ -346,6 +346,8 @@ class Settings(BaseSettings):
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
 
+        self.API_SERVER = self.API_SERVER.rstrip("/")
+
         if not self.NETWORK_INTERFACE:
             self.NETWORK_INTERFACE = get_default_interface()
 
