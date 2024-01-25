@@ -229,7 +229,7 @@ class Settings(BaseSettings):
         description="Default to Avalanche Testnet RPC",
     )
     PAYMENT_CHAIN_ID: int = Field(
-        default=43114,   # Avalanche Mainnet
+        default=43114,  # Avalanche Mainnet
         # default=43113,  # Avalanche Fuji Testnet
         description="Avalanche chain ID",
     )
