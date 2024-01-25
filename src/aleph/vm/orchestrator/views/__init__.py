@@ -221,6 +221,19 @@ async def status_check_host(request: web.Request):
     return web.json_response(result, status=result_status)
 
 
+async def status_check_ipv6(request: web.Request):
+    """Check that the platform has IPv6 egress connectivity"""
+    timeout = aiohttp.ClientTimeout(total=2)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            vm_ipv6 = await status.check_ipv6(session)
+        except aiohttp.ClientTimeout:
+            vm_ipv6 = False
+
+    result = {"host": await check_host_egress_ipv6(), "vm": vm_ipv6}
+    return web.json_response(result, headers={"Access-Control-Allow-Origin:": "*"})
+
+
 async def status_check_version(request: web.Request):
     """Check if the software is running a version equal or newer than the given one"""
     reference_str: Optional[str] = request.query.get("reference")
