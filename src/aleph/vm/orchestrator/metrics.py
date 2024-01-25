@@ -4,7 +4,17 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, select, delete
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    delete,
+    select,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
