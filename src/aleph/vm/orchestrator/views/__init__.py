@@ -129,6 +129,23 @@ async def about_executions(request: web.Request) -> web.Response:
     )
 
 
+async def list_executions(request: web.Request) -> web.Response:
+    pool: VmPool = request.app["vm_pool"]
+    return web.json_response(
+        {
+            item_hash: {
+                "networking": {
+                    "ipv4": execution.vm.tap_interface.ip_network,
+                    "ipv6": execution.vm.tap_interface.ipv6_network,
+                },
+            }
+            for item_hash, execution in pool.executions.items()
+            if execution.is_running
+        },
+        dumps=dumps_for_json,
+    )
+
+
 async def about_config(request: web.Request) -> web.Response:
     authenticate_request(request)
     return web.json_response(
