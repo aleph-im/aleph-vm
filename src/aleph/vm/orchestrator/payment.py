@@ -85,6 +85,7 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
 
 class InvalidAddressError(ValueError):
     """The blockchain address could not be parsed."""
+
     pass
 
 
