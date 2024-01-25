@@ -228,7 +228,7 @@ class Settings(BaseSettings):
         description="Default to Avalanche Testnet RPC",
     )
     PAYMENT_BUFFER: Decimal = Field(
-        default=Decimal('0.0000000001'),
+        default=Decimal("0.0000000001"),
         description="Buffer to add to the required payment to prevent floating point errors",
     )
 
