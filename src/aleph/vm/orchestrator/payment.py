@@ -44,6 +44,11 @@ async def get_balance(address: str) -> Decimal:
         return resp_data["balance"]
 
 
+class InvalidAddressError(ValueError):
+    """The blockchain address could not be parsed."""
+    pass
+
+
 async def get_stream(sender: str, receiver: str, chain) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
@@ -53,9 +58,20 @@ async def get_stream(sender: str, receiver: str, chain) -> Decimal:
     chain_id = 43113
     superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
 
-    super_token: HexAddress = to_normalized_address(settings.PAYMENT_SUPER_TOKEN)
-    sender_address: HexAddress = to_normalized_address(sender)
-    receiver_address: HexAddress = to_normalized_address(receiver)
+    try:
+        super_token: HexAddress = to_normalized_address(settings.PAYMENT_SUPER_TOKEN)
+    except ValueError as error:
+        raise InvalidAddressError(f"Invalid token address '{settings.PAYMENT_SUPER_TOKEN}' - {error.args}") from error
+
+    try:
+        sender_address: HexAddress = to_normalized_address(sender)
+    except ValueError as error:
+        raise InvalidAddressError(f"Invalid sender address '{sender}' - {error.args}") from error
+
+    try:
+        receiver_address: HexAddress = to_normalized_address(receiver)
+    except ValueError as error:
+        raise InvalidAddressError(f"Invalid receiver address '{receiver}' - {error.args}") from error
 
     # Run the network request in a background thread and wait for it to complete.
     loop = asyncio.get_event_loop()
