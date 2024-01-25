@@ -2,9 +2,10 @@ import asyncio
 import logging
 import math
 from decimal import Decimal
-from typing import Iterable
+from typing import Iterable, Optional
 
 import aiohttp
+from aleph_message.models import ItemHash, PaymentType
 from eth_typing import HexAddress
 from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
@@ -18,7 +19,7 @@ from aleph.vm.utils import get_path_size, to_normalized_address
 logger = logging.getLogger(__name__)
 
 
-async def get_balance(address: str) -> Decimal:
+async def fetch_balance_of_address(address: str) -> Decimal:
     """
     Get the balance of the user from the PyAleph API.
 
@@ -42,6 +43,44 @@ async def get_balance(address: str) -> Decimal:
 
         resp_data = await resp.json()
         return resp_data["balance"]
+
+
+async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
+    """Fetch the flow price of an execution from the reference API server."""
+    async with aiohttp.ClientSession() as session:
+        url = f"{settings.API_SERVER}/api/v0/price/{item_hash}"
+        resp = await session.get(url)
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
+        resp_data = await resp.json()
+        required_flow: float = resp_data["required_tokens"]
+        payment_type: Optional[str] = resp_data["payment_type"]
+
+        if payment_type is None:
+            raise ValueError("Payment type must be specified in the message")
+        elif payment_type != PaymentType.superfluid:
+            raise ValueError(f"Payment type {payment_type} is not supported")
+
+        return Decimal(required_flow)
+
+
+async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
+    """Fetch the hold price of an execution from the reference API server."""
+    async with aiohttp.ClientSession() as session:
+        url = f"{settings.API_SERVER}/api/v0/price/{item_hash}"
+        resp = await session.get(url)
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
+        resp_data = await resp.json()
+        required_hold: float = resp_data["required_tokens"]
+        payment_type: Optional[str] = resp_data["payment_type"]
+
+        if payment_type not in (None, PaymentType.hold):
+            raise ValueError(f"Payment type {payment_type} is not supported")
+
+        return Decimal(required_hold)
 
 
 class InvalidAddressError(ValueError):
@@ -85,7 +124,7 @@ async def get_stream(sender: str, receiver: str, chain) -> Decimal:
 
 async def compute_required_balance(executions: Iterable[VmExecution]) -> Decimal:
     """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
-    costs = await asyncio.gather(*(compute_execution_hold_cost(execution) for execution in executions))
+    costs = await asyncio.gather(*(fetch_execution_hold_price(execution.vm_hash) for execution in executions))
     return sum(costs, Decimal(0))
 
 
@@ -145,43 +184,7 @@ async def _get_execution_storage_size(execution: VmExecution) -> int:
     return size
 
 
-async def get_required_flow(executions: Iterable[VmExecution]) -> Decimal:
-    """Compute the flow required for the resources of the user from the messages and the pricing aggregate"""
-    flow = Decimal(0)
-    for execution in executions:
-        flow += await compute_execution_flow_cost(execution)
-
-    return Decimal(flow)
-
-
-async def compute_execution_flow_cost(execution: VmExecution) -> Decimal:
-    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
-    compute_unit_cost_hour = 0.11 if execution.persistent else 0.011
-    compute_unit_cost_second = compute_unit_cost_hour / HOUR
-
-    compute_units_required = _get_nb_compute_units(execution)
-    compute_unit_multiplier = _get_compute_unit_multiplier(execution)
-
-    compute_unit_price = (
-        Decimal(compute_units_required) * Decimal(compute_unit_multiplier) * Decimal(compute_unit_cost_second)
-    )
-
-    additional_storage_flow_price = await _get_additional_storage_flow_price(execution)
-    price = compute_unit_price + additional_storage_flow_price
-
-    return Decimal(price)
-
-
-async def _get_additional_storage_flow_price(execution: VmExecution) -> Decimal:
-    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
-    additional_storage_hour_price = 0.000000977
-    additional_storage_second_price = Decimal(additional_storage_hour_price) / Decimal(HOUR)
-    nb_compute_units = _get_nb_compute_units(execution)
-    free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
-
-    total_volume_size = await _get_execution_storage_size(execution)
-    additional_storage = max(
-        Decimal(total_volume_size) - (Decimal(free_storage_per_compute_unit) * Decimal(nb_compute_units)), Decimal(0)
-    )
-    price = additional_storage / additional_storage_second_price / Decimal(MiB)
-    return Decimal(price)
+async def compute_total_flow(executions: Iterable[VmExecution]) -> Decimal:
+    """Compute the flow required for a collection of executions, typically all executions from a specific address"""
+    flows = await asyncio.gather(*(compute_execution_hold_cost(execution) for execution in executions))
+    return sum(flows, Decimal(0))
