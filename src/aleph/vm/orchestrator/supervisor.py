@@ -37,6 +37,7 @@ from .views import (
     run_code_from_path,
     status_check_fastapi,
     status_check_host,
+    status_check_ipv6,
     status_check_version,
     status_public_config,
     update_allocations,
@@ -102,6 +103,7 @@ app.add_routes(
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/host", status_check_host),
         web.get("/status/check/version", status_check_version),
+        web.get("/status/check/ipv6", status_check_ipv6),
         web.get("/status/config", status_public_config),
         # Allow CORS on endpoints expected to be called from a web browser
         web.options("/about/executions/list", allow_cors_on_endpoint),
@@ -111,6 +113,7 @@ app.add_routes(
             "/control/machine/{ref}/{view:.*}",
             allow_cors_on_endpoint,
         ),
+        web.options("/status/check/ipv6", allow_cors_on_endpoint),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", lambda _: web.HTTPNotFound()),
         web.get("/control/{suffix:.*}", lambda _: web.HTTPNotFound()),
