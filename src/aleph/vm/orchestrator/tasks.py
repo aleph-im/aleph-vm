@@ -25,7 +25,7 @@ from aleph.vm.utils import create_task_log_exceptions
 from .messages import load_updated_message
 from .payment import (
     compute_required_balance,
-    compute_total_flow,
+    compute_required_flow,
     fetch_balance_of_address,
     get_stream,
 )
@@ -169,14 +169,14 @@ async def monitor_payments(app: web.Application):
                 logger.debug(
                     f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
                 )
-                required_stream = await compute_total_flow(executions)
+                required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
                 while stream < required_stream:
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await pool.stop_vm(last_execution.vm_hash)
-                    required_stream = await compute_total_flow(executions)
+                    required_stream = await compute_required_flow(executions)
 
 
 async def start_payment_monitoring_task(app: web.Application):
