@@ -31,6 +31,7 @@ from .views import (
     about_execution_records,
     about_executions,
     about_login,
+    list_executions,
     notify_allocation,
     run_code_from_hostname,
     run_code_from_path,
@@ -83,7 +84,8 @@ async def allow_cors_on_endpoint(request: web.Request):
 app.add_routes(
     [
         web.get("/about/login", about_login),
-        web.get("/about/executions", about_executions),
+        web.get("/about/executions/list", list_executions),
+        web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
