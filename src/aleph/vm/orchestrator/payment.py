@@ -91,8 +91,7 @@ async def get_stream(sender: str, receiver: str, chain) -> Decimal:
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    # TODO: Convert chain str to ID
-    chain_id = 43113
+    chain_id = settings.PAYMENT_CHAIN_ID
     superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
 
     try:
