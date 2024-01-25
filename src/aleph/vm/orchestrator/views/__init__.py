@@ -1,7 +1,9 @@
 import binascii
 import logging
 from collections.abc import Awaitable
+from decimal import Decimal
 from hashlib import sha256
+from json import JSONDecodeError
 from pathlib import Path
 from string import Template
 from typing import Optional
@@ -11,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash
+from aleph_message.models import ItemHash, MessageType
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -22,7 +24,13 @@ from aleph.vm.controllers.firecracker.executable import (
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import status
+from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.payment import (
+    InvalidAddressError,
+    fetch_execution_flow_price,
+    get_stream,
+)
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation, VMNotification
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
@@ -353,13 +361,48 @@ async def notify_allocation(request: web.Request):
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
+    except JSONDecodeError as error:
+        raise web.HTTPBadRequest(reason="Body is not valid JSON") from error
     except ValidationError as error:
-        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+        raise web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code) from error
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
 
-    instance = vm_notification.instance
+    item_hash: ItemHash = vm_notification.instance
+    message = await try_get_message(item_hash)
+    if message.type != MessageType.instance:
+        raise web.HTTPBadRequest(reason="Message is not an instance")
+
+    if not message.content.payment:
+        raise web.HTTPBadRequest(reason="Message does not have payment information")
+
+    if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
+        raise web.HTTPBadRequest(reason="Message is not for this instance")
+
+    # Check that there is a payment stream for this instance
+    try:
+        active_flow: Decimal = await get_stream(
+            sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
+        )
+    except InvalidAddressError as error:
+        logger.warning(f"Invalid address {error}", exc_info=True)
+        raise web.HTTPBadRequest(reason=f"Invalid address {error}") from error
+
+    if not active_flow:
+        raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
+
+    required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+
+    if active_flow < required_flow:
+        active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+        required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+        raise web.HTTPPaymentRequired(
+            reason="Insufficient payment stream",
+            text="Insufficient payment stream for this instance\n\n"
+            f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+            f"Present: {active_flow_per_month} / month (flow = {active_flow})",
+        )
 
     # Exceptions that can be raised when starting a VM:
     vm_creation_exceptions = (
@@ -372,14 +415,12 @@ async def notify_allocation(request: web.Request):
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}
-
-    instance_item_hash = ItemHash(instance)
     try:
-        await start_persistent_vm(instance_item_hash, pubsub, pool)
+        await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
     except vm_creation_exceptions as error:
         logger.exception(error)
-        scheduling_errors[instance_item_hash] = error
+        scheduling_errors[item_hash] = error
         successful = False
 
     failing = set(scheduling_errors.keys())
