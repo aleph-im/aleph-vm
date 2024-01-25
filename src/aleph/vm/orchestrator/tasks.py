@@ -25,8 +25,8 @@ from aleph.vm.utils import create_task_log_exceptions
 from .messages import load_updated_message
 from .payment import (
     compute_required_balance,
-    get_balance,
-    get_required_flow,
+    compute_total_flow,
+    fetch_balance_of_address,
     get_stream,
 )
 from .pubsub import PubSub
@@ -150,7 +150,7 @@ async def monitor_payments(app: web.Application):
         # Check if the balance held in the wallet is sufficient holder tier resources
         for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
             for chain, executions in chains.items():
-                balance = await get_balance(sender)
+                balance = await fetch_balance_of_address(sender)
 
                 # Stop executions until the required balance is reached
                 required_balance = await compute_required_balance(executions)
@@ -167,14 +167,14 @@ async def monitor_payments(app: web.Application):
                 logger.debug(
                     f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
                 )
-                required_stream = await get_required_flow(executions)
+                required_stream = await compute_total_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
                 while stream < required_stream:
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await last_execution.stop()
-                    required_stream = await get_required_flow(executions)
+                    required_stream = await compute_total_flow(executions)
 
 
 async def start_payment_monitoring_task(app: web.Application):
