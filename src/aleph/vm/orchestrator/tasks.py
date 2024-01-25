@@ -156,7 +156,7 @@ async def monitor_payments(app: web.Application):
                 required_balance = await compute_required_balance(executions)
                 logger.debug(f"Required balance for Sender {sender} executions: {required_balance}")
                 # Stop executions until the required balance is reached
-                while balance < required_balance:
+                while balance < (required_balance + settings.PAYMENT_BUFFER):
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await pool.stop_vm(last_execution.vm_hash)
@@ -172,7 +172,7 @@ async def monitor_payments(app: web.Application):
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
-                while stream < required_stream:
+                while stream < (required_stream + settings.PAYMENT_BUFFER):
                     last_execution = executions.pop(-1)
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await pool.stop_vm(last_execution.vm_hash)
