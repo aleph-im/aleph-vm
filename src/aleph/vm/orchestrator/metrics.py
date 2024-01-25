@@ -97,7 +97,7 @@ async def save_record(record: ExecutionRecord):
 
 async def delete_record(execution_uuid: str):
     """Delete the resource usage in database"""
-    async with AsyncSession() as session:
+    async with AsyncSessionMaker() as session:
         try:
             statement = delete(ExecutionRecord).where(ExecutionRecord.uuid == execution_uuid)
             await session.execute(statement)
