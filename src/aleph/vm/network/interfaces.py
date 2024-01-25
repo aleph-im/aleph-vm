@@ -44,6 +44,13 @@ class TapInterface:
     def host_ipv6(self) -> IPv6Interface:
         return IPv6Interface(f"{self.ipv6_network[0]}/{self.ipv6_network.prefixlen}")
 
+    def to_dict(self):
+        return {
+            "device": self.device_name,
+            "ipv4": str(self.ip_network),
+            "ipv6": str(self.ipv6_network),
+        }
+
     async def create(self):
         logger.debug("Create network interface")
 
