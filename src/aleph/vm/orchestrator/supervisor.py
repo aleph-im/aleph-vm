@@ -102,6 +102,10 @@ app.add_routes(
         web.get("/status/check/host", status_check_host),
         web.get("/status/check/version", status_check_version),
         web.get("/status/config", status_public_config),
+        # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
+        web.get("/about/{suffix:.*}", lambda _: web.HTTPNotFound()),
+        web.get("/control/{suffix:.*}", lambda _: web.HTTPNotFound()),
+        web.get("/status/{suffix:.*}", lambda _: web.HTTPNotFound()),
         web.static("/static", Path(__file__).parent / "views/static"),
         web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
         web.route("*", "/{suffix:.*}", run_code_from_hostname),
