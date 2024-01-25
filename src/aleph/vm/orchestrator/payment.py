@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 from decimal import Decimal
 from typing import Iterable, Optional
 
@@ -11,10 +10,8 @@ from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
-from aleph.vm.constants import HOUR, GiB, MiB
-from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.models import VmExecution
-from aleph.vm.utils import get_path_size, to_normalized_address
+from aleph.vm.utils import to_normalized_address
 
 logger = logging.getLogger(__name__)
 
@@ -129,63 +126,7 @@ async def compute_required_balance(executions: Iterable[VmExecution]) -> Decimal
     return sum(costs, Decimal(0))
 
 
-async def compute_execution_hold_cost(execution: VmExecution) -> Decimal:
-    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
-    compute_unit_cost = 200 if execution.persistent else 2000
-
-    compute_units_required = _get_nb_compute_units(execution)
-    compute_unit_multiplier = _get_compute_unit_multiplier(execution)
-
-    compute_unit_price = Decimal(compute_units_required) * Decimal(compute_unit_multiplier) * Decimal(compute_unit_cost)
-    additional_storage_hold_price = await _get_additional_storage_hold_price(execution)
-    price = compute_unit_price + additional_storage_hold_price
-    return Decimal(price)
-
-
-async def _get_additional_storage_hold_price(execution: VmExecution) -> Decimal:
-    # TODO: Use PAYMENT_PRICING_AGGREGATE when possible
-    nb_compute_units = _get_nb_compute_units(execution)
-    free_storage_per_compute_unit = 2 * GiB if not execution.persistent else 20 * GiB
-
-    total_volume_size = await _get_execution_storage_size(execution)
-    additional_storage = max(total_volume_size - (free_storage_per_compute_unit * nb_compute_units), 0)
-    price = Decimal(additional_storage) / 20 / MiB
-    return price
-
-
-def _get_nb_compute_units(execution: VmExecution) -> int:
-    """A compute unit is currently defined as: 1 vcpu, 2048 MB of memory."""
-    cpu = execution.vm.hardware_resources.vcpus
-    memory = math.ceil(execution.vm.hardware_resources.memory / 2048)
-    nb_compute_units = cpu if cpu >= memory else memory
-    return nb_compute_units
-
-
-def _get_compute_unit_multiplier(execution: VmExecution) -> int:
-    compute_unit_multiplier = 1
-    if not execution.persistent and execution.message.environment.internet:
-        compute_unit_multiplier += 1
-    return compute_unit_multiplier
-
-
-async def _get_execution_storage_size(execution: VmExecution) -> int:
-    size = 0
-
-    if execution.is_instance:
-        size += execution.message.rootfs.size_mib * MiB
-    elif execution.is_program:
-        if isinstance(execution.resources, AlephProgramResources):
-            size += await get_path_size(execution.resources.code_path)
-            if execution.resources.data_path:
-                size += await get_path_size(execution.resources.data_path)
-
-    for volume in execution.resources.volumes:
-        size += await get_path_size(volume.path_on_host)
-
-    return size
-
-
-async def compute_total_flow(executions: Iterable[VmExecution]) -> Decimal:
+async def compute_required_flow(executions: Iterable[VmExecution]) -> Decimal:
     """Compute the flow required for a collection of executions, typically all executions from a specific address"""
-    flows = await asyncio.gather(*(compute_execution_hold_cost(execution) for execution in executions))
+    flows = await asyncio.gather(*(fetch_execution_flow_price(execution.vm_hash) for execution in executions))
     return sum(flows, Decimal(0))
