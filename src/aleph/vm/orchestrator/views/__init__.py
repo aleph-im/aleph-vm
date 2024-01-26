@@ -285,6 +285,11 @@ async def status_public_config(request: web.Request):
                 "DEBUG_ASYNCIO": settings.DEBUG_ASYNCIO,
                 "EXECUTION_LOG_ENABLED": settings.EXECUTION_LOG_ENABLED,
             },
+            "payment": {
+                "PAYMENT_RECEIVER_ADDRESS": settings.PAYMENT_RECEIVER_ADDRESS,
+                "PAYMENT_SUPER_TOKEN": settings.PAYMENT_SUPER_TOKEN,
+                "PAYMENT_CHAIN_ID": settings.PAYMENT_CHAIN_ID,
+            },
         },
         dumps=dumps_for_json,
     )
