@@ -273,6 +273,10 @@ class VmPool:
         """Return all executions of the given type, grouped by sender and by chain."""
         executions_by_sender: Dict[str, Dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
+            if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
+                # Ignore Diagnostic VM execution
+                continue
+
             if not execution.is_running:
                 # Ignore the execution that is stopping or not running anymore
                 continue
