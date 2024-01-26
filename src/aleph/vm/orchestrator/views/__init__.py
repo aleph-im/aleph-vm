@@ -404,7 +404,9 @@ async def notify_allocation(request: web.Request):
     except JSONDecodeError as error:
         raise web.HTTPBadRequest(reason="Body is not valid JSON") from error
     except ValidationError as error:
-        raise web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code) from error
+        raise web.json_response(
+            data=error.json(), status=web.HTTPBadRequest.status_code, headers={"Access-Control-Allow-Origin": "*"}
+        ) from error
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
@@ -481,4 +483,5 @@ async def notify_allocation(request: web.Request):
             "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
         },
         status=status_code,
+        headers={"Access-Control-Allow-Origin": "*"},
     )
