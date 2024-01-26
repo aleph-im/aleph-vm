@@ -483,4 +483,5 @@ async def notify_allocation(request: web.Request):
             "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
         },
         status=status_code,
+        headers={"Access-Control-Allow-Origin": "*"},
     )
