@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from typing import Dict
 
 import aiohttp
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
 
@@ -133,11 +134,28 @@ async def connect_ipv6():
 @app.get("/internet")
 async def read_internet():
     """Connect the aleph.im official website to check Internet connectivity."""
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
-        async with session.get("https://aleph.im/") as resp:
-            resp.raise_for_status()
-            return {"result": resp.status, "headers": resp.headers}
+
+    async def check_web_connectivity(url):
+        timeout = aiohttp.ClientTimeout(total=2)
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
+            try:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    return {"result": resp.status, "headers": resp.headers}
+            except (aiohttp.ClientError, aiohttp.ClientResponseError) as e:
+                return {"error": str(e)}
+
+    results = await asyncio.gather(
+        check_web_connectivity("https://aleph.im/"),
+        check_web_connectivity("https://detectportal.firefox.com/"),
+    )
+    if any(result.get("result") for result in results):
+        # At least one of the requests succeeded
+        return list(results)
+    else:
+        # None of the requests succeeded
+        return JSONResponse(status_code=400, content=list(results))
+
 
 
 @app.get("/post_a_message")
