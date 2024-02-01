@@ -187,7 +187,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         headers.update(
             {
                 "Aleph-Program-ItemHash": execution.vm_hash,
-                "Aleph-Program-Code-Ref": execution.message.code.ref
+                "Aleph-Program-Code-Ref": execution.message.code.ref,
                 # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
             }
         )

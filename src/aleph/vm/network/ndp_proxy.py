@@ -9,6 +9,7 @@ has to answer to these requests to make the VMs routable.
 To achieve this, we use ndppd. Each time an update is required, we overwrite /etc/ndppd.conf
 and restart the service.
 """
+
 import logging
 from dataclasses import dataclass
 from ipaddress import IPv6Network

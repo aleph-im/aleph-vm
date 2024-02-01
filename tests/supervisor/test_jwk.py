@@ -30,9 +30,9 @@ async def test_valid_signature(valid_jwk_headers: Dict[str, Any], mocker):
 
 @pytest.mark.asyncio
 async def test_invalid_signature(valid_jwk_headers: Dict[str, Any], mocker):
-    valid_jwk_headers[
-        "X-SignedOperation"
-    ] = '{"time":"2023-07-14T22:14:14.132Z","signature":"96ffdbbd1704d5f6bfe4698235a0de0d2f58668deaa4371422bee26664f313f51fd483c78c34c6b317fc209779f9ddd9c45accf558e3bf881b49ad970ebf0ade"}'
+    valid_jwk_headers["X-SignedOperation"] = (
+        '{"time":"2023-07-14T22:14:14.132Z","signature":"96ffdbbd1704d5f6bfe4698235a0de0d2f58668deaa4371422bee26664f313f51fd483c78c34c6b317fc209779f9ddd9c45accf558e3bf881b49ad970ebf0ade"}'
+    )
     request = mocker.AsyncMock()
     request.headers = valid_jwk_headers
 
