@@ -4,6 +4,7 @@ This module is in charge of providing the source code corresponding to a 'code i
 In this prototype, it returns a hardcoded example.
 In the future, it should connect to an Aleph node and retrieve the code from there.
 """
+
 import asyncio
 import json
 import logging

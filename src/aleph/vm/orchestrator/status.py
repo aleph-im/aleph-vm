@@ -2,6 +2,7 @@
 Used to check that the example_fastapi program works as expected
 in a deployed supervisor.
 """
+
 import logging
 from typing import Any
 
