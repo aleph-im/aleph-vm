@@ -12,6 +12,7 @@ https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html
 
 See also the cloud-localds  man page (1)
 """
+
 import base64
 import json
 from pathlib import Path

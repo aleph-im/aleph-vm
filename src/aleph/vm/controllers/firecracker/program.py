@@ -84,8 +84,7 @@ class ProgramVmConfiguration(MsgpackSerializable):
 
 
 @dataclass
-class ConfigurationPayload(MsgpackSerializable):
-    ...
+class ConfigurationPayload(MsgpackSerializable): ...
 
 
 @dataclass
@@ -315,9 +314,11 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
                 mem_size_mib=self.hardware_resources.memory,
             ),
             vsock=Vsock(),
-            network_interfaces=[NetworkInterface(iface_id="eth0", host_dev_name=self.tap_interface.device_name)]
-            if self.enable_networking
-            else [],
+            network_interfaces=(
+                [NetworkInterface(iface_id="eth0", host_dev_name=self.tap_interface.device_name)]
+                if self.enable_networking
+                else []
+            ),
         )
 
     async def wait_for_init(self) -> None:

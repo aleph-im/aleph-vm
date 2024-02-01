@@ -31,8 +31,7 @@ def get_ipv6_forwarding_state() -> int:
 
 
 class IPv6Allocator(Protocol):
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network:
-        ...
+    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network: ...
 
 
 class StaticIPv6Allocator(IPv6Allocator):
