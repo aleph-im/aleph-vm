@@ -167,7 +167,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
-        ssh_authorized_keys: list[str] | None
+        ssh_authorized_keys: Optional[list[str]]
         if settings.USE_DEVELOPER_SSH_KEYS:
             ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS or []
         else:
