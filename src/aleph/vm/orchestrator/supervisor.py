@@ -37,6 +37,7 @@ from .views import (
     run_code_from_hostname,
     run_code_from_path,
     status_check_fastapi,
+    status_check_fastapi_legacy,
     status_check_host,
     status_check_ipv6,
     status_check_version,
@@ -102,6 +103,7 @@ app.add_routes(
         web.post("/control/machine/{ref}/reboot", operate_reboot),
         # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
+        web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
         web.get("/status/check/host", status_check_host),
         web.get("/status/check/version", status_check_version),
         web.get("/status/check/ipv6", status_check_ipv6),
