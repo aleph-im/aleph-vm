@@ -23,11 +23,14 @@ def return_false_on_timeout(func: Callable[..., Awaitable[Any]]) -> Callable[...
 async def check_ip_connectivity(url: str, socket_family: socket.AddressFamily = socket.AF_UNSPEC) -> bool:
     timeout = aiohttp.ClientTimeout(total=5)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket_family), timeout=timeout) as session:
-        async with session.get(url) as resp:
-            # We expect the Quad9 endpoints to return a 404 error, but other endpoints may return a 200
-            if resp.status not in (200, 404):
-                resp.raise_for_status()
-            return True
+        try:
+            async with session.get(url) as resp:
+                # We expect the Quad9 endpoints to return a 404 error, but other endpoints may return a 200
+                if resp.status not in (200, 404):
+                    resp.raise_for_status()
+                return True
+        except aiohttp.ClientConnectorError:
+            return False
 
 
 @return_false_on_timeout
