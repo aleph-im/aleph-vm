@@ -330,7 +330,7 @@ class VmExecution:
             await self.runs_done_event.wait()
 
     async def save(self):
-        pid_info = self.vm.to_dict()
+        pid_info = self.vm.to_dict() if self.vm else None
         # Handle cases when the process cannot be accessed
         if not self.persistent and pid_info and pid_info.get("process"):
             await save_record(
