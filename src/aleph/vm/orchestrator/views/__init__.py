@@ -174,25 +174,33 @@ async def index(request: web.Request):
     return web.Response(content_type="text/html", body=body)
 
 
-async def status_check_fastapi(request: web.Request):
-    retro_compatibility: bool = request.rel_url.query.get("retro-compatibility", "false") == "true"
+async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] = None):
+    """Check that the FastAPI diagnostic VM runs correctly"""
+
+    # Retro-compatibility mode ignores some of the newer checks. It is used to check the status of legacy VMs.
+    retro_compatibility: bool = (
+        vm_id == settings.LEGACY_CHECK_FASTAPI_VM_ID
+        or request.rel_url.query.get("retro-compatibility", "false") == "true"
+    )
+    # Default to the value in the settings.
+    fastapi_vm_id: ItemHash = vm_id or ItemHash(settings.CHECK_FASTAPI_VM_ID)
 
     async with aiohttp.ClientSession() as session:
         result = {
-            "index": await status.check_index(session),
-            "environ": await status.check_environ(session),
-            "messages": await status.check_messages(session),
-            "dns": await status.check_dns(session),
-            "ipv4": await status.check_ipv4(session),
-            "internet": await status.check_internet(session),
-            "cache": await status.check_cache(session),
-            "persistent_storage": await status.check_persistent_storage(session),
-            "error_handling": await status.check_error_raised(session),
+            "index": await status.check_index(session, fastapi_vm_id),
+            "environ": await status.check_environ(session, fastapi_vm_id),
+            "messages": await status.check_messages(session, fastapi_vm_id),
+            "dns": await status.check_dns(session, fastapi_vm_id),
+            "ipv4": await status.check_ipv4(session, fastapi_vm_id),
+            "internet": await status.check_internet(session, fastapi_vm_id),
+            "cache": await status.check_cache(session, fastapi_vm_id),
+            "persistent_storage": await status.check_persistent_storage(session, fastapi_vm_id),
+            "error_handling": await status.check_error_raised(session, fastapi_vm_id),
         }
         if not retro_compatibility:
             # These fields were added in the runtime running Debian 12.
             result = result | {
-                "lifespan": await status.check_lifespan(session),
+                "lifespan": await status.check_lifespan(session, fastapi_vm_id),
                 # IPv6 requires extra work from node operators and is not required yet.
                 # "ipv6": await status.check_ipv6(session),
             }
