@@ -69,6 +69,31 @@
             </div>
         </div>
 
+        <div id="virtualization-legacy-checks">
+            <h3>Virtualization (legacy)</h3>
+            <p>
+                Virtualization
+                <span id="virtualization-legacy-check">
+                ...
+                    <span class="loader-container">
+                        <span id="loader-one" class="loader"></span>
+                        <span id="loader-two" class="loader"></span>
+                        <span id="loader-three" class="loader"></span>
+                    </span>
+                </span>
+            </p>
+            <div class="details">
+                <ul></ul>
+            </div>
+            <div class="help" style="display: none">
+                <p>
+                    ℹ️ <a href="https://docs.aleph.im/nodes/compute/troubleshooting/#virtualization">
+                        Troubleshoot virtualization
+                    </a>
+                </p>
+            </div>
+        </div>
+
         <div id="host-checks">
             <h3>Host connectivity</h3>
             <p>
@@ -202,6 +227,20 @@
                     const detailsDiv = document.querySelector("#virtualization-checks .details ul");
                     detailsDiv.innerHTML = objectToString(details);
                     document.querySelector("#virtualization-checks .help").style.display = "block";
+                }
+            } catch (err) {
+                console.error('Could not fetch api status', err);
+            }
+        })();
+
+        (async () => {
+            try {
+                const { status, details } = await fetchFastapiCheckStatus(legacy=true);
+                document.getElementById('virtualization-legacy-check').innerHTML = status;
+                if(Object.keys(details).length > 0){
+                    const detailsDiv = document.querySelector("#virtualization-legacy-checks .details ul");
+                    detailsDiv.innerHTML = objectToString(details);
+                    document.querySelector("#virtualization-legacy-checks .help").style.display = "block";
                 }
             } catch (err) {
                 console.error('Could not fetch api status', err);

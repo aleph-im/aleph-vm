@@ -210,6 +210,11 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
         )
 
 
+async def status_check_fastapi_legacy(request: web.Request):
+    """Check that the legacy FastAPI VM runs correctly"""
+    return await status_check_fastapi(request, vm_id=ItemHash(settings.LEGACY_CHECK_FASTAPI_VM_ID))
+
+
 async def status_check_host(request: web.Request):
     """Check that the platform is supported and configured correctly"""
 

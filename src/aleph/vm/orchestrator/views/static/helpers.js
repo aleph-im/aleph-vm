@@ -1,5 +1,8 @@
-async function fetchFastapiCheckStatus () {
-    const q = await fetch('/status/check/fastapi');
+
+// Add optional "legacy" argument to this function
+async function fetchFastapiCheckStatus (legacy = false) {
+    const path = legacy ? '/status/check/fastapi/legacy' : '/status/check/fastapi';
+    const q = await fetch(path);
     let res = {
         status: q.status,
         details: []
