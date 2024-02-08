@@ -149,8 +149,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
 
     if execution.is_running:
         logger.info(f"Stopping {execution.vm_hash}")
-        await execution.stop()
-        execution.persistent = False
+        await pool.stop_vm(execution.vm_hash)
         return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
     else:
         return web.Response(status=200, body="Already stopped, nothing to do")
@@ -170,10 +169,13 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
 
     if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
-        await pool.stop_vm(vm_hash)
-        await pool.forget_vm(vm_hash)
+        if execution.persistent:
+            await pool.systemd_manager.restart(execution.controller_service)
+        else:
+            await pool.stop_vm(vm_hash)
+            pool.forget_vm(vm_hash)
 
-        await create_vm_execution(vm_hash=vm_hash, pool=pool)
+            await create_vm_execution(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:
         return web.Response(status=200, body="Starting VM (was not running) with ref {vm_hash}")
@@ -194,7 +196,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
     logger.info(f"Erasing {execution.vm_hash}")
 
     # Stop the VM
-    await execution.stop()
+    await pool.stop_vm(execution.vm_hash)
     await pool.forget_vm(execution.vm_hash)
 
     # Delete all data
