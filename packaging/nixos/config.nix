@@ -92,10 +92,10 @@
         (
           buildPythonPackage rec {
             pname = "aleph-message";
-            version = "0.4.0";
+            version = "0.4.2";
             src = fetchPypi {
               inherit pname version;
-              sha256 = "sha256-a1yyiRUjcaER2JXxPAKPLQMoVlpWq3SbXB+XzBbvDvU=";
+              sha256 = "sha256-bfqsYb7IY7vWNfItTdcASBKBiAln7JjmZgWDdbCMPSM=";
             };
             doCheck = false;
             propagatedBuildInputs = [
