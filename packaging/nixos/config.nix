@@ -110,6 +110,7 @@
   environment.sessionVariables = rec {
     ALEPH_VM_SETUP = "git clone https://github.com/aleph-im/aleph-vm.git";
     LD_LIBRARY_PATH = "/run/current-system/sw/lib";
+    ALEPH_VM_FIRECRACKER_PATH = "/run/current-system/sw/bin/firecracker";
   };
 
   system.stateVersion = "22.11";
