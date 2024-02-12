@@ -60,7 +60,6 @@
 
   environment.systemPackages = with pkgs; [
 
-    ( callPackage ./default.nix {} )
 
     helix
 
@@ -87,6 +86,9 @@
         nftables
         jsonschema
         pydantic
+
+        ( callPackage ./default.nix {} )
+
         (
           buildPythonPackage rec {
             pname = "aleph-message";
