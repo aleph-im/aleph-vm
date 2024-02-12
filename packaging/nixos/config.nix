@@ -29,6 +29,15 @@
 
   services.openssh.enable = true;
 
+#  networking.nftables.enable = true;
+
+  environment = {
+    shellAliases = {
+      orchestrator = "python -m aleph.vm.orchestrator";
+      check-nftables = "python -m nftables";
+    };
+  };
+
   virtualisation = {
     podman = {
       enable = true;
