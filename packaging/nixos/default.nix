@@ -8,7 +8,7 @@ in
 
   python311.pkgs.buildPythonPackage rec {
     pname = "aleph-vm";
-    version = "0.3.0";
+    version = "0.4.0";
     src = ../..;
     format = "pyproject";
     #src = fetchPypi {
