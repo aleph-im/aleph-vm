@@ -185,28 +185,33 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
     # Default to the value in the settings.
     fastapi_vm_id: ItemHash = vm_id or ItemHash(settings.CHECK_FASTAPI_VM_ID)
 
-    async with aiohttp.ClientSession() as session:
-        result = {
-            "index": await status.check_index(session, fastapi_vm_id),
-            "environ": await status.check_environ(session, fastapi_vm_id),
-            "messages": await status.check_messages(session, fastapi_vm_id),
-            "dns": await status.check_dns(session, fastapi_vm_id),
-            "ipv4": await status.check_ipv4(session, fastapi_vm_id),
-            "internet": await status.check_internet(session, fastapi_vm_id),
-            "cache": await status.check_cache(session, fastapi_vm_id),
-            "persistent_storage": await status.check_persistent_storage(session, fastapi_vm_id),
-            "error_handling": await status.check_error_raised(session, fastapi_vm_id),
-        }
-        if not retro_compatibility:
-            # These fields were added in the runtime running Debian 12.
-            result = result | {
-                "lifespan": await status.check_lifespan(session, fastapi_vm_id),
-                # IPv6 requires extra work from node operators and is not required yet.
-                # "ipv6": await status.check_ipv6(session),
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = {
+                "index": await status.check_index(session, fastapi_vm_id),
+                "environ": await status.check_environ(session, fastapi_vm_id),
+                "messages": await status.check_messages(session, fastapi_vm_id),
+                "dns": await status.check_dns(session, fastapi_vm_id),
+                "ipv4": await status.check_ipv4(session, fastapi_vm_id),
+                "internet": await status.check_internet(session, fastapi_vm_id),
+                "cache": await status.check_cache(session, fastapi_vm_id),
+                "persistent_storage": await status.check_persistent_storage(session, fastapi_vm_id),
+                "error_handling": await status.check_error_raised(session, fastapi_vm_id),
             }
+            if not retro_compatibility:
+                # These fields were added in the runtime running Debian 12.
+                result = result | {
+                    "lifespan": await status.check_lifespan(session, fastapi_vm_id),
+                    # IPv6 requires extra work from node operators and is not required yet.
+                    # "ipv6": await status.check_ipv6(session),
+                }
 
+            return web.json_response(
+                result, status=200 if all(result.values()) else 503, headers={"Access-Control-Allow-Origin": "*"}
+            )
+    except aiohttp.ServerDisconnectedError as error:
         return web.json_response(
-            result, status=200 if all(result.values()) else 503, headers={"Access-Control-Allow-Origin": "*"}
+            {"error": f"Server disconnected: {error}"}, status=503, headers={"Access-Control-Allow-Origin": "*"}
         )
 
 
