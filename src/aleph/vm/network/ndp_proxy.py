@@ -10,14 +10,22 @@ To achieve this, we use ndppd. Each time an update is required, we overwrite /et
 and restart the service.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from ipaddress import IPv6Network
 from pathlib import Path
+from subprocess import CalledProcessError
 
 from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
+
+
+class NdpProxyTerminatedError(Exception):
+    """Raised when restarting the NDP Proxy fails due to a SIGTERM signal."""
+
+    pass
 
 
 @dataclass
@@ -33,7 +41,13 @@ class NdpProxy:
     @staticmethod
     async def _restart_ndppd():
         logger.debug("Restarting ndppd")
-        await run_in_subprocess(["systemctl", "restart", "ndppd"])
+        try:
+            await run_in_subprocess(["systemctl", "restart", "ndppd"])
+        except CalledProcessError as error:
+            if "died with <Signals.SIGTERM: 15>." in str(error):
+                raise NdpProxyTerminatedError("ndppd was terminated by a SIGTERM signal") from error
+            else:
+                raise
 
     async def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"
@@ -41,7 +55,18 @@ class NdpProxy:
             config += f"  rule {address_range} {{\n    iface {interface}\n  }}\n"
         config += "}\n"
         Path("/etc/ndppd.conf").write_text(config)
-        await self._restart_ndppd()
+        for attempt in range(3):
+            try:
+                await self._restart_ndppd()
+                break
+            except NdpProxyTerminatedError:
+                if attempt >= 2:
+                    raise
+                logger.warning(
+                    "ndppd was terminated by a SIGTERM signal while restarting. Waiting 5 seconds and retrying."
+                )
+                await asyncio.sleep(5)
+                continue
 
     async def add_range(self, interface: str, address_range: IPv6Network):
         logger.debug("Proxying range %s -> %s", address_range, interface)
