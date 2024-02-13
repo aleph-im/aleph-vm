@@ -245,7 +245,7 @@ async def status_check_ipv6(request: web.Request):
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
             vm_ipv6 = await status.check_ipv6(session, vm_id=ItemHash(settings.CHECK_FASTAPI_VM_ID))
-        except aiohttp.ClientTimeout:
+        except TimeoutError:
             vm_ipv6 = False
 
     result = {"host": await check_host_egress_ipv6(), "vm": vm_ipv6}
