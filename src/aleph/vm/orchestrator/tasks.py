@@ -174,7 +174,11 @@ async def monitor_payments(app: web.Application):
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
                 while stream < (required_stream + settings.PAYMENT_BUFFER):
-                    last_execution = executions.pop(-1)
+                    try:
+                        last_execution = executions.pop(-1)
+                    except IndexError:  # Empty list
+                        logger.debug("No execution can be maintained due to insufficient stream")
+                        break
                     logger.debug(f"Stopping {last_execution} due to insufficient stream")
                     await pool.stop_vm(last_execution.vm_hash)
                     required_stream = await compute_required_flow(executions)
