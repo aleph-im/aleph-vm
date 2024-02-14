@@ -84,7 +84,8 @@ class ProgramVmConfiguration(MsgpackSerializable):
 
 
 @dataclass
-class ConfigurationPayload(MsgpackSerializable): ...
+class ConfigurationPayload(MsgpackSerializable):
+    ...
 
 
 @dataclass
