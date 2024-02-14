@@ -1,6 +1,6 @@
 import logging
 import socket
-from typing import Any, Awaitable, Callable, Tuple
+from typing import Any, Awaitable, Callable, Optional, Tuple
 
 import aiohttp
 
@@ -45,10 +45,29 @@ async def check_host_egress_ipv6() -> bool:
     return await check_ip_connectivity(settings.CONNECTIVITY_IPV6_URL)
 
 
-async def resolve_dns(hostname: str) -> Tuple[str, str]:
-    info_inet, info_inet6 = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
-    ipv4 = info_inet[4][0]
-    ipv6 = info_inet6[4][0]
+async def resolve_dns(hostname: str) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a hostname to an IPv4 and IPv6 address."""
+    ipv4: Optional[str] = None
+    ipv6: Optional[str] = None
+
+    info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
+    if not info:
+        logger.error("DNS resolution failed")
+
+    # Iterate over the results to find the IPv4 and IPv6 addresses they may not all be present.
+    # The function returns a list of 5-tuples with the following structure:
+    # (family, type, proto, canonname, sockaddr)
+    for info_tuple in info:
+        if info_tuple[0] == socket.AF_INET:
+            ipv4 = info_tuple[4][0]
+        elif info_tuple[0] == socket.AF_INET6:
+            ipv6 = info_tuple[4][0]
+
+    if ipv4 and not ipv6:
+        logger.warning(f"DNS resolution for {hostname} returned only an IPv4 address")
+    elif ipv6 and not ipv4:
+        logger.warning(f"DNS resolution for {hostname} returned only an IPv6 address")
+
     return ipv4, ipv6
 
 
