@@ -248,25 +248,28 @@ class VmPool:
         await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and not execution.persistent
         )
+        return executions if executions else []
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and execution.persistent
         )
+        return executions if executions else []
 
     def get_instance_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and execution.is_instance
         )
+        return executions if executions else []
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> Dict[str, Dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
