@@ -7,13 +7,14 @@ import sys
 from datetime import datetime
 from os import listdir
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import aiohttp
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
 from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
@@ -91,13 +92,31 @@ async def read_aleph_messages():
 @app.get("/dns")
 async def resolve_dns_hostname():
     """Check if DNS resolution is working."""
-    info_inet, info_inet6 = socket.getaddrinfo("example.org", 80, proto=socket.IPPROTO_TCP)
-    ipv4 = info_inet[4][0]
-    ipv6 = info_inet6[4][0]
-    return {
-        "ipv4": ipv4,
-        "ipv6": ipv6,
-    }
+    hostname = "example.org"
+    ipv4: Optional[str] = None
+    ipv6: Optional[str] = None
+
+    info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
+    if not info:
+        logger.error("DNS resolution failed")
+
+    # Iterate over the results to find the IPv4 and IPv6 addresses they may not all be present.
+    # The function returns a list of 5-tuples with the following structure:
+    # (family, type, proto, canonname, sockaddr)
+    for info_tuple in info:
+        if info_tuple[0] == socket.AF_INET:
+            ipv4 = info_tuple[4][0]
+        elif info_tuple[0] == socket.AF_INET6:
+            ipv6 = info_tuple[4][0]
+
+    if ipv4 and not ipv6:
+        logger.warning(f"DNS resolution for {hostname} returned only an IPv4 address")
+    elif ipv6 and not ipv4:
+        logger.warning(f"DNS resolution for {hostname} returned only an IPv6 address")
+
+    result = {"ipv4": ipv4, "ipv6": ipv6}
+    status_code = 200 if len(info) > 1 else 503
+    return JSONResponse(content=result, status_code=status_code)
 
 
 @app.get("/ip/address")
