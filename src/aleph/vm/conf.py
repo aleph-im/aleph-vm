@@ -2,6 +2,7 @@ import ipaddress
 import logging
 import os
 import re
+import shutil
 from collections.abc import Iterable
 from decimal import Decimal
 from enum import Enum
@@ -355,6 +356,14 @@ class Settings(BaseSettings):
         os.makedirs(self.DATA_CACHE, exist_ok=True)
 
         os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
+
+        # If the Linux kernel provided is on another device than the execution root,
+        # copy it to the execution root to allow hardlink creation within jailer directories.
+        if os.stat(self.LINUX_PATH).st_dev != os.stat(self.EXECUTION_ROOT).st_dev:
+            logger.info("The Linux kernel is on another device than the execution root. Creating a copy.")
+            linux_path_on_device = self.EXECUTION_ROOT / "vmlinux.bin"
+            shutil.copy(self.LINUX_PATH, linux_path_on_device)
+            self.LINUX_PATH = linux_path_on_device
 
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
