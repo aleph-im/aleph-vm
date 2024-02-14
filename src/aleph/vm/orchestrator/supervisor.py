@@ -13,6 +13,7 @@ from pathlib import Path
 from secrets import token_urlsafe
 from typing import Callable
 
+import aiohttp_cors
 from aiohttp import web
 
 from aleph.vm.conf import settings
@@ -68,9 +69,6 @@ async def server_version_middleware(
     return resp
 
 
-app = web.Application(middlewares=[server_version_middleware])
-
-
 async def allow_cors_on_endpoint(request: web.Request):
     """Allow CORS on endpoints that VM owners use to control their machine."""
     return web.Response(
@@ -83,6 +81,9 @@ async def allow_cors_on_endpoint(request: web.Request):
         },
     )
 
+
+app = web.Application(middlewares=[server_version_middleware])
+cors = aiohttp_cors.setup(app)
 
 app.add_routes(
     [
