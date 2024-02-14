@@ -1,30 +1,34 @@
 Run with
 
+## Build a system image
+
+In this example, we build a Qcow2 virtual machine using `-f vm` and launch 
+immediately after build it using `--run`.
 ```shell
 nixos-generate -f vm -c config.nix --run
 ```
 
-Then inside the VM:
+## Run the orchestrator
+
+In a terminal, run the VM orchestrator.
+> ℹ️ The `orchestrator` command is a shell alias to `python -m aleph.vm.orchestrator`.
 
 ```shell
-git clone https://github.com/aleph-im/aleph-vm.git
-cd ./aleph-vm
-git checkout hoh-nixos-vm
+$ orchestrator
 ```
 
-Download Firecracker, Jailer and a Linux kernel:
+## Test the orchestrator
+
+> ℹ️ The `check-fastapi` command is a shell alias to `curl -i http://127.0.0.1:4020/status/check/fastapi`.
+
+In another terminal, call the FastAPI checks using an HTTP request.
 ```shell
-bash ./packaging/nixos/setup.sh
-```
-
-```shell
-
-python -m vm_supervisor
-```
+check-fastapi
+````
 
 ## Cleanup
 
-Remove all state using:
+In case you used a Qcow2 virtual machine, remove all state using:
 ```shell
 rm nixos.qcow2
 ```
