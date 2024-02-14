@@ -189,7 +189,6 @@ class VmPool:
         assert execution.persistent, "Execution isn't persistent"
         self.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
-        execution.persistent = False
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.

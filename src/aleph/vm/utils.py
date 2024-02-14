@@ -15,7 +15,6 @@ from typing import Any, Dict, Optional
 import aiodns
 import msgpack
 from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
-from aleph_message.models.execution.base import MachineType
 from eth_typing import HexAddress, HexStr
 from eth_utils import hexstr_if_str, is_address, to_hex
 
@@ -23,12 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_message_executable_content(message_dict: Dict) -> ExecutableContent:
-    if message_dict["type"] == MachineType.vm_function:
+    if "type" in message_dict:
         return ProgramContent.parse_obj(message_dict)
-    elif message_dict["type"] == MachineType.vm_instance:
-        return InstanceContent.parse_obj(message_dict)
     else:
-        raise ValueError(f"Unknown message type {message_dict['type']}")
+        return InstanceContent.parse_obj(message_dict)
 
 
 class MsgpackSerializable:
