@@ -13,7 +13,6 @@ import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPNotFound
-from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash, MessageType
 from pydantic import ValidationError
@@ -48,6 +47,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
+    cors_allow_all,
     dumps_for_json,
     get_ref_from_dns,
 )
@@ -112,15 +112,7 @@ def authenticate_request(request: web.Request) -> None:
         raise web.HTTPUnauthorized(reason="Invalid token", text="401 Invalid token")
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def about_login(request: web.Request) -> web.Response:
     token = request.query.get("token")
     if compare_digest(token, request.app["secret_token"]):
@@ -131,15 +123,7 @@ async def about_login(request: web.Request) -> web.Response:
         return web.json_response({"success": False}, status=401)
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def about_executions(request: web.Request) -> web.Response:
     authenticate_request(request)
     pool: VmPool = request.app["vm_pool"]
@@ -149,15 +133,7 @@ async def about_executions(request: web.Request) -> web.Response:
     )
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def list_executions(request: web.Request) -> web.Response:
     pool: VmPool = request.app["vm_pool"]
     return web.json_response(
@@ -175,6 +151,7 @@ async def list_executions(request: web.Request) -> web.Response:
     )
 
 
+@cors_allow_all
 async def about_config(request: web.Request) -> web.Response:
     authenticate_request(request)
     return web.json_response(
@@ -183,15 +160,7 @@ async def about_config(request: web.Request) -> web.Response:
     )
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def about_execution_records(_: web.Request):
     records = await get_execution_records()
     return web.json_response(records, dumps=dumps_for_json)
@@ -211,15 +180,7 @@ async def index(request: web.Request):
     return web.Response(content_type="text/html", body=body)
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] = None):
     """Check that the FastAPI diagnostic VM runs correctly"""
 
@@ -261,29 +222,13 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
         )
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_check_fastapi_legacy(request: web.Request):
     """Check that the legacy FastAPI VM runs correctly"""
     return await status_check_fastapi(request, vm_id=ItemHash(settings.LEGACY_CHECK_FASTAPI_VM_ID))
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_check_host(request: web.Request):
     """Check that the platform is supported and configured correctly"""
 
@@ -303,15 +248,7 @@ async def status_check_host(request: web.Request):
     return web.json_response(result, status=result_status, headers={"Access-Control-Allow-Origin": "*"})
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_check_ipv6(request: web.Request):
     """Check that the platform has IPv6 egress connectivity"""
     timeout = aiohttp.ClientTimeout(total=2)
@@ -325,15 +262,7 @@ async def status_check_ipv6(request: web.Request):
     return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_check_version(request: web.Request):
     """Check if the software is running a version equal or newer than the given one"""
     reference_str: Optional[str] = request.query.get("reference")
@@ -359,15 +288,7 @@ async def status_check_version(request: web.Request):
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
     return web.json_response(
@@ -505,15 +426,7 @@ async def update_allocations(request: web.Request):
     )
 
 
-@custom_cors(
-    {
-        "*": ResourceOptions(
-            allow_credentials=True,
-            allow_headers="*",
-            expose_headers="*",
-        )
-    }
-)
+@cors_allow_all
 async def notify_allocation(request: web.Request):
     """Notify instance allocation, only used for Pay as you Go feature"""
     try:

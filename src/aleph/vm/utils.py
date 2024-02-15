@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 import aiodns
 import msgpack
+from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
 from aleph_message.models.execution.base import MachineType
 from eth_typing import HexAddress, HexStr
@@ -29,6 +30,17 @@ def get_message_executable_content(message_dict: Dict) -> ExecutableContent:
         return InstanceContent.parse_obj(message_dict)
     else:
         raise ValueError(f"Unknown message type {message_dict['type']}")
+
+
+def cors_allow_all(function):
+    default_config = {
+        "*": ResourceOptions(
+            allow_credentials=True,
+            allow_headers="*",
+            expose_headers="*",
+        )
+    }
+    return custom_cors(config=default_config)(function)
 
 
 class MsgpackSerializable:
