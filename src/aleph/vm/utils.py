@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_message_executable_content(message_dict: Dict) -> ExecutableContent:
-    if "type" in message_dict:
+    try:
         return ProgramContent.parse_obj(message_dict)
-    else:
+    except ValueError as error:
         return InstanceContent.parse_obj(message_dict)
 
 
