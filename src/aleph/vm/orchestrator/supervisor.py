@@ -130,6 +130,7 @@ def setup_webapp(pool: VmPool | None):
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/certificates", about_certificates),
         web.get("/about/config", about_config),
+        web.get("/about/capability", about_capability),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
         web.post("/control/reserve_resources", operate_reserve_resources),
