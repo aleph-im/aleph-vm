@@ -17,7 +17,6 @@ multidict==5.1.0
 git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py
 packaging==20.9
 psutil==5.8.0
-py-cpuinfo==5.0.0
 pycares==3.1.1
 pyparsing==2.4.7
 pyrsistent==0.15.5
