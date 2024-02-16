@@ -3,14 +3,13 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
 
-import cpuinfo
 import psutil
 from aiohttp import web
+from aleph.vm.conf import settings
+from aleph.vm.orchestrator.machine import get_cpu_info, get_memory_info
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
-
-from aleph.vm.conf import settings
 
 
 class Period(BaseModel):
@@ -76,6 +75,30 @@ class MachineUsage(BaseModel):
     active: bool = True
 
 
+class ExtendedCpuProperties(CpuProperties):
+    """CPU properties."""
+
+    model: Optional[str] = Field(default=None, description="CPU model")
+    frequency: Optional[str] = Field(default=None, description="CPU frequency")
+    count: Optional[str] = Field(default=None, description="CPU count")
+
+
+
+class MemoryProperties(BaseModel):
+    """MEMORY properties."""
+
+    size: Optional[str] = Field(default=None, description="Memory size")
+    units: Optional[str] = Field(default=None, description="Memory size units")
+    type: Optional[str] = Field(default=None, description="Memory type")
+    clock: Optional[str] = Field(default=None, description="Memory clock")
+    clock_units: Optional[str] = Field(default=None, description="Memory clock units")
+
+
+class MachineCapability(BaseModel):
+    cpu: ExtendedCpuProperties
+    memory: MemoryProperties
+
+
 @lru_cache
 def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
@@ -83,11 +106,35 @@ def get_machine_properties() -> MachineProperties:
 
     In the future, some properties may have to be fetched from within a VM.
     """
-    cpu_info = cpuinfo.get_cpu_info()  # Slow
+
+    cpu_info = get_cpu_info()
     return MachineProperties(
         cpu=CpuProperties(
-            architecture=cpu_info["raw_arch_string"],
-            vendor=cpu_info["vendor_id"],
+            architecture=cpu_info["architecture"],
+            vendor=cpu_info["vendor"],
+        ),
+    )
+
+
+@lru_cache
+def get_machine_capability() -> MachineCapability:
+    cpu_info = get_cpu_info()
+    mem_info = get_memory_info()
+
+    return MachineCapability(
+        cpu=ExtendedCpuProperties(
+            architecture=cpu_info["architecture"],
+            vendor=cpu_info["vendor"],
+            model=cpu_info["model"],
+            frequency=cpu_info["frequency"],
+            count=cpu_info["count"],
+        ),
+        memory=MemoryProperties(
+            size=mem_info["size"],
+            units=mem_info["units"],
+            type=mem_info["type"],
+            clock=mem_info["clock"],
+            clock_units=mem_info["clock_units"],
         ),
     )
 
@@ -117,6 +164,13 @@ async def about_system_usage(_: web.Request):
         properties=get_machine_properties(),
     )
     return web.json_response(text=usage.json(exclude_none=True), headers={"Access-Control-Allow-Origin:": "*"})
+
+
+async def about_capability(_: web.Request):
+    """Public endpoint to expose information about the CRN capability."""
+
+    capability: MachineCapability = get_machine_capability()
+    return web.json_response(text=capability.json(exclude_none=False), headers={"Access-Control-Allow-Origin:": "*"})
 
 
 class Allocation(BaseModel):

@@ -15,13 +15,12 @@ from typing import Callable
 
 import aiohttp_cors
 from aiohttp import web
-
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.version import __version__
 
 from .metrics import create_tables, setup_engine
-from .resources import about_system_usage
+from .resources import about_capability, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
     start_watch_for_messages_task,
@@ -94,6 +93,7 @@ app.add_routes(
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/config", about_config),
+        web.get("/about/capability", about_capability),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocations", update_allocations),
         web.post("/control/allocation/notify", notify_allocation),
