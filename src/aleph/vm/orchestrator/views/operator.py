@@ -5,6 +5,7 @@ from datetime import timedelta
 import aiohttp.web_exceptions
 from aiohttp import web
 from aiohttp.web_urldispatcher import UrlMappingMatchInfo
+from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from aleph_message.models.execution import BaseExecutableContent
@@ -17,6 +18,7 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
+from aleph.vm.utils import cors_allow_all
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ def is_sender_authorized(authenticated_sender: str, message: BaseExecutableConte
         return False
 
 
+@cors_allow_all
 async def stream_logs(request: web.Request) -> web.StreamResponse:
     """Stream the logs of a VM.
 
@@ -105,6 +108,7 @@ async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
     raise web.HTTPForbidden(body="Unauthorized sender")
 
 
+@cors_allow_all
 @require_jwk_authentication
 async def operate_expire(request: web.Request, authenticated_sender: str) -> web.Response:
     """Stop the virtual machine, smoothly if possible.
@@ -131,6 +135,7 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
     return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
 
 
+@cors_allow_all
 @require_jwk_authentication
 async def operate_stop(request: web.Request, authenticated_sender: str) -> web.Response:
     """Stop the virtual machine, smoothly if possible."""
@@ -155,6 +160,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
         return web.Response(status=200, body="Already stopped, nothing to do")
 
 
+@cors_allow_all
 @require_jwk_authentication
 async def operate_reboot(request: web.Request, authenticated_sender: str) -> web.Response:
     """
@@ -181,6 +187,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
         return web.Response(status=200, body="Starting VM (was not running) with ref {vm_hash}")
 
 
+@cors_allow_all
 @require_jwk_authentication
 async def operate_erase(request: web.Request, authenticated_sender: str) -> web.Response:
     """Delete all data stored by a virtual machine.
