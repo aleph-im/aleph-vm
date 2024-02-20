@@ -68,7 +68,7 @@ in
   services.openssh.enable = true;
 
   services.ndppd.enable = true;
-  services.redis.enable = true;
+  services.redis.servers."aleph-vm".enable = true;
 
 #  networking.nftables.enable = true;
 
