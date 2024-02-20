@@ -13,6 +13,7 @@ from pathlib import Path
 from secrets import token_urlsafe
 from typing import Callable
 
+import aiohttp_cors
 from aiohttp import web
 
 from aleph.vm.conf import settings
@@ -68,9 +69,6 @@ async def server_version_middleware(
     return resp
 
 
-app = web.Application(middlewares=[server_version_middleware])
-
-
 async def allow_cors_on_endpoint(request: web.Request):
     """Allow CORS on endpoints that VM owners use to control their machine."""
     return web.Response(
@@ -83,6 +81,9 @@ async def allow_cors_on_endpoint(request: web.Request):
         },
     )
 
+
+app = web.Application(middlewares=[server_version_middleware])
+cors = aiohttp_cors.setup(app)
 
 app.add_routes(
     [
@@ -108,15 +109,6 @@ app.add_routes(
         web.get("/status/check/version", status_check_version),
         web.get("/status/check/ipv6", status_check_ipv6),
         web.get("/status/config", status_public_config),
-        # Allow CORS on endpoints expected to be called from a web browser
-        web.options("/about/executions/list", allow_cors_on_endpoint),
-        web.options("/about/usage/system", allow_cors_on_endpoint),
-        web.options("/control/allocation/notify", allow_cors_on_endpoint),
-        web.options(
-            "/control/machine/{ref}/{view:.*}",
-            allow_cors_on_endpoint,
-        ),
-        web.options("/status/check/ipv6", allow_cors_on_endpoint),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", lambda _: web.HTTPNotFound()),
         web.get("/control/{suffix:.*}", lambda _: web.HTTPNotFound()),
