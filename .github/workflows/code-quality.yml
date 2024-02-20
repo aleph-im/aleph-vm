@@ -23,13 +23,17 @@ jobs:
         run: |
           python3 -m pip install hatch
 
-      - name: Test style wth ruff, black and isoort
+      - name: Test style wth ruff, black and isort
         run: |
           hatch run lint:style
 
       - name: Test typing with Mypy
         run: |
           hatch run lint:typing
+
+      - name: Run unit tests
+        run: |
+          hatch run testing:test
 
   code-quality-shell:
     runs-on: ubuntu-22.04
