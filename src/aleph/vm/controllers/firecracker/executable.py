@@ -306,8 +306,11 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         logger.debug(f"started guest API for {self.vm_id}")
 
     async def stop_guest_api(self):
-        if self.guest_api_process and self.guest_api_process._popen:
+        if self.guest_api_process and self.guest_api_process.is_alive():
             self.guest_api_process.terminate()
+            await asyncio.sleep(5)
+            if self.guest_api_process.is_alive():
+                self.guest_api_process.kill()
 
     async def teardown(self):
         if self.fvm:
