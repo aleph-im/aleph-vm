@@ -208,7 +208,7 @@ class VmPool:
         for saved_execution in saved_executions:
             # Prevent to load the same execution twice
             if self.executions.get(saved_execution.vm_hash):
-                break
+                continue
 
             vm_id = saved_execution.vm_id
             message_dict = json.loads(saved_execution.message)
