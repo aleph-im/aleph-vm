@@ -220,12 +220,14 @@ class VmPool:
                 continue
 
             vm_id = saved_execution.vm_id
+
             message_dict = json.loads(saved_execution.message)
+            original_dict = json.loads(saved_execution.original_message)
 
             execution = VmExecution(
                 vm_hash=vm_hash,
                 message=get_message_executable_content(message_dict),
-                original=get_message_executable_content(message_dict),
+                original=get_message_executable_content(original_dict),
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
                 persistent=saved_execution.persistent,
