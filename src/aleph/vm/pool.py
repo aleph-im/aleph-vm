@@ -189,7 +189,6 @@ class VmPool:
         assert execution.persistent, "Execution isn't persistent"
         self.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
-        execution.persistent = False
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
@@ -209,7 +208,7 @@ class VmPool:
         for saved_execution in saved_executions:
             # Prevent to load the same execution twice
             if self.executions.get(saved_execution.vm_hash):
-                break
+                continue
 
             vm_id = saved_execution.vm_id
             message_dict = json.loads(saved_execution.message)
@@ -249,25 +248,28 @@ class VmPool:
         await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and not execution.persistent
         )
+        return executions or []
 
     def get_persistent_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and execution.persistent
         )
+        return executions or []
 
     def get_instance_executions(self) -> Iterable[VmExecution]:
-        return (
+        executions = (
             execution
             for _vm_hash, execution in self.executions.items()
             if execution.is_running and execution.is_instance
         )
+        return executions or []
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> Dict[str, Dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
