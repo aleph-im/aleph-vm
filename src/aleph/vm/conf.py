@@ -16,7 +16,7 @@ from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph.vm.utils import is_command_available
+from aleph.vm.utils import file_hashes_differ, is_command_available
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +362,11 @@ class Settings(BaseSettings):
         if os.stat(self.LINUX_PATH).st_dev != os.stat(self.EXECUTION_ROOT).st_dev:
             logger.info("The Linux kernel is on another device than the execution root. Creating a copy.")
             linux_path_on_device = self.EXECUTION_ROOT / "vmlinux.bin"
-            shutil.copy(self.LINUX_PATH, linux_path_on_device)
+
+            # Only copy if the hash of the file differ.
+            if file_hashes_differ(self.LINUX_PATH, linux_path_on_device):
+                shutil.copy(self.LINUX_PATH, linux_path_on_device)
+
             self.LINUX_PATH = linux_path_on_device
 
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)

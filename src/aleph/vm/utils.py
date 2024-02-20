@@ -10,7 +10,7 @@ from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
 from pathlib import Path
 from shutil import disk_usage
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import aiodns
 import msgpack
@@ -186,3 +186,19 @@ def to_normalized_address(value: str) -> HexAddress:
         return HexAddress(HexStr(hex_address))
     else:
         raise ValueError("Unknown format {}, attempted to normalize to {}".format(value, hex_address))
+
+
+def md5sum(file_path: Path) -> str:
+    """Calculate the MD5 hash of a file. Externalize to the `md5sum` command for better performance."""
+    return subprocess.check_output(["md5sum", file_path], text=True).split()[0]
+
+
+def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path], str] = md5sum) -> bool:
+    """Check if the MD5 hash of two files differ."""
+    if not source.exists():
+        raise FileNotFoundError("Source file does not exist: {}".format(source))
+
+    if not destination.exists():
+        return True
+
+    return checksum(source) != checksum(destination)
