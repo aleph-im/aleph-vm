@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import json
 import logging
@@ -128,11 +129,7 @@ class VmPool:
             self.forget_vm(vm_hash)
             raise
 
-        async def forget_on_stop(stop_event: asyncio.Event):
-            await stop_event.wait()
-            self.forget_vm(vm_hash)
-
-        _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+        self._schedule_forget_on_stop(execution)
 
         return execution
 
@@ -202,6 +199,14 @@ class VmPool:
         except KeyError:
             pass
 
+    def _schedule_forget_on_stop(self, execution: VmExecution):
+        """Create a task that will remove the VM from the pool after it stops."""
+        async def forget_on_stop(stop_event: asyncio.Event):
+            await stop_event.wait()
+            self.forget_vm(execution.vm_hash)
+
+        _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+
     async def _load_persistent_executions(self):
         """Load persistent executions from the database."""
         saved_executions = await get_execution_records()
@@ -224,12 +229,7 @@ class VmPool:
                 persistent=saved_execution.persistent,
             )
 
-            # Ensure the VM is forgotten from the pool if it is stopped.
-            async def forget_on_stop(stop_event: asyncio.Event):
-                await stop_event.wait()
-                self.forget_vm(vm_hash)
-
-            _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+            self._schedule_forget_on_stop(execution)
 
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
