@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -201,6 +202,7 @@ class VmPool:
 
     def _schedule_forget_on_stop(self, execution: VmExecution):
         """Create a task that will remove the VM from the pool after it stops."""
+
         async def forget_on_stop(stop_event: asyncio.Event):
             await stop_event.wait()
             self.forget_vm(execution.vm_hash)
