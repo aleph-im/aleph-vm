@@ -31,6 +31,10 @@ jobs:
         run: |
           hatch run lint:typing
 
+      - name: Install required system packages for installing and running tests
+        run: |
+          sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
+
       - name: Run unit tests
         run: |
           hatch run testing:test
