@@ -231,8 +231,6 @@ class VmPool:
                 persistent=saved_execution.persistent,
             )
 
-            self._schedule_forget_on_stop(execution)
-
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 await execution.prepare()
@@ -246,6 +244,8 @@ class VmPool:
                 await execution.vm.start_guest_api()
                 execution.ready_event.set()
                 execution.times.started_at = datetime.now(tz=timezone.utc)
+
+                self._schedule_forget_on_stop(execution)
 
                 self.executions[vm_hash] = execution
             else:
