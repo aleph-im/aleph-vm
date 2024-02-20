@@ -204,7 +204,9 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
 
     # Stop the VM
     await pool.stop_vm(execution.vm_hash)
-    pool.forget_vm(execution.vm_hash)
+    if execution.vm_hash in pool.executions:
+        logger.warning(f"VM {execution.vm_hash} was not stopped properly, forgetting it anyway")
+        pool.forget_vm(execution.vm_hash)
 
     # Delete all data
     if execution.resources is not None:

@@ -132,7 +132,7 @@ class VmPool:
             await stop_event.wait()
             self.forget_vm(vm_hash)
 
-        asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+        _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
         return execution
 
@@ -184,7 +184,7 @@ class VmPool:
         else:
             return None
 
-    async def stop_persistent_execution(self, execution):
+    async def stop_persistent_execution(self, execution: VmExecution):
         """Stop persistent VMs in the pool."""
         assert execution.persistent, "Execution isn't persistent"
         self.systemd_manager.stop_and_disable(execution.controller_service)
@@ -206,27 +206,37 @@ class VmPool:
         """Load persistent executions from the database."""
         saved_executions = await get_execution_records()
         for saved_execution in saved_executions:
-            # Prevent to load the same execution twice
-            if self.executions.get(saved_execution.vm_hash):
+            vm_hash = ItemHash(saved_execution.vm_hash)
+
+            if vm_hash in self.executions:
+                # The execution is already loaded, skip it
                 continue
 
             vm_id = saved_execution.vm_id
             message_dict = json.loads(saved_execution.message)
-            original_dict = json.loads(saved_execution.original_message)
+
             execution = VmExecution(
-                vm_hash=saved_execution.vm_hash,
+                vm_hash=vm_hash,
                 message=get_message_executable_content(message_dict),
                 original=get_message_executable_content(message_dict),
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
                 persistent=saved_execution.persistent,
             )
+
+            # Ensure the VM is forgotten from the pool if it is stopped.
+            async def forget_on_stop(stop_event: asyncio.Event):
+                await stop_event.wait()
+                self.forget_vm(vm_hash)
+
+            _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
-                    tap_interface = await self.network.prepare_tap(vm_id, execution.vm_hash, vm_type)
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
                 else:
                     tap_interface = None
 
@@ -235,7 +245,7 @@ class VmPool:
                 execution.ready_event.set()
                 execution.times.started_at = datetime.now(tz=timezone.utc)
 
-                self.executions[execution.vm_hash] = execution
+                self.executions[vm_hash] = execution
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
