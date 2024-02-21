@@ -21,7 +21,7 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install hatch
+          python3 -m pip install hatch hatch-vcs coverage
 
       - name: Test style wth ruff, black and isort
         run: |
@@ -37,7 +37,14 @@ jobs:
 
       - name: Run unit tests
         run: |
-          hatch run testing:test
+          hatch run testing:test-cov
+          hatch run testing:cov
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: aleph-im/aleph-vm
 
   code-quality-shell:
     runs-on: ubuntu-22.04
