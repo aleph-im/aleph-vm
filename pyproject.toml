@@ -83,14 +83,14 @@ check = "aleph-vm controller run {args:--help}"
 
 [tool.hatch.envs.testing]
 dependencies = [
-  "coverage[toml]==7.3.2",
-  "pytest==7.4.2",
-  "pytest-mock==3.11.1",
-  "pytest-asyncio==0.21.1",
+  "pytest==8.0.1",
+  "pytest-cov==4.1.0",
+  "pytest-mock==3.12.0",
+  "pytest-asyncio==0.23.5",
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
-test-cov = "coverage run -m pytest {args:tests}"
+test-cov = "pytest --cov {args:tests}"
 cov-report = [
   "- coverage combine",
   "coverage report",
