@@ -159,6 +159,10 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     controller_configuration: Optional[Configuration] = None
     support_snapshot: bool
 
+    @property
+    def resources_path(self) -> Path:
+        return Path(self.fvm.namespace_path)
+
     def __init__(
         self,
         vm_id: int,
