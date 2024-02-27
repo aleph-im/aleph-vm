@@ -119,6 +119,14 @@ class VmExecution:
     def uses_payment_stream(self) -> bool:
         return self.message.payment and self.message.payment.is_stream
 
+    @property
+    def has_resources(self):
+        return (
+            self.vm.resources_path.exists()
+            if self.hypervisor == HypervisorType.firecracker
+            else True
+        )
+
     def __init__(
         self,
         vm_hash: ItemHash,

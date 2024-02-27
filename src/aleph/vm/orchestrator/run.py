@@ -119,6 +119,12 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
 
     execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
+    # Prevent execution issues if the execution resources are empty
+    # TODO: Improve expiration process to avoid that kind of issues.
+    if not execution.has_resources:
+        pool.forget_vm(execution.vm_hash)
+        execution = None
+
     if not execution:
         execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
 
@@ -207,6 +213,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
             _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
         else:
             await execution.stop()
+            pool.forget_vm(execution.vm_hash)
 
 
 async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPool):
