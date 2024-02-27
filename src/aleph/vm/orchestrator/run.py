@@ -121,7 +121,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
 
     # Prevent execution issues if the execution resources are empty
     # TODO: Improve expiration process to avoid that kind of issues.
-    if not execution.has_resources:
+    if execution and not execution.has_resources:
         pool.forget_vm(execution.vm_hash)
         execution = None
 

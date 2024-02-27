@@ -121,11 +121,7 @@ class VmExecution:
 
     @property
     def has_resources(self):
-        return (
-            self.vm.resources_path.exists()
-            if self.hypervisor == HypervisorType.firecracker
-            else True
-        )
+        return self.vm.resources_path.exists() if self.hypervisor == HypervisorType.firecracker else True
 
     def __init__(
         self,
