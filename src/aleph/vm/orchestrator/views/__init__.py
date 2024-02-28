@@ -114,10 +114,12 @@ def authenticate_request(request: web.Request) -> None:
 
 @cors_allow_all
 async def about_login(request: web.Request) -> web.Response:
-    token = request.query.get("token")
-    if compare_digest(token, request.app["secret_token"]):
+    secret_token = request.app["secret_token"]
+    request_token = request.query.get("token")
+
+    if request_token and secret_token and compare_digest(request_token, secret_token):
         response = web.HTTPFound("/about/config")
-        response.cookies["token"] = token
+        response.cookies["token"] = request_token
         return response
     else:
         return web.json_response({"success": False}, status=401)
