@@ -11,6 +11,7 @@ from typing import Dict, Optional
 
 import aiohttp
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
@@ -27,6 +28,13 @@ logger.debug("imports done")
 
 http_app = FastAPI()
 app = AlephApp(http_app=http_app)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 cache = VmCache()
 
 startup_lifespan_executed: bool = False
