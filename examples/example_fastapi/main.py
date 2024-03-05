@@ -10,14 +10,17 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import aiohttp
+from aleph_message.models import PostMessage, StoreMessage, ProgramMessage
+from aleph_message.status import MessageStatus
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
+from aleph.sdk.chains.ethereum import get_fallback_account
 from aleph.sdk.chains.remote import RemoteAccount
-from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
+from aleph.sdk.client import AlephHttpClient, AuthenticatedAlephHttpClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
 from aleph.sdk.vm.cache import VmCache
@@ -54,7 +57,8 @@ async def index():
             "/ip/4",
             "/ip/6",
             "/internet",
-            "/post_a_message",
+            "/post/account/local",
+            "/post/account/remote",
             "/state/increment",
             "/wait-for/{delay}",
             "/platform/os",
@@ -84,7 +88,7 @@ async def environ() -> Dict[str, str]:
 @app.get("/messages")
 async def read_aleph_messages():
     """Read data from Aleph using the Aleph Client library."""
-    async with AlephClient() as client:
+    async with AlephHttpClient() as client:
         data = await client.get_messages(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
     return {"Messages": data}
 
@@ -159,9 +163,21 @@ async def read_internet():
             return {"result": resp.status, "headers": resp.headers}
 
 
-@app.get("/post_a_message")
-async def post_a_message():
-    """Post a message on the Aleph network"""
+@app.get("/get_a_message")
+async def get_a_message():
+    """Get a message from the Aleph.im network"""
+    item_hash = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+    async with AlephHttpClient() as client:
+        message = await client.get_message(
+            item_hash=item_hash,
+            message_type=ProgramMessage,
+        )
+        return message.dict()
+
+
+@app.post("/post/account/remote")
+async def post_with_remote_account():
+    """Post a message on the Aleph.im network using the remote account of the host."""
 
     account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
 
@@ -171,20 +187,93 @@ async def post_a_message():
         "answer": 42,
         "something": "interesting",
     }
-    async with AuthenticatedAlephClient(
+    async with AuthenticatedAlephHttpClient(
         account=account,
     ) as client:
-        response = await client.create_post(
+        message: PostMessage
+        status: MessageStatus
+        message, status = await client.create_post(
             post_content=content,
             post_type="test",
             ref=None,
             channel="TEST",
             inline=True,
             storage_engine=StorageEnum.storage,
+            sync=True,
         )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": status})
     return {
-        "response": response,
+        "message": message,
     }
+
+
+@app.post("/post/account/local")
+async def post_with_local_account():
+    """Post a message on the Aleph.im network using a local private key."""
+
+    account = get_fallback_account()
+
+    content = {
+        "date": datetime.utcnow().isoformat(),
+        "test": True,
+        "answer": 42,
+        "something": "interesting",
+    }
+    async with AuthenticatedAlephHttpClient(
+        account=account,
+        api_server="https://api2.aleph.im",
+        allow_unix_sockets=False,
+    ) as client:
+        message: PostMessage
+        status: MessageStatus
+        message, status = await client.create_post(
+            post_content=content,
+            post_type="test",
+            ref=None,
+            channel="TEST",
+            inline=True,
+            storage_engine=StorageEnum.storage,
+            sync=True,
+        )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": status})
+    return {
+        "message": message,
+    }
+
+
+@app.post("/post_a_file")
+async def post_a_file():
+    account = get_fallback_account()
+    file_path = Path(__file__).absolute()
+    async with AuthenticatedAlephHttpClient(
+        account=account,
+    ) as client:
+        message: StoreMessage
+        status: MessageStatus
+        message, status = await client.create_store(
+            file_path=file_path,
+            ref=None,
+            channel="TEST",
+            storage_engine=StorageEnum.storage,
+            sync=True,
+        )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": status})
+    return {
+        "message": message,
+    }
+
+
+@app.get("/sign_a_message")
+async def sign_a_message():
+    """Sign a message using a locally managed account within the virtual machine."""
+    account = get_fallback_account()
+    message = {"hello": "world",
+               "chain": "ETH"}
+    signed_message = await account.sign_message(message)
+    return {"message": signed_message}
 
 
 @app.get("/cache/get/{key}")

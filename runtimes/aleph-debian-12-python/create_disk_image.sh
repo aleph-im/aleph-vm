@@ -31,7 +31,7 @@ apt-get install -y --no-install-recommends --no-install-suggests \
 
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
-pip3 install --target /opt/aleph/libs 'aleph-sdk-python==0.9.0' 'fastapi~=0.109.2'
+pip3 install --target /opt/aleph/libs 'aleph-sdk-python==0.9.0' 'aleph-message==0.4.4' 'fastapi~=0.109.2'
 
 # Compile Python code to bytecode for faster execution
 python3 -m compileall -f /usr/local/lib/python3.11
