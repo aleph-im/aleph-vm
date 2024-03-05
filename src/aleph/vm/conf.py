@@ -289,7 +289,7 @@ class Settings(BaseSettings):
     )
     FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
 
-    CHECK_FASTAPI_VM_ID = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+    CHECK_FASTAPI_VM_ID = "84bdcc1a8b96c15c32c315c39df1dd7c143c79499ae7a6628e3d276ad5546afa"
     LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
 
     # Developer options
