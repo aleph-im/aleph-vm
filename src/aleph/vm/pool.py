@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 from aleph_message.models import (
     Chain,
@@ -243,8 +243,8 @@ class VmPool:
                 else:
                     tap_interface = None
 
-                execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
-                await execution.vm.start_guest_api()
+                vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
+                await vm.start_guest_api()
                 execution.ready_event.set()
                 execution.times.started_at = datetime.now(tz=timezone.utc)
 

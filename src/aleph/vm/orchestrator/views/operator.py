@@ -1,11 +1,9 @@
-import asyncio
 import logging
 from datetime import timedelta
 
 import aiohttp.web_exceptions
 from aiohttp import web
 from aiohttp.web_urldispatcher import UrlMappingMatchInfo
-from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from aleph_message.models.execution import BaseExecutableContent
