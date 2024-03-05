@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
 
 import psutil
-import qmp
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume

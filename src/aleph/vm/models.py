@@ -4,7 +4,7 @@ import uuid
 from asyncio import Task
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Callable, Coroutine, Optional, Union
 
 from aleph_message.models import (
     ExecutableContent,
@@ -83,7 +83,7 @@ class VmExecution:
     persistent: bool = False
 
     @property
-    def is_running(self):
+    def is_running(self) -> bool:
         return (
             self.times.starting_at and not self.times.stopping_at
             if not self.persistent
@@ -94,21 +94,20 @@ class VmExecution:
     def is_stopping(self) -> bool:
         return bool(self.times.stopping_at and not self.times.stopped_at)
 
-    @property
-    def is_program(self):
+    def is_program(self) -> bool:
         return isinstance(self.message, ProgramContent)
 
     @property
-    def is_instance(self):
+    def is_instance(self) -> bool:
         return isinstance(self.message, InstanceContent)
 
     @property
-    def hypervisor(self):
+    def hypervisor(self) -> HypervisorType:
         # default to firecracker for retro compat
         return self.message.environment.hypervisor or HypervisorType.firecracker
 
     @property
-    def becomes_ready(self):
+    def becomes_ready(self) -> Callable[[], Coroutine]:
         return self.ready_event.wait
 
     @property
@@ -160,7 +159,7 @@ class VmExecution:
     def to_json(self, indent: Optional[int] = None) -> str:
         return dumps_for_json(self.to_dict(), indent=indent)
 
-    async def prepare(self):
+    async def prepare(self) -> None:
         """Download VM required files"""
         async with self.preparation_pending_lock:
             if self.resources:
@@ -234,6 +233,8 @@ class VmExecution:
         return vm
 
     async def start(self):
+        assert self.vm, "The VM attribute has to be set before calling start()"
+
         self.times.starting_at = datetime.now(tz=timezone.utc)
 
         try:
@@ -252,6 +253,7 @@ class VmExecution:
             raise
 
     async def wait_for_init(self):
+        assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
         await self.vm.wait_for_init()
 
     def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
@@ -289,8 +291,9 @@ class VmExecution:
         else:
             return False
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the VM and release resources"""
+        assert self.vm, "The VM attribute has to be set before calling stop()"
 
         # Prevent concurrent calls to stop() using a Lock
         async with self.stop_pending_lock:
@@ -338,6 +341,8 @@ class VmExecution:
             await self.runs_done_event.wait()
 
     async def save(self):
+        assert self.vm, "The VM attribute has to be set before calling save()"
+
         pid_info = self.vm.to_dict() if self.vm else None
         # Handle cases when the process cannot be accessed
         if not self.persistent and pid_info and pid_info.get("process"):

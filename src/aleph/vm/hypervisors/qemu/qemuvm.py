@@ -22,8 +22,11 @@ class QemuVM(object):
     interface_name: str
     qemu_process = None
 
-    def __repr__(self):
-        return f"<QemuVM: {self.qemu_process.pid if  self.qemu_process else 'not running'}>"
+    def __repr__(self) -> str:
+        if self.qemu_process:
+            return f"<QemuVM: {self.qemu_process.pid}>"
+        else:
+            return f"<QemuVM: not running>"
 
     def __init__(self, config: QemuVMConfiguration):
         self.qemu_bin_path = config.qemu_bin_path
@@ -98,6 +101,7 @@ class QemuVM(object):
         while not self.qemu_process:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
+            assert self.qemu_process.stderr, "Qemu process stderr is missing"
             line = await self.qemu_process.stderr.readline()
             if not line:  # FD is closed nothing more will come
                 print(self, "EOF")
@@ -121,6 +125,7 @@ class QemuVM(object):
         while not self.qemu_process:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
+            assert self.qemu_process.stdout, "Qemu process stdout is missing"
             line = await self.qemu_process.stdout.readline()
             if not line:  # FD is closed nothing more will come
                 print(self, "EOF")

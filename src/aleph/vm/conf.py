@@ -11,7 +11,6 @@ from pathlib import Path
 from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
-from aleph_message.models import ItemHash
 from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
@@ -327,6 +326,12 @@ class Settings(BaseSettings):
             ), "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
 
         if self.FAKE_DATA_PROGRAM:
+            assert self.FAKE_DATA_PROGRAM, "Local fake program directory not specified"
+            assert self.FAKE_DATA_MESSAGE, "Local fake message not specified"
+            assert self.FAKE_DATA_DATA, "Local fake data directory not specified"
+            assert self.FAKE_DATA_RUNTIME, "Local runtime .squashfs build not specified"
+            assert self.FAKE_DATA_VOLUME, "Local data volume .squashfs not specified"
+
             assert isdir(self.FAKE_DATA_PROGRAM), "Local fake program directory is missing"
             assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
             assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
@@ -377,7 +382,7 @@ class Settings(BaseSettings):
         if not self.NETWORK_INTERFACE:
             self.NETWORK_INTERFACE = get_default_interface()
 
-        if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION:
+        if self.DNS_NAMESERVERS is None and self.DNS_RESOLUTION and self.NETWORK_INTERFACE:
             self.DNS_NAMESERVERS = obtain_dns_ips(
                 dns_resolver=self.DNS_RESOLUTION,
                 network_interface=self.NETWORK_INTERFACE,
