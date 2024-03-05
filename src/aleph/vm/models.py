@@ -289,8 +289,8 @@ class VmExecution:
             if self.times.stopped_at is not None:
                 logger.debug(f"VM={self.vm.vm_id} already stopped")
                 return
-            await self.all_runs_complete()
             self.times.stopping_at = datetime.now(tz=timezone.utc)
+            await self.all_runs_complete()
             await self.record_usage()
             await self.vm.teardown()
             self.times.stopped_at = datetime.now(tz=timezone.utc)
