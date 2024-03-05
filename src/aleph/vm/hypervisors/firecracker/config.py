@@ -58,5 +58,6 @@ class FirecrackerConfig(BaseModel):
     class Config:
         allow_population_by_field_name = True
 
-        def alias_generator(x):
+        @staticmethod
+        def alias_generator(x: str):
             return x.replace("_", "-")

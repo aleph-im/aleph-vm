@@ -3,8 +3,6 @@ async SystemD Manager implementation.
 """
 
 import logging
-import sys
-from typing import Any
 
 import dbus
 from dbus import DBusException, SystemBus
