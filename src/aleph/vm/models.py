@@ -94,6 +94,7 @@ class VmExecution:
     def is_stopping(self) -> bool:
         return bool(self.times.stopping_at and not self.times.stopped_at)
 
+    @property
     def is_program(self) -> bool:
         return isinstance(self.message, ProgramContent)
 
@@ -123,7 +124,8 @@ class VmExecution:
         return self.message.payment and self.message.payment.is_stream
 
     @property
-    def has_resources(self):
+    def has_resources(self) -> bool:
+        assert self.vm, "The VM attribute has to be set before calling has_resources()"
         return self.vm.resources_path.exists() if self.hypervisor == HypervisorType.firecracker else True
 
     def __init__(
