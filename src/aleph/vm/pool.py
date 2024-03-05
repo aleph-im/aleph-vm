@@ -89,9 +89,10 @@ class VmPool:
 
         # Check if an execution is already present for this VM, then return it.
         # Do not `await` in this section.
-        try:
-            return self.executions[vm_hash]
-        except KeyError:
+        current_execution = self.get_running_vm(vm_hash)
+        if current_execution:
+            return current_execution
+        else:
             execution = VmExecution(
                 vm_hash=vm_hash,
                 message=message,
