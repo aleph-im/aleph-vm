@@ -259,13 +259,11 @@ class VmPool:
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
         # Stop executions in parallel:
-        await asyncio.gather(*(execution.stop() for vm_hash, execution in self.get_ephemeral_executions()))
+        await asyncio.gather(*(execution.stop() for execution in self.get_ephemeral_executions()))
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
         executions = (
-            execution
-            for _vm_hash, execution in self.executions.items()
-            if execution.is_running and not execution.persistent
+            execution for _, execution in self.executions.items() if execution.is_running and not execution.persistent
         )
         return executions or []
 
