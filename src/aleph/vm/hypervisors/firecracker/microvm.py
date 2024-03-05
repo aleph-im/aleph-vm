@@ -88,6 +88,7 @@ class MicroVM:
     config_file_path: Optional[Path] = None
     drives: list[Drive]
     init_timeout: float
+    runtime_config: Optional[RuntimeConfiguration]
     mounted_rootfs: Optional[Path] = None
     _unix_socket: Optional[Server] = None
 
@@ -364,6 +365,7 @@ class MicroVM:
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
+            assert self.proc.stdout, "Process stdout is missing"
             line = await self.proc.stdout.readline()
             if not line:  # EOF, FD is closed nothing more will come
                 return
@@ -378,6 +380,7 @@ class MicroVM:
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
+            assert self.proc.stderr, "Process stderr is missing"
             line = await self.proc.stderr.readline()
             if not line:  # EOF, FD is closed nothing more will come
                 return
@@ -395,10 +398,10 @@ class MicroVM:
         self.stderr_task = loop.create_task(self.print_logs_stderr())
         return self.stdout_task, self.stderr_task
 
-    async def wait_for_init(self):
+    async def wait_for_init(self) -> None:
         """Wait for a connection from the init in the VM"""
         logger.debug("Waiting for init...")
-        queue = asyncio.Queue()
+        queue: asyncio.Queue[RuntimeConfiguration] = asyncio.Queue()
 
         async def unix_client_connected(reader: asyncio.StreamReader, _writer: asyncio.StreamWriter):
             data = await reader.read(1_000_000)

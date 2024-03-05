@@ -55,6 +55,9 @@ class TapInterface:
         logger.debug("Create network interface")
 
         ip_command = shutil.which("ip")
+        if not ip_command:
+            raise FileNotFoundError("ip command not found")
+
         run([ip_command, "tuntap", "add", self.device_name, "mode", "tap"])
         run(
             [

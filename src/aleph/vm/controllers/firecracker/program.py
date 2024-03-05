@@ -316,7 +316,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             vsock=Vsock(),
             network_interfaces=(
                 [NetworkInterface(iface_id="eth0", host_dev_name=self.tap_interface.device_name)]
-                if self.enable_networking
+                if self.enable_networking and self.tap_interface
                 else []
             ),
         )
