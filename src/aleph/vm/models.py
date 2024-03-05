@@ -91,6 +91,10 @@ class VmExecution:
         )
 
     @property
+    def is_stopping(self) -> bool:
+        return bool(self.times.stopping_at and not self.times.stopped_at)
+
+    @property
     def is_program(self):
         return isinstance(self.message, ProgramContent)
 
