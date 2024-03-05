@@ -164,7 +164,7 @@ class VmPool:
     async def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
-        if execution and execution.is_running:
+        if execution and execution.is_running and not execution.is_stopping:
             execution.cancel_expiration()
             return execution
         else:
