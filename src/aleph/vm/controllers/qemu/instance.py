@@ -178,12 +178,13 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
+        self.qemu_process = None
 
     # TODO : wait for andress soltion for pid handling
     def to_dict(self):
         """Dict representation of the virtual machine. Used to record resource usage and for JSON serialization."""
         if self.qemu_process and psutil:
-            # The firecracker process is still running and process information can be obtained from `psutil`.
+            # The Qemu process is still running and process information can be obtained from `psutil`.
             try:
                 p = psutil.Process(self.qemu_process.pid)
                 pid_info = {
