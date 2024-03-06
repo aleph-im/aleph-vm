@@ -2,9 +2,10 @@ import asyncio
 import logging
 import uuid
 from asyncio import Task
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Coroutine, Optional, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 from aleph_message.models import (
     ExecutableContent,

@@ -2,7 +2,8 @@ import asyncio
 import logging
 from abc import ABC
 from asyncio.subprocess import Process
-from typing import Any, Coroutine, Optional
+from collections.abc import Coroutine
+from typing import Any, Optional
 
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
