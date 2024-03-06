@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Optional
 
 from aleph_message.models import (
     Chain,
@@ -284,9 +284,9 @@ class VmPool:
         )
         return executions or []
 
-    def get_executions_by_sender(self, payment_type: PaymentType) -> Dict[str, Dict[str, list[VmExecution]]]:
+    def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
-        executions_by_sender: Dict[str, Dict[str, list[VmExecution]]] = {}
+        executions_by_sender: dict[str, dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
             if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
                 # Ignore Diagnostic VM execution
