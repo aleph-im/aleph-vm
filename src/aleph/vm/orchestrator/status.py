@@ -158,3 +158,21 @@ async def check_crash_and_restart(session: ClientSession, vm_id: ItemHash) -> bo
 
     except ClientResponseError:
         return False
+
+
+async def check_get_a_message(session, vm_id):
+    try:
+        result: dict = await get_json_from_vm(session, vm_id, "/")
+        assert result["result"] is True
+        assert "headers" in result
+        return True
+    except ClientResponseError:
+        return False
+
+
+async def check_post_a_message(session, vm_id):
+    return None
+
+
+async def check_sign_a_message(session, vm_id):
+    return None
