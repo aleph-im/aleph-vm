@@ -10,7 +10,7 @@ from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
 from pathlib import Path
 from shutil import disk_usage
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 import aiodns
 import msgpack
@@ -22,10 +22,10 @@ from eth_utils import hexstr_if_str, is_address, to_hex
 logger = logging.getLogger(__name__)
 
 
-def get_message_executable_content(message_dict: Dict) -> ExecutableContent:
+def get_message_executable_content(message_dict: dict) -> ExecutableContent:
     try:
         return ProgramContent.parse_obj(message_dict)
-    except ValueError as error:
+    except ValueError:
         return InstanceContent.parse_obj(message_dict)
 
 
@@ -190,11 +190,11 @@ def to_normalized_address(value: str) -> HexAddress:
     try:
         hex_address = hexstr_if_str(to_hex, value).lower()
     except AttributeError:
-        raise TypeError("Value must be any string, instead got type {}".format(type(value)))
+        raise TypeError(f"Value must be any string, instead got type {type(value)}")
     if is_address(hex_address):
         return HexAddress(HexStr(hex_address))
     else:
-        raise ValueError("Unknown format {}, attempted to normalize to {}".format(value, hex_address))
+        raise ValueError(f"Unknown format {value}, attempted to normalize to {hex_address}")
 
 
 def md5sum(file_path: Path) -> str:
@@ -205,7 +205,7 @@ def md5sum(file_path: Path) -> str:
 def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path], str] = md5sum) -> bool:
     """Check if the MD5 hash of two files differ."""
     if not source.exists():
-        raise FileNotFoundError("Source file does not exist: {}".format(source))
+        raise FileNotFoundError(f"Source file does not exist: {source}")
 
     if not destination.exists():
         return True

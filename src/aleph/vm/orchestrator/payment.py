@@ -1,7 +1,8 @@
 import asyncio
 import logging
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable, Optional
+from typing import Optional
 
 import aiohttp
 from aleph_message.models import ItemHash, PaymentType
