@@ -41,7 +41,7 @@ class VmPool:
     executions: dict[ItemHash, VmExecution]
     message_cache: dict[str, ExecutableMessage] = {}
     network: Optional[Network]
-    snapshot_manager: SnapshotManager
+    snapshot_manager: Optional[SnapshotManager] = None
     systemd_manager: SystemDManager
 
     def __init__(self):
@@ -65,17 +65,17 @@ class VmPool:
             else None
         )
         self.systemd_manager = SystemDManager()
-        self.snapshot_manager = SnapshotManager()
-        logger.debug("Initializing SnapshotManager ...")
-        self.snapshot_manager.run_snapshots()
-
-        logger.debug("Loading existing executions ...")
-        asyncio.run(self._load_persistent_executions())
+        if settings.SNAPSHOT_FREQUENCY > 0:
+            self.snapshot_manager = SnapshotManager()
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
         if self.network:
             self.network.setup()
+
+        if self.snapshot_manager:
+            logger.debug("Initializing SnapshotManager ...")
+            self.snapshot_manager.run_in_thread()
 
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
@@ -124,7 +124,7 @@ class VmPool:
                 if execution.is_program and execution.vm:
                     await execution.vm.load_configuration()
 
-            if execution.vm and execution.vm.support_snapshot:
+            if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.start_for(vm=execution.vm)
         except Exception:
             # ensure the VM is removed from the pool on creation error
@@ -210,7 +210,7 @@ class VmPool:
 
         _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
-    async def _load_persistent_executions(self):
+    async def load_persistent_executions(self):
         """Load persistent executions from the database."""
         saved_executions = await get_execution_records()
         for saved_execution in saved_executions:
