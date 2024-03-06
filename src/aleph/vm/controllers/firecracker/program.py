@@ -356,7 +356,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         ipv6 = self.get_ipv6()
         ipv6_gateway = self.get_ipv6_gateway()
 
-        if not settings.DNS_NAMESERVERS:
+        if settings.ALLOW_VM_NETWORKING and not settings.DNS_NAMESERVERS:
             msg = "Invalid configuration: DNS nameservers missing"
             raise ValueError(msg)
 
