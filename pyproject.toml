@@ -135,6 +135,13 @@ all = [
 pythonpath = [
   "src"
 ]
+testpaths = [
+  "tests"
+]
+ignore = [
+  "runtimes/aleph-debian-11-python/rootfs/",
+  "runtimes/aleph-debian-12-python/rootfs/",
+]
 
 [tool.black]
 target-version = ["py39"]
