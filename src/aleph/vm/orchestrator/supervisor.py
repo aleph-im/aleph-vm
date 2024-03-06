@@ -156,6 +156,10 @@ def run():
             app.on_cleanup.append(stop_balances_monitoring_task)
             app.on_cleanup.append(stop_all_vms)
 
+        logger.info("Loading existing executions ...")
+        asyncio.run(pool.load_persistent_executions())
+
+        logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
     except OSError as e:
         if e.errno == 98:
