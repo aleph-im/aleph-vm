@@ -27,7 +27,12 @@ apt-get install -y --no-install-recommends --no-install-suggests \
   docker.io \
   cgroupfs-mount \
   nftables \
-  iputils-ping curl
+  iputils-ping curl \
+  locales
+
+# Update locale settings to en_US UTF-8
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen en_US.UTF-8
 
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
