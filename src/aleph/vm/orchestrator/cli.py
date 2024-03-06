@@ -201,6 +201,10 @@ async def benchmark(runs: int):
     settings.WATCH_FOR_MESSAGES = False
     settings.WATCH_FOR_UPDATES = False
 
+    # Finish setting up the settings
+    settings.setup()
+    settings.check()
+
     # First test all methods
     settings.REUSE_TIMEOUT = 0.1
     for path in (
