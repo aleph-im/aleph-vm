@@ -242,7 +242,8 @@ class Settings(BaseSettings):
 
     SNAPSHOT_FREQUENCY: int = Field(
         default=60,
-        description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes.",
+        description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes. "
+        "If set to zero, snapshots are disabled.",
     )
 
     SNAPSHOT_COMPRESSION_ALGORITHM: SnapshotCompressionAlgorithm = Field(
