@@ -1,8 +1,9 @@
 import functools
 import json
 import logging
+from collections.abc import Awaitable, Coroutine
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Literal, Union
+from typing import Any, Callable, Literal, Union
 
 import pydantic
 from aiohttp import web

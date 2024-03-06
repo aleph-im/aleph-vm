@@ -11,7 +11,7 @@ from aleph.vm.controllers.configuration import QemuVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
 
 
-class QemuVM(object):
+class QemuVM:
     qemu_bin_path: str
     cloud_init_drive_path: Optional[str]
     image_path: str
@@ -26,7 +26,7 @@ class QemuVM(object):
         if self.qemu_process:
             return f"<QemuVM: {self.qemu_process.pid}>"
         else:
-            return f"<QemuVM: not running>"
+            return "<QemuVM: not running>"
 
     def __init__(self, config: QemuVMConfiguration):
         self.qemu_bin_path = config.qemu_bin_path

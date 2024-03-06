@@ -6,7 +6,7 @@ import sys
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Callable, Dict, Generic, Optional, Tuple, TypedDict, TypeVar, Union
+from typing import Callable, Generic, Optional, TypedDict, TypeVar, Union
 
 import psutil
 from aleph_message.models import ItemHash
@@ -37,11 +37,10 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    async def download_all(self):
+    async def download_all(self) -> None:
         volume = self.message_content.rootfs
         parent_image_path = await get_rootfs_base_path(volume.parent.ref)
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
-        return
 
     async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
@@ -90,7 +89,7 @@ class EntryDict(TypedDict):
     MESSAGE: str
 
 
-def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> Tuple[asyncio.Queue, Callable[[], None]]:
+def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> tuple[asyncio.Queue, Callable[[], None]]:
     """Create a queue which streams the logs for the process.
 
     @param stdout_identifier: journald identifier for process stdout
@@ -149,7 +148,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     support_snapshot = False
     qmp_socket_path = None
     persistent = True
-    _queue_cancellers: Dict[asyncio.Queue, Callable] = {}
+    _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
 
     def __repr__(self):
