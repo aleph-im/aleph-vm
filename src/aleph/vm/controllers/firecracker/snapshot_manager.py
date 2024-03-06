@@ -86,7 +86,7 @@ class SnapshotManager:
         self.executions = {}
         self._scheduler = Scheduler()
 
-    def run_snapshots(self) -> None:
+    def run_in_thread(self) -> None:
         job_thread = threading.Thread(
             target=infinite_run_scheduler_jobs,
             args=[self._scheduler],
