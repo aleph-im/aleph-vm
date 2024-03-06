@@ -257,13 +257,15 @@ class Settings(BaseSettings):
 
     # Tests on programs
 
-    FAKE_DATA_PROGRAM: Optional[Path] = None
-    BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../examples/example_fastapi")))
+    FAKE_DATA_PROGRAM: Optional[Path] = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
+    BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
-    FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../examples/program_message_from_aleph.json")))
-    FAKE_DATA_DATA: Optional[Path] = Path(abspath(join(__file__, "../../examples/data/")))
-    FAKE_DATA_RUNTIME = Path(abspath(join(__file__, "../../runtimes/aleph-debian-11-python/rootfs.squashfs")))
-    FAKE_DATA_VOLUME: Optional[Path] = Path(abspath(join(__file__, "../../examples/volumes/volume-venv.squashfs")))
+    FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
+    FAKE_DATA_DATA: Optional[Path] = Path(abspath(join(__file__, "../../../../examples/data/")))
+    FAKE_DATA_RUNTIME = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
+    FAKE_DATA_VOLUME: Optional[Path] = Path(
+        abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs"))
+    )
 
     # Tests on instances
 
@@ -279,7 +281,7 @@ class Settings(BaseSettings):
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
-    FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
 
     CHECK_FASTAPI_VM_ID = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
     LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
