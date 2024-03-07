@@ -251,7 +251,7 @@ class VmPool:
                 self._schedule_forget_on_stop(execution)
 
                 # Start the snapshot manager for the VM
-                if execution.vm.support_snapshot and self.snapshot_manager:
+                if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
 
                 self.executions[vm_hash] = execution
