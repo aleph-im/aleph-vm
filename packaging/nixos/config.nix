@@ -1,41 +1,26 @@
-{ modulesPath, pkgs, config,... }:
+{ modulesPath, pkgs, config, lib,... }:
 let
   myPythonEnv = (
-      pkgs.python311.withPackages(ps: with ps; [
-        aiohttp
-        msgpack
-        aiodns
-        sqlalchemy
-        setproctitle
-        psutil
-        packaging
-        py-cpuinfo
-        jsonschema
-        pydantic
-
-        ( callPackage ./default.nix {} )
-
-        (
-          buildPythonPackage rec {
-            pname = "aleph-message";
-            version = "0.4.2";
-            src = fetchPypi {
-              inherit pname version;
-              sha256 = "sha256-bfqsYb7IY7vWNfItTdcASBKBiAln7JjmZgWDdbCMPSM=";
-            };
-            doCheck = false;
-            propagatedBuildInputs = [
-              pkgs.python311Packages.pydantic
-            ];
-          }
-        )
-      ])
-    );
+    pkgs.python311.withPackages(ps: with ps; [
+      ( callPackage ./aleph-vm.nix {} )
+    ])
+  );
 
   vmlinux = pkgs.fetchurl {
     url = "https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy";
     sha256 = "sha256-8jo6yMdVa7h3owBZ6aaxQ7mXGkg5RwoAjnjiYF77ZrY=";
   };
+
+  runtime = pkgs.fetchurl {
+    url = "https://ipfs.aleph.cloud/ipfs/bafybeibmbjwdh6o4wc3cjk5trgbu6lemq35ycuv2hnxk63u5egsb5ovkve";
+    sha256 = "sha256-8jo6yMdVa7h3owBZ6aaxQ7mXGkg5RwoAjnjiYF77ZrY=";
+  };
+
+#  dockerImage = pkgs.dockerTools.pullImage {
+#    imageName = "docker.io/alephim/vm-connector:alpha";
+#    sha256 = "sha256-8jo6yMdVa7h3owBZ6aaxQ7mXGkg5RwoAjnjiYF77ZrY=";
+#    imageDigest = "sha256-of-the-image";
+#  };
 in
 {
   imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];
@@ -49,6 +34,7 @@ in
   virtualisation.cores = 4;
   virtualisation.memorySize = 4096;
   virtualisation.diskSize = 4096;
+#  virtualisation.interfaces.enp5s0.assignIP = true;
   virtualisation.forwardPorts = [
     { from = "host"; host.port = 4020; guest.port = 4020; }
   ];
@@ -77,7 +63,29 @@ in
       orchestrator = "python -m aleph.vm.orchestrator";
       check-nftables = "python -m nftables";
       check = "curl -i http://localhost:4020/status/check/fastapi";
+      clone = "git clone https://github.com/aleph-im/aleph-vm.git";
+      j = "journalctl -u aleph-vm-supervisor -f";
     };
+  };
+
+  systemd.services.aleph-vm-supervisor = {
+    description = "Aleph.im VM Orchestrator";
+    after = [ "network.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${myPythonEnv}/bin/python -m aleph.vm.orchestrator";
+      Restart = "always";
+      User = "root";
+    };
+    environment = {
+      LD_LIBRARY_PATH = "/run/current-system/sw/lib";
+      ALEPH_VM_FIRECRACKER_PATH = "/run/current-system/sw/bin/firecracker";
+      ALEPH_VM_JAILER_PATH = "/run/current-system/sw/bin/jailer";
+      ALEPH_VM_LINUX_PATH = vmlinux;
+      ALEPH_VM_SUPERVISOR_HOST = "0.0.0.0";
+      PYTHONPATH = "${myPythonEnv}/lib/";
+      PATH= lib.mkForce "/run/current-system/sw/bin";
+      };
   };
 
   virtualisation = {
@@ -100,14 +108,15 @@ in
   environment.systemPackages = with pkgs; [
 
     helix
+    vim
 
+    which
     git
     redis
     acl
     curl
     squashfsTools
     debootstrap
-    vim
     firecracker
     ndppd
     cloud-utils
@@ -115,8 +124,13 @@ in
     myPythonEnv
   ];
 
+  # Symlink the file from variable `runtime` above to /var/cache/aleph-vm/vm/runtime. It is not in /etc
+  # because it is not a configuration file. Therefore environment.etc is not suitable.
+#  environment.pathsToLink = {
+#    "/var/cache/aleph-vm/vm/runtime/f873715dc2feec3833074bd4b8745363a0e0093746b987b4c8191268883b2463" = runtime;
+#  };
+
   environment.sessionVariables = rec {
-    ALEPH_VM_SETUP = "git clone https://github.com/aleph-im/aleph-vm.git";
     LD_LIBRARY_PATH = "/run/current-system/sw/lib";
     ALEPH_VM_FIRECRACKER_PATH = "/run/current-system/sw/bin/firecracker";
     ALEPH_VM_JAILER_PATH = "/run/current-system/sw/bin/jailer";
