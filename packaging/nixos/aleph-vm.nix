@@ -21,32 +21,65 @@ in
     ];
     propagatedBuildInputs = [
       pkgs.git
+      pkgs.which
+      pkgs.git
+      pkgs.redis
+      pkgs.acl
+      pkgs.curl
+      pkgs.squashfsTools
+      pkgs.debootstrap
+      pkgs.firecracker
+      pkgs.ndppd
+      pkgs.cloud-utils
 
-      pkgs.python311Packages.setuptools
-      pkgs.python311Packages.hatchling
-      pkgs.python311Packages.hatch-vcs
-      pkgs.python311Packages.nftables
-      pkgs.python311Packages.pyyaml
-
-      pkgs.python311Packages.schedule
+      # Versions from nixpkgs
+      pkgs.python311Packages.aiodns
+      pkgs.python311Packages.aiohttp
+      pkgs.python311Packages.aiohttp-cors
+      pkgs.python311Packages.aiosqlite
+      pkgs.python311Packages.alembic
+      pkgs.python311Packages.cryptography
       pkgs.python311Packages.dbus-python
+      pkgs.python311Packages.eth-account
+      pkgs.python311Packages.eth-hash
+      pkgs.python311Packages.eth-typing
+      pkgs.python311Packages.hatch-vcs
+      pkgs.python311Packages.hatchling
+      pkgs.python311Packages.jsonschema
+      pkgs.python311Packages.msgpack
+      pkgs.python311Packages.nftables
+      pkgs.python311Packages.packaging
+      pkgs.python311Packages.psutil
+      pkgs.python311Packages.py-cpuinfo
+      pkgs.python311Packages.pydantic
+      pkgs.python311Packages.pyyaml
+      pkgs.python311Packages.schedule
+      pkgs.python311Packages.setproctitle
+      pkgs.python311Packages.setuptools
+      pkgs.python311Packages.sqlalchemy
       pkgs.python311Packages.systemd
 
-      pkgs.python311Packages.aiohttp
-      pkgs.python311Packages.alembic
-      pkgs.python311Packages.aiosqlite
-
-      pkgs.python311Packages.cryptography
-      pkgs.python311Packages.eth-hash
-      pkgs.python311Packages.eth-account
-      pkgs.python311Packages.eth-typing
-
+      # Specific versions from PyPI
+      aioredis
+      aleph-message
+      jwskate
       nftablesPyPI
       qmp
       superfluid
-      jwskate
-      aioredis
     ];
+
+    aleph-message = python311.pkgs.buildPythonPackage rec {
+      pname = "aleph-message";
+      version = "0.4.4";
+      src = python311.pkgs.fetchPypi {
+        inherit pname version;
+        sha256 = "sha256-0WKvQpVd8hWezks+fdeYpMtzCqCtsYtP2aVTiQcltQg=";
+      };
+      doCheck = false;
+      propagatedBuildInputs = [
+        pkgs.python311Packages.pydantic
+      ];
+    };
 
     nftablesPyPI = python311.pkgs.buildPythonPackage rec {
       pname = "pip-nftables";
