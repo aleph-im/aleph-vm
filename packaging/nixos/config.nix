@@ -54,7 +54,10 @@ in
   services.openssh.enable = true;
 
   services.ndppd.enable = true;
-  services.redis.servers."aleph-vm".enable = true;
+  services.redis.servers."aleph-vm" = {
+    enable = true;
+    port = 6379;
+  };
 
 #  networking.nftables.enable = true;
 
@@ -64,7 +67,7 @@ in
       check-nftables = "python -m nftables";
       check = "curl -i http://localhost:4020/status/check/fastapi";
       clone = "git clone https://github.com/aleph-im/aleph-vm.git";
-      j = "journalctl -u aleph-vm-supervisor -f";
+      j = "journalctl -u aleph-vm-supervisor --boot";
     };
   };
 
