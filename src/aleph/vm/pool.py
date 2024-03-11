@@ -98,8 +98,7 @@ class VmPool:
                 message=message,
                 original=original,
                 snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=persistent,
+                systemd_manager=self.systemd_manager if persistent else None,
             )
             self.executions[vm_hash] = execution
 
@@ -118,8 +117,8 @@ class VmPool:
             await execution.start()
 
             # Start VM and snapshots automatically
-            if execution.persistent:
-                self.systemd_manager.enable_and_start(execution.controller_service)
+            if execution.systemd_manager:
+                execution.systemd_manager.enable_and_start(execution.controller_service)
                 await execution.wait_for_init()
                 if execution.is_program and execution.vm:
                     await execution.vm.load_configuration()
@@ -230,8 +229,7 @@ class VmPool:
                 message=get_message_executable_content(message_dict),
                 original=get_message_executable_content(original_dict),
                 snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=saved_execution.persistent,
+                systemd_manager=self.systemd_manager if saved_execution.persistent else None,
             )
 
             if execution.is_running:
