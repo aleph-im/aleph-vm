@@ -72,7 +72,6 @@ class VmExecution:
     vm: Optional[Union[AlephFirecrackerExecutable, AlephQemuInstance]] = None
 
     times: VmExecutionTimes
-
     ready_event: asyncio.Event
     concurrent_runs: int
     runs_done_event: asyncio.Event
@@ -86,11 +85,10 @@ class VmExecution:
 
     @property
     def is_running(self) -> bool:
-        return (
-            self.times.starting_at and not self.times.stopping_at
-            if not self.persistent
-            else self.systemd_manager.is_service_active(self.controller_service)
-        )
+        if self.systemd_manager:
+            return self.systemd_manager.is_service_active(self.controller_service)
+        else:
+            return bool(self.times.starting_at and not self.times.stopping_at)
 
     @property
     def is_stopping(self) -> bool:
@@ -314,7 +312,7 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if self.vm.support_snapshot:
+            if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
 

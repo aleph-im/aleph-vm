@@ -185,7 +185,8 @@ class VmPool:
     async def stop_persistent_execution(self, execution: VmExecution):
         """Stop persistent VMs in the pool."""
         assert execution.persistent, "Execution isn't persistent"
-        self.systemd_manager.stop_and_disable(execution.controller_service)
+        assert execution.systemd_manager, "SystemDManager isn't defined on a persistent execution"
+        execution.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
