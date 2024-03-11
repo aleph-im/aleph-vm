@@ -42,7 +42,7 @@ class VmPool:
     message_cache: dict[str, ExecutableMessage] = {}
     network: Optional[Network]
     snapshot_manager: Optional[SnapshotManager] = None
-    systemd_manager: SystemDManager
+    systemd_manager: Optional[SystemDManager] = None
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -64,9 +64,8 @@ class VmPool:
             if settings.ALLOW_VM_NETWORKING
             else None
         )
-        self.systemd_manager = SystemDManager()
-        if settings.SNAPSHOT_FREQUENCY > 0:
-            self.snapshot_manager = SnapshotManager()
+        self.snapshot_manager = SnapshotManager() if settings.SNAPSHOT_FREQUENCY > 0 else None
+        self.systemd_manager = SystemDManager() if SystemDManager.is_available() else None
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
@@ -86,6 +85,9 @@ class VmPool:
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
+
+        if persistent and not self.systemd_manager:
+            logger.error("VMs cannot be made persistent without access to Systemd. Is DBus available ?")
 
         # Check if an execution is already present for this VM, then return it.
         # Do not `await` in this section.
@@ -224,6 +226,9 @@ class VmPool:
 
             message_dict = json.loads(saved_execution.message)
             original_dict = json.loads(saved_execution.original_message)
+
+            if saved_execution.persistent and not self.systemd_manager:
+                logger.error("VMs cannot be made persistent without access to Systemd. Is DBus available ?")
 
             execution = VmExecution(
                 vm_hash=vm_hash,

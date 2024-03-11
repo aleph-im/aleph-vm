@@ -3,12 +3,20 @@ async SystemD Manager implementation.
 """
 
 import logging
-
-import dbus
-from dbus import DBusException, SystemBus
-from dbus.proxies import Interface
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+try:
+    import dbus
+    from dbus import DBusException, SystemBus
+    from dbus.proxies import Interface
+except ImportError:
+    logger.error("dbus-python not installed. SystemDManager will not work.")
+    # Mock the dbus module to avoid errors in type annotations
+    DBusException = Any
+    SystemBus = Any
+    Interface = Any
 
 
 class SystemDManager:
@@ -24,6 +32,10 @@ class SystemDManager:
         self.bus = dbus.SystemBus()
         systemd = self.bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
         self.manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return SystemBus is not Any
 
     def stop_and_disable(self, service: str) -> None:
         if self.is_service_active(service):
