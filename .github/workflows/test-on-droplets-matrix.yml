@@ -37,10 +37,12 @@ jobs:
         run: |
           sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
 
+        # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
-          hatch run testing:test-cov
-          hatch run testing:cov
+          sudo python3 -m pip install hatch hatch-vcs coverage
+          sudo hatch run testing:test-cov
+          sudo hatch run testing:cov
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
