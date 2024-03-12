@@ -39,8 +39,8 @@ jobs:
 
       - name: Run unit tests
         run: |
-          hatch run testing:test-cov
-          hatch run testing:cov
+          sudo hatch run testing:test-cov
+          sudo hatch run testing:cov
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
