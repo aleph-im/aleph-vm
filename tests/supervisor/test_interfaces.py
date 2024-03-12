@@ -45,7 +45,7 @@ def test_add_ip_address():
         run(["ip", "tuntap", "del", test_device_name, "mode", "tap"], check=False)
 
     # Without an interface, the function should raise an error
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(IndexError):
         add_ip_address(IPRoute(), test_device_name, test_ipv4)
 
 
