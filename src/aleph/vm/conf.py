@@ -317,6 +317,7 @@ class Settings(BaseSettings):
                 raise ValueError(msg)
 
     def check(self):
+        """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
@@ -363,6 +364,7 @@ class Settings(BaseSettings):
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
     def setup(self):
+        """Setup the environment defined by the settings. Call this method after loading the settings."""
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
