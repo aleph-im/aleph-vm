@@ -15,6 +15,7 @@ from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
+from aleph_message.models.execution.environment import HypervisorType
 from aleph.vm.utils import file_hashes_differ, is_command_available
 
 logger = logging.getLogger(__name__)
@@ -255,6 +256,10 @@ class Settings(BaseSettings):
     ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
     ENABLE_QEMU_SUPPORT: bool = Field(default=False)
+    INSTANCE_DEFAULT_HYPERVISOR: Optional[HypervisorType] = Field(
+        default=HypervisorType.firecracker,  # User Firecracker
+        description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
+    )
 
     # Tests on programs
 
@@ -356,6 +361,9 @@ class Settings(BaseSettings):
             assert is_command_available(
                 "qemu-system-x86_64"
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
+        else:
+            # If QEmu is not supported, ignore the setting and use Firecracker by default
+            settings.INSTANCE_DEFAULT_HYPERVISOR = HypervisorType.firecracker
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)

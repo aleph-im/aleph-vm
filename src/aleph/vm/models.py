@@ -105,8 +105,11 @@ class VmExecution:
 
     @property
     def hypervisor(self) -> HypervisorType:
-        # default to firecracker for retro compat
-        return self.message.environment.hypervisor or HypervisorType.firecracker
+        if self.is_program:
+            return HypervisorType.firecracker
+
+        # Hypervisor setting is only used for instances
+        return self.message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
 
     @property
     def becomes_ready(self) -> Callable[[], Coroutine]:
