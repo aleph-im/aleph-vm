@@ -361,9 +361,6 @@ class Settings(BaseSettings):
             assert is_command_available(
                 "qemu-system-x86_64"
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
-        else:
-            # If QEmu is not supported, ignore the setting and use Firecracker by default
-            settings.INSTANCE_DEFAULT_HYPERVISOR = HypervisorType.firecracker
 
     def setup(self):
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
@@ -398,6 +395,10 @@ class Settings(BaseSettings):
                 dns_resolver=self.DNS_RESOLUTION,
                 network_interface=self.NETWORK_INTERFACE,
             )
+
+        if not settings.ENABLE_QEMU_SUPPORT:
+            # If QEmu is not supported, ignore the setting and use Firecracker by default
+            settings.INSTANCE_DEFAULT_HYPERVISOR = HypervisorType.firecracker
 
     def display(self) -> str:
         attributes: dict[str, Any] = {}
