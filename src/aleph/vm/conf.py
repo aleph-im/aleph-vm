@@ -11,11 +11,11 @@ from pathlib import Path
 from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
+from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph_message.models.execution.environment import HypervisorType
 from aleph.vm.utils import file_hashes_differ, is_command_available
 
 logger = logging.getLogger(__name__)
