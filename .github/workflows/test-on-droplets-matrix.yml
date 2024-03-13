@@ -37,6 +37,32 @@ jobs:
         run: |
           sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
 
+      - name: Download and build required files for running tests
+        run: |
+          sudo mkdir --parents /opt/firecracker/
+          sudo curl -fsSL -o "/opt/firecracker/vmlinux.bin" "https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy"
+          
+          rm -fr /tmp/firecracker-release
+          mkdir --parents /tmp/firecracker-release /opt/firecracker
+          curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64.tgz | tar -xz --no-same-owner --directory /tmp/firecracker-release
+          # Copy binaries:
+          cp /tmp/firecracker-release/release-v*/firecracker-v*[!.debug] /opt/firecracker/firecracker
+          cp /tmp/firecracker-release/release-v*/jailer-v*[!.debug] /opt/firecracker/jailer
+          chmod +x /opt/firecracker/firecracker
+          chmod +x /opt/firecracker/jailer
+          
+          find /opt
+
+      - name: "Build custom runtime"
+        run: |
+          sudo apt update
+          sudo apt install -y debootstrap ndppd acl cloud-image-utils qemu-utils qemu-system-x86
+          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+
+      - name: "Build example volume"
+        run: |
+          cd examples/volumes && bash build_squashfs.sh
+
         # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
