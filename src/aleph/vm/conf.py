@@ -258,7 +258,7 @@ class Settings(BaseSettings):
 
     # Tests on programs
 
-    FAKE_DATA_PROGRAM: Optional[Path] = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
+    FAKE_DATA_PROGRAM: Optional[Path] = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
     FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
