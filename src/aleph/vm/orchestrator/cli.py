@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from statistics import mean
 from typing import Callable
+from typing import Callable, Optional, cast
 
 from aiohttp.web import Request, Response
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -157,6 +158,15 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
+class FakeRequest:
+    headers: dict[str, str]
+    raw_headers: list[tuple[bytes, bytes]]
+    match_info: dict
+    method: str
+    query_string: str
+    read: Callable
+
+
 async def benchmark(runs: int):
     """Measure program performance by immediately running the supervisor
     with fake requests.
@@ -166,16 +176,6 @@ async def benchmark(runs: int):
 
     ref = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
-
-    FakeRequest: Request
-
-    class FakeRequest:  # type: ignore[no-redef]
-        headers: dict[str, str]
-        raw_headers: list[tuple[bytes, bytes]]
-        match_info: dict
-        method: str
-        query_string: str
-        read: Callable
 
     fake_request = FakeRequest()  # type: ignore[operator]
     fake_request.match_info = {"ref": ref, "suffix": "/"}
@@ -219,7 +219,9 @@ async def benchmark(runs: int):
         "/cache/keys",
     ):
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code_on_request(vm_hash=ref, path=path, pool=pool, request=fake_request)
+        response: Response = await run_code_on_request(
+            vm_hash=ref, path=path, pool=pool, request=cast(Request, fake_request)
+        )
         assert response.status == 200
 
     # Disable VM timeout to exit benchmark properly
@@ -228,7 +230,9 @@ async def benchmark(runs: int):
     for _run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response2: Response = await run_code_on_request(vm_hash=ref, path=path, pool=pool, request=fake_request)
+        response2: Response = await run_code_on_request(
+            vm_hash=ref, path=path, pool=pool, request=cast(Request, fake_request)
+        )
         assert response2.status == 200
         bench.append(time.time() - t0)
 
