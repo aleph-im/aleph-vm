@@ -7,7 +7,6 @@ import sys
 import time
 from pathlib import Path
 from statistics import mean
-from typing import Callable
 from typing import Callable, Optional, cast
 
 from aiohttp.web import Request, Response
@@ -239,8 +238,7 @@ async def benchmark(runs: int):
     logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} min={min(bench):03f} max={max(bench):03f}")
     logger.info(bench)
 
-    event = None
-    result = await run_code_on_event(vm_hash=ref, event=event, pubsub=PubSub(), pool=pool)
+    result = await run_code_on_event(vm_hash=ref, event=None, pubsub=PubSub(), pool=pool)
     print("Event result", result)
 
 
@@ -251,7 +249,7 @@ async def start_instance(item_hash: ItemHash) -> None:
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
     # Watching for updates on this instance will therefore not work.
-    pubsub = None
+    pubsub: Optional[PubSub] = None
 
     await start_persistent_vm(item_hash, pubsub, pool)
 
