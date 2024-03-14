@@ -111,7 +111,7 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> tup
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    def _ready_for_read():
+    def _ready_for_read() -> None:
         change_type = r.process()  # reset fd status
         if change_type != journal.APPEND:
             return
