@@ -64,7 +64,7 @@ def set_link_up(ipr: IPRoute, device_name: str):
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
         raise MissingInterfaceError(f"Interface {device_name} does not exist, can't set it up.")
-    ipr.link("set", index=ipr.link_lookup(ifname=device_name)[0], state="up")
+    ipr.link("set", index=interface_index[0], state="up")
 
 
 def delete_tap_interface(ipr: IPRoute, device_name: str):
