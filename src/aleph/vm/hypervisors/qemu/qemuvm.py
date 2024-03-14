@@ -21,6 +21,7 @@ class QemuVM:
     mem_size_mb: int
     interface_name: str
     qemu_process = None
+    log_queues: list[asyncio.Queue]
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -37,6 +38,7 @@ class QemuVM:
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
+        self.log_queues = []
 
     def prepare_start(self):
         pass
@@ -93,8 +95,6 @@ class QemuVM:
 
         logger.debug(f"started qemu vm {self}, {proc}")
         return proc
-
-    log_queues: list[asyncio.Queue] = []
 
     # TODO : convert when merging with log fixing branch
     async def _process_stderr(self):
