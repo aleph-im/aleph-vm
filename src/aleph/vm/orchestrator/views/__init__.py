@@ -434,12 +434,12 @@ async def notify_allocation(request: web.Request):
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
-    except JSONDecodeError as error:
-        raise web.HTTPBadRequest(reason="Body is not valid JSON") from error
+    except JSONDecodeError:
+        return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
-        raise web.json_response(
+        return web.json_response(
             data=error.json(), status=web.HTTPBadRequest.status_code, headers={"Access-Control-Allow-Origin": "*"}
-        ) from error
+        )
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
@@ -447,13 +447,13 @@ async def notify_allocation(request: web.Request):
     item_hash: ItemHash = vm_notification.instance
     message = await try_get_message(item_hash)
     if message.type != MessageType.instance:
-        raise web.HTTPBadRequest(reason="Message is not an instance")
+        return web.HTTPBadRequest(reason="Message is not an instance")
 
     if not message.content.payment:
-        raise web.HTTPBadRequest(reason="Message does not have payment information")
+        return web.HTTPBadRequest(reason="Message does not have payment information")
 
     if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
-        raise web.HTTPBadRequest(reason="Message is not for this instance")
+        return web.HTTPBadRequest(reason="Message is not for this instance")
 
     # Check that there is a payment stream for this instance
     try:
@@ -462,7 +462,7 @@ async def notify_allocation(request: web.Request):
         )
     except InvalidAddressError as error:
         logger.warning(f"Invalid address {error}", exc_info=True)
-        raise web.HTTPBadRequest(reason=f"Invalid address {error}") from error
+        return web.HTTPBadRequest(reason=f"Invalid address {error}")
 
     if not active_flow:
         raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
@@ -472,7 +472,7 @@ async def notify_allocation(request: web.Request):
     if active_flow < required_flow:
         active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
         required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-        raise web.HTTPPaymentRequired(
+        return web.HTTPPaymentRequired(
             reason="Insufficient payment stream",
             text="Insufficient payment stream for this instance\n\n"
             f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
