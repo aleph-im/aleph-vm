@@ -8,13 +8,13 @@ dynamic = ["version"]
 description = "Aleph.im VM execution engine"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = {file = "LICENSE"}
 keywords = []
 authors = [
   { name="Hugo Herter", email="git@hugoherter.com" },
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Framework :: aiohttp",
   "Intended Audience :: Information Technology",
