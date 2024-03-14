@@ -44,7 +44,10 @@ class AlephQemuResources(AlephFirecrackerResources):
 
     async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
-        qemu_img_path = shutil.which("qemu-img")
+        qemu_img_path: Optional[str] = shutil.which("qemu-img")
+        if not qemu_img_path:
+            raise VmSetupError("qemu-img not found in PATH")
+
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
         # detect the image format
