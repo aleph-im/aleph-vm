@@ -218,7 +218,7 @@ async def authenticate_websocket_message(message) -> str:
 
 def require_jwk_authentication(
     handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]
-) -> Callable[[web.Response], Awaitable[web.StreamResponse]]:
+) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
     @functools.wraps(handler)
     async def wrapper(request):
         try:
