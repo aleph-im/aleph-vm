@@ -13,6 +13,12 @@ from .ndp_proxy import NdpProxy
 logger = logging.getLogger(__name__)
 
 
+class MissingInterfaceError(Exception):
+    """The interface is missing."""
+
+    pass
+
+
 class InterfaceBusyError(Exception):
     """The interface is busy."""
 
@@ -41,8 +47,11 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
 def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
     """Add an IP address to the given interface. If the address already exists, a warning is logged and the function
     returns without error."""
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        raise MissingInterfaceError(f"Interface {device_name} does not exist, can't add address {ip} to it.")
     try:
-        ipr.addr("add", index=ipr.link_lookup(ifname=device_name)[0], address=str(ip.ip), mask=ip.network.prefixlen)
+        ipr.addr("add", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
     except NetlinkError as e:
         if e.code == 17:
             logger.warning(f"Address {ip} already exists")
@@ -52,11 +61,18 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6
 
 def set_link_up(ipr: IPRoute, device_name: str):
     """Set the given interface up."""
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        raise MissingInterfaceError(f"Interface {device_name} does not exist, can't set it up.")
     ipr.link("set", index=ipr.link_lookup(ifname=device_name)[0], state="up")
 
 
 def delete_tap_interface(ipr: IPRoute, device_name: str):
-    ipr.link("del", index=ipr.link_lookup(ifname=device_name)[0])
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        logger.debug(f"Interface {device_name} does not exist, won't be deleted.")
+        return
+    ipr.link("del", index=interface_index[0])
 
 
 class TapInterface:
