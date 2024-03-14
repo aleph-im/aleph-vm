@@ -26,9 +26,7 @@ def read_root():
 
 async def get_latest_message_amend(ref: str, sender: str) -> Optional[dict]:
     async with aiohttp.ClientSession() as session:
-        url = (
-            f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1" f"&refs={ref}&addresses={sender}"
-        )
+        url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={ref}&addresses={sender}"
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
