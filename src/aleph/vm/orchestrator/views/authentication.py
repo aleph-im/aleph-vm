@@ -68,7 +68,7 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @root_validator(pre=False, skip_on_failure=True)
-    def check_expiry(cls, values):
+    def check_expiry(cls, values) -> dict[str, bytes]:
         """Check that the token has not expired"""
         payload: bytes = values["payload"]
         content = SignedPubKeyPayload.parse_raw(payload)
@@ -78,7 +78,7 @@ class SignedPubKeyHeader(BaseModel):
         return values
 
     @root_validator(pre=False, skip_on_failure=True)
-    def check_signature(cls, values):
+    def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
         signature: bytes = values["signature"]
         payload: bytes = values["payload"]
