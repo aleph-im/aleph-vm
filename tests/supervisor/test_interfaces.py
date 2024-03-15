@@ -5,6 +5,7 @@ import pytest
 from pyroute2 import IPRoute
 
 from aleph.vm.network.interfaces import (
+    MissingInterfaceError,
     add_ip_address,
     create_tap_interface,
     delete_tap_interface,
@@ -45,7 +46,7 @@ def test_add_ip_address():
         run(["ip", "tuntap", "del", test_device_name, "mode", "tap"], check=False)
 
     # Without an interface, the function should raise an error
-    with pytest.raises(IndexError):
+    with pytest.raises(MissingInterfaceError):
         add_ip_address(IPRoute(), test_device_name, test_ipv4)
 
 
