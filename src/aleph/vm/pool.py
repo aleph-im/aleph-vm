@@ -42,7 +42,7 @@ class VmPool:
     message_cache: dict[str, ExecutableMessage] = {}
     network: Optional[Network]
     snapshot_manager: Optional[SnapshotManager] = None
-    systemd_manager: SystemDManager
+    systemd_manager: Optional[SystemDManager] = None
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
@@ -64,9 +64,8 @@ class VmPool:
             if settings.ALLOW_VM_NETWORKING
             else None
         )
-        self.systemd_manager = SystemDManager()
-        if settings.SNAPSHOT_FREQUENCY > 0:
-            self.snapshot_manager = SnapshotManager()
+        self.snapshot_manager = SnapshotManager() if settings.SNAPSHOT_FREQUENCY > 0 else None
+        self.systemd_manager = SystemDManager() if SystemDManager.is_available() else None
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
@@ -87,6 +86,9 @@ class VmPool:
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
 
+        if persistent and not self.systemd_manager:
+            logger.error("VMs cannot be made persistent without access to Systemd. Is DBus available ?")
+
         # Check if an execution is already present for this VM, then return it.
         # Do not `await` in this section.
         current_execution = self.get_running_vm(vm_hash)
@@ -98,8 +100,7 @@ class VmPool:
                 message=message,
                 original=original,
                 snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=persistent,
+                systemd_manager=self.systemd_manager if persistent else None,
             )
             self.executions[vm_hash] = execution
 
@@ -118,8 +119,8 @@ class VmPool:
             await execution.start()
 
             # Start VM and snapshots automatically
-            if execution.persistent:
-                self.systemd_manager.enable_and_start(execution.controller_service)
+            if execution.systemd_manager:
+                execution.systemd_manager.enable_and_start(execution.controller_service)
                 await execution.wait_for_init()
                 if execution.is_program and execution.vm:
                     await execution.vm.load_configuration()
@@ -186,7 +187,8 @@ class VmPool:
     async def stop_persistent_execution(self, execution: VmExecution):
         """Stop persistent VMs in the pool."""
         assert execution.persistent, "Execution isn't persistent"
-        self.systemd_manager.stop_and_disable(execution.controller_service)
+        assert execution.systemd_manager, "SystemDManager isn't defined on a persistent execution"
+        execution.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
@@ -225,13 +227,15 @@ class VmPool:
             message_dict = json.loads(saved_execution.message)
             original_dict = json.loads(saved_execution.original_message)
 
+            if saved_execution.persistent and not self.systemd_manager:
+                logger.error("VMs cannot be made persistent without access to Systemd. Is DBus available ?")
+
             execution = VmExecution(
                 vm_hash=vm_hash,
                 message=get_message_executable_content(message_dict),
                 original=get_message_executable_content(original_dict),
                 snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=saved_execution.persistent,
+                systemd_manager=self.systemd_manager if saved_execution.persistent else None,
             )
 
             if execution.is_running:

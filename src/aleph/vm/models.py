@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -72,7 +74,6 @@ class VmExecution:
     vm: Optional[Union[AlephFirecrackerExecutable, AlephQemuInstance]] = None
 
     times: VmExecutionTimes
-
     ready_event: asyncio.Event
     concurrent_runs: int
     runs_done_event: asyncio.Event
@@ -81,15 +82,15 @@ class VmExecution:
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
 
-    persistent: bool = False
+    snapshot_manager: Optional[SnapshotManager]
+    systemd_manager: Optional["SystemDManager"]
 
     @property
     def is_running(self) -> bool:
-        return (
-            self.times.starting_at and not self.times.stopping_at
-            if not self.persistent
-            else self.systemd_manager.is_service_active(self.controller_service)
-        )
+        if self.systemd_manager:
+            return self.systemd_manager.is_service_active(self.controller_service)
+        else:
+            return bool(self.times.starting_at and not self.times.stopping_at)
 
     @property
     def is_stopping(self) -> bool:
@@ -102,6 +103,10 @@ class VmExecution:
     @property
     def is_instance(self) -> bool:
         return isinstance(self.message, InstanceContent)
+
+    @property
+    def persistent(self) -> bool:
+        return self.systemd_manager is not None
 
     @property
     def hypervisor(self) -> HypervisorType:
@@ -137,9 +142,8 @@ class VmExecution:
         vm_hash: ItemHash,
         message: ExecutableContent,
         original: ExecutableContent,
-        snapshot_manager: "SnapshotManager",
-        systemd_manager: "SystemDManager",
-        persistent: bool,
+        snapshot_manager: Optional[SnapshotManager],
+        systemd_manager: Optional[SystemDManager],
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -154,7 +158,6 @@ class VmExecution:
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
         self.systemd_manager = systemd_manager
-        self.persistent = persistent
 
     def to_dict(self) -> dict:
         return {
@@ -314,7 +317,7 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if self.vm.support_snapshot:
+            if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
 
