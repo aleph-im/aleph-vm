@@ -65,10 +65,10 @@ in
     shellAliases = {
       run-orchestrator = "python -m aleph.vm.orchestrator";
       run-tests = "pytest --cov";
-      build-runtime = "cd ./runtimes/aleph-debian-12-python ; bash create_disk_image.sh";
       check-nftables = "python -m nftables";
       check-fastapi = "curl -i http://localhost:4020/status/check/fastapi";
-      clone = "git clone https://github.com/aleph-im/aleph-vm.git";
+      clone = "git clone https://github.com/aleph-im/aleph-vm.git ~/aleph-vm";
+      build-runtime = "cd ~/aleph-vm/runtimes/aleph-debian-12-python ; bash create_disk_image.sh";
       journal = "journalctl -u aleph-vm-supervisor --boot";
     };
   };
