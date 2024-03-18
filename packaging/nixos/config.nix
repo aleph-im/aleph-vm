@@ -130,6 +130,7 @@ in
     helix
     ndppd
     vim
+    tmux
 
     myPythonEnv
   ];
