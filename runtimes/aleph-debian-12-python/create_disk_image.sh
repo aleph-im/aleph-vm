@@ -57,6 +57,10 @@ ln -s agetty /etc/init.d/agetty.ttyS0
 echo ttyS0 > /etc/securetty
 EOT
 
+# Some environments such as NixOS mount those when doing a `chroot`.
+umount rootfs/proc || true
+umount rootfs/sys || true
+
 cat <<EOT > ./rootfs/etc/inittab
 # /etc/inittab
 
