@@ -32,10 +32,11 @@ in
 
   nixpkgs.localSystem.system = "x86_64-linux";
   virtualisation.cores = 4;
-  virtualisation.memorySize = 4096;
+  virtualisation.memorySize = 8192;
   virtualisation.diskSize = 12000;
 #  virtualisation.interfaces.enp5s0.assignIP = true;
   virtualisation.forwardPorts = [
+    { from = "host"; host.port = 2222; guest.port = 22; }
     { from = "host"; host.port = 4020; guest.port = 4020; }
   ];
 
@@ -52,6 +53,7 @@ in
   services.getty.autologinUser = "root";
 
   services.openssh.enable = true;
+  services.openssh.settings.PasswordAuthentication = true;
 
   services.ndppd.enable = true;
   services.redis.servers."aleph-vm" = {
