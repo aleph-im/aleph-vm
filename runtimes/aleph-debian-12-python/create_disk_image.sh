@@ -1,15 +1,18 @@
 #!/bin/sh
 
 rm ./rootfs.squashfs
+umask rootfs/proc
+umask rootfs/sys
 
 set -euf
 
 rm -fr ./rootfs
 mkdir ./rootfs
 
-debootstrap --variant=minbase bookworm ./rootfs http://deb.debian.org/debian/
+debootstrap --variant=minbase bookworm rootfs http://deb.debian.org/debian/
 
-chroot ./rootfs /bin/sh <<EOT
+# PATH fix for NixOS and other distributions with a PATH different from Debian/Ubuntu
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games $(which chroot) ./rootfs /bin/sh <<EOT
 
 set -euf
 
