@@ -33,7 +33,7 @@ in
   nixpkgs.localSystem.system = "x86_64-linux";
   virtualisation.cores = 4;
   virtualisation.memorySize = 4096;
-  virtualisation.diskSize = 4096;
+  virtualisation.diskSize = 12000;
 #  virtualisation.interfaces.enp5s0.assignIP = true;
   virtualisation.forwardPorts = [
     { from = "host"; host.port = 4020; guest.port = 4020; }
