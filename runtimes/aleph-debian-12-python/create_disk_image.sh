@@ -1,8 +1,8 @@
 #!/bin/sh
 
 rm ./rootfs.squashfs
-umask rootfs/proc
-umask rootfs/sys
+umount rootfs/proc
+umount rootfs/sys
 
 set -euf
 
