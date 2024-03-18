@@ -64,7 +64,7 @@ in
   environment = {
     shellAliases = {
       run-orchestrator = "python -m aleph.vm.orchestrator";
-      run-tests = "hatch run testing:test-cov";
+      run-tests = "pytest --cov";
       check-nftables = "python -m nftables";
       check-fastapi = "curl -i http://localhost:4020/status/check/fastapi";
       clone = "git clone https://github.com/aleph-im/aleph-vm.git";
