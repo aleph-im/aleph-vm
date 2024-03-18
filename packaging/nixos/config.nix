@@ -40,6 +40,9 @@ in
     { from = "host"; host.port = 4020; guest.port = 4020; }
   ];
 
+  # set hostname
+  networking.hostName = "aleph-vm";
+
   users.users = {
     root = {
       initialPassword = "toor";
@@ -61,16 +64,17 @@ in
     port = 6379;
   };
 
-#  networking.nftables.enable = true;
+  networking.nftables.enable = true;
 
   environment = {
     shellAliases = {
       run-orchestrator = "python -m aleph.vm.orchestrator";
-      run-tests = "pytest --cov";
+      run-tests = "pytest --cov ./src ./tests";
       check-nftables = "python -m nftables";
       check-fastapi = "curl -i http://localhost:4020/status/check/fastapi";
       clone = "git clone https://github.com/aleph-im/aleph-vm.git ~/aleph-vm";
       build-runtime = "cd ~/aleph-vm/runtimes/aleph-debian-12-python ; bash create_disk_image.sh";
+      build-volume-venv = "cd ~/aleph-vm/examples/volumes ; bash build_squashfs.sh";
       journal = "journalctl -u aleph-vm-supervisor --boot";
     };
   };
