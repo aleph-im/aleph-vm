@@ -12,7 +12,7 @@ mkdir ./rootfs
 debootstrap --variant=minbase bookworm rootfs http://deb.debian.org/debian/
 
 # PATH fix for NixOS and other distributions with a PATH different from Debian/Ubuntu
-PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games $(which chroot) ./rootfs /bin/sh <<EOT
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games $(which chroot) ./rootfs /bin/bash <<EOT
 
 set -euf
 
