@@ -31,7 +31,6 @@ in
       pkgs.ndppd
       pkgs.redis
       pkgs.squashfsTools
-      pkgs.ninja
 
       # Versions from nixpkgs
       pkgs.python311Packages.aiodns
