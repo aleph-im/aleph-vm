@@ -63,11 +63,12 @@ in
 
   environment = {
     shellAliases = {
-      orchestrator = "python -m aleph.vm.orchestrator";
+      run-orchestrator = "python -m aleph.vm.orchestrator";
+      run-tests = "hatch run testing:test-cov";
       check-nftables = "python -m nftables";
-      check = "curl -i http://localhost:4020/status/check/fastapi";
+      check-fastapi = "curl -i http://localhost:4020/status/check/fastapi";
       clone = "git clone https://github.com/aleph-im/aleph-vm.git";
-      j = "journalctl -u aleph-vm-supervisor --boot";
+      journal = "journalctl -u aleph-vm-supervisor --boot";
     };
   };
 
@@ -110,19 +111,22 @@ in
 
   environment.systemPackages = with pkgs; [
 
-    helix
-    vim
-
-    which
-    git
-    redis
+    # Required dependencies
     acl
+    cloud-utils
     curl
-    squashfsTools
     debootstrap
     firecracker
+    git
+    redis
+    squashfsTools
+    which
+
+    # User tools
+    hatch
+    helix
     ndppd
-    cloud-utils
+    vim
 
     myPythonEnv
   ];

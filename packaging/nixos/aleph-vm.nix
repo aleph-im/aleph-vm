@@ -20,17 +20,18 @@ in
       pkgs.git
     ];
     propagatedBuildInputs = [
-      pkgs.git
-      pkgs.which
-      pkgs.git
-      pkgs.redis
       pkgs.acl
+      pkgs.cloud-utils
       pkgs.curl
-      pkgs.squashfsTools
       pkgs.debootstrap
       pkgs.firecracker
+      pkgs.git
+      pkgs.git
+      pkgs.hatch
       pkgs.ndppd
-      pkgs.cloud-utils
+      pkgs.redis
+      pkgs.squashfsTools
+      pkgs.ninja
 
       # Versions from nixpkgs
       pkgs.python311Packages.aiodns
@@ -52,12 +53,19 @@ in
       pkgs.python311Packages.psutil
       pkgs.python311Packages.py-cpuinfo
       pkgs.python311Packages.pydantic
+      pkgs.python311Packages.pyroute2
       pkgs.python311Packages.pyyaml
       pkgs.python311Packages.schedule
       pkgs.python311Packages.setproctitle
       pkgs.python311Packages.setuptools
       pkgs.python311Packages.sqlalchemy
       pkgs.python311Packages.systemd
+
+      # Test dependencies
+      pkgs.python311Packages.pytest
+      pkgs.python311Packages.pytest-cov
+      pkgs.python311Packages.pytest-asyncio
+      pkgs.python311Packages.pytest-mock
 
       # Specific versions from PyPI
       aioredis
