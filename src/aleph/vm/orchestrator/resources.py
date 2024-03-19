@@ -124,10 +124,10 @@ class Allocation(BaseModel):
     It contains the item_hashes of all persistent VMs, instances, on-demand VMs and jobs.
     """
 
-    persistent_vms: set[str] = Field(default_factory=set)
-    instances: set[str] = Field(default_factory=set)
-    on_demand_vms: Optional[set[str]] = None
-    jobs: Optional[set[str]] = None
+    persistent_vms: set[ItemHash] = Field(default_factory=set)
+    instances: set[ItemHash] = Field(default_factory=set)
+    on_demand_vms: Optional[set[ItemHash]] = None
+    jobs: Optional[set[ItemHash]] = None
 
 
 class VMNotification(BaseModel):
