@@ -90,28 +90,37 @@ async def download_file(url: str, local_path: Path) -> None:
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
     tmp_path = Path(f"{local_path}.part")
 
-    # Ensure the file is not being downloaded by another task in parallel.
-    try:
-        tmp_path.touch(exist_ok=False)
-    except FileExistsError:
-        # Another task is already downloading the file
-        # Use `asyncio.timeout` manager after dropping support for Python 3.10
-        await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=300)
-
     logger.debug(f"Downloading {url} -> {tmp_path}")
-    download_attempts = 3
+    download_attempts = 10
     for attempt in range(download_attempts):
+        logger.debug(f"Download attempt {attempt + 1}/{download_attempts}...")
         try:
+            # Ensure the file is not being downloaded by another task in parallel.
+            tmp_path.touch(exist_ok=False)
+
             await download_file_in_chunks(url, tmp_path)
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
+            return
+        except FileExistsError as file_exists_error:
+            # Another task is already downloading the file.
+            # Use `asyncio.timeout` manager after dropping support for Python 3.10
+            logger.debug(f"File already being downloaded by another task: {local_path}")
+            try:
+                await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=30)
+            except TimeoutError as error:
+                if attempt < (download_attempts - 1):
+                    logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
+                    continue
+                else:
+                    raise error from file_exists_error
         except (
             aiohttp.ClientConnectionError,
             aiohttp.ClientResponseError,
             aiohttp.ClientPayloadError,
         ) as error:
             if attempt < (download_attempts - 1):
-                logger.warning(f"Download failed, retrying attempt {attempt + 1}/3...")
+                logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
                 continue
             else:
                 raise error
