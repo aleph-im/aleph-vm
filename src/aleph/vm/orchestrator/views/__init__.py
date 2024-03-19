@@ -350,7 +350,7 @@ async def update_allocations(request: web.Request):
         data = await request.json()
         allocation = Allocation.parse_obj(data)
     except ValidationError as error:
-        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+        return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
