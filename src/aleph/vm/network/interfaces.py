@@ -34,14 +34,12 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
         if error.code == 17:
             logger.warning(f"Interface {device_name} already exists")
         elif error.code == 16:
-            raise InterfaceBusyError(
-                f"Interface {device_name} is busy - is there another process using it ?"
-            ) from error
+            logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
             raise
     except OSError as error:
         if error.errno == errno.EBUSY:
-            raise InterfaceBusyError(f"Interface {device_name} is busy. Is another process using it ?") from error
+            logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
 
 
 def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
