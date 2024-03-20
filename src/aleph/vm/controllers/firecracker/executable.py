@@ -296,8 +296,12 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         return
 
     async def start_guest_api(self):
-        logger.debug(f"starting guest API for {self.vm_id}")
-        vsock_path = f"{self.fvm.vsock_path}_53"
+        vsock_path = Path(f"{self.fvm.vsock_path}_53")
+
+        # Ensure that the directory where the VSOCK socket will be created exists
+        vsock_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"starting guest API for {self.vm_id} on {vsock_path}")
+
         vm_hash = self.vm_hash
         self.guest_api_process = Process(
             target=run_guest_api,
