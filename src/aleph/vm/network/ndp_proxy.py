@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from ipaddress import IPv6Network
 from pathlib import Path
+from subprocess import CalledProcessError
 
 from aleph.vm.utils import run_in_subprocess
 
@@ -33,7 +34,11 @@ class NdpProxy:
     @staticmethod
     async def _restart_ndppd():
         logger.debug("Restarting ndppd")
-        await run_in_subprocess(["systemctl", "restart", "ndppd"])
+        try:
+            await run_in_subprocess(["systemctl", "restart", "ndppd"])
+        except CalledProcessError as error:
+            logger.error("Failed to restart ndppd: %s", error)
+            # We do not raise the error here, since this should not crash the entire system
 
     async def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"
