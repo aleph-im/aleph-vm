@@ -57,7 +57,7 @@ from packaging.version import InvalidVersion, Version
 logger = logging.getLogger(__name__)
 
 
-def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
+async def run_code_from_path(request: web.Request) -> web.Response:
     """Allow running an Aleph VM function from a URL path
 
     The path is expected to follow the scheme defined in `app.add_routes` below,
@@ -68,7 +68,7 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
 
     message_ref = ItemHash(request.match_info["ref"])
     pool: VmPool = request.app["vm_pool"]
-    return run_code_on_request(message_ref, path, pool, request)
+    return await run_code_on_request(message_ref, path, pool, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
