@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Optional
@@ -43,12 +44,12 @@ class VmPool:
     network: Optional[Network]
     snapshot_manager: Optional[SnapshotManager] = None
     systemd_manager: SystemDManager
-    creation_semaphore: asyncio.Semaphore
+    creation_lock: threading.Lock
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
-        self.creation_semaphore = asyncio.Semaphore(1)
+        self.creation_lock = threading.Lock()
 
         self.network = (
             Network(
@@ -89,7 +90,7 @@ class VmPool:
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
 
-        await self.creation_semaphore.acquire()
+        self.creation_lock.acquire()
 
         # Check if an execution is already present for this VM, then return it.
         # Do not `await` in this section.
@@ -135,11 +136,9 @@ class VmPool:
             self.forget_vm(vm_hash)
             raise
         finally:
-            self.creation_semaphore.release()
+            self.creation_lock.release()
 
         self._schedule_forget_on_stop(execution)
-
-        self.creation_semaphore.release()
 
         return execution
 
