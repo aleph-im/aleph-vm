@@ -90,57 +90,54 @@ class VmPool:
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
 
-        self.creation_lock.acquire()
-
-        # Check if an execution is already present for this VM, then return it.
-        # Do not `await` in this section.
-        current_execution = self.get_running_vm(vm_hash)
-        if current_execution:
-            return current_execution
-        else:
-            execution = VmExecution(
-                vm_hash=vm_hash,
-                message=message,
-                original=original,
-                snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=persistent,
-            )
-            self.executions[vm_hash] = execution
-
-        try:
-            await execution.prepare()
-            vm_id = self.get_unique_vm_id()
-
-            if self.network:
-                vm_type = VmType.from_message_content(message)
-                tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
-                await self.network.create_tap(vm_id, tap_interface)
+        with self.creation_lock:
+            # Check if an execution is already present for this VM, then return it.
+            # Do not `await` in this section.
+            current_execution = self.get_running_vm(vm_hash)
+            if current_execution:
+                return current_execution
             else:
-                tap_interface = None
+                execution = VmExecution(
+                    vm_hash=vm_hash,
+                    message=message,
+                    original=original,
+                    snapshot_manager=self.snapshot_manager,
+                    systemd_manager=self.systemd_manager,
+                    persistent=persistent,
+                )
+                self.executions[vm_hash] = execution
 
-            execution.create(vm_id=vm_id, tap_interface=tap_interface)
-            await execution.start()
+            try:
+                await execution.prepare()
+                vm_id = self.get_unique_vm_id()
 
-            # Start VM and snapshots automatically
-            if execution.persistent:
-                self.systemd_manager.enable_and_start(execution.controller_service)
-                await execution.wait_for_init()
-                if execution.is_program and execution.vm:
-                    await execution.vm.load_configuration()
+                if self.network:
+                    vm_type = VmType.from_message_content(message)
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                    await self.network.create_tap(vm_id, tap_interface)
+                else:
+                    tap_interface = None
 
-            if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
-                await self.snapshot_manager.start_for(vm=execution.vm)
-        except Exception:
-            # ensure the VM is removed from the pool on creation error
-            self.forget_vm(vm_hash)
-            raise
-        finally:
-            self.creation_lock.release()
+                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                await execution.start()
 
-        self._schedule_forget_on_stop(execution)
+                # Start VM and snapshots automatically
+                if execution.persistent:
+                    self.systemd_manager.enable_and_start(execution.controller_service)
+                    await execution.wait_for_init()
+                    if execution.is_program and execution.vm:
+                        await execution.vm.load_configuration()
 
-        return execution
+                if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
+                    await self.snapshot_manager.start_for(vm=execution.vm)
+            except Exception:
+                # ensure the VM is removed from the pool on creation error
+                self.forget_vm(vm_hash)
+                raise
+
+            self._schedule_forget_on_stop(execution)
+
+            return execution
 
     def get_unique_vm_id(self) -> int:
         """Get a unique identifier for the VM.
