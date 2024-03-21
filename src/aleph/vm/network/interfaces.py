@@ -36,10 +36,12 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
         elif error.code == 16:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
-            raise
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
     except OSError as error:
         if error.errno == errno.EBUSY:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
+        else:
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
 
 
 def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
@@ -54,7 +56,9 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6
         if e.code == 17:
             logger.warning(f"Address {ip} already exists")
         else:
-            raise
+            logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
+    except OSError as e:
+        logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
 
 
 def set_link_up(ipr: IPRoute, device_name: str):
@@ -62,7 +66,12 @@ def set_link_up(ipr: IPRoute, device_name: str):
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
         raise MissingInterfaceError(f"Interface {device_name} does not exist, can't set it up.")
-    ipr.link("set", index=interface_index[0], state="up")
+    try:
+        ipr.link("set", index=interface_index[0], state="up")
+    except NetlinkError as e:
+        logger.error(f"Unknown exception while setting link up to interface {device_name}: {e}")
+    except OSError as e:
+        logger.error(f"Unknown exception while setting link up to interface {device_name}: {e}")
 
 
 def delete_tap_interface(ipr: IPRoute, device_name: str):
@@ -70,7 +79,12 @@ def delete_tap_interface(ipr: IPRoute, device_name: str):
     if not interface_index:
         logger.debug(f"Interface {device_name} does not exist, won't be deleted.")
         return
-    ipr.link("del", index=interface_index[0])
+    try:
+        ipr.link("del", index=interface_index[0])
+    except NetlinkError as error:
+        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
+    except OSError as error:
+        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
 
 
 class TapInterface:

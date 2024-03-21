@@ -43,10 +43,12 @@ class VmPool:
     network: Optional[Network]
     snapshot_manager: Optional[SnapshotManager] = None
     systemd_manager: SystemDManager
+    creation_semaphore: asyncio.Semaphore
 
     def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.creation_semaphore = asyncio.Semaphore(1)
 
         self.network = (
             Network(
@@ -86,6 +88,8 @@ class VmPool:
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
+
+        await self.creation_semaphore.acquire()
 
         # Check if an execution is already present for this VM, then return it.
         # Do not `await` in this section.
@@ -130,8 +134,12 @@ class VmPool:
             # ensure the VM is removed from the pool on creation error
             self.forget_vm(vm_hash)
             raise
+        finally:
+            self.creation_semaphore.release()
 
         self._schedule_forget_on_stop(execution)
+
+        self.creation_semaphore.release()
 
         return execution
 
