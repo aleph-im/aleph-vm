@@ -36,10 +36,12 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
         elif error.code == 16:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
-            raise
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
     except OSError as error:
         if error.errno == errno.EBUSY:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
+        else:
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
 
 
 def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
@@ -54,7 +56,7 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6
         if e.code == 17:
             logger.warning(f"Address {ip} already exists")
         else:
-            raise
+            logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
 
 
 def set_link_up(ipr: IPRoute, device_name: str):
