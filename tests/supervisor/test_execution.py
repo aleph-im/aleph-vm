@@ -23,7 +23,7 @@ async def test_create_execution():
     settings.setup()
     settings.check()
 
-    vm_hash = ItemHash("fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash")
+    vm_hash = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     message = await get_message(ref=vm_hash)
 
     execution = VmExecution(
