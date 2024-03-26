@@ -1,6 +1,5 @@
 import binascii
 import logging
-from collections.abc import Awaitable
 from decimal import Decimal
 from hashlib import sha256
 from json import JSONDecodeError

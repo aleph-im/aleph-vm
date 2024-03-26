@@ -9,22 +9,16 @@ from pathlib import Path
 from statistics import mean
 from typing import Callable, Optional, cast
 
-from aiohttp.web import Request, Response
-from sqlalchemy.ext.asyncio import create_async_engine
-
-from aleph.vm.version import get_version_from_apt, get_version_from_git
-
-try:
-    import sentry_sdk
-except ImportError:
-    sentry_sdk = None
-
 import alembic.command
 import alembic.config
+import sentry_sdk
+from aiohttp.web import Request, Response
 from aleph_message.models import ItemHash
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.pool import VmPool
+from aleph.vm.version import get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
 from .pubsub import PubSub
