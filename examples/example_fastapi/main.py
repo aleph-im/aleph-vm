@@ -17,7 +17,8 @@ from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from aleph.sdk.chains.remote import RemoteAccount
+# FIXME: This import fails to work in a VM when using pytest
+# from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
