@@ -39,8 +39,10 @@ async def test_create_execution():
     await asyncio.wait_for(execution.prepare(), timeout=30)
 
     vm = execution.create(vm_id=3, tap_interface=None)
+
+    # Test that the VM is created correctly. It is not started yet.
     assert isinstance(vm, AlephFirecrackerProgram)
-    assert vm.vm_id == settings.START_ID_INDEX
+    assert vm.vm_id == 3
 
     # TODO: Check that the VM is actually starting.
     #       This is currently not working as expected and needs to be fixed.
