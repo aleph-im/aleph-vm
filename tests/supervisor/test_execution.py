@@ -6,6 +6,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker import AlephFirecrackerProgram
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator import metrics
 from aleph.vm.storage import get_message
 
 
@@ -22,6 +23,10 @@ async def test_create_execution():
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
+
+    # The database is required for the metrics and is currently not optional.
+    engine = metrics.setup_engine()
+    await metrics.create_tables(engine)
 
     vm_hash = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     message = await get_message(ref=vm_hash)
