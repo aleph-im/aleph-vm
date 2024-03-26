@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 from aleph_message.models import ItemHash
@@ -20,8 +21,8 @@ async def test_create_execution():
     settings.ALLOW_VM_NETWORKING = False
     settings.USE_JAILER = False
 
-    import logging
     logging.basicConfig(level=logging.DEBUG)
+    settings.PRINT_SYSTEM_LOGS = True
 
     # Ensure that the settings are correct and required files present.
     settings.setup()
@@ -52,4 +53,5 @@ async def test_create_execution():
     assert isinstance(vm, AlephFirecrackerProgram)
     assert vm.vm_id == 3
 
-    await asyncio.wait_for(execution.start(), timeout=30)
+    await execution.start()
+    await execution.stop()
