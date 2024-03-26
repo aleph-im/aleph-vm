@@ -5,16 +5,12 @@ from typing import Optional
 
 import aiohttp
 import aioredis
+import sentry_sdk
 from aiohttp import web
 from setproctitle import setproctitle
 
 from aleph.vm.conf import settings
 from aleph.vm.version import get_version_from_apt, get_version_from_git
-
-try:
-    import sentry_sdk
-except ImportError:
-    sentry_sdk = None
 
 logger = logging.getLogger(__name__)
 
