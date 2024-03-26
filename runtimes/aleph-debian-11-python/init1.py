@@ -18,24 +18,14 @@ import socket
 import subprocess
 import sys
 import traceback
+from collections.abc import AsyncIterable
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from enum import Enum
 from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import (
-    Any,
-    AsyncIterable,
-    Dict,
-    List,
-    Literal,
-    NewType,
-    Optional,
-    Tuple,
-    Union,
-    cast,
-)
+from typing import Any, Literal, NewType, Optional, Union, cast
 
 import aiohttp
 import msgpack
@@ -80,15 +70,15 @@ class ConfigurationPayload:
     ipv6: Optional[str] = None
     route: Optional[str] = None
     ipv6_gateway: Optional[str] = None
-    dns_servers: List[str] = field(default_factory=list)
-    volumes: List[Volume] = field(default_factory=list)
-    variables: Optional[Dict[str, str]] = None
-    authorized_keys: Optional[List[str]] = None
+    dns_servers: list[str] = field(default_factory=list)
+    volumes: list[Volume] = field(default_factory=list)
+    variables: Optional[dict[str, str]] = None
+    authorized_keys: Optional[list[str]] = None
 
 
 @dataclass
 class RunCodePayload:
-    scope: Dict
+    scope: dict
 
 
 # Open a socket to receive instructions from the host
@@ -117,7 +107,7 @@ def setup_hostname(hostname: str):
     system(f"hostname {hostname}")
 
 
-def setup_variables(variables: Optional[Dict[str, str]]):
+def setup_variables(variables: Optional[dict[str, str]]):
     if variables is None:
         return
     for key, value in variables.items():
@@ -129,7 +119,7 @@ def setup_network(
     ipv6: Optional[str],
     ipv4_gateway: Optional[str],
     ipv6_gateway: Optional[str],
-    dns_servers: Optional[List[str]] = None,
+    dns_servers: Optional[list[str]] = None,
 ):
     """Setup the system with info from the host."""
     dns_servers = dns_servers or []
@@ -180,13 +170,13 @@ def setup_input_data(input_data: bytes):
             os.system("unzip -q /opt/input.zip -d /data")
 
 
-def setup_authorized_keys(authorized_keys: List[str]) -> None:
+def setup_authorized_keys(authorized_keys: list[str]) -> None:
     path = Path("/root/.ssh/authorized_keys")
     path.parent.mkdir(exist_ok=True)
     path.write_text("\n".join(key for key in authorized_keys))
 
 
-def setup_volumes(volumes: List[Volume]):
+def setup_volumes(volumes: list[Volume]):
     for volume in volumes:
         logger.debug(f"Mounting /dev/{volume.device} on {volume.mount}")
         os.makedirs(volume.mount, exist_ok=True)
@@ -213,7 +203,7 @@ async def wait_for_lifespan_event_completion(
             "type": f"lifespan.{event}",
         }
 
-    async def send(response: Dict):
+    async def send(response: dict):
         response_type = response.get("type")
         if response_type == f"lifespan.{event}.complete":
             lifespan_completion.set()
@@ -260,7 +250,7 @@ async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> A
         app = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint
-        locals: Dict[str, Any] = {}
+        locals: dict[str, Any] = {}
         exec(code, globals(), locals)
         app = locals[entrypoint]
     else:
@@ -313,7 +303,7 @@ async def setup_code(
         raise ValueError("Invalid interface. This should never happen.")
 
 
-async def run_python_code_http(application: ASGIApplication, scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+async def run_python_code_http(application: ASGIApplication, scope: dict) -> tuple[dict, dict, str, Optional[bytes]]:
     logger.debug("Running code")
     with StringIO() as buf, redirect_stdout(buf):
         # Execute in the same process, saves ~20ms than a subprocess
@@ -335,14 +325,14 @@ async def run_python_code_http(application: ASGIApplication, scope: dict) -> Tup
         await application(scope, receive, send)
 
         logger.debug("Waiting for headers")
-        headers: Dict
+        headers: dict
         if scope["type"] == "http":
             headers = await send_queue.get()
         else:
             headers = {}
 
         logger.debug("Waiting for body")
-        response_body: Dict = await send_queue.get()
+        response_body: dict = await send_queue.get()
 
         logger.debug("Waiting for buffer")
         output = buf.getvalue()
@@ -394,7 +384,7 @@ def show_loading():
     return headers, body
 
 
-async def run_executable_http(scope: dict) -> Tuple[Dict, Dict, str, Optional[bytes]]:
+async def run_executable_http(scope: dict) -> tuple[dict, dict, str, Optional[bytes]]:
     logger.debug("Calling localhost")
 
     tries = 0
@@ -453,8 +443,8 @@ async def process_instruction(
 
         output: Optional[str] = None
         try:
-            headers: Dict
-            body: Dict
+            headers: dict
+            body: dict
             output_data: Optional[bytes]
 
             if interface == Interface.asgi:
@@ -532,7 +522,7 @@ def setup_system(config: ConfigurationPayload):
     logger.debug("Setup finished")
 
 
-def umount_volumes(volumes: List[Volume]):
+def umount_volumes(volumes: list[Volume]):
     "Umount user related filesystems"
     system("sync")
     for volume in volumes:

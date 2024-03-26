@@ -121,7 +121,7 @@ async def download_file(url: str, local_path: Path) -> None:
         ) as error:
             if attempt < (download_attempts - 1):
                 logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
-                continue
+                # continue  #  continue inside try/finally block is unimplemented in `mypyc`
             else:
                 raise error
         finally:

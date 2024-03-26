@@ -104,18 +104,18 @@ class MicroVM:
         return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_id))
 
     @property
-    def jailer_path(self):
+    def jailer_path(self) -> str:
         return os.path.join(self.namespace_path, "root")
 
     @property
-    def socket_path(self):
+    def socket_path(self) -> str:
         if self.use_jailer:
             return f"{self.jailer_path}/run/firecracker.socket"
         else:
             return f"/tmp/firecracker-{self.vm_id}.socket"
 
     @property
-    def vsock_path(self):
+    def vsock_path(self) -> str:
         if self.use_jailer:
             return f"{self.jailer_path}{VSOCK_PATH}"
         else:
@@ -140,7 +140,7 @@ class MicroVM:
         self.runtime_config = None
         self.log_queues: list[asyncio.Queue] = []
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "jailer_path": self.jailer_path,
             "socket_path": self.socket_path,
@@ -148,9 +148,9 @@ class MicroVM:
             **self.__dict__,
         }
 
-    def prepare_jailer(self):
+    def prepare_jailer(self) -> None:
         if not self.use_jailer:
-            return False
+            return
         system(f"rm -fr {self.jailer_path}")
 
         # system(f"rm -fr {self.jailer_path}/run/")

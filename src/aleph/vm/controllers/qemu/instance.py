@@ -44,7 +44,10 @@ class AlephQemuResources(AlephFirecrackerResources):
 
     async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
-        qemu_img_path = shutil.which("qemu-img")
+        qemu_img_path: Optional[str] = shutil.which("qemu-img")
+        if not qemu_img_path:
+            raise VmSetupError("qemu-img not found in PATH")
+
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
         # detect the image format
@@ -111,7 +114,7 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> tup
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    def _ready_for_read():
+    def _ready_for_read() -> None:
         change_type = r.process()  # reset fd status
         if change_type != journal.APPEND:
             return

@@ -6,15 +6,9 @@ import signal
 import sys
 from pathlib import Path
 
+from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-
-try:
-    import sentry_sdk
-except ImportError:
-    sentry_sdk = None
-
-from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 
 from .configuration import (
     Configuration,

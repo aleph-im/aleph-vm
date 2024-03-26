@@ -82,6 +82,11 @@ async def allow_cors_on_endpoint(request: web.Request):
     )
 
 
+async def http_not_found(request: web.Request):
+    """Return a 404 error for unknown URLs."""
+    return web.HTTPNotFound()
+
+
 app = web.Application(middlewares=[server_version_middleware])
 cors = aiohttp_cors.setup(app)
 
@@ -110,9 +115,9 @@ app.add_routes(
         web.get("/status/check/ipv6", status_check_ipv6),
         web.get("/status/config", status_public_config),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
-        web.get("/about/{suffix:.*}", lambda _: web.HTTPNotFound()),
-        web.get("/control/{suffix:.*}", lambda _: web.HTTPNotFound()),
-        web.get("/status/{suffix:.*}", lambda _: web.HTTPNotFound()),
+        web.get("/about/{suffix:.*}", http_not_found),
+        web.get("/control/{suffix:.*}", http_not_found),
+        web.get("/status/{suffix:.*}", http_not_found),
         # /static is used to serve static files
         web.static("/static", Path(__file__).parent / "views/static"),
         # /vm is used to launch VMs on-demand

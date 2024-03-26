@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     SUPERVISOR_PORT: int = 4020
 
     # Public domain name
-    DOMAIN_NAME: Optional[str] = Field(
+    DOMAIN_NAME: str = Field(
         default="localhost",
         description="Default public domain name",
     )

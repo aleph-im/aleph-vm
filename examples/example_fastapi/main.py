@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from os import listdir
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import aiohttp
 from fastapi import FastAPI
@@ -84,7 +84,7 @@ async def check_lifespan():
 
 
 @app.get("/environ")
-async def environ() -> Dict[str, str]:
+async def environ() -> dict[str, str]:
     """List environment variables"""
     return dict(os.environ)
 

@@ -39,7 +39,7 @@ class VmPool:
 
     counter: int  # Used to provide distinct ids to network interfaces
     executions: dict[ItemHash, VmExecution]
-    message_cache: dict[str, ExecutableMessage] = {}
+    message_cache: dict[str, ExecutableMessage]
     network: Optional[Network]
     snapshot_manager: Optional[SnapshotManager] = None
     systemd_manager: SystemDManager
@@ -48,6 +48,7 @@ class VmPool:
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.message_cache = {}
 
         asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()

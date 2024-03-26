@@ -15,9 +15,12 @@ from sqlalchemy import (
     delete,
     select,
 )
-from sqlalchemy.engine import Engine
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 try:
     from sqlalchemy.orm import declarative_base
@@ -26,7 +29,7 @@ except ImportError:
 
 from aleph.vm.conf import make_db_url, settings
 
-AsyncSessionMaker: sessionmaker
+AsyncSessionMaker: async_sessionmaker[AsyncSession]
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +39,11 @@ Base: Any = declarative_base()
 def setup_engine():
     global AsyncSessionMaker
     engine = create_async_engine(make_db_url(), echo=True)
-    AsyncSessionMaker = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    AsyncSessionMaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine
 
 
-async def create_tables(engine: Engine):
+async def create_tables(engine: AsyncEngine):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

@@ -7,7 +7,7 @@ from aleph.vm.orchestrator.views.authentication import authenticate_jwk
 # Avoid failures linked to settings when initializing the global VmPool object
 os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
 
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -23,7 +23,7 @@ def valid_jwk_headers(mocker):
 
 @pytest.mark.skip(reason="TODO: Fix this test")
 @pytest.mark.asyncio
-async def test_valid_signature(valid_jwk_headers: Dict[str, Any], mocker):
+async def test_valid_signature(valid_jwk_headers: dict[str, Any], mocker):
     request = mocker.AsyncMock()
     request.headers = valid_jwk_headers
     await authenticate_jwk(request)
@@ -31,7 +31,7 @@ async def test_valid_signature(valid_jwk_headers: Dict[str, Any], mocker):
 
 @pytest.mark.skip(reason="TODO: Fix this test")
 @pytest.mark.asyncio
-async def test_invalid_signature(valid_jwk_headers: Dict[str, Any], mocker):
+async def test_invalid_signature(valid_jwk_headers: dict[str, Any], mocker):
     valid_jwk_headers["X-SignedOperation"] = (
         '{"time":"2023-07-14T22:14:14.132Z","signature":"96ffdbbd1704d5f6bfe4698235a0de0d2f58668deaa4371422bee26664f313f51fd483c78c34c6b317fc209779f9ddd9c45accf558e3bf881b49ad970ebf0ade"}'
     )
@@ -44,7 +44,7 @@ async def test_invalid_signature(valid_jwk_headers: Dict[str, Any], mocker):
 
 @pytest.mark.skip(reason="TODO: Fix this test")
 @pytest.mark.asyncio
-async def test_expired_token(valid_jwk_headers: Dict[str, Any], mocker):
+async def test_expired_token(valid_jwk_headers: dict[str, Any], mocker):
     mocker.patch("aleph.vm.orchestrator.views.authentication.is_token_still_valid", lambda timestamp: False)
     request = mocker.AsyncMock()
     request.headers = valid_jwk_headers
@@ -55,7 +55,7 @@ async def test_expired_token(valid_jwk_headers: Dict[str, Any], mocker):
 
 @pytest.mark.parametrize("missing_header", ["X-SignedPubKey", "X-SignedOperation"])
 @pytest.mark.asyncio
-async def test_missing_headers(valid_jwk_headers: Dict[str, Any], mocker, missing_header: str):
+async def test_missing_headers(valid_jwk_headers: dict[str, Any], mocker, missing_header: str):
     del valid_jwk_headers[missing_header]
 
     request = mocker.AsyncMock()
