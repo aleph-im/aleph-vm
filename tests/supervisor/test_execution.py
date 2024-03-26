@@ -20,6 +20,9 @@ async def test_create_execution():
     settings.ALLOW_VM_NETWORKING = False
     settings.USE_JAILER = False
 
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
