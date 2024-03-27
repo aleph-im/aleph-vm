@@ -88,6 +88,7 @@ dependencies = [
   "pytest-cov==4.1.0",
   "pytest-mock==3.12.0",
   "pytest-asyncio==0.23.5",
+  "pytest-aiohttp==1.0.5",
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
