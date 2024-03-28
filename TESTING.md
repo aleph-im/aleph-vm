@@ -1,6 +1,11 @@
 # Testing aleph-vm
 
-In order to run tests locally, follow the following procedure:
+This proedure describes how to run tests on a local system.
+
+Tests also run on GitHub Actions via [the following workflow](./.github/workflows/test-on-droplets-matrix.yml).
+
+Since these tests create block devices and manipulate network interfaces, they need to run as root.
+If you are not comfortable with this, run them in a virtual machine.
 
 ## 1. Clone this repository
 
