@@ -51,3 +51,8 @@ Remove the Python library `nftables` from the `hatch` virtual environment:
 hatch run testing:pip uninstall nftables
 ```
 
+## 4. Run tests
+
+```shell
+hatch run testing:test
+```
