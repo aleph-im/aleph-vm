@@ -1,6 +1,6 @@
 # Testing aleph-vm
 
-This proedure describes how to run tests on a local system.
+This procedure describes how to run tests on a local system.
 
 Tests also run on GitHub Actions via [the following workflow](./.github/workflows/test-on-droplets-matrix.yml).
 
