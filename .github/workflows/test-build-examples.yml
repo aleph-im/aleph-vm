@@ -34,6 +34,7 @@ jobs:
           ls
           pwd
           pip3 install -t /opt/packages -r ./examples/example_pip/requirements.txt
+          mksquashfs /opt/packages packages.squashfs
 
 #      - run: |
 #          ipfs add packages.squashfs
