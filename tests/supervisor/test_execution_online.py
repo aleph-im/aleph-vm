@@ -1,5 +1,4 @@
 import asyncio
-import logging
 
 import pytest
 from aleph_message.models import ItemHash
