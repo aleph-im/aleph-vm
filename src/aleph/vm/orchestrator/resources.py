@@ -99,7 +99,6 @@ class ExtendedCpuProperties(CpuProperties):
     count: Optional[str] = Field(default=None, description="CPU count")
 
 
-
 class MemoryProperties(BaseModel):
     """MEMORY properties."""
 
