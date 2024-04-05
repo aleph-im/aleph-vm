@@ -100,14 +100,14 @@ class MachineCapability(BaseModel):
 
 
 @lru_cache
-def get_machine_properties() -> MachineProperties:
+async def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
     These should not change while the supervisor is running.
 
     In the future, some properties may have to be fetched from within a VM.
     """
 
-    cpu_info = get_cpu_info()
+    cpu_info = await get_cpu_info()
     return MachineProperties(
         cpu=CpuProperties(
             architecture=cpu_info["architecture"],
@@ -117,9 +117,9 @@ def get_machine_properties() -> MachineProperties:
 
 
 @lru_cache
-def get_machine_capability() -> MachineCapability:
-    cpu_info = get_cpu_info()
-    mem_info = get_memory_info()
+async def get_machine_capability() -> MachineCapability:
+    cpu_info = await get_cpu_info()
+    mem_info = await get_memory_info()
 
     return MachineCapability(
         cpu=ExtendedCpuProperties(
@@ -161,7 +161,7 @@ async def about_system_usage(_: web.Request):
             start_timestamp=period_start,
             duration_seconds=60,
         ),
-        properties=get_machine_properties(),
+        properties=await get_machine_properties(),
     )
     return web.json_response(text=usage.json(exclude_none=True), headers={"Access-Control-Allow-Origin:": "*"})
 
@@ -169,7 +169,7 @@ async def about_system_usage(_: web.Request):
 async def about_capability(_: web.Request):
     """Public endpoint to expose information about the CRN capability."""
 
-    capability: MachineCapability = get_machine_capability()
+    capability: MachineCapability = await get_machine_capability()
     return web.json_response(text=capability.json(exclude_none=False), headers={"Access-Control-Allow-Origin:": "*"})
 
 
