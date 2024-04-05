@@ -1,18 +1,26 @@
+import asyncio
 import json
 import re
-import subprocess
 from functools import lru_cache
 
 import psutil
 
 
 @lru_cache
-def get_hardware_info():
-    lshw = subprocess.Popen(["lshw", "-sanitize", "-json"], stdout=subprocess.PIPE, shell=False)
-    output, _ = lshw.communicate()
+async def get_hardware_info():
+    lshw = await asyncio.create_subprocess_shell(
+        "lshw -sanitize -json",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    output, _ = await lshw.communicate()
     data = json.loads(output)
 
-    hw_info = {}
+    hw_info = {
+        "cpu": None,
+        "memory": None
+    }
 
     for hw in data["children"][0]["children"]:
         if hw["id"] == "cpu":
@@ -24,8 +32,8 @@ def get_hardware_info():
 
 
 @lru_cache
-def get_cpu_info():
-    hw = get_hardware_info()
+async def get_cpu_info():
+    hw = await get_hardware_info()
 
     cpu_info = hw["cpu"]
     architecture = cpu_info["width"]
@@ -53,8 +61,8 @@ def get_cpu_info():
 
 
 @lru_cache
-def get_memory_info():
-    hw = get_hardware_info()
+async def get_memory_info():
+    hw = await get_hardware_info()
     mem_info = hw["memory"]
 
     memory_type = ""
@@ -62,11 +70,13 @@ def get_memory_info():
 
     for bank in mem_info["children"]:
         memory_clock = bank["clock"]
-        try:
-            memory_type = re.search("(DDR[2-6])", bank["description"]).group(0)
-            break
-        except:
-            pass
+        if "description" in bank:
+            matched = re.search("(DDR[2-6])", bank["description"])
+            if matched:
+                memory_type = matched.group(0)
+                break
+            else:
+                pass
 
     return {
         "size": mem_info["size"],
