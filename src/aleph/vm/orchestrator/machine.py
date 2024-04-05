@@ -9,18 +9,13 @@ import psutil
 @lru_cache
 async def get_hardware_info():
     lshw = await asyncio.create_subprocess_shell(
-        "lshw -sanitize -json",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        "lshw -sanitize -json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
 
     output, _ = await lshw.communicate()
     data = json.loads(output)
 
-    hw_info = {
-        "cpu": None,
-        "memory": None
-    }
+    hw_info = {"cpu": None, "memory": None}
 
     for hw in data["children"][0]["children"]:
         if hw["id"] == "cpu":
