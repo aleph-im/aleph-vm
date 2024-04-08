@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from os import listdir
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 import aiohttp
 from fastapi import FastAPI
@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 # FIXME: This import fails to work in a VM when using pytest
-# from aleph.sdk.chains.remote import RemoteAccount
+if TYPE_CHECKING:
+    from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephClient, AuthenticatedAlephClient
 from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
