@@ -83,6 +83,8 @@ config = "aleph-vm orchestrator config {args:--help}"
 check = "aleph-vm controller run {args:--help}"
 
 [tool.hatch.envs.testing]
+type = "virtual"
+system-packages = true
 dependencies = [
   "pytest==8.0.1",
   "pytest-cov==4.1.0",

@@ -38,23 +38,6 @@ Create the testing virtual environment:
 hatch env create testing
 ```
 
-Obtain the path to the testing virtual environment. 
-```
-hatch run testing:which python
-```
-
-Locate the file named `pyvenv.cfg` in your virtual environment.
-Edit it to use system site packages:
-```
-vim /root/.local/share/hatch/env/virtual/aleph-vm/i5XWCcQ_/testing/pyvenv.cfg
-```
-
-Set `include-system-site-packages` to `true`.
-
-Remove the Python library `nftables` from the `hatch` virtual environment:
-```shell
-hatch run testing:pip uninstall nftables
-```
 
 ## 4. Run tests
 
