@@ -124,7 +124,7 @@ class VmPool:
 
                 # Start VM and snapshots automatically
                 if execution.persistent:
-                    self.systemd_manager.enable_and_start(execution.controller_service)
+                    await self.systemd_manager.enable_and_start(execution.controller_service)
                     await execution.wait_for_init()
                     if execution.is_program and execution.vm:
                         await execution.vm.load_configuration()
@@ -191,7 +191,7 @@ class VmPool:
     async def stop_persistent_execution(self, execution: VmExecution):
         """Stop persistent VMs in the pool."""
         assert execution.persistent, "Execution isn't persistent"
-        self.systemd_manager.stop_and_disable(execution.controller_service)
+        await self.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
