@@ -37,7 +37,7 @@ jobs:
         run: |
           sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
 
-      - name: Download and build required files for running tests
+      - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
           sudo mkdir --parents /opt/firecracker/
           sudo curl -fsSL -o "/opt/firecracker/vmlinux.bin" "https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy"
