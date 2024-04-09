@@ -333,6 +333,9 @@ async def run_python_code_http(application: ASGIApplication, scope: dict) -> tup
 
         logger.debug("Waiting for body")
         response_body: dict = await send_queue.get()
+        while not send_queue.empty():
+            new_body = await send_queue.get()
+            response_body["body"] += new_body["body"]
 
         logger.debug("Waiting for buffer")
         output = buf.getvalue()
