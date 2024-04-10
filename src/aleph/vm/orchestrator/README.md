@@ -28,8 +28,7 @@ Intel Skylake, Intel Cascade Lake, AMD Zen2 and ARM64 Neoverse N1.
 
 ### Operating System
 
-These instructions have been tested on Debian 11 Bullseye, and should work on recent versions
-of Ubuntu as well (22.04+).
+These instructions have been tested on Debian 11 Bullseye, Debian 12 Bookworm and Ubuntu 22.04.
 
 ### Hosting providers
 
