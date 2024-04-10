@@ -79,7 +79,7 @@ jobs:
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
-          ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
+          ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:2025-03"
 
           scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
           scp -pr ./examples root@${DROPLET_IPV4}:/opt/
