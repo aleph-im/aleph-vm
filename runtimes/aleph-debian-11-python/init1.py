@@ -342,7 +342,10 @@ async def run_python_code_http(application: ASGIApplication, scope: dict) -> Tup
             headers = {}
 
         logger.debug("Waiting for body")
-        response_body: Dict = await send_queue.get()
+        response_body = await send_queue.get()
+        while not send_queue.empty():
+            new_body = await send_queue.get()
+            # update response_body with the new_body
 
         logger.debug("Waiting for buffer")
         output = buf.getvalue()
@@ -572,7 +575,7 @@ async def main() -> None:
     server_reference = ServerReference()
 
     async def handle_instruction(reader, writer):
-        data = await reader.read(1000_1000)  # Max 1 Mo
+        data = await reader.read(10_000_000)  # Max 10 Mo
 
         logger.debug("Init received msg")
         if logger.level <= logging.DEBUG:
