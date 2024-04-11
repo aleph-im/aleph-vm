@@ -2,13 +2,12 @@
 async SystemD Manager implementation.
 """
 
-import abc
 import enum
 import logging
 from typing import Literal, Protocol, runtime_checkable
 
-from dbus_fast import DBusError
-from dbus_fast.aio import MessageBus, ProxyInterface, ProxyObject
+from dbus_fast import DBusError, BusType
+from dbus_fast.aio import MessageBus, ProxyObject
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +147,7 @@ class SystemDManager:
     manager: SystemdProxy
 
     def __init__(self):
-        self.bus = MessageBus()
+        self.bus = MessageBus(bus_type=BusType.SYSTEM)
 
     async def connect(self):
         await self.bus.connect()
