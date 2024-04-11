@@ -4,9 +4,9 @@ async SystemD Manager implementation.
 
 import enum
 import logging
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Optional, Protocol, runtime_checkable
 
-from dbus_fast import DBusError, BusType
+from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus, ProxyObject
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class UnitFileState(str, enum.Enum):
     """Indicates that a unit file is permanently enabled."""
 
     ENABLED_RUNTIME = "enabled-runtime"
-    """Indicates the unit file is only temporarily enabled and will no longer be enabled after a reboot 
+    """Indicates the unit file is only temporarily enabled and will no longer be enabled after a reboot
     (that means, it is enabled via /run/ symlinks, rather than /etc/)."""
 
     LINKED = "linked"
@@ -143,13 +143,14 @@ class SystemDManager:
     Used to manage the systemd services on the host on Linux.
     """
 
-    bus: MessageBus
-    manager: SystemdProxy
+    bus: Optional[MessageBus]
+    manager: Optional[SystemdProxy]
 
     def __init__(self):
-        self.bus = MessageBus(bus_type=BusType.SYSTEM)
+        pass
 
     async def connect(self):
+        self.bus = MessageBus(bus_type=BusType.SYSTEM)
         await self.bus.connect()
         path = "/org/freedesktop/systemd1"
         bus_name = "org.freedesktop.systemd1"
