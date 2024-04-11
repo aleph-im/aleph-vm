@@ -162,26 +162,32 @@ class SystemDManager:
         self.manager = interface
 
     async def enable(self, service: str) -> None:
+        assert self.manager, "connect() not called"
         await self.manager.call_enable_unit_files([service], False, True)
         logger.debug(f"Enabled {service} service")
 
     async def start(self, service: str) -> None:
+        assert self.manager, "connect() not called"
         await self.manager.call_start_unit(service, Mode.REPLACE)
         logger.debug(f"Started {service} service")
 
     async def stop(self, service: str) -> None:
+        assert self.manager, "connect() not called"
         await self.manager.call_stop_unit(service, Mode.REPLACE)
         logger.debug(f"Stopped {service} service")
 
     async def restart(self, service: str) -> None:
+        assert self.manager, "connect() not called"
         await self.manager.call_restart_unit(service, Mode.REPLACE)
         logger.debug(f"Restarted {service} service")
 
     async def disable(self, service: str) -> None:
+        assert self.manager, "connect() not called"
         await self.manager.call_disable_unit_files([service], False)
         logger.debug(f"Disabled {service} service")
 
     async def is_service_enabled(self, service: str) -> bool:
+        assert self.manager, "connect() not called"
         try:
             state = await self.manager.call_get_unit_file_state(service)
             return state == UnitFileState.ENABLED
@@ -190,6 +196,8 @@ class SystemDManager:
             return False
 
     async def is_service_active(self, service: str) -> bool:
+        assert self.manager, "connect() not called"
+        assert self.bus, "connect() not called"
         try:
             path = await self.manager.call_get_unit(service)
             bus_name = "org.freedesktop.systemd1"
