@@ -161,6 +161,12 @@ class VmPool:
             # anymore.
             currently_used_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.is_running}
             for i in range(settings.START_ID_INDEX, 255**2):
+
+                if self.network:
+                    # Check the network interface don't already exists, otherwise it will cause a crash
+                    if self.network.interface_exists(i):
+                        continue
+
                 if i not in currently_used_vm_ids:
                     return i
             else:

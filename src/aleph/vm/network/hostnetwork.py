@@ -3,6 +3,8 @@ from ipaddress import IPv6Network
 from pathlib import Path
 from typing import Optional, Protocol
 
+import pyroute2
+
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import IPv6AllocationPolicy
@@ -136,6 +138,7 @@ class Network:
         self.ipv4_forwarding_enabled = ipv4_forwarding_enabled
         self.ipv6_forwarding_enabled = ipv6_forwarding_enabled
         self.use_ndp_proxy = use_ndp_proxy
+        self.ndb = pyroute2.NDB()
 
         if not self.ipv4_address_pool.is_private:
             logger.warning(f"Using a network range that is not private: {self.ipv4_address_pool}")
@@ -220,3 +223,7 @@ class Network:
         """Create TAP interface to be used by VM"""
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
+
+    def interface_exists(self, vm_id: int):
+        interface_name = f"vmtap{vm_id}"
+        return self.ndb.interfaces.exists(interface_name)
