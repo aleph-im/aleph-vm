@@ -137,10 +137,15 @@ async def ip_address():
 @app.get("/ip/4")
 async def connect_ipv4():
     """Connect to the Quad9 VPN provider using their IPv4 address."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(5)
-    sock.connect(("9.9.9.9", 53))
-    return {"result": True}
+    ipv4_host = "9.9.9.9"
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((ipv4_host, 53))
+        return {"result": True}
+    except socket.timeout:
+        logger.warning(f"Socket connection for host {ipv4_host} failed")
+        return {"result": False}
 
 
 @app.get("/ip/6")
@@ -148,23 +153,33 @@ async def connect_ipv6():
     """Connect to the Quad9 VPN provider using their IPv6 address.
     The webserver on that address returns a 404 error, so we accept that response code.
     """
+    ipv6_host = "https://[2620:fe::fe]"
     timeout = aiohttp.ClientTimeout(total=5)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
-        async with session.get("https://[2620:fe::fe]") as resp:
-            # We expect this endpoint to return a 404 error
-            if resp.status != 404:
-                resp.raise_for_status()
-            return {"result": True, "headers": resp.headers}
+        try:
+            async with session.get(ipv6_host) as resp:
+                # We expect this endpoint to return a 404 error
+                if resp.status != 404:
+                    resp.raise_for_status()
+                return {"result": True, "headers": resp.headers}
+        except aiohttp.ClientTimeout:
+            logger.warning(f"Session connection for host {ipv6_host} failed")
+            return {"result": False, "headers": resp.headers}
 
 
 @app.get("/internet")
 async def read_internet():
     """Connect the aleph.im official website to check Internet connectivity."""
+    internet_host = "https://aleph.im/"
     timeout = aiohttp.ClientTimeout(total=5)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
-        async with session.get("https://aleph.im/") as resp:
-            resp.raise_for_status()
-            return {"result": resp.status, "headers": resp.headers}
+        try:
+            async with session.get(internet_host) as resp:
+                resp.raise_for_status()
+                return {"result": resp.status, "headers": resp.headers}
+        except aiohttp.ClientTimeout:
+            logger.warning(f"Session connection for host {internet_host} failed")
+            return {"result": False, "headers": resp.headers}
 
 
 @app.get("/post_a_message")
