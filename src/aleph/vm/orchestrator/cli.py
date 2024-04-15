@@ -20,6 +20,7 @@ from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.pool import VmPool
 from aleph.vm.version import get_version_from_apt, get_version_from_git
 
+from ..models import VmExecution
 from . import metrics, supervisor
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
@@ -187,7 +188,8 @@ async def benchmark(runs: int):
 
     bench: list[float] = []
 
-    pool = VmPool()
+    loop = asyncio.new_event_loop()
+    pool = VmPool(loop)
     pool.setup()
 
     # Does not make sense in benchmarks
@@ -236,25 +238,24 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
-async def start_instance(item_hash: ItemHash) -> None:
+async def start_instance(pool, pubsub: Optional[PubSub], item_hash: ItemHash) -> VmExecution:
     """Run an instance from an InstanceMessage."""
-    pool = VmPool()
-
-    # The main program uses a singleton pubsub instance in order to watch for updates.
-    # We create another instance here since that singleton is not initialized yet.
-    # Watching for updates on this instance will therefore not work.
-    pubsub: Optional[PubSub] = None
-
-    await start_persistent_vm(item_hash, pubsub, pool)
+    return await start_persistent_vm(item_hash, pubsub, pool)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
     """Run instances from a list of message identifiers."""
     logger.info(f"Instances to run: {instances}")
+    loop = asyncio.new_event_loop()
+    pool = VmPool(loop)
+    # The main program uses a singleton pubsub instance in order to watch for updates.
+    # We create another instance here since that singleton is not initialized yet.
+    # Watching for updates on this instance will therefore not work.
+    pubsub: Optional[PubSub] = None
 
-    await asyncio.gather(*[start_instance(item_hash=instance_id) for instance_id in instances])
+    await asyncio.gather(*[start_instance(pool, pubsub, item_hash=instance_id) for instance_id in instances])
+
     await asyncio.Event().wait()  # wait forever
-    # TODO : should we really wait forever?
 
 
 @contextlib.contextmanager
