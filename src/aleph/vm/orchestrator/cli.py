@@ -188,7 +188,7 @@ async def benchmark(runs: int):
 
     bench: list[float] = []
 
-    loop = asyncio.new_event_loop()
+    loop = asyncio.get_event_loop()
     pool = VmPool(loop)
     pool.setup()
 
@@ -246,7 +246,7 @@ async def start_instance(pool, pubsub: Optional[PubSub], item_hash: ItemHash) ->
 async def run_instances(instances: list[ItemHash]) -> None:
     """Run instances from a list of message identifiers."""
     logger.info(f"Instances to run: {instances}")
-    loop = asyncio.new_event_loop()
+    loop = asyncio.get_event_loop()
     pool = VmPool(loop)
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
