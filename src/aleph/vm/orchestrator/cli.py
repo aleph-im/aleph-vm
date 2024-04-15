@@ -17,10 +17,10 @@ from aleph_message.models import ItemHash
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
+from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.version import get_version_from_apt, get_version_from_git
 
-from ..models import VmExecution
 from . import metrics, supervisor
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
