@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional, Protocol
 
 import pyroute2
-
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import IPv6AllocationPolicy
