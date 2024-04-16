@@ -15,4 +15,4 @@ publish:
 	cargo build --release
 	mkdir -p ./dist
 	cp target/release/example_http_rust ./dist/
-	aleph program ./dist example_http_rust
+	aleph program upload ./dist example_http_rust
