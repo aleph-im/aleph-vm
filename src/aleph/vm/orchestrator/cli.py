@@ -238,7 +238,7 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
-async def start_instance(pool, pubsub: Optional[PubSub], item_hash: ItemHash) -> VmExecution:
+async def start_instance(item_hash: ItemHash, pubsub: Optional[PubSub], pool) -> VmExecution:
     """Run an instance from an InstanceMessage."""
     return await start_persistent_vm(item_hash, pubsub, pool)
 
@@ -253,7 +253,7 @@ async def run_instances(instances: list[ItemHash]) -> None:
     # Watching for updates on this instance will therefore not work.
     pubsub: Optional[PubSub] = None
 
-    await asyncio.gather(*[start_instance(pool, pubsub, item_hash=instance_id) for instance_id in instances])
+    await asyncio.gather(*[start_instance(instance_id, pubsub, pool) for instance_id in instances])
 
     await asyncio.Event().wait()  # wait forever
 
