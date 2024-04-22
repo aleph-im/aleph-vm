@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -7,14 +8,14 @@ import sys
 from datetime import datetime
 from os import listdir
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import aiohttp
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pip._internal.operations.freeze import freeze
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from starlette.responses import JSONResponse
 
 from aleph.sdk.chains.remote import RemoteAccount
@@ -167,19 +168,47 @@ async def connect_ipv6():
             return {"result": False, "headers": resp.headers}
 
 
-@app.get("/internet")
-async def read_internet():
-    """Connect the aleph.im official website to check Internet connectivity."""
-    internet_host = "https://aleph.im/"
-    timeout = aiohttp.ClientTimeout(total=5)
+async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5):
+    """Check the connectivity of a single URL."""
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
         try:
             async with session.get(internet_host) as resp:
                 resp.raise_for_status()
-                return {"result": resp.status, "headers": resp.headers}
-        except aiohttp.ClientTimeout:
+                return {"result": resp.status, "headers": resp.headers, "url": internet_host}
+        except (aiohttp.ClientConnectionError, TimeoutError):
             logger.warning(f"Session connection for host {internet_host} failed")
-            return {"result": False, "headers": resp.headers}
+            return {"result": False, "url": internet_host}
+
+
+@app.get("/internet")
+async def read_internet():
+    """Check Internet connectivity of the system, requiring IP connectivity, domain resolution and HTTPS/TLS."""
+    internet_hosts: List[HttpUrl] = [
+        HttpUrl(url="https://aleph.im/", scheme="https"),
+        HttpUrl(url="https://ethereum.org", scheme="https"),
+        HttpUrl(url="https://ipfs.io/", scheme="https"),
+    ]
+    timeout_seconds = 5
+
+    # Create a list of tasks to check the URLs in parallel
+    tasks: set[asyncio.Task] = set(asyncio.create_task(check_url(host, timeout_seconds)) for host in internet_hosts)
+
+    # While no tasks have completed, keep waiting for the next one to finish
+    while tasks:
+        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        result = done.pop().result()
+
+        if result["result"]:
+            # The task was successful, cancel the remaining tasks and return the result
+            for task in tasks:
+                task.cancel()
+            return result
+        else:
+            continue
+
+    # No URL was reachable
+    return {"result": False}
 
 
 @app.get("/post_a_message")
