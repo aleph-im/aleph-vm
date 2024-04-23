@@ -257,34 +257,36 @@ async def get_a_message():
 @app.post("/post_a_message")
 async def post_with_remote_account():
     """Post a message on the Aleph.im network using the remote account of the host."""
+    try:
+        account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
 
-    account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
-
-    content = {
-        "date": datetime.now(tz=timezone.utc).isoformat(),
-        "test": True,
-        "answer": 42,
-        "something": "interesting",
-    }
-    async with AuthenticatedAlephHttpClient(
-        account=account,
-    ) as client:
-        message: PostMessage
-        status: MessageStatus
-        message, status = await client.create_post(
-            post_content=content,
-            post_type="test",
-            ref=None,
-            channel="TEST",
-            inline=True,
-            storage_engine=StorageEnum.storage,
-            sync=True,
-        )
-        if status != MessageStatus.PROCESSED:
-            return JSONResponse(status_code=500, content={"error": status})
-    return {
-        "message": message,
-    }
+        content = {
+            "date": datetime.now(tz=timezone.utc).isoformat(),
+            "test": True,
+            "answer": 42,
+            "something": "interesting",
+        }
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+        ) as client:
+            message: PostMessage
+            status: MessageStatus
+            message, status = await client.create_post(
+                post_content=content,
+                post_type="test",
+                ref=None,
+                channel="TEST",
+                inline=True,
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+            if status != MessageStatus.PROCESSED:
+                return JSONResponse(status_code=500, content={"error": status})
+        return {
+            "message": message,
+        }
+    except aiohttp.client_exceptions.UnixClientConnectorError:
+        return JSONResponse(status_code=500, content={"error": "Could not connect to the remote account"})
 
 
 @app.post("/post_a_message_local_account")
@@ -348,6 +350,7 @@ async def post_a_file():
 @app.get("/sign_a_message")
 async def sign_a_message():
     """Sign a message using a locally managed account within the virtual machine."""
+    # FIXME: Broken, fixing this depends on https://github.com/aleph-im/aleph-sdk-python/pull/120
     account = get_fallback_account()
     message = {"hello": "world", "chain": "ETH"}
     signed_message = await account.sign_message(message)

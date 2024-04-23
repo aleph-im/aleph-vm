@@ -204,7 +204,7 @@ async def check_post_a_message(session: ClientSession, vm_id: ItemHash) -> bool:
 async def check_sign_a_message(session: ClientSession, vm_id: ItemHash) -> bool:
     """Check that the VM can sign a message using a key local to the VM."""
     try:
-        result: dict = await post_to_vm(session, vm_id, "/post_a_message_local_account")
+        result: dict = await post_to_vm(session, vm_id, "/sign_a_message")
         return "item_hash" in result
     except ClientResponseError:
         return False
