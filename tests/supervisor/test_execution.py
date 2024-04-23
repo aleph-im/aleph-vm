@@ -58,10 +58,12 @@ async def test_create_execution():
 
 
 @pytest.mark.asyncio
-async def test_create_execution_online():
+async def test_create_execution_online(vm_hash: ItemHash = None):
     """
     Create a new VM execution without building it locally and check that it starts properly.
     """
+
+    vm_hash = vm_hash or settings.CHECK_FASTAPI_VM_ID
 
     # Ensure that the settings are correct and required files present.
     settings.setup()
@@ -71,7 +73,6 @@ async def test_create_execution_online():
     engine = metrics.setup_engine()
     await metrics.create_tables(engine)
 
-    vm_hash = ItemHash("3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af")
     message = await get_message(ref=vm_hash)
 
     execution = VmExecution(
@@ -93,3 +94,11 @@ async def test_create_execution_online():
 
     await execution.start()
     await execution.stop()
+
+
+@pytest.mark.asyncio
+async def test_create_execution_legacy():
+    """
+    Create a new VM execution based on the legacy FastAPI check and ensure that it starts properly.
+    """
+    await test_create_execution_online(vm_hash=settings.LEGACY_CHECK_FASTAPI_VM_ID)
