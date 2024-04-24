@@ -214,13 +214,9 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
                     # "ipv6": await status.check_ipv6(session),
                 }
 
-            return web.json_response(
-                result, status=200 if all(result.values()) else 503
-            )
+            return web.json_response(result, status=200 if all(result.values()) else 503)
     except aiohttp.ServerDisconnectedError as error:
-        return web.json_response(
-            {"error": f"Server disconnected: {error}"}, status=503
-        )
+        return web.json_response({"error": f"Server disconnected: {error}"}, status=503)
 
 
 @cors_allow_all
@@ -434,9 +430,7 @@ async def notify_allocation(request: web.Request):
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
-        return web.json_response(
-            data=error.json(), status=web.HTTPBadRequest.status_code
-        )
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
