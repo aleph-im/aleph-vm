@@ -227,8 +227,6 @@ def require_jwk_authentication(
             return web.json_response(data={"error": e.reason}, status=e.status)
 
         response = await handler(request, authenticated_sender)
-        # Allow browser clients to access the body of the response
-        response.headers.update({"Access-Control-Allow-Origin": request.headers.get("Origin", "")})
         return response
 
     return wrapper
