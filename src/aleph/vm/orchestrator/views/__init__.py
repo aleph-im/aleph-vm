@@ -199,6 +199,9 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
                 "index": await status.check_index(session, fastapi_vm_id),
                 "environ": await status.check_environ(session, fastapi_vm_id),
                 "messages": await status.check_messages(session, fastapi_vm_id),
+                # Using the remote account currently causes issues
+                # "post_a_message": await status.check_post_a_message(session, fastapi_vm_id),
+                # "sign_a_message": await status.check_sign_a_message(session, fastapi_vm_id),
                 "dns": await status.check_dns(session, fastapi_vm_id),
                 "ipv4": await status.check_ipv4(session, fastapi_vm_id),
                 "internet": await status.check_internet(session, fastapi_vm_id),
@@ -209,6 +212,7 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
             if not retro_compatibility:
                 # These fields were added in the runtime running Debian 12.
                 result = result | {
+                    "get_a_message": await status.check_get_a_message(session, fastapi_vm_id),
                     "lifespan": await status.check_lifespan(session, fastapi_vm_id),
                     # IPv6 requires extra work from node operators and is not required yet.
                     # "ipv6": await status.check_ipv6(session),
