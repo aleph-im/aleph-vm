@@ -11,7 +11,7 @@ from typing import Optional
 import aiodns
 import aiohttp
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPNotFound
+from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash, MessageType
 from pydantic import ValidationError
@@ -65,7 +65,13 @@ async def run_code_from_path(request: web.Request) -> web.Response:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = ItemHash(request.match_info["ref"])
+    try:
+        message_ref = ItemHash(request.match_info["ref"])
+    except UnknownHashError as e:
+        raise HTTPBadRequest(
+            reason="Invalid message reference", text=f"Invalid message reference: {request.match_info['ref']}"
+        ) from e
+
     pool: VmPool = request.app["vm_pool"]
     return await run_code_on_request(message_ref, path, pool, request)
 
@@ -98,8 +104,10 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             try:
                 message_ref = ItemHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
-            except aiodns.error.DNSError as error:
-                raise HTTPNotFound(reason="Invalid message reference") from error
+            except aiodns.error.DNSError:
+                return HTTPNotFound(reason="Invalid message reference")
+            except UnknownHashError:
+                return HTTPNotFound(reason="Invalid message reference")
 
     pool = request.app["vm_pool"]
     return await run_code_on_request(message_ref, path, pool, request)
