@@ -13,8 +13,8 @@ from pathlib import Path
 from secrets import token_urlsafe
 from typing import Callable
 
-import aiohttp_cors
 from aiohttp import web
+from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
@@ -69,62 +69,67 @@ async def server_version_middleware(
     return resp
 
 
-async def allow_cors_on_endpoint(request: web.Request):
-    """Allow CORS on endpoints that VM owners use to control their machine."""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Origin": "*",
-            "Allow": "POST",
-        },
-    )
-
-
 async def http_not_found(request: web.Request):
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
 
 app = web.Application(middlewares=[server_version_middleware])
-cors = aiohttp_cors.setup(app)
-
-app.add_routes(
-    [
-        # /about APIs return information about the VM Orchestrator
-        web.get("/about/login", about_login),
-        web.get("/about/executions/list", list_executions),
-        web.get("/about/executions/details", about_executions),
-        web.get("/about/executions/records", about_execution_records),
-        web.get("/about/usage/system", about_system_usage),
-        web.get("/about/config", about_config),
-        # /control APIs are used to control the VMs and access their logs
-        web.post("/control/allocations", update_allocations),
-        web.post("/control/allocation/notify", notify_allocation),
-        web.get("/control/machine/{ref}/logs", stream_logs),
-        web.post("/control/machine/{ref}/expire", operate_expire),
-        web.post("/control/machine/{ref}/stop", operate_stop),
-        web.post("/control/machine/{ref}/erase", operate_erase),
-        web.post("/control/machine/{ref}/reboot", operate_reboot),
-        # /status APIs are used to check that the VM Orchestrator is running properly
-        web.get("/status/check/fastapi", status_check_fastapi),
-        web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
-        web.get("/status/check/host", status_check_host),
-        web.get("/status/check/version", status_check_version),
-        web.get("/status/check/ipv6", status_check_ipv6),
-        web.get("/status/config", status_public_config),
-        # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
-        web.get("/about/{suffix:.*}", http_not_found),
-        web.get("/control/{suffix:.*}", http_not_found),
-        web.get("/status/{suffix:.*}", http_not_found),
-        # /static is used to serve static files
-        web.static("/static", Path(__file__).parent / "views/static"),
-        # /vm is used to launch VMs on-demand
-        web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
-        web.route("*", "/{suffix:.*}", run_code_from_hostname),
-    ]
+cors = setup(
+    app,
+    defaults={
+        "*": ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        )
+    },
 )
+
+# Routes that need CORS enabled
+cors_routes = [
+    # /about APIs return information about the VM Orchestrator
+    web.get("/about/login", about_login),
+    web.get("/about/executions/list", list_executions),
+    web.get("/about/executions/details", about_executions),
+    web.get("/about/executions/records", about_execution_records),
+    web.get("/about/usage/system", about_system_usage),
+    web.get("/about/config", about_config),
+    # /control APIs are used to control the VMs and access their logs
+    web.post("/control/allocation/notify", notify_allocation),
+    web.get("/control/machine/{ref}/logs", stream_logs),
+    web.post("/control/machine/{ref}/expire", operate_expire),
+    web.post("/control/machine/{ref}/stop", operate_stop),
+    web.post("/control/machine/{ref}/erase", operate_erase),
+    web.post("/control/machine/{ref}/reboot", operate_reboot),
+    # /status APIs are used to check that the VM Orchestrator is running properly
+    web.get("/status/check/fastapi", status_check_fastapi),
+    web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
+    web.get("/status/check/host", status_check_host),
+    web.get("/status/check/version", status_check_version),
+    web.get("/status/check/ipv6", status_check_ipv6),
+    web.get("/status/config", status_public_config),
+]
+routes = app.add_routes(cors_routes)
+for route in routes:
+    cors.add(route)
+
+
+# Routes that don't need CORS enabled
+other_routes = [
+    # /control APIs are used to control the VMs and access their logs
+    web.post("/control/allocations", update_allocations),
+    # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
+    web.get("/about/{suffix:.*}", http_not_found),
+    web.get("/control/{suffix:.*}", http_not_found),
+    web.get("/status/{suffix:.*}", http_not_found),
+    # /static is used to serve static files
+    web.static("/static", Path(__file__).parent / "views/static"),
+    # /vm is used to launch VMs on-demand
+    web.route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
+    web.route("*", "/{suffix:.*}", run_code_from_hostname),
+]
+app.add_routes(other_routes)
 
 
 async def stop_all_vms(app: web.Application):

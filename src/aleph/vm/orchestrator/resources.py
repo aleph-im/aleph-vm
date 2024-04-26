@@ -11,6 +11,7 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.utils import cors_allow_all
 
 
 class Period(BaseModel):
@@ -92,6 +93,7 @@ def get_machine_properties() -> MachineProperties:
     )
 
 
+@cors_allow_all
 async def about_system_usage(_: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -116,7 +118,7 @@ async def about_system_usage(_: web.Request):
         ),
         properties=get_machine_properties(),
     )
-    return web.json_response(text=usage.json(exclude_none=True), headers={"Access-Control-Allow-Origin:": "*"})
+    return web.json_response(text=usage.json(exclude_none=True))
 
 
 class Allocation(BaseModel):

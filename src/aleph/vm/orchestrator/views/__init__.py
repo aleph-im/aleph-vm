@@ -199,6 +199,9 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
                 "index": await status.check_index(session, fastapi_vm_id),
                 "environ": await status.check_environ(session, fastapi_vm_id),
                 "messages": await status.check_messages(session, fastapi_vm_id),
+                # Using the remote account currently causes issues
+                # "post_a_message": await status.check_post_a_message(session, fastapi_vm_id),
+                # "sign_a_message": await status.check_sign_a_message(session, fastapi_vm_id),
                 "dns": await status.check_dns(session, fastapi_vm_id),
                 "ipv4": await status.check_ipv4(session, fastapi_vm_id),
                 "internet": await status.check_internet(session, fastapi_vm_id),
@@ -209,18 +212,15 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
             if not retro_compatibility:
                 # These fields were added in the runtime running Debian 12.
                 result = result | {
+                    "get_a_message": await status.check_get_a_message(session, fastapi_vm_id),
                     "lifespan": await status.check_lifespan(session, fastapi_vm_id),
                     # IPv6 requires extra work from node operators and is not required yet.
                     # "ipv6": await status.check_ipv6(session),
                 }
 
-            return web.json_response(
-                result, status=200 if all(result.values()) else 503, headers={"Access-Control-Allow-Origin": "*"}
-            )
+            return web.json_response(result, status=200 if all(result.values()) else 503)
     except aiohttp.ServerDisconnectedError as error:
-        return web.json_response(
-            {"error": f"Server disconnected: {error}"}, status=503, headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return web.json_response({"error": f"Server disconnected: {error}"}, status=503)
 
 
 @cors_allow_all
@@ -246,7 +246,7 @@ async def status_check_host(request: web.Request):
         },
     }
     result_status = 200 if all(result["ipv4"].values()) and all(result["ipv6"].values()) else 503
-    return web.json_response(result, status=result_status, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result, status=result_status)
 
 
 @cors_allow_all
@@ -260,7 +260,7 @@ async def status_check_ipv6(request: web.Request):
             vm_ipv6 = False
 
     result = {"host": await check_host_egress_ipv6(), "vm": vm_ipv6}
-    return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result)
 
 
 @cors_allow_all
@@ -283,7 +283,6 @@ async def status_check_version(request: web.Request):
         return web.Response(
             status=200,
             text=f"Up-to-date: version {current} >= {reference}",
-            headers={"Access-Control-Allow-Origin": "*"},
         )
     else:
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
@@ -327,7 +326,6 @@ async def status_public_config(request: web.Request):
             },
         },
         dumps=dumps_for_json,
-        headers={"Access-Control-Allow-Origin": "*"},
     )
 
 
@@ -436,9 +434,7 @@ async def notify_allocation(request: web.Request):
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
-        return web.json_response(
-            data=error.json(), status=web.HTTPBadRequest.status_code, headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
