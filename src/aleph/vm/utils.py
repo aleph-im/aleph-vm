@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import subprocess
@@ -69,9 +70,12 @@ async def get_ref_from_dns(domain):
     return record[0].text
 
 
-def to_json(o: Any):
+async def to_json(o: Any):
     if hasattr(o, "to_dict"):  # default method
-        return o.to_dict()
+        if inspect.isawaitable(o.to_dict):
+            return await o.to_dict()
+        else:
+            return o.to_dict()
     elif hasattr(o, "dict"):  # Pydantic
         return o.dict()
     elif is_dataclass(o):

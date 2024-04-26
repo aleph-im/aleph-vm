@@ -159,7 +159,7 @@ async def monitor_payments(app: web.Application):
         #             required_balance = await compute_required_balance(executions)
 
         # Check if the balance held in the wallet is sufficient stream tier resources
-        for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
+        for sender, chains in await pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
             for chain, executions in chains.items():
                 stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
                 logger.debug(

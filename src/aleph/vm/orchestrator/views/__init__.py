@@ -146,7 +146,7 @@ async def list_executions(request: web.Request) -> web.Response:
                 },
             }
             for item_hash, execution in pool.executions.items()
-            if execution.is_running
+            if await execution.check_is_running()
         },
         dumps=dumps_for_json,
     )
@@ -356,8 +356,13 @@ async def update_allocations(request: web.Request):
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
-    for execution in list(pool.get_persistent_executions()):
-        if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
+    persistent_executions = list(await pool.get_persistent_executions())
+    for execution in persistent_executions:
+        if (
+            execution.vm_hash not in allocations
+            and not execution.uses_payment_stream
+            and (await execution.check_is_running())
+        ):
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await pool.stop_vm(execution.vm_hash)

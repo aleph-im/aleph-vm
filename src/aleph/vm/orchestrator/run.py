@@ -118,7 +118,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     # Prevent execution issues if the execution resources are empty
     # TODO: Improve expiration process to avoid that kind of issues.
@@ -222,7 +222,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
     Execute code in response to an event.
     """
 
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
@@ -268,7 +268,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
 
 
 async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool: VmPool) -> VmExecution:
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+    execution: Optional[VmExecution] = await pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
@@ -288,7 +288,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool:
 
 async def stop_persistent_vm(vm_hash: ItemHash, pool: VmPool) -> Optional[VmExecution]:
     logger.info(f"Stopping persistent VM {vm_hash}")
-    execution = pool.get_running_vm(vm_hash)
+    execution = await pool.get_running_vm(vm_hash)
 
     if execution:
         await execution.stop()
