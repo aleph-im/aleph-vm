@@ -5,7 +5,7 @@ async SystemD Manager implementation.
 import abc
 import enum
 import logging
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal
 
 from dbus_fast import DBusError
 from dbus_fast.aio import MessageBus, ProxyInterface, ProxyObject
@@ -105,37 +105,50 @@ class ActiveState(str, enum.Enum):
 ActiveStateLiteral = Literal["active", "reloading", "inactive", "failed", "activating", "deactivating"]
 
 
-@runtime_checkable
-class SystemdProxy(Protocol):
+class SystemdProxy(ProxyInterface, abc.ABC):
     """ABC for typing.
 
     for description of methodsp
     see https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html#The%20Manager%20Object"""
 
-    async def call_enable_unit_files(self, files: list[str], runtime: bool, force: bool): ...
+    @abc.abstractmethod
+    async def call_enable_unit_files(self, files: list[str], runtime: bool, force: bool):
+        pass
 
-    async def call_get_unit_file_state(self, service) -> UnitFileStateLiteral: ...
+    @abc.abstractmethod
+    async def call_get_unit_file_state(self, service) -> UnitFileStateLiteral:
+        pass
 
+    @abc.abstractmethod
     async def call_start_unit(self, name, mode):
         pass
 
-    async def call_stop_unit(self, name, mode): ...
+    @abc.abstractmethod
+    async def call_stop_unit(self, name, mode):
+        pass
 
-    async def call_restart_unit(self, name, mode): ...
+    @abc.abstractmethod
+    async def call_restart_unit(self, name, mode):
+        pass
 
-    async def call_disable_unit_files(self, files: list[str], runtime: bool): ...
+    @abc.abstractmethod
+    async def call_disable_unit_files(self, files: list[str], runtime: bool):
+        pass
 
-    async def call_get_unit(self, name: str) -> str: ...
+    @abc.abstractmethod
+    async def call_get_unit(self, name: str) -> str:
+        pass
 
 
-@runtime_checkable
-class UnitProxy(Protocol):
-    """for typing.
+class UnitProxy(ProxyInterface, abc.ABC):
+    """ABC for typing.
 
     for description of methods see
     https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html#Service%20Unit%20Objects"""
 
-    async def get_active_state(self) -> ActiveStateLiteral: ...
+    @abc.abstractmethod
+    async def get_active_state(self) -> ActiveStateLiteral:
+        pass
 
 
 class SystemDManager:
@@ -156,10 +169,8 @@ class SystemDManager:
         bus_name = "org.freedesktop.systemd1"
         introspect = await self.bus.introspect(bus_name, path)
         systemd_proxy: ProxyObject = self.bus.get_proxy_object(bus_name, path, introspection=introspect)
-        interface = systemd_proxy.get_interface("org.freedesktop.systemd1.Manager")
-        # Check required method are implemented
-        assert isinstance(interface, SystemdProxy)
-        self.manager = interface
+        # noinspection PyTypeChecker
+        self.manager = systemd_proxy.get_interface("org.freedesktop.systemd1.Manager")  # type: ignore
 
     async def enable(self, service: str) -> None:
         await self.manager.call_enable_unit_files([service], False, True)
@@ -195,9 +206,7 @@ class SystemDManager:
             bus_name = "org.freedesktop.systemd1"
             introspect = await self.bus.introspect(bus_name, path)
             systemd_service = self.bus.get_proxy_object(bus_name, path, introspection=introspect)
-            unit = systemd_service.get_interface("org.freedesktop.systemd1.Unit")
-            # Check required method are implemented
-            assert isinstance(unit, UnitProxy)
+            unit: UnitProxy = systemd_service.get_interface("org.freedesktop.systemd1.Unit")  # type: ignore
             active_state = await unit.get_active_state()
             return active_state == ActiveState.ACTIVE
         except DBusError as error:
