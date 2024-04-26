@@ -69,19 +69,6 @@ async def server_version_middleware(
     return resp
 
 
-async def allow_cors_on_endpoint(request: web.Request):
-    """Allow CORS on endpoints that VM owners use to control their machine."""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Origin": "*",
-            "Allow": "POST",
-        },
-    )
-
-
 async def http_not_found(request: web.Request):
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
