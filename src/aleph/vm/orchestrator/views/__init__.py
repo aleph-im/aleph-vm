@@ -65,9 +65,12 @@ async def run_code_from_path(request: web.Request) -> web.Response:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = ItemHash(request.match_info["ref"])
-    pool: VmPool = request.app["vm_pool"]
-    return await run_code_on_request(message_ref, path, pool, request)
+    try:
+        message_ref = ItemHash(request.match_info["ref"])
+        pool: VmPool = request.app["vm_pool"]
+        return await run_code_on_request(message_ref, path, pool, request)
+    except UnknownHashError:
+        return HTTPNotFound(reason="Invalid message reference")
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -98,8 +101,10 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             try:
                 message_ref = ItemHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
-            except aiodns.error.DNSError as error:
-                raise HTTPNotFound(reason="Invalid message reference") from error
+            except aiodns.error.DNSError:
+                return HTTPNotFound(reason="Invalid message reference")
+            except UnknownHashError:
+                return HTTPNotFound(reason="Invalid message reference")
 
     pool = request.app["vm_pool"]
     return await run_code_on_request(message_ref, path, pool, request)
