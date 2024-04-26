@@ -214,13 +214,9 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
                     # "ipv6": await status.check_ipv6(session),
                 }
 
-            return web.json_response(
-                result, status=200 if all(result.values()) else 503, headers={"Access-Control-Allow-Origin": "*"}
-            )
+            return web.json_response(result, status=200 if all(result.values()) else 503)
     except aiohttp.ServerDisconnectedError as error:
-        return web.json_response(
-            {"error": f"Server disconnected: {error}"}, status=503, headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return web.json_response({"error": f"Server disconnected: {error}"}, status=503)
 
 
 @cors_allow_all
@@ -246,7 +242,7 @@ async def status_check_host(request: web.Request):
         },
     }
     result_status = 200 if all(result["ipv4"].values()) and all(result["ipv6"].values()) else 503
-    return web.json_response(result, status=result_status, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result, status=result_status)
 
 
 @cors_allow_all
@@ -260,7 +256,7 @@ async def status_check_ipv6(request: web.Request):
             vm_ipv6 = False
 
     result = {"host": await check_host_egress_ipv6(), "vm": vm_ipv6}
-    return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result)
 
 
 @cors_allow_all
@@ -283,7 +279,6 @@ async def status_check_version(request: web.Request):
         return web.Response(
             status=200,
             text=f"Up-to-date: version {current} >= {reference}",
-            headers={"Access-Control-Allow-Origin": "*"},
         )
     else:
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
@@ -327,7 +322,6 @@ async def status_public_config(request: web.Request):
             },
         },
         dumps=dumps_for_json,
-        headers={"Access-Control-Allow-Origin": "*"},
     )
 
 
@@ -436,9 +430,7 @@ async def notify_allocation(request: web.Request):
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
-        return web.json_response(
-            data=error.json(), status=web.HTTPBadRequest.status_code, headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
