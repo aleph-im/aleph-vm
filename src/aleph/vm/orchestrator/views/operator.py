@@ -174,7 +174,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
         if execution.persistent:
-            pool.systemd_manager.restart(execution.controller_service)
+            await pool.systemd_manager.restart(execution.controller_service)
         else:
             await pool.stop_vm(vm_hash)
             pool.forget_vm(vm_hash)
