@@ -239,8 +239,9 @@ class VmPool:
                 persistent=saved_execution.persistent,
             )
 
-            if execution.is_running:
-                # TODO: Improve the way that we re-create running execution
+            if await self.systemd_manager.is_service_active(
+                execution.controller_service
+            ):  # TODO: Improve the way that we re-create running execution
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
