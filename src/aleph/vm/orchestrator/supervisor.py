@@ -172,7 +172,7 @@ def run():
         asyncio.run(pool.load_persistent_executions())
 
         logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
-        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT, loop=loop)
+        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
     except OSError as e:
         if e.errno == 98:
             logger.error(

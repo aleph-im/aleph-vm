@@ -83,11 +83,13 @@ class VmExecution:
 
     persistent: bool = False
 
-    async def check_is_running(self) -> bool:
-        if not self.persistent:
-            return bool(self.times.starting_at and not self.times.stopping_at)
-        else:
-            return await self.systemd_manager.is_service_active(self.controller_service)
+    @property
+    def is_running(self) -> bool:
+        return (
+            bool(self.times.starting_at and not self.times.stopping_at)
+            if not self.persistent
+            else self.systemd_manager.is_service_active(self.controller_service)
+        )
 
     @property
     def is_stopping(self) -> bool:
@@ -158,9 +160,9 @@ class VmExecution:
         self.systemd_manager = systemd_manager
         self.persistent = persistent
 
-    async def to_dict(self) -> dict:
+    def to_dict(self) -> dict:
         return {
-            "is_running": await self.check_is_running(),
+            "is_running": self.is_running,
             **self.__dict__,
         }
 

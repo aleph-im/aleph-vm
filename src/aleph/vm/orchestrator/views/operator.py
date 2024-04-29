@@ -150,7 +150,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
     if not is_sender_authorized(authenticated_sender, execution.message):
         return web.Response(status=403, body="Unauthorized sender")
 
-    if await execution.check_is_running():
+    if execution.is_running:
         logger.info(f"Stopping {execution.vm_hash}")
         await pool.stop_vm(execution.vm_hash)
         return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
@@ -171,7 +171,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     if not is_sender_authorized(authenticated_sender, execution.message):
         return web.Response(status=403, body="Unauthorized sender")
 
-    if await execution.check_is_running():
+    if execution.is_running:
         logger.info(f"Rebooting {execution.vm_hash}")
         if execution.persistent:
             await pool.systemd_manager.restart(execution.controller_service)

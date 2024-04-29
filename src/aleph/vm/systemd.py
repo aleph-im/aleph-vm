@@ -170,12 +170,11 @@ class SystemDManager:
 
     async def enable(self, service: str) -> None:
         manager = await self.get_manager()
-        logger.debug(f"Enabled {service} service")
         await manager.call_enable_unit_files([service], False, True)
+        logger.debug(f"Enabled {service} service")
 
     async def start(self, service: str) -> None:
         manager = await self.get_manager()
-        logger.debug(f"Starting {service} service")
         await manager.call_start_unit(service, Mode.REPLACE)
         logger.debug(f"Started {service} service")
 

@@ -146,7 +146,7 @@ async def list_executions(request: web.Request) -> web.Response:
                 },
             }
             for item_hash, execution in pool.executions.items()
-            if await execution.check_is_running()
+            if execution.is_running
         },
         dumps=dumps_for_json,
     )
@@ -341,8 +341,8 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 
 async def update_allocations(request: web.Request):
-    # if not authenticate_api_request(request):
-    #     return web.HTTPUnauthorized(text="Authentication token received is invalid")
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
     try:
         data = await request.json()
@@ -356,15 +356,8 @@ async def update_allocations(request: web.Request):
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
-    executions = list(pool.executions.values())
-
-    for execution in executions:
-        if (
-            execution.vm_hash not in allocations
-            and not execution.uses_payment_stream
-            and execution.persistent
-            and (await execution.check_is_running())
-        ):
+    for execution in list(pool.get_persistent_executions()):
+        if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
             vm_type = "instance" if execution.is_instance else "persistent program"
             logger.info("Stopping %s %s", vm_type, execution.vm_hash)
             await pool.stop_vm(execution.vm_hash)

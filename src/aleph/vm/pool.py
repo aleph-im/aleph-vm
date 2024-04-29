@@ -50,6 +50,7 @@ class VmPool:
         self.executions = {}
         self.message_cache = {}
 
+        asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
 
         self.network = (
@@ -93,7 +94,7 @@ class VmPool:
         async with self.creation_lock:
             # Check if an execution is already present for this VM, then return it.
             # Do not `await` in this section.
-            current_execution = await self.get_running_vm(vm_hash)
+            current_execution = self.get_running_vm(vm_hash)
             if current_execution:
                 return current_execution
             else:
@@ -109,7 +110,7 @@ class VmPool:
 
             try:
                 await execution.prepare()
-                vm_id = await self.get_unique_vm_id()
+                vm_id = self.get_unique_vm_id()
 
                 if self.network:
                     vm_type = VmType.from_message_content(message)
@@ -139,7 +140,7 @@ class VmPool:
 
             return execution
 
-    async def get_unique_vm_id(self) -> int:
+    def get_unique_vm_id(self) -> int:
         """Get a unique identifier for the VM.
 
         This identifier is used to name the network interface and in the IPv4 range
@@ -158,9 +159,7 @@ class VmPool:
             #
             # We therefore recycle vm_id values from executions that are not running
             # anymore.
-            currently_used_vm_ids = {
-                execution.vm_id for execution in self.executions.values() if (await execution.check_is_running())
-            }
+            currently_used_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.is_running}
             for i in range(settings.START_ID_INDEX, 255**2):
                 if i not in currently_used_vm_ids:
                     return i
@@ -168,10 +167,10 @@ class VmPool:
                 msg = "No available value for vm_id."
                 raise ValueError(msg)
 
-    async def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
-        if execution and (await execution.check_is_running()) and not execution.is_stopping:
+        if execution and execution.is_running and not execution.is_stopping:
             execution.cancel_expiration()
             return execution
         else:
@@ -240,8 +239,7 @@ class VmPool:
                 persistent=saved_execution.persistent,
             )
 
-            if await execution.check_is_running():
-                logger.info(f"Reloading running persistent execution {execution}")
+            if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 await execution.prepare()
                 if self.network:
@@ -271,39 +269,31 @@ class VmPool:
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
         # Stop executions in parallel:
-        await asyncio.gather(*(execution.stop() for execution in await self.get_ephemeral_executions()))
+        await asyncio.gather(*(execution.stop() for execution in self.get_ephemeral_executions()))
 
-    async def get_ephemeral_executions(self) -> Iterable[VmExecution]:
-        executions = [
-            (
-                execution
-                for _, execution in self.executions.items()
-                if (await execution.check_is_running()) and not execution.persistent
-            )
-        ]
+    def get_ephemeral_executions(self) -> Iterable[VmExecution]:
+        executions = (
+            execution for _, execution in self.executions.items() if execution.is_running and not execution.persistent
+        )
         return executions or []
 
-    async def get_persistent_executions(self) -> Iterable[VmExecution]:
-        executions = [
-            (
-                execution
-                for _vm_hash, execution in self.executions.items()
-                if (await execution.check_is_running()) and execution.persistent
-            )
-        ]
+    def get_persistent_executions(self) -> Iterable[VmExecution]:
+        executions = (
+            execution
+            for _vm_hash, execution in self.executions.items()
+            if execution.is_running and execution.persistent
+        )
         return executions or []
 
-    async def get_instance_executions(self):
-        executions = [
-            (
-                execution
-                for _vm_hash, execution in self.executions.items()
-                if (await execution.check_is_running()) and execution.is_instance
-            )
-        ]
+    def get_instance_executions(self) -> Iterable[VmExecution]:
+        executions = (
+            execution
+            for _vm_hash, execution in self.executions.items()
+            if execution.is_running and execution.is_instance
+        )
         return executions or []
 
-    async def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
+    def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
         executions_by_sender: dict[str, dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
@@ -311,7 +301,7 @@ class VmPool:
                 # Ignore Diagnostic VM execution
                 continue
 
-            if not await execution.check_is_running():
+            if not execution.is_running:
                 # Ignore the execution that is stopping or not running anymore
                 continue
             if execution.vm_hash == settings.CHECK_FASTAPI_VM_ID:
