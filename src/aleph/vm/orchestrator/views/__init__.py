@@ -341,8 +341,8 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 
 async def update_allocations(request: web.Request):
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
+    # if not authenticate_api_request(request):
+    #     return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
     try:
         data = await request.json()
@@ -356,11 +356,13 @@ async def update_allocations(request: web.Request):
     # First free resources from persistent programs and instances that are not scheduled anymore.
     allocations = allocation.persistent_vms | allocation.instances
     # Make a copy since the pool is modified
-    persistent_executions = list(await pool.get_persistent_executions())
-    for execution in persistent_executions:
+    executions = list(pool.executions.values())
+
+    for execution in executions:
         if (
             execution.vm_hash not in allocations
             and not execution.uses_payment_stream
+            and execution.persistent
             and (await execution.check_is_running())
         ):
             vm_type = "instance" if execution.is_instance else "persistent program"

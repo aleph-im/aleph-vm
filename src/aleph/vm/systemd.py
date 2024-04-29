@@ -150,13 +150,13 @@ class SystemDManager:
         pass
 
     async def get_bus(self):
-        if self._bus is None:
+        if True or self._bus is None:
             self._bus = MessageBus(bus_type=BusType.SYSTEM)
             await self._bus.connect()
         return self._bus
 
     async def get_manager(self):
-        if self._manager is None:
+        if True or self._manager is None:
             bus = await self.get_bus()
             path = "/org/freedesktop/systemd1"
             bus_name = "org.freedesktop.systemd1"
@@ -170,11 +170,12 @@ class SystemDManager:
 
     async def enable(self, service: str) -> None:
         manager = await self.get_manager()
-        await manager.call_enable_unit_files([service], False, True)
         logger.debug(f"Enabled {service} service")
+        await manager.call_enable_unit_files([service], False, True)
 
     async def start(self, service: str) -> None:
         manager = await self.get_manager()
+        logger.debug(f"Starting {service} service")
         await manager.call_start_unit(service, Mode.REPLACE)
         logger.debug(f"Started {service} service")
 

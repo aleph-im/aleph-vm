@@ -50,7 +50,6 @@ class VmPool:
         self.executions = {}
         self.message_cache = {}
 
-        asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
 
         self.network = (
@@ -242,6 +241,7 @@ class VmPool:
             )
 
             if await execution.check_is_running():
+                logger.info(f"Reloading running persistent execution {execution}")
                 # TODO: Improve the way that we re-create running execution
                 await execution.prepare()
                 if self.network:
@@ -274,27 +274,33 @@ class VmPool:
         await asyncio.gather(*(execution.stop() for execution in await self.get_ephemeral_executions()))
 
     async def get_ephemeral_executions(self) -> Iterable[VmExecution]:
-        executions = (
-            execution
-            for _, execution in self.executions.items()
-            if (await execution.check_is_running()) and not execution.persistent
-        )
+        executions = [
+            (
+                execution
+                for _, execution in self.executions.items()
+                if (await execution.check_is_running()) and not execution.persistent
+            )
+        ]
         return executions or []
 
     async def get_persistent_executions(self) -> Iterable[VmExecution]:
-        executions = (
-            execution
-            for _vm_hash, execution in self.executions.items()
-            if (await execution.check_is_running()) and execution.persistent
-        )
+        executions = [
+            (
+                execution
+                for _vm_hash, execution in self.executions.items()
+                if (await execution.check_is_running()) and execution.persistent
+            )
+        ]
         return executions or []
 
-    async def get_instance_executions(self) -> Iterable[VmExecution]:
-        executions = (
-            execution
-            for _vm_hash, execution in self.executions.items()
-            if (await execution.check_is_running()) and execution.is_instance
-        )
+    async def get_instance_executions(self):
+        executions = [
+            (
+                execution
+                for _vm_hash, execution in self.executions.items()
+                if (await execution.check_is_running()) and execution.is_instance
+            )
+        ]
         return executions or []
 
     async def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:

@@ -161,6 +161,7 @@ def run():
 
     try:
         if settings.WATCH_FOR_MESSAGES:
+            # FIXME We have a bug because task run on app.on_ don't run on the same loop?
             app.on_startup.append(start_watch_for_messages_task)
             app.on_startup.append(start_payment_monitoring_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
@@ -171,7 +172,7 @@ def run():
         asyncio.run(pool.load_persistent_executions())
 
         logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
-        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT, loop=loop)
     except OSError as e:
         if e.errno == 98:
             logger.error(
