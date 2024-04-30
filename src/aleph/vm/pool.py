@@ -241,6 +241,7 @@ class VmPool:
             if await self.systemd_manager.is_service_active(
                 execution.controller_service
             ):  # TODO: Improve the way that we re-create running execution
+                logger.debug(("Execution %s is still running in systemd, reconnecting", execution.vm_hash))
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
@@ -251,16 +252,21 @@ class VmPool:
                 vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
                 await vm.start_guest_api()
                 execution.ready_event.set()
+                execution.times.starting_at = execution.times.starting_at or datetime.now(tz=timezone.utc)
                 execution.times.started_at = datetime.now(tz=timezone.utc)
-
+                execution.times.stopping_at = None
+                execution.times.stopped_at = None
                 self._schedule_forget_on_stop(execution)
 
                 # Start the snapshot manager for the VM
                 if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
 
+                assert execution.is_running
                 self.executions[vm_hash] = execution
+
             else:
+                logger.debug(("Execution %s is not running in systemd, reconnecting", execution.vm_hash))
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
 
