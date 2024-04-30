@@ -251,8 +251,8 @@ async def run_instances(instances: list[ItemHash]) -> None:
     # Watching for updates on this instance will therefore not work.
     pubsub: Optional[PubSub] = None
 
-    await asyncio.gather(*[start_instance(instance_id, pubsub, pool) for instance_id in instances])
 
+    await asyncio.gather(*[start_instance(instance_id, pubsub, pool) for instance_id in instances])
     await asyncio.Event().wait()  # wait forever
 
 
