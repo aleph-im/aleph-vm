@@ -1,4 +1,3 @@
-import functools
 import math
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,7 +14,7 @@ from aleph.vm.orchestrator.machine import (
     get_hardware_info,
     get_memory_info,
 )
-from aleph.vm.utils import cors_allow_all
+from aleph.vm.utils import cors_allow_all, async_cache
 
 
 class Period(BaseModel):
@@ -105,19 +104,6 @@ class MachineCapability(BaseModel):
 
 
 machine_properties_cached = None
-
-
-def async_cache(fn):
-    cache = {}
-
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        key = (args, frozenset(kwargs.items()))
-        if key not in cache:
-            cache[key] = await fn(*args, **kwargs)
-        return cache[key]
-
-    return wrapper
 
 
 @async_cache
