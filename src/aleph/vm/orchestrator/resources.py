@@ -87,8 +87,8 @@ def get_machine_properties() -> MachineProperties:
     cpu_info = cpuinfo.get_cpu_info()  # Slow
     return MachineProperties(
         cpu=CpuProperties(
-            architecture=cpu_info["raw_arch_string"],
-            vendor=cpu_info["vendor_id"],
+            architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
+            vendor=cpu_info.get("vendor_id", cpu_info.get("vendor_id_raw")),
         ),
     )
 
