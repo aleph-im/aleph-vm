@@ -1,12 +1,10 @@
 import asyncio
 import json
 import re
-from functools import lru_cache
 
 import psutil
 
 
-@lru_cache
 async def get_hardware_info():
     lshw = await asyncio.create_subprocess_shell(
         "lshw -sanitize -json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -26,10 +24,7 @@ async def get_hardware_info():
     return hw_info
 
 
-@lru_cache
-async def get_cpu_info():
-    hw = await get_hardware_info()
-
+def get_cpu_info(hw):
     cpu_info = hw["cpu"]
     architecture = cpu_info["width"]
 
@@ -55,9 +50,7 @@ async def get_cpu_info():
     }
 
 
-@lru_cache
-async def get_memory_info():
-    hw = await get_hardware_info()
+def get_memory_info(hw):
     mem_info = hw["memory"]
 
     memory_type = ""
