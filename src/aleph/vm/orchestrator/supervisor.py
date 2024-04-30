@@ -94,8 +94,8 @@ cors_routes = [
     web.get("/about/executions/details", about_executions),
     web.get("/about/executions/records", about_execution_records),
     web.get("/about/usage/system", about_system_usage),
-    web.get("/about/config", about_config),
     web.get("/about/capability", about_capability),
+    web.get("/about/config", about_config),
     # /control APIs are used to control the VMs and access their logs
     web.post("/control/allocation/notify", notify_allocation),
     web.get("/control/machine/{ref}/logs", stream_logs),
