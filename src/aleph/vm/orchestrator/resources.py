@@ -1,7 +1,6 @@
-import functools
 import math
 from datetime import datetime, timezone
-from functools import lru_cache
+from typing import Optional
 
 import psutil
 from aiohttp import web
@@ -15,11 +14,11 @@ from aleph.vm.orchestrator.machine import (
     get_hardware_info,
     get_memory_info,
 )
-from aleph.vm.utils import cors_allow_all
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (
+    async_cache,
     check_amd_sev_es_supported,
     check_amd_sev_snp_supported,
     check_amd_sev_supported,
@@ -133,19 +132,6 @@ def get_machine_gpus(request: web.Request) -> GpuProperties:
 machine_properties_cached = None
 
 
-def async_cache(fn):
-    cache = {}
-
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        key = (args, frozenset(kwargs.items()))
-        if key not in cache:
-            cache[key] = await fn(*args, **kwargs)
-        return cache[key]
-
-    return wrapper
-
-
 @async_cache
 async def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
@@ -157,8 +143,18 @@ async def get_machine_properties() -> MachineProperties:
     cpu_info = get_cpu_info(hw)
     return MachineProperties(
         cpu=CpuProperties(
-            architecture=cpu_info.get("architecture"),
+            architecture=cpu_info["architecture"],
             vendor=cpu_info["vendor"],
+            features=list(
+                filter(
+                    None,
+                    (
+                        "sev" if check_amd_sev_supported() else None,
+                        "sev_es" if check_amd_sev_es_supported() else None,
+                        "sev_snp" if check_amd_sev_snp_supported() else None,
+                    ),
+                )
+            ),
         ),
     )
 
@@ -171,18 +167,11 @@ async def get_machine_capability() -> MachineCapability:
 
     return MachineCapability(
         cpu=ExtendedCpuProperties(
-            architecture=cpu_info["architecture", cpu_info.get("arch_string_raw")],
-            vendor=cpu_info.get("vendor"),
+            architecture=cpu_info["architecture"],
+            vendor=cpu_info["vendor"],
             model=cpu_info["model"],
             frequency=cpu_info["frequency"],
             count=cpu_info["count"],
-        ),
-        memory=MemoryProperties(
-            size=mem_info["size"],
-            units=mem_info["units"],
-            type=mem_info["type"],
-            clock=mem_info["clock"],
-            clock_units=mem_info["clock_units", cpu_info.get("vendor_id_raw")],
             features=list(
                 filter(
                     None,
@@ -193,6 +182,12 @@ async def get_machine_capability() -> MachineCapability:
                     ),
                 )
             ),
+        ),
+        memory=MemoryProperties(
+            size=mem_info["size"],
+            units=mem_info["units"],
+            type=mem_info["type"],
+            clock=mem_info["clock"],
         ),
     )
 
