@@ -1,17 +1,20 @@
+import functools
 import math
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Optional
 
 import psutil
 from aiohttp import web
-from aleph.vm.conf import settings
-from aleph.vm.orchestrator.machine import get_cpu_info, get_memory_info
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.machine import (
+    get_cpu_info,
+    get_hardware_info,
+    get_memory_info,
+)
 from aleph.vm.utils import cors_allow_all
 
 
@@ -101,15 +104,31 @@ class MachineCapability(BaseModel):
     memory: MemoryProperties
 
 
-@lru_cache
+machine_properties_cached = None
+
+
+def async_cache(fn):
+    cache = {}
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        key = (args, frozenset(kwargs.items()))
+        if key not in cache:
+            cache[key] = await fn(*args, **kwargs)
+        return cache[key]
+
+    return wrapper
+
+
+@async_cache
 async def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
     These should not change while the supervisor is running.
 
     In the future, some properties may have to be fetched from within a VM.
     """
-
-    cpu_info = await get_cpu_info()
+    hw = await get_hardware_info()
+    cpu_info = get_cpu_info(hw)
     return MachineProperties(
         cpu=CpuProperties(
             architecture=cpu_info["architecture"],
@@ -118,10 +137,11 @@ async def get_machine_properties() -> MachineProperties:
     )
 
 
-@lru_cache
+@async_cache
 async def get_machine_capability() -> MachineCapability:
-    cpu_info = await get_cpu_info()
-    mem_info = await get_memory_info()
+    hw = await get_hardware_info()
+    cpu_info = get_cpu_info(hw)
+    mem_info = get_memory_info(hw)
 
     return MachineCapability(
         cpu=ExtendedCpuProperties(
@@ -146,6 +166,7 @@ async def about_system_usage(_: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
+    machine_properties = await get_machine_properties()
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
             count=psutil.cpu_count(),
@@ -164,7 +185,7 @@ async def about_system_usage(_: web.Request):
             start_timestamp=period_start,
             duration_seconds=60,
         ),
-        properties=await get_machine_properties(),
+        properties=machine_properties,
     )
     return web.json_response(text=usage.json(exclude_none=True))
 
