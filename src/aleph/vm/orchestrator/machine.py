@@ -55,9 +55,8 @@ def get_memory_info(hw):
 
     memory_type = ""
     memory_clock = ""
-
     for bank in mem_info["children"]:
-        memory_clock = bank["clock"]
+        memory_clock = bank.get("clock")
         if "description" in bank:
             matched = re.search("(DDR[2-6])", bank["description"])
             if matched:
@@ -71,5 +70,5 @@ def get_memory_info(hw):
         "units": mem_info["units"],
         "type": memory_type,
         "clock": memory_clock,
-        "clock_units": "Hz",
+        "clock_units": "Hz" if memory_clock is not None else "",
     }
