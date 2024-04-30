@@ -50,7 +50,6 @@ class VmPool:
         self.executions = {}
         self.message_cache = {}
 
-        asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
 
         self.network = (
