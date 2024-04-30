@@ -224,7 +224,7 @@ async def about_capability(_: web.Request):
     """Public endpoint to expose information about the CRN capability."""
 
     capability: MachineCapability = await get_machine_capability()
-    return web.json_response(text=capability.json(exclude_none=False), headers={"Access-Control-Allow-Origin:": "*"})
+    return web.json_response(text=capability.json(exclude_none=False))
 
 
 class Allocation(BaseModel):
