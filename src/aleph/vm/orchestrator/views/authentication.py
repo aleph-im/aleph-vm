@@ -68,7 +68,7 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @root_validator(pre=False, skip_on_failure=True)
-    def check_expiry(cls, values):
+    def check_expiry(cls, values) -> dict[str, bytes]:
         """Check that the token has not expired"""
         payload: bytes = values["payload"]
         content = SignedPubKeyPayload.parse_raw(payload)
@@ -78,7 +78,7 @@ class SignedPubKeyHeader(BaseModel):
         return values
 
     @root_validator(pre=False, skip_on_failure=True)
-    def check_signature(cls, values):
+    def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
         signature: bytes = values["signature"]
         payload: bytes = values["payload"]
@@ -218,7 +218,7 @@ async def authenticate_websocket_message(message) -> str:
 
 def require_jwk_authentication(
     handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]
-) -> Callable[[web.Response], Awaitable[web.StreamResponse]]:
+) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
     @functools.wraps(handler)
     async def wrapper(request):
         try:
@@ -227,8 +227,6 @@ def require_jwk_authentication(
             return web.json_response(data={"error": e.reason}, status=e.status)
 
         response = await handler(request, authenticated_sender)
-        # Allow browser clients to access the body of the response
-        response.headers.update({"Access-Control-Allow-Origin": request.headers.get("Origin", "")})
         return response
 
     return wrapper

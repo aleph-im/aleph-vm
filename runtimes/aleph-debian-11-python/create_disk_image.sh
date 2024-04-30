@@ -38,8 +38,11 @@ pip3 install 'fastapi~=0.103.1'
 echo "Pip installing aleph-client"
 pip3 install 'aleph-sdk-python==0.7.0'
 
-# Compile all Python bytecode
-python3 -m compileall -f /usr/local/lib/python3.9
+# Compile Python code to bytecode for faster execution
+# -o2 is needed to compile with optimization level 2 which is what we launch init1.py (`python -OO`)
+# otherwise they are not used
+python3 -m compileall -o 2 -f /usr/local/lib/python3.9
+
 
 echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config

@@ -45,7 +45,7 @@ dependencies = [
   "systemd-python==235",
   "systemd-python==235",
   "superfluid~=0.2.1",
-  "sqlalchemy[asyncio]",
+  "sqlalchemy[asyncio]>=2.0",
   "aiosqlite==0.19.0",
   "alembic==1.13.1",
   "aiohttp_cors~=0.7.0",
@@ -82,11 +82,14 @@ config = "aleph-vm orchestrator config {args:--help}"
 check = "aleph-vm controller run {args:--help}"
 
 [tool.hatch.envs.testing]
+type = "virtual"
+system-packages = true
 dependencies = [
   "pytest==8.0.1",
   "pytest-cov==4.1.0",
   "pytest-mock==3.12.0",
   "pytest-asyncio==0.23.5",
+  "pytest-aiohttp==1.0.5",
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
@@ -132,6 +135,13 @@ all = [
 [tool.pytest.ini_options]
 pythonpath = [
   "src"
+]
+testpaths = [
+  "tests"
+]
+ignore = [
+  "runtimes/aleph-debian-11-python/rootfs/",
+  "runtimes/aleph-debian-12-python/rootfs/",
 ]
 
 [tool.black]

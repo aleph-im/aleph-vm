@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     SUPERVISOR_PORT: int = 4020
 
     # Public domain name
-    DOMAIN_NAME: Optional[str] = Field(
+    DOMAIN_NAME: str = Field(
         default="localhost",
         description="Default public domain name",
     )
@@ -289,7 +289,7 @@ class Settings(BaseSettings):
     )
     FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
 
-    CHECK_FASTAPI_VM_ID = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+    CHECK_FASTAPI_VM_ID = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
 
     # Developer options
@@ -317,6 +317,7 @@ class Settings(BaseSettings):
                 raise ValueError(msg)
 
     def check(self):
+        """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
@@ -340,11 +341,17 @@ class Settings(BaseSettings):
             assert self.FAKE_DATA_RUNTIME, "Local runtime .squashfs build not specified"
             assert self.FAKE_DATA_VOLUME, "Local data volume .squashfs not specified"
 
-            assert isdir(self.FAKE_DATA_PROGRAM), "Local fake program directory is missing"
-            assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
-            assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
-            assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
-            assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
+            assert isdir(
+                self.FAKE_DATA_PROGRAM
+            ), f"Local fake program directory is missing, no directory '{self.FAKE_DATA_PROGRAM}'"
+            assert isfile(self.FAKE_DATA_MESSAGE), f"Local fake message '{self.FAKE_DATA_MESSAGE}' not found"
+            assert isdir(self.FAKE_DATA_DATA), f"Local fake data directory '{self.FAKE_DATA_DATA}' is missing"
+            assert isfile(
+                self.FAKE_DATA_RUNTIME
+            ), f"Local runtime '{self.FAKE_DATA_RUNTIME}' is missing, did you build it ?"
+            assert isfile(
+                self.FAKE_DATA_VOLUME
+            ), f"Local data volume '{self.FAKE_DATA_VOLUME}' is missing, did you build it ?"
 
         assert is_command_available("setfacl"), "Command `setfacl` not found, run `apt install acl`"
         if self.USE_NDP_PROXY:
@@ -363,6 +370,7 @@ class Settings(BaseSettings):
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
     def setup(self):
+        """Setup the environment defined by the settings. Call this method after loading the settings."""
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)

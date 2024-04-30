@@ -44,6 +44,7 @@ async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
 
 
 async def build_event_scope(event) -> dict[str, Any]:
+    """Build an ASGI scope for an event."""
     return {
         "type": "aleph.message",
         "body": event,

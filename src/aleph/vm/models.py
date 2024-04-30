@@ -86,7 +86,7 @@ class VmExecution:
     @property
     def is_running(self) -> bool:
         return (
-            self.times.starting_at and not self.times.stopping_at
+            bool(self.times.starting_at and not self.times.stopping_at)
             if not self.persistent
             else self.systemd_manager.is_service_active(self.controller_service)
         )
@@ -130,7 +130,11 @@ class VmExecution:
     @property
     def has_resources(self) -> bool:
         assert self.vm, "The VM attribute has to be set before calling has_resources()"
-        return self.vm.resources_path.exists() if self.hypervisor == HypervisorType.firecracker else True
+        if isinstance(self.vm, AlephFirecrackerExecutable):
+            assert self.hypervisor == HypervisorType.firecracker
+            return self.vm.resources_path.exists()
+        else:
+            return True
 
     def __init__(
         self,
@@ -173,7 +177,7 @@ class VmExecution:
                 return
 
             self.times.preparing_at = datetime.now(tz=timezone.utc)
-            resources = None
+            resources: Union[AlephProgramResources, AlephInstanceResources, AlephQemuResources]
             if self.is_program:
                 resources = AlephProgramResources(self.message, namespace=self.vm_hash)
             elif self.is_instance:
@@ -181,6 +185,10 @@ class VmExecution:
                     resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
                 elif self.hypervisor == HypervisorType.qemu:
                     resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+                else:
+                    raise ValueError(f"Unknown hypervisor type {self.hypervisor}")
+            else:
+                raise ValueError("Unknown executable message type")
 
             if not resources:
                 msg = "Unknown executable message type"

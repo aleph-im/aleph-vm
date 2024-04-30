@@ -11,6 +11,9 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
+from aleph.vm.conf import settings
+from aleph.vm.utils import cors_allow_all
+
 
 class Period(BaseModel):
     datetime: datetime
@@ -138,6 +141,7 @@ async def get_machine_capability() -> MachineCapability:
     )
 
 
+@cors_allow_all
 async def about_system_usage(_: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -162,7 +166,7 @@ async def about_system_usage(_: web.Request):
         ),
         properties=await get_machine_properties(),
     )
-    return web.json_response(text=usage.json(exclude_none=True), headers={"Access-Control-Allow-Origin:": "*"})
+    return web.json_response(text=usage.json(exclude_none=True))
 
 
 async def about_capability(_: web.Request):
@@ -177,10 +181,10 @@ class Allocation(BaseModel):
     It contains the item_hashes of all persistent VMs, instances, on-demand VMs and jobs.
     """
 
-    persistent_vms: set[str] = Field(default_factory=set)
-    instances: set[str] = Field(default_factory=set)
-    on_demand_vms: Optional[set[str]] = None
-    jobs: Optional[set[str]] = None
+    persistent_vms: set[ItemHash] = Field(default_factory=set)
+    instances: set[ItemHash] = Field(default_factory=set)
+    on_demand_vms: Optional[set[ItemHash]] = None
+    jobs: Optional[set[ItemHash]] = None
 
 
 class VMNotification(BaseModel):

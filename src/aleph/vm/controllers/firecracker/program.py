@@ -84,7 +84,8 @@ class ProgramVmConfiguration(MsgpackSerializable):
 
 
 @dataclass
-class ConfigurationPayload(MsgpackSerializable): ...
+class ConfigurationPayload(MsgpackSerializable):
+    pass
 
 
 @dataclass
@@ -283,7 +284,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             prepare_jailer,
         )
 
-    async def setup(self):
+    async def setup(self) -> None:
         logger.debug(f"Setup started for VM={self.vm_id}")
         await setfacl()
 
@@ -325,7 +326,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         """Wait for the custom init inside the virtual machine to signal it is ready."""
         await self.fvm.wait_for_init()
 
-    async def load_configuration(self):
+    async def load_configuration(self) -> None:
         code: bytes | None
         volumes: list[Volume]
 
@@ -341,7 +342,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         input_data: bytes | None,
         interface: Interface,
         volumes: list[Volume],
-    ):
+    ) -> None:
         """Set up the VM configuration. The program mode uses a VSOCK connection to the custom init of the virtual
         machine to send this configuration. Other modes may use Cloud-init, ..."""
         logger.debug("Sending configuration")

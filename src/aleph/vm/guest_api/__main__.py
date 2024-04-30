@@ -1,20 +1,17 @@
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
 import aioredis
+import sentry_sdk
 from aiohttp import web
 from setproctitle import setproctitle
 
 from aleph.vm.conf import settings
 from aleph.vm.version import get_version_from_apt, get_version_from_git
-
-try:
-    import sentry_sdk
-except ImportError:
-    sentry_sdk = None
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +153,7 @@ async def list_keys_from_cache(request: web.Request):
 
 
 def run_guest_api(
-    unix_socket_path,
+    unix_socket_path: Path,
     vm_hash: Optional[str] = None,
     sentry_dsn: Optional[str] = None,
     server_name: Optional[str] = None,
@@ -199,8 +196,8 @@ def run_guest_api(
     app.router.add_route(method="POST", path="/api/v0/p2p/pubsub/pub", handler=repost)
 
     # web.run_app(app=app, port=9000)
-    web.run_app(app=app, path=unix_socket_path)
+    web.run_app(app=app, path=str(unix_socket_path))
 
 
 if __name__ == "__main__":
-    run_guest_api("/tmp/guest-api", vm_hash="vm")
+    run_guest_api(Path("/tmp/guest-api"), vm_hash="vm")
