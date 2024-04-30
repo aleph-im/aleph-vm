@@ -45,7 +45,7 @@ class VmPool:
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
         self.message_cache = {}

@@ -145,7 +145,7 @@ def run():
     engine = setup_engine()
     asyncio.run(create_tables(engine))
 
-    pool = VmPool(loop)
+    pool = VmPool()
     pool.setup()
 
     hostname = settings.DOMAIN_NAME
