@@ -241,7 +241,7 @@ class VmPool:
             if await self.systemd_manager.is_service_active(
                 execution.controller_service
             ):  # TODO: Improve the way that we re-create running execution
-                logger.debug(("Execution %s is still running in systemd, reconnecting", execution.vm_hash))
+                logger.debug("Execution %s is still running in systemd, reconnecting", execution.vm_hash)
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
