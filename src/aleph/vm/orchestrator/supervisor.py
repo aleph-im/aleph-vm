@@ -20,7 +20,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
 
-from .resources import about_certificates, about_system_usage
+from .resources import about_capability, about_certificates, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
     start_watch_for_messages_task,
@@ -129,8 +129,8 @@ def setup_webapp(pool: VmPool | None):
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/certificates", about_certificates),
-        web.get("/about/config", about_config),
         web.get("/about/capability", about_capability),
+        web.get("/about/config", about_config),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
         web.post("/control/reserve_resources", operate_reserve_resources),
