@@ -14,7 +14,7 @@ from aleph.vm.orchestrator.machine import (
     get_hardware_info,
     get_memory_info,
 )
-from aleph.vm.utils import cors_allow_all, async_cache
+from aleph.vm.utils import async_cache, cors_allow_all
 
 
 class Period(BaseModel):
