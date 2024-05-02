@@ -140,7 +140,11 @@ async def stop_all_vms(app: web.Application):
 
 def run():
     """Run the VM Supervisor."""
+    # Loop creation set here to avoid bug with Future on different loop
+
     loop = asyncio.new_event_loop()
+    # apparently needed for Python 3.9 / Debian 11
+    asyncio.set_event_loop(loop)
     settings.check()
 
     engine = setup_engine()
@@ -163,7 +167,6 @@ def run():
 
     try:
         if settings.WATCH_FOR_MESSAGES:
-            # FIXME We have a bug because task run on app.on_ don't run on the same loop?
             app.on_startup.append(start_watch_for_messages_task)
             app.on_startup.append(start_payment_monitoring_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
