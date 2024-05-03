@@ -3,6 +3,9 @@ import asyncio
 import json
 import logging
 import signal
+from asyncio.subprocess import Process
+from typing import Union
+
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
