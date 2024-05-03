@@ -3,6 +3,9 @@ import asyncio
 import json
 import logging
 import signal
+from asyncio.subprocess import Process
+from typing import Union
+
 import sys
 from pathlib import Path
 
@@ -54,7 +57,7 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-async def run_persistent_vm(config: Configuration):
+async def execute_persistent_vm(config: Configuration):
     if config.hypervisor == HypervisorType.firecracker:
         assert isinstance(config.vm_configuration, VMConfiguration)
         execution = MicroVM(
@@ -73,9 +76,13 @@ async def run_persistent_vm(config: Configuration):
         execution = QemuVM(config.vm_configuration)
         process = await execution.start()
 
-        # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
+    return execution, process
+
+
+async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, QemuVM], process: Process):
+    # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
+    loop = asyncio.get_event_loop()
+    loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
 
     if config.settings.PRINT_SYSTEM_LOGS:
         execution.start_printing_logs()
@@ -83,7 +90,11 @@ async def run_persistent_vm(config: Configuration):
     await process.wait()
     logger.info(f"Process terminated with {process.returncode}")
 
-    return execution
+
+async def run_persistent_vm(config: Configuration):
+    execution, process = await execute_persistent_vm(config)
+    await handle_persistent_vm(config=config, execution=execution, process=process)
+    return execution, process
 
 
 def main():

@@ -53,11 +53,12 @@ jobs:
           
           find /opt
 
-      - name: "Build custom runtime"
+      - name: "Build custom runtimes"
         run: |
           sudo apt update
           sudo apt install -y debootstrap ndppd acl cloud-image-utils qemu-utils qemu-system-x86
           cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+          cd runtimes/instance-rootfs && sudo ./create_debian-12-qemu-disk.sh && cd ../..
 
       - name: "Build example volume"
         run: |
