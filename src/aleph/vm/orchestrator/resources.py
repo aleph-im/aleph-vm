@@ -1,7 +1,9 @@
 import math
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional
 
+import cpuinfo
 import psutil
 from aiohttp import web
 from aleph_message.models import ItemHash
@@ -143,6 +145,8 @@ async def get_machine_capability() -> MachineCapability:
             type=mem_info["type"],
             clock=mem_info["clock"],
             clock_units=mem_info["clock_units"],
+            architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
+            vendor=cpu_info.get("vendor_id", cpu_info.get("vendor_id_raw")),
         ),
     )
 
@@ -173,6 +177,7 @@ async def about_system_usage(_: web.Request):
         ),
         properties=machine_properties,
     )
+
     return web.json_response(text=usage.json(exclude_none=True))
 
 

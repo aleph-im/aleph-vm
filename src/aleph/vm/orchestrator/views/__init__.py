@@ -341,6 +341,12 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 
 async def update_allocations(request: web.Request):
+    """Main entry for the start of persistence VM and instance, called by the Scheduler,
+
+
+    auth via the SETTINGS.ALLOCATION_TOKEN_HASH  sent in header X-Auth-Signature.
+    Receive a list of vm and instance that should be present and then match that state by stopping and launching VMs
+    """
     if not authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
