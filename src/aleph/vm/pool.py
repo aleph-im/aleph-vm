@@ -45,11 +45,13 @@ class VmPool:
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
 
-    def __init__(self):
+    def __init__(self, loop: asyncio.AbstractEventLoop):
         self.counter = settings.START_ID_INDEX
         self.executions = {}
         self.message_cache = {}
 
+        # apparently needed for Python 3.9 / Debian 11
+        asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
 
         self.network = (
