@@ -37,7 +37,8 @@ class MockSystemDManager(SystemDManager):
         return self.process is not None
 
     async def stop_and_disable(self, vm_hash: str):
-        self.process.kill()
+        if self.process:
+            self.process.kill()
         self.process = None
         self.execution = None
         return self.execution, self.process
@@ -70,14 +71,13 @@ async def test_create_qemu_instance():
     message = await get_message(ref=vm_hash)
 
     mock_systemd_manager = MockSystemDManager()
-    systemd_manager = SystemDManager()
 
     execution = VmExecution(
         vm_hash=vm_hash,
         message=message.content,
         original=message.content,
         snapshot_manager=None,
-        systemd_manager=systemd_manager,
+        systemd_manager=None,
         persistent=True,
     )
 
@@ -126,7 +126,6 @@ async def test_create_qemu_instance_online():
     message = await get_message(ref=vm_hash)
 
     mock_systemd_manager = MockSystemDManager()
-    systemd_manager = SystemDManager()
 
     network = (
         Network(
@@ -150,7 +149,7 @@ async def test_create_qemu_instance_online():
         message=message.content,
         original=message.content,
         snapshot_manager=None,
-        systemd_manager=systemd_manager,
+        systemd_manager=None,
         persistent=True,
     )
 
