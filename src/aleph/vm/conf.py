@@ -281,7 +281,7 @@ class Settings(BaseSettings):
     )
 
     USE_FAKE_INSTANCE_BASE = False
-    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../runtimes/instance-rootfs/rootfs.ext4")))
+    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/debian-12.btrfs")))
     FAKE_QEMU_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/rootfs.img")))
     FAKE_INSTANCE_ID: str = Field(
         default="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",

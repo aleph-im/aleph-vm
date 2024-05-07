@@ -36,8 +36,8 @@ class MockSystemDManager(SystemDManager):
         return self.process is not None
 
     async def stop_and_disable(self, vm_hash: str):
-        if self.process:
-            self.process.kill()
+        await self.execution.shutdown()
+        await self.execution.stop()
         self.process = None
         self.execution = None
         return self.execution, self.process
@@ -46,13 +46,14 @@ class MockSystemDManager(SystemDManager):
 @pytest.mark.asyncio
 async def test_create_instance():
     """
-    Create an instance and check that it start / init / stop properly.
+    Create a fake instance locally and check that it start / init / stop properly.
     """
 
     settings.USE_FAKE_INSTANCE_BASE = True
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
+    # settings.FAKE_INSTANCE_MESSAGE
     settings.ALLOW_VM_NETWORKING = True
-    settings.USE_JAILER = False
+    settings.USE_JAILER = True
 
     logging.basicConfig(level=logging.DEBUG)
     settings.PRINT_SYSTEM_LOGS = True
@@ -70,18 +71,6 @@ async def test_create_instance():
 
     mock_systemd_manager = MockSystemDManager()
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message.content,
-        original=message.content,
-        snapshot_manager=None,
-        systemd_manager=None,
-        persistent=True,
-    )
-
-    # Downloading the resources required may take some time, limit it to 10 seconds
-    await asyncio.wait_for(execution.prepare(), timeout=30)
-
     # Creating a Network to initialize the tap_interface that is needed for the creation of an instance
     network = Network(
         vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
@@ -95,16 +84,29 @@ async def test_create_instance():
         use_ndp_proxy=False,
         ipv6_forwarding_enabled=False,
     )
-    network.setup()
 
-    tap_interface = await network.prepare_tap(3, vm_hash, VmType.instance)
-    await network.create_tap(3, tap_interface)
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message.content,
+        original=message.content,
+        snapshot_manager=None,
+        systemd_manager=None,
+        persistent=True,
+    )
 
-    vm = execution.create(vm_id=3, tap_interface=tap_interface)
+    # Downloading the resources required may take some time, limit it to 10 seconds
+    await asyncio.wait_for(execution.prepare(), timeout=30)
+
+    vm_id = 3
+    vm_type = VmType.from_message_content(message.content) 
+    tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
+    await network.create_tap(vm_id, tap_interface)
+
+    vm = execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
     # Test that the VM is created correctly. It is not started yet.
     assert isinstance(vm, AlephFirecrackerInstance)
-    assert vm.vm_id == 3
+    assert vm.vm_id == vm_id
     assert vm.persistent
     assert vm.enable_networking
 
@@ -112,6 +114,10 @@ async def test_create_instance():
     firecracker_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
     assert isinstance(firecracker_execution, MicroVM)
     assert firecracker_execution.proc is not None
+    await execution.wait_for_init()
+
+    # This sleep is to leave the instance to boot up and prevent disk corruption
+    await asyncio.sleep(60)
     firecracker_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await execution.stop()
     assert firecracker_execution is None
