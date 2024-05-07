@@ -1,22 +1,24 @@
 import asyncio
 import logging
+from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Optional
-from asyncio.subprocess import Process
+from unittest.mock import AsyncMock
+
 import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.__main__ import (configuration_from_file,
+                                           execute_persistent_vm)
 from aleph.vm.controllers.firecracker import AlephFirecrackerInstance
-from aleph.vm.controllers.__main__ import configuration_from_file, execute_persistent_vm
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.models import VmExecution
+from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator import metrics
 from aleph.vm.storage import get_message
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
-from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-from unittest.mock import AsyncMock
 
 
 @pytest.mark.asyncio
