@@ -18,6 +18,7 @@ from aleph.vm.vm_type import VmType
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from unittest.mock import AsyncMock
 
+
 @pytest.mark.asyncio
 class MockSystemDManager(SystemDManager):
     execution: Optional[MicroVM] = None
@@ -98,7 +99,7 @@ async def test_create_instance():
     await asyncio.wait_for(execution.prepare(), timeout=30)
 
     vm_id = 3
-    vm_type = VmType.from_message_content(message.content) 
+    vm_type = VmType.from_message_content(message.content)
     tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
     await network.create_tap(vm_id, tap_interface)
 
