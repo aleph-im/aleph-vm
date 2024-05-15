@@ -37,8 +37,9 @@ class MockSystemDManager(SystemDManager):
         return self.process is not None
 
     async def stop_and_disable(self, vm_hash: str):
-        await self.execution.shutdown()
-        await self.execution.stop()
+        if self.execution:
+            await self.execution.shutdown()
+            await self.execution.stop()
         self.process = None
         self.execution = None
         return self.execution, self.process
