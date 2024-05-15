@@ -23,6 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerResources,
     AlephProgramResources,
 )
+from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.network.interfaces import TapInterface
@@ -34,11 +35,8 @@ from aleph.vm.orchestrator.metrics import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
+from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
-
-if TYPE_CHECKING:
-    from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
-    from aleph.vm.systemd import SystemDManager
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +78,9 @@ class VmExecution:
     stop_event: asyncio.Event
     expire_task: Optional[asyncio.Task] = None
     update_task: Optional[asyncio.Task] = None
+
+    snapshot_manager: Optional[SnapshotManager]
+    systemd_manager: Optional[SystemDManager]
 
     persistent: bool = False
 
@@ -137,8 +138,8 @@ class VmExecution:
         vm_hash: ItemHash,
         message: ExecutableContent,
         original: ExecutableContent,
-        snapshot_manager: "SnapshotManager",
-        systemd_manager: "SystemDManager",
+        snapshot_manager: Optional[SnapshotManager],
+        systemd_manager: Optional[SystemDManager],
         persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
@@ -318,7 +319,7 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if self.vm.support_snapshot:
+            if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
 
