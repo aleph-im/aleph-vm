@@ -281,13 +281,15 @@ class Settings(BaseSettings):
     )
 
     USE_FAKE_INSTANCE_BASE = False
-    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../runtimes/instance-debian-rootfs/rootfs.ext4")))
+    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../runtimes/instance-rootfs/rootfs.ext4")))
+    FAKE_QEMU_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/rootfs.img")))
     FAKE_INSTANCE_ID: str = Field(
         default="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
     FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
 
     CHECK_FASTAPI_VM_ID = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
