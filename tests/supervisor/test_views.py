@@ -257,6 +257,36 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 
 
 @pytest.mark.asyncio
+async def test_system_capability_mock(aiohttp_client, mocker):
+    """Test that the capability system endpoints response value. No auth needed"""
+    mocker.patch("aleph.vm.orchestrator.machine.get_hardware_info", FAKE_SYSTEM_INFO)
+    mocker.patch(
+        "psutil.getloadavg",
+        lambda: [1, 2, 3],
+    )
+    mocker.patch(
+        "psutil.cpu_count",
+        lambda: 200,
+    )
+    app = setup_webapp(pool=None)
+    client = await aiohttp_client(app)
+    response: web.Response = await client.get("/about/capability")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert resp == {
+        "cpu": {
+            "architecture": "x86_64",
+            "vendor": "AuthenticAMD",
+            "model": "AMD EPYC 7763 64-Core Processor",
+            "frequency": "2000000000",
+            "count": "200",
+        },
+        "memory": {"size": "17179869184", "units": "bytes", "type": "", "clock": None, "clock_units": ""},
+    }
+
+
+@pytest.mark.asyncio
 async def test_allocation_invalid_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid auth token is provided."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
