@@ -1,9 +1,7 @@
 import math
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Optional
 
-import cpuinfo
 import psutil
 from aiohttp import web
 from aleph_message.models import ItemHash
