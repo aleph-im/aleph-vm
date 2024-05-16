@@ -1,15 +1,18 @@
+# Keep datetime import as is as it allow patching in test
+import datetime
 import functools
 import json
 import logging
 from collections.abc import Awaitable, Coroutine
-from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Union
 
+import cryptography.exceptions
 import pydantic
 from aiohttp import web
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from jwskate import Jwk
+from jwcrypto import jwk, jws
+from jwcrypto.jwa import JWA
 from pydantic import BaseModel, ValidationError, root_validator, validator
 
 from aleph.vm.conf import settings
@@ -17,12 +20,12 @@ from aleph.vm.conf import settings
 logger = logging.getLogger(__name__)
 
 
-def is_token_still_valid(timestamp):
+def is_token_still_valid(datestr: str):
     """
     Checks if a token has expired based on its expiry timestamp
     """
-    current_datetime = datetime.now(tz=timezone.utc)
-    expiry_datetime = datetime.fromisoformat(timestamp)
+    current_datetime = datetime.datetime.now(tz=datetime.timezone.utc)
+    expiry_datetime = datetime.datetime.fromisoformat(datestr.replace("Z", "+00:00"))
 
     return expiry_datetime > current_datetime
 
@@ -48,9 +51,9 @@ class SignedPubKeyPayload(BaseModel):
     expires: str
 
     @property
-    def json_web_key(self) -> Jwk:
+    def json_web_key(self) -> jwk.JWK:
         """Return the ephemeral public key as Json Web Key"""
-        return Jwk(self.pubkey)
+        return jwk.JWK(**self.pubkey)
 
 
 class SignedPubKeyHeader(BaseModel):
@@ -95,16 +98,16 @@ class SignedPubKeyHeader(BaseModel):
 
 
 class SignedOperationPayload(BaseModel):
-    time: datetime
+    time: datetime.datetime
     method: Union[Literal["POST"], Literal["GET"]]
     path: str
     # body_sha256: str  # disabled since there is no body
 
     @validator("time")
-    def time_is_current(cls, v: datetime) -> datetime:
+    def time_is_current(cls, v: datetime.datetime) -> datetime.datetime:
         """Check that the time is current and the payload is not a replay attack."""
-        max_past = datetime.now(tz=timezone.utc) - timedelta(minutes=2)
-        max_future = datetime.now(tz=timezone.utc) + timedelta(minutes=2)
+        max_past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(minutes=2)
+        max_future = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(minutes=2)
         if v < max_past:
             raise ValueError("Time is too far in the past")
         if v > max_future:
@@ -154,13 +157,17 @@ def get_signed_pubkey(request: web.Request) -> SignedPubKeyHeader:
         raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey fields") from error
     except json.JSONDecodeError as error:
         raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format") from error
-    except ValueError as error:
-        if error.args == ("Token expired",):
-            raise web.HTTPUnauthorized(reason="Token expired") from error
-        elif error.args == ("Invalid signature",):
-            raise web.HTTPUnauthorized(reason="Invalid signature") from error
+    except ValueError as errors:
+        logging.debug(errors)
+        for err in errors.args[0]:
+            if isinstance(err.exc, json.JSONDecodeError):
+                raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format") from errors
+            if str(err.exc) == "Token expired":
+                raise web.HTTPUnauthorized(reason="Token expired") from errors
+            if str(err.exc) == "Invalid signature":
+                raise web.HTTPUnauthorized(reason="Invalid signature") from errors
         else:
-            raise error
+            raise errors
 
 
 def get_signed_operation(request: web.Request) -> SignedOperation:
@@ -179,14 +186,14 @@ def get_signed_operation(request: web.Request) -> SignedOperation:
 
 def verify_signed_operation(signed_operation: SignedOperation, signed_pubkey: SignedPubKeyHeader) -> str:
     """Verify that the operation is signed by the ephemeral key authorized by the wallet."""
-    if signed_pubkey.content.json_web_key.verify(
-        data=signed_operation.payload,
-        signature=signed_operation.signature,
-        alg="ES256",
-    ):
+    pubkey = signed_pubkey.content.json_web_key
+
+    try:
+        JWA.signing_alg("ES256").verify(pubkey, signed_operation.payload, signed_operation.signature)
         logger.debug("Signature verified")
         return signed_pubkey.content.address
-    else:
+    except cryptography.exceptions.InvalidSignature as e:
+        logger.debug("Failing to validate signature for operation", e)
         raise web.HTTPUnauthorized(reason="Signature could not verified")
 
 
@@ -225,6 +232,10 @@ def require_jwk_authentication(
             authenticated_sender: str = await authenticate_jwk(request)
         except web.HTTPException as e:
             return web.json_response(data={"error": e.reason}, status=e.status)
+        except Exception as e:
+            # Unexpected make sure to log it
+            logging.exception(e)
+            raise
 
         response = await handler(request, authenticated_sender)
         return response
