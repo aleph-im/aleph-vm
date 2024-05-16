@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo mkdir --parents /opt/firecracker/
           sudo curl -fsSL -o "/opt/firecracker/vmlinux.bin" "https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy"
-          
+
           rm -fr /tmp/firecracker-release
           mkdir --parents /tmp/firecracker-release /opt/firecracker
           curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64.tgz | tar -xz --no-same-owner --directory /tmp/firecracker-release
@@ -50,7 +50,7 @@ jobs:
           cp /tmp/firecracker-release/release-v*/jailer-v*[!.debug] /opt/firecracker/jailer
           chmod +x /opt/firecracker/firecracker
           chmod +x /opt/firecracker/jailer
-          
+
           find /opt
 
       - name: "Build custom runtimes"
