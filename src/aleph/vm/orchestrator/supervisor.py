@@ -87,7 +87,6 @@ def setup_webapp():
         },
     )
 
-
     # Routes that need CORS enabled
     cors_routes = [
         # /about APIs return information about the VM Orchestrator
