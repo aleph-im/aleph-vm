@@ -16,6 +16,16 @@ from aleph.vm.orchestrator.views.authentication import (
 )
 
 
+def to_0x_hex(b: bytes) -> str:
+    """
+    Convert the bytes to a 0x-prefixed hex string
+    """
+
+    # force this for compat between different hexbytes versions which behave differenty
+    # and conflict with other package don't allow us to have the version we want
+    return "0x" + bytes.hex(b)
+
+
 @pytest.mark.asyncio
 async def test_require_jwk_authentication_missing_header(aiohttp_client):
     """An HTTP request to a view decorated by `@require_jwk_authentication` must return an error
@@ -102,7 +112,7 @@ async def test_require_jwk_authentication_expired(aiohttp_client):
     pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
     signable_message = eth_account.messages.encode_defunct(hexstr=pubkey_payload)
     signed_message: SignedMessage = signer_account.sign_message(signable_message)
-    pubkey_signature = signed_message.signature.to_0x_hex()
+    pubkey_signature = to_0x_hex(signed_message.signature)
 
     pubkey_signature_header = json.dumps(
         {
@@ -154,7 +164,7 @@ async def test_require_jwk_authentication_wrong_key(aiohttp_client, patch_dateti
     )
 
     resp = await client.get("/", headers=headers)
-    assert resp.status == 401, resp.text()
+    assert resp.status == 401, await resp.text()
 
     r = await resp.json()
     assert {"error": "Invalid signature"} == r
@@ -186,7 +196,7 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
     signable_message = eth_account.messages.encode_defunct(hexstr=pubkey_payload)
     signed_message: SignedMessage = signer_account.sign_message(signable_message)
-    pubkey_signature = signed_message.signature.to_0x_hex()
+    pubkey_signature = to_0x_hex(signed_message.signature)
 
     # Modify the payload to render the signature invalid
     pubkey["domain"] = "baddomain"
@@ -213,7 +223,7 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     )
 
     resp = await client.get("/", headers=headers)
-    assert resp.status == 401, resp.text()
+    assert resp.status == 401, await resp.text()
 
     r = await resp.json()
     assert {"error": "Invalid signature"} == r
@@ -266,7 +276,7 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
     signable_message = eth_account.messages.encode_defunct(hexstr=pubkey_payload)
     signed_message: SignedMessage = signer_account.sign_message(signable_message)
-    pubkey_signature = signed_message.signature.to_0x_hex()
+    pubkey_signature = to_0x_hex(signed_message.signature)
     pubkey_signature_header = json.dumps(
         {
             "payload": pubkey_payload,
@@ -295,7 +305,7 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     )
 
     resp = await client.get("/", headers=headers)
-    assert resp.status == 200, resp.text()
+    assert resp.status == 200, await resp.text()
 
     r = await resp.text()
     assert "ok" == r
