@@ -331,6 +331,12 @@ async def status_public_config(request: web.Request):
                 "PAYMENT_RECEIVER_ADDRESS": settings.PAYMENT_RECEIVER_ADDRESS,
                 "PAYMENT_SUPER_TOKEN": settings.PAYMENT_SUPER_TOKEN,
                 "PAYMENT_CHAIN_ID": settings.PAYMENT_CHAIN_ID,
+                "PAYMENT_MONITOR_INTERVAL": settings.PAYMENT_MONITOR_INTERVAL,
+            },
+            "computing": {
+                "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
+                "INSTANCE_DEFAULT_HYPERVISOR": settings.INSTANCE_DEFAULT_HYPERVISOR,
+                "USE_CONFIDENTIAL_COMPUTING": settings.USE_CONFIDENTIAL_COMPUTING,
             },
         },
         dumps=dumps_for_json,

@@ -130,6 +130,14 @@ def is_command_available(command):
         return False
 
 
+def check_system_module(module_path) -> str:
+    try:
+        output = subprocess.check_output(["cat", "/sys/module", module_path], stderr=subprocess.STDOUT)
+        return str(output)
+    except subprocess.CalledProcessError:
+        return ""
+
+
 def fix_message_validation(message: dict) -> dict:
     """Patch a fake message program to pass validation."""
     message["item_content"] = json.dumps(message["content"])
