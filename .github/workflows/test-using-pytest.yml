@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y upgrade
-          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-aioredis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables  libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-aioredis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables  libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto
           pip install --upgrade typing-extensions types-PyYAML
 
       - name: Install required Python packages
