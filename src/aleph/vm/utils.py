@@ -131,7 +131,7 @@ def is_command_available(command):
 
 
 def check_system_module(module_path: str) -> str:
-    p = Path('/sys/module') / module_path
+    p = Path("/sys/module") / module_path
     if not p.exists():
         return ""
     return p.open().read().strip()

@@ -342,7 +342,6 @@ class Settings(BaseSettings):
                 int(ipv4_pool_length) <= settings.IPV4_NETWORK_PREFIX_LENGTH
             ), "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
 
-
         if self.FAKE_DATA_PROGRAM:
             assert self.FAKE_DATA_PROGRAM, "Local fake program directory not specified"
             assert self.FAKE_DATA_MESSAGE, "Local fake message not specified"
@@ -381,7 +380,7 @@ class Settings(BaseSettings):
         if self.ENABLE_CONFIDENTIAL_COMPUTING:
             assert check_system_module("kvm_amd/parameters/sev") == "Y", "SEV feature isn't enabled, enable it in BIOS"
             assert (
-                    check_system_module("kvm_amd/parameters/sev_es") == "Y"
+                check_system_module("kvm_amd/parameters/sev_es") == "Y"
             ), "SEV-ES feature isn't enabled, enable it in BIOS"
 
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
