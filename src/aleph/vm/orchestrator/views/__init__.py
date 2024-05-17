@@ -336,7 +336,7 @@ async def status_public_config(request: web.Request):
             "computing": {
                 "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
                 "INSTANCE_DEFAULT_HYPERVISOR": settings.INSTANCE_DEFAULT_HYPERVISOR,
-                "USE_CONFIDENTIAL_COMPUTING": settings.USE_CONFIDENTIAL_COMPUTING,
+                "ENABLE_CONFIDENTIAL_COMPUTING": settings.ENABLE_CONFIDENTIAL_COMPUTING,
             },
         },
         dumps=dumps_for_json,

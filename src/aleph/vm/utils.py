@@ -130,12 +130,11 @@ def is_command_available(command):
         return False
 
 
-def check_system_module(module_path) -> str:
-    try:
-        output = subprocess.check_output(["cat", "/sys/module", module_path], stderr=subprocess.STDOUT)
-        return str(output)
-    except subprocess.CalledProcessError:
+def check_system_module(module_path: str) -> str:
+    p = Path('/sys/module') / module_path
+    if not p.exists():
         return ""
+    return p.open().read().strip()
 
 
 def fix_message_validation(message: dict) -> dict:

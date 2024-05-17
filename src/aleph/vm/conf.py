@@ -261,7 +261,7 @@ class Settings(BaseSettings):
         description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
     )
 
-    USE_CONFIDENTIAL_COMPUTING: bool = Field(
+    ENABLE_CONFIDENTIAL_COMPUTING: bool = Field(
         default=False,
         description="Enable Confidential Computing using AMD-SEV. It will test if the host is compatible "
         "with SEV and SEV-ES",
@@ -342,11 +342,6 @@ class Settings(BaseSettings):
                 int(ipv4_pool_length) <= settings.IPV4_NETWORK_PREFIX_LENGTH
             ), "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
 
-        if self.USE_CONFIDENTIAL_COMPUTING:
-            assert check_system_module("kvm_amd/parameters/sev") == "Y", "SEV feature isn't enabled, enable it in BIOS."
-            assert (
-                check_system_module("kvm_amd/parameters/sev_es") == "Y"
-            ), "SEV-ES feature isn't enabled, enable it in BIOS."
 
         if self.FAKE_DATA_PROGRAM:
             assert self.FAKE_DATA_PROGRAM, "Local fake program directory not specified"
@@ -376,12 +371,21 @@ class Settings(BaseSettings):
             "cloud-localds"
         ), "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
 
-        if settings.ENABLE_QEMU_SUPPORT:
+        if self.ENABLE_QEMU_SUPPORT:
             # Qemu support
             assert is_command_available("qemu-img"), "Command `qemu-img` not found, run `apt install qemu-utils`"
             assert is_command_available(
                 "qemu-system-x86_64"
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
+
+        if self.ENABLE_CONFIDENTIAL_COMPUTING:
+            assert check_system_module("kvm_amd/parameters/sev") == "Y", "SEV feature isn't enabled, enable it in BIOS"
+            assert (
+                    check_system_module("kvm_amd/parameters/sev_es") == "Y"
+            ), "SEV-ES feature isn't enabled, enable it in BIOS"
+
+            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
+            "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
