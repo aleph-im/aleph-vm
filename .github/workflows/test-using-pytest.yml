@@ -37,10 +37,6 @@ jobs:
         run: |
           sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
 
-      - name: Create user jailman
-        run: |
-          sudo useradd jailman
-
       - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
           sudo mkdir --parents /opt/firecracker/
@@ -69,7 +65,11 @@ jobs:
         run: |
           cd examples/volumes && bash build_squashfs.sh
 
-        # Unit tests create and delete network interfaces, and therefore require to run as root
+      - name: Create user jailman
+        run: |
+          sudo useradd jailman
+        
+      # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
           sudo python3 -m pip install hatch hatch-vcs coverage
