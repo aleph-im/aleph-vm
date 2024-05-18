@@ -39,6 +39,7 @@ jobs:
 
       - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
+          sudo useradd jailman
           sudo mkdir --parents /opt/firecracker/
           sudo curl -fsSL -o "/opt/firecracker/vmlinux.bin" "https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy"
 
@@ -64,10 +65,6 @@ jobs:
       - name: "Build example volume"
         run: |
           cd examples/volumes && bash build_squashfs.sh
-
-      - name: Create user jailman
-        run: |
-          sudo useradd jailman
         
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
