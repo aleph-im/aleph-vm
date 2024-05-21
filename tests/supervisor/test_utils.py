@@ -6,8 +6,8 @@ from aleph.vm.utils import check_system_module
 def test_check_system_module_enabled():
 
     with mock.patch(
-            "pathlib.Path.exists",
-            return_value=True,
+        "pathlib.Path.exists",
+        return_value=True,
     ):
         expected_value = "Y"
         with mock.patch(
