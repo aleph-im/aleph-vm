@@ -16,7 +16,7 @@ from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph.vm.utils import file_hashes_differ, is_command_available
+from aleph.vm.utils import check_system_module, file_hashes_differ, is_command_available
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,12 @@ class Settings(BaseSettings):
         description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
     )
 
+    ENABLE_CONFIDENTIAL_COMPUTING: bool = Field(
+        default=False,
+        description="Enable Confidential Computing using AMD-SEV. It will test if the host is compatible "
+        "with SEV and SEV-ES",
+    )
+
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
@@ -364,12 +370,21 @@ class Settings(BaseSettings):
             "cloud-localds"
         ), "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
 
-        if settings.ENABLE_QEMU_SUPPORT:
+        if self.ENABLE_QEMU_SUPPORT:
             # Qemu support
             assert is_command_available("qemu-img"), "Command `qemu-img` not found, run `apt install qemu-utils`"
             assert is_command_available(
                 "qemu-system-x86_64"
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
+
+        if self.ENABLE_CONFIDENTIAL_COMPUTING:
+            assert check_system_module("kvm_amd/parameters/sev") == "Y", "SEV feature isn't enabled, enable it in BIOS"
+            assert (
+                check_system_module("kvm_amd/parameters/sev_es") == "Y"
+            ), "SEV-ES feature isn't enabled, enable it in BIOS"
+
+            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
+            "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""

@@ -130,6 +130,13 @@ def is_command_available(command):
         return False
 
 
+def check_system_module(module_path: str) -> str:
+    p = Path("/sys/module") / module_path
+    if not p.exists():
+        return ""
+    return p.open().read().strip()
+
+
 def fix_message_validation(message: dict) -> dict:
     """Patch a fake message program to pass validation."""
     message["item_content"] = json.dumps(message["content"])
