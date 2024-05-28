@@ -18,9 +18,9 @@ from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
+from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
 
-from ..sevclient import SevClient
 from .metrics import create_tables, setup_engine
 from .resources import about_certificates, about_system_usage
 from .tasks import (
