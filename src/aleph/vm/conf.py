@@ -267,6 +267,11 @@ class Settings(BaseSettings):
         "with SEV and SEV-ES",
     )
 
+    CONFIDENTIAL_DIRECTORY: Path = Field(
+        None,
+        description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
+    )
+
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
@@ -409,6 +414,7 @@ class Settings(BaseSettings):
 
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
+        os.makedirs(self.CONFIDENTIAL_DIRECTORY, exist_ok=True)
 
         self.API_SERVER = self.API_SERVER.rstrip("/")
 
@@ -467,6 +473,8 @@ class Settings(BaseSettings):
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
         if not self.JAILER_BASE_DIR:
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
+        if not self.CONFIDENTIAL_DIRECTORY:
+            self.CONFIDENTIAL_DIRECTORY = self.EXECUTION_ROOT / "confidential"
 
     class Config:
         env_prefix = "ALEPH_VM_"
