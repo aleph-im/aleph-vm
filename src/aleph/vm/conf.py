@@ -387,6 +387,7 @@ class Settings(BaseSettings):
             assert (
                 check_system_module("kvm_amd/parameters/sev_es") == "Y"
             ), "SEV-ES feature isn't enabled, enable it in BIOS"
+            assert is_command_available("sevctl"), "Command `sevctl` not found, run `cargo install sevctl`"
 
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
             "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"

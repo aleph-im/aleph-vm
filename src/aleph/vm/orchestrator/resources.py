@@ -122,6 +122,21 @@ async def about_system_usage(_: web.Request):
     return web.json_response(text=usage.json(exclude_none=True))
 
 
+@cors_allow_all
+async def about_certificates(request: web.Request):
+    """Public endpoint to expose platform certificates for confidential computing."""
+
+    if not settings.ENABLE_CONFIDENTIAL_COMPUTING:
+        return web.HTTPBadRequest(reason="Confidential computing setting not enabled on that server")
+
+    sev_client = request.app["sev_client"]
+
+    if not sev_client.certificates_archive.is_file():
+        sev_client.export_certificates()
+
+    return web.FileResponse(sev_client.certificates_archive)
+
+
 class Allocation(BaseModel):
     """An allocation is the set of resources that are currently allocated on this orchestrator.
     It contains the item_hashes of all persistent VMs, instances, on-demand VMs and jobs.
