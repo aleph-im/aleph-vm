@@ -20,8 +20,9 @@ from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.version import __version__
 
+from ..sevclient import SevClient
 from .metrics import create_tables, setup_engine
-from .resources import about_system_usage, about_certificates
+from .resources import about_certificates, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
     start_watch_for_messages_task,
@@ -52,7 +53,6 @@ from .views.operator import (
     operate_stop,
     stream_logs,
 )
-from ..sevclient import SevClient
 
 logger = logging.getLogger(__name__)
 
