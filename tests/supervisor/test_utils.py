@@ -1,6 +1,11 @@
 from unittest import mock
 
-from aleph.vm.utils import check_system_module
+from aleph.vm.utils import (
+    check_amd_sev_es_supported,
+    check_amd_sev_snp_supported,
+    check_amd_sev_supported,
+    check_system_module,
+)
 
 
 def test_check_system_module_enabled():
@@ -17,3 +22,18 @@ def test_check_system_module_enabled():
 
             output = check_system_module("kvm_amd/parameters/sev_enp")
             assert output == expected_value
+
+            assert check_amd_sev_supported() is True
+            assert check_amd_sev_es_supported() is True
+            assert check_amd_sev_snp_supported() is True
+
+        with mock.patch(
+            "pathlib.Path.open",
+            mock.mock_open(read_data="N"),
+        ):
+            output = check_system_module("kvm_amd/parameters/sev_enp")
+            assert output is None
+
+            assert check_amd_sev_supported() is False
+            assert check_amd_sev_es_supported() is False
+            assert check_amd_sev_snp_supported() is False
