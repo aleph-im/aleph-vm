@@ -130,11 +130,11 @@ def is_command_available(command):
         return False
 
 
-def check_system_module(module_path: str) -> str:
+def check_system_module(module_path: str) -> Optional[str]:
     p = Path("/sys/module") / module_path
     if not p.exists():
-        return ""
-    return p.open().read().strip()
+        return None
+    return p.read_text().strip()
 
 
 def fix_message_validation(message: dict) -> dict:
