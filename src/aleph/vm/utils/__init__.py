@@ -137,6 +137,34 @@ def check_system_module(module_path: str) -> Optional[str]:
     return p.read_text().strip()
 
 
+def check_amd_sev_supported() -> bool:
+    """Check if AMD SEV is supported on the system.
+
+    AMD Secure Encrypted Virtualization (SEV)
+    Uses one key per virtual machine to isolate guests and the hypervisor from one another.
+    """
+    return check_system_module("kvm_amd/parameters/sev") == "Y"
+
+
+def check_amd_sev_es_supported() -> bool:
+    """Check if AMD SEV-ES is supported on the system.
+
+    AMD Secure Encrypted Virtualization-Encrypted State (SEV-ES)
+    Encrypts all CPU register contents when a VM stops running.
+    """
+    return check_system_module("kvm_amd/parameters/sev_es") == "Y"
+
+
+def check_amd_sev_snp_supported() -> bool:
+    """Check if AMD SEV-SNP is supported on the system.
+
+    AMD Secure Encrypted Virtualization-Secure Nested Paging (SEV-SNP)
+    Adds strong memory integrity protection to help prevent malicious hypervisor-based attacks like data replay,
+    memory re-mapping, and more in order to create an isolated execution environment.
+    """
+    return check_system_module("kvm_amd/parameters/sev_snp") == "Y"
+
+
 def fix_message_validation(message: dict) -> dict:
     """Patch a fake message program to pass validation."""
     message["item_content"] = json.dumps(message["content"])
