@@ -21,7 +21,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.version import __version__
 
 from .metrics import create_tables, setup_engine
-from .resources import about_system_usage
+from .resources import about_capability, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
     start_watch_for_messages_task,
@@ -95,6 +95,7 @@ def setup_webapp():
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
+        web.get("/about/capability", about_capability),
         web.get("/about/config", about_config),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
