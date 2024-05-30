@@ -19,6 +19,9 @@ jobs:
           - os: "ubuntu-22.04"
             make_target: "all-podman-ubuntu-2204"
             artifact_name: "aleph-vm.ubuntu-22.04.deb"
+          - os: "ubuntu-24.04"
+            make_target: "all-podman-ubuntu-2404"
+            artifact_name: "aleph-vm.ubuntu-24.04.deb"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
