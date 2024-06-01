@@ -86,11 +86,7 @@ class VmExecution:
 
     @property
     def is_running(self) -> bool:
-        return (
-            self.systemd_manager.is_service_active(self.controller_service)
-            if self.persistent and self.systemd_manager
-            else bool(self.times.starting_at and not self.times.stopping_at)
-        )
+        return bool(self.times.starting_at and not self.times.stopping_at)
 
     @property
     def is_stopping(self) -> bool:

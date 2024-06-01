@@ -140,12 +140,16 @@ async def stop_all_vms(app: web.Application):
 
 def run():
     """Run the VM Supervisor."""
+    # Loop creation set here to avoid bug with Future on different loop
+
+    loop = asyncio.new_event_loop()
+    # apparently needed for Python 3.9 / Debian 11
+    asyncio.set_event_loop(loop)
     settings.check()
 
     engine = setup_engine()
     asyncio.run(create_tables(engine))
 
-    loop = asyncio.new_event_loop()
     pool = VmPool(loop)
     pool.setup()
 
@@ -170,10 +174,10 @@ def run():
             app.on_cleanup.append(stop_all_vms)
 
         logger.info("Loading existing executions ...")
-        asyncio.run(pool.load_persistent_executions())
+        loop.run_until_complete(pool.load_persistent_executions())
 
         logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
-        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
+        web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT, loop=loop)
     except OSError as e:
         if e.errno == 98:
             logger.error(
