@@ -3,6 +3,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import pathlib
 import subprocess
 from base64 import b16encode, b32decode
 from collections.abc import Coroutine
@@ -13,6 +14,7 @@ from shutil import disk_usage
 from typing import Any, Callable, Optional
 
 import aiodns
+import aiofiles
 import msgpack
 from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
@@ -218,3 +220,8 @@ def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path
         return True
 
     return checksum(source) != checksum(destination)
+
+
+def write_bytes_file(file_path: Path, file_content: bytes):
+    """Save a file on disk in async way."""
+    file_path.write_bytes(file_content)

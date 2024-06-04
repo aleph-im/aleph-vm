@@ -50,6 +50,7 @@ from .views.operator import (
     operate_erase,
     operate_expire,
     operate_reboot,
+    operate_start,
     operate_stop,
     stream_logs,
 )
@@ -102,6 +103,7 @@ def setup_webapp():
         web.post("/control/allocation/notify", notify_allocation),
         web.get("/control/machine/{ref}/logs", stream_logs),
         web.post("/control/machine/{ref}/expire", operate_expire),
+        web.post("/control/machine/{ref}/start", operate_start),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),

@@ -105,6 +105,10 @@ class VmExecution:
         return isinstance(self.message, InstanceContent)
 
     @property
+    def is_confidential(self) -> bool:
+        return self.uses_payment_stream  # TODO: check also if the VM message is confidential
+
+    @property
     def hypervisor(self) -> HypervisorType:
         if self.is_program:
             return HypervisorType.firecracker

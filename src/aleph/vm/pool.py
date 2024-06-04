@@ -123,7 +123,7 @@ class VmPool:
                 await execution.start()
 
                 # Start VM and snapshots automatically
-                if execution.persistent:
+                if execution.persistent and not execution.is_confidential:
                     self.systemd_manager.enable_and_start(execution.controller_service)
                     await execution.wait_for_init()
                     if execution.is_program and execution.vm:

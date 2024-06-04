@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import timedelta
 
 import aiohttp.web_exceptions
@@ -7,7 +8,9 @@ from aiohttp.web_urldispatcher import UrlMappingMatchInfo
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from aleph_message.models.execution import BaseExecutableContent
+from anyio import asyncPath
 
+from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution
 from aleph.vm.orchestrator.views import authenticate_api_request
@@ -16,7 +19,7 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
-from aleph.vm.utils import cors_allow_all
+from aleph.vm.utils import cors_allow_all, write_bytes_file
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +134,50 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
     execution.persistent = False
 
     return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_start(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Start the confidential virtual machine if possible."""
+    # TODO: Add user authentication
+    vm_hash = get_itemhash_or_400(request.match_info)
+
+    pool: VmPool = request.app["vm_pool"]
+    logger.debug(f"Iterating through running executions... {pool.executions}")
+    execution = get_execution_or_404(vm_hash, pool=pool)
+
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    if execution.is_running:
+        return web.Response(status=403, body=f"VM with ref {vm_hash} already running")
+
+    if not execution.is_confidential:
+        return web.Response(status=403, body=f"Operation not allowed for VM {vm_hash} because it isn't confidential")
+
+    post = await request.post()
+
+    vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash
+    os.makedirs(vm_session_path, exist_ok=True)
+
+    session_file_content = post.get("session")
+    if session_file_content:
+        return web.Response(status=403, body=f"Session file required for VM with ref {vm_hash}")
+
+    session_file_path = asyncPath(vm_session_path / "vm_session.b64")
+    await session_file_path.write_bytes(session_file_content.file.read())
+
+    godh_file_content = post.get("godh")
+    if godh_file_content:
+        return web.Response(status=403, body=f"GODH file required for VM with ref {vm_hash}")
+
+    godh_file_path = asyncPath(vm_session_path / "vm_godh.b64")
+    await godh_file_path.write_bytes(godh_file_content.file.read())
+
+    pool.systemd_manager.enable_and_start(execution.controller_service)
+
+    return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
 
 
 @cors_allow_all
