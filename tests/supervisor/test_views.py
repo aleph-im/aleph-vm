@@ -155,7 +155,7 @@ async def test_about_certificates(aiohttp_client):
         return_value=False,
     ) as is_file_mock:
         with mock.patch(
-            "subprocess.run",
+            "aleph.vm.utils.run_in_subprocess",
             return_value=True,
         ) as export_mock:
             app = setup_webapp()
