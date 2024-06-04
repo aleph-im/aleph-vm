@@ -1,5 +1,6 @@
-import subprocess
 from pathlib import Path
+
+from aleph.vm.utils import run_in_subprocess
 
 
 class SevClient:
@@ -9,14 +10,13 @@ class SevClient:
         self.certificates_dir.mkdir(exist_ok=True, parents=True)
         self.certificates_archive = self.certificates_dir / "certs_export.cert"
 
-    def sevctl_cmd(self, *args) -> subprocess.CompletedProcess:
-        result = subprocess.run(
+    async def sevctl_cmd(self, *args) -> bytes:
+        result = await run_in_subprocess(
             ["sevctl", *args],
-            capture_output=True,
-            text=True,
+            check=True,
         )
 
         return result
 
-    def export_certificates(self):
-        _ = self.sevctl_cmd("export", self.certificates_archive)
+    async def export_certificates(self):
+        _ = await self.sevctl_cmd("export", self.certificates_archive)

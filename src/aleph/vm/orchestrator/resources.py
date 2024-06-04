@@ -11,6 +11,7 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import cors_allow_all
 
 
@@ -129,10 +130,10 @@ async def about_certificates(request: web.Request):
     if not settings.ENABLE_CONFIDENTIAL_COMPUTING:
         return web.HTTPBadRequest(reason="Confidential computing setting not enabled on that server")
 
-    sev_client = request.app["sev_client"]
+    sev_client: SevClient = request.app["sev_client"]
 
     if not sev_client.certificates_archive.is_file():
-        sev_client.export_certificates()
+        await sev_client.export_certificates()
 
     return web.FileResponse(sev_client.certificates_archive)
 
