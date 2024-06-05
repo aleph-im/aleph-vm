@@ -17,7 +17,7 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
-from aleph.vm.utils import cors_allow_all, write_bytes_file
+from aleph.vm.utils import cors_allow_all
 
 logger = logging.getLogger(__name__)
 
