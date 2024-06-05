@@ -18,13 +18,14 @@ debian-package-code:
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo
+debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo sevctl-podman
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
 	cp -pr ./target/firecracker ./aleph-vm/opt/firecracker/
 	cp -pr ./target/jailer ./aleph-vm/opt/firecracker/
 	cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
+	cp -pr ./target/sevctl ./aleph-vm/opt/sevctl
 
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
@@ -44,6 +45,19 @@ vmlinux:
 download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
 	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+
+sevctl:
+	cd ./sevctl && cargo build --release --target x86_64-unknown-linux-gnu
+	./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl ok
+	cp ./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl ./target/sevctl
+
+sevctl-podman:
+	# Build sevctl inside an OCI Image with an upstream version of Rust.
+	# sevctl requires a version of Rust more recent than the one available in Debian stable.
+	podman build -t sevctl-builder-debian-12 -f ./debian-12-sevctl.dockerfile .
+	podman run --rm -v $(PWD)/target:/target sevctl-builder-debian-12
+	# Test the binary
+	./target/sevctl -V
 
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
