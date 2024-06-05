@@ -15,7 +15,7 @@ debian-package-code:
 	cp ../examples/instance_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/instance_message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'jwskate==0.8.0' 'eth-account==0.9.0' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
+	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo
@@ -93,6 +93,17 @@ all-podman-ubuntu-2204: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-22.04.deb
 
+all-podman-ubuntu-2404: version
+	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2404:latest -f ./packaging/ubuntu-24.04.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging-ubuntu-2404:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.ubuntu-24.04.deb
+
 # extract Python requirements from Debian 11 container
 requirements-debian-11: all-podman-debian-11
 	podman run --rm -ti \
@@ -119,6 +130,15 @@ requirements-ubuntu-22.04: all-podman-ubuntu-2204
 		-v ./requirements-ubuntu-22.04.txt:/mnt/requirements-ubuntu-22.04.txt \
 		ubuntu:jammy \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-22.04.txt"
+
+# extract Python requirements from Ubuntu 24.04 container
+requirements-ubuntu-24.04: all-podman-ubuntu-2404
+	podman run --rm -ti \
+		-v ./target/aleph-vm.ubuntu-24.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-ubuntu-24.04.txt:/mnt/requirements-ubuntu-24.04.txt \
+		ubuntu:noble \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-24.04.txt"
 
 # run on host in order to sign with GPG
 repository-bullseye:
