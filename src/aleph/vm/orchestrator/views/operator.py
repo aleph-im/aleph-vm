@@ -1,5 +1,4 @@
 import logging
-import os
 from datetime import timedelta
 
 import aiohttp.web_exceptions
@@ -158,23 +157,21 @@ async def operate_start(request: web.Request, authenticated_sender: str) -> web.
     post = await request.post()
 
     vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash
-    os.makedirs(vm_session_path, exist_ok=True)
+    vm_session_path.mkdir(exist_ok=True)
 
     session_file_content = post.get("session")
-    if session_file_content:
+    if not session_file_content:
         return web.Response(status=403, body=f"Session file required for VM with ref {vm_hash}")
 
     session_file_path = vm_session_path / "vm_session.b64"
-    with open(session_file_path, "wb") as session_file:
-        session_file.write(session_file_content.file.read())
+    session_file_path.write_bytes(session_file_content.file.read())
 
     godh_file_content = post.get("godh")
-    if godh_file_content:
+    if not godh_file_content:
         return web.Response(status=403, body=f"GODH file required for VM with ref {vm_hash}")
 
     godh_file_path = vm_session_path / "vm_godh.b64"
-    with open(godh_file_path, "wb") as godh_file:
-        godh_file.write(godh_file_content.file.read())
+    godh_file_path.write_bytes(godh_file_content.file.read())
 
     pool.systemd_manager.enable_and_start(execution.controller_service)
 

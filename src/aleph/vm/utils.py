@@ -218,8 +218,3 @@ def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path
         return True
 
     return checksum(source) != checksum(destination)
-
-
-def write_bytes_file(file_path: Path, file_content: bytes):
-    """Save a file on disk in async way."""
-    file_path.write_bytes(file_content)
