@@ -155,7 +155,7 @@ async def test_about_certificates(aiohttp_client):
         return_value=False,
     ) as is_file_mock:
         with mock.patch(
-            "aleph.vm.utils.run_in_subprocess",
+            "aleph.vm.sevclient.run_in_subprocess",
             return_value=True,
         ) as export_mock:
             app = setup_webapp()
@@ -170,7 +170,7 @@ async def test_about_certificates(aiohttp_client):
             is_file_mock.assert_has_calls([call(), call()])
             certificates_expected_dir = sev_client.certificates_archive
             export_mock.assert_called_once_with(
-                ["sevctl", "export", certificates_expected_dir], capture_output=True, text=True
+                ["sevctl", "export", str(certificates_expected_dir)], check=True
             )
 
             # Remove file mock
