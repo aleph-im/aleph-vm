@@ -3,7 +3,6 @@ import dataclasses
 import hashlib
 import json
 import logging
-import pathlib
 import subprocess
 from base64 import b16encode, b32decode
 from collections.abc import Coroutine
@@ -14,7 +13,6 @@ from shutil import disk_usage
 from typing import Any, Callable, Optional
 
 import aiodns
-import aiofiles
 import msgpack
 from aiohttp_cors import ResourceOptions, custom_cors
 from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
