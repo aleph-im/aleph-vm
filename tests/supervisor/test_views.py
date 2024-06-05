@@ -169,9 +169,7 @@ async def test_about_certificates(aiohttp_client):
             assert response.status == 200
             is_file_mock.assert_has_calls([call(), call()])
             certificates_expected_dir = sev_client.certificates_archive
-            export_mock.assert_called_once_with(
-                ["sevctl", "export", str(certificates_expected_dir)], check=True
-            )
+            export_mock.assert_called_once_with(["sevctl", "export", str(certificates_expected_dir)], check=True)
 
             # Remove file mock
             Path(sev_client.certificates_archive).unlink()
