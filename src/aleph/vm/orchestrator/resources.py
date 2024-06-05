@@ -132,10 +132,7 @@ async def about_certificates(request: web.Request):
 
     sev_client: SevClient = request.app["sev_client"]
 
-    if not sev_client.certificates_archive.is_file():
-        await sev_client.export_certificates()
-
-    return web.FileResponse(sev_client.certificates_archive)
+    return web.FileResponse(await sev_client.get_certificates())
 
 
 class Allocation(BaseModel):

@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from unittest import mock
 from unittest.mock import call
@@ -147,7 +148,6 @@ async def test_about_certificates(aiohttp_client):
 
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
-    settings.CONFIDENTIAL_DIRECTORY = Path().resolve()
     settings.setup()
 
     with mock.patch(
@@ -158,18 +158,16 @@ async def test_about_certificates(aiohttp_client):
             "aleph.vm.sevclient.run_in_subprocess",
             return_value=True,
         ) as export_mock:
-            app = setup_webapp()
-            sev_client = SevClient(settings.CONFIDENTIAL_DIRECTORY)
-            app["sev_client"] = sev_client
-            # Create mock file to return it
-            Path(sev_client.certificates_archive).touch(exist_ok=True)
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                app = setup_webapp()
+                sev_client = SevClient(Path(tmp_dir))
+                app["sev_client"] = sev_client
+                # Create mock file to return it
+                Path(sev_client.certificates_archive).touch(exist_ok=True)
 
-            client = await aiohttp_client(app)
-            response: web.Response = await client.get("/about/certificates")
-            assert response.status == 200
-            is_file_mock.assert_has_calls([call(), call()])
-            certificates_expected_dir = sev_client.certificates_archive
-            export_mock.assert_called_once_with(["sevctl", "export", str(certificates_expected_dir)], check=True)
-
-            # Remove file mock
-            Path(sev_client.certificates_archive).unlink()
+                client = await aiohttp_client(app)
+                response: web.Response = await client.get("/about/certificates")
+                assert response.status == 200
+                is_file_mock.assert_has_calls([call(), call()])
+                certificates_expected_dir = sev_client.certificates_archive
+                export_mock.assert_called_once_with(["sevctl", "export", str(certificates_expected_dir)], check=True)
