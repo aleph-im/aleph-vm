@@ -18,13 +18,14 @@ debian-package-code:
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo
+debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bin/sevctl
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
 	cp -pr ./target/firecracker ./aleph-vm/opt/firecracker/
 	cp -pr ./target/jailer ./aleph-vm/opt/firecracker/
 	cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
+	cp -pr ./target/bin/sevctl ./aleph-vm/opt/sevctl
 
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
@@ -45,6 +46,11 @@ download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
 	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
+target/bin/sevctl:
+	# Release 0.4.3 matches revision c41c9172be013d6f10b9e1d7286fcb021805d5a5
+	cargo install --git https://github.com/virtee/sevctl.git --rev c41c9172be013d6f10b9e1d7286fcb021805d5a5 --target x86_64-unknown-linux-gnu --root ./target
+	./target/bin/sevctl -V
+
 version:
 	python3 ./version_from_git.py --inplace deb aleph-vm/DEBIAN/control
 	python3 ./version_from_git.py --inplace __version__ ../src/aleph/vm/version.py
@@ -62,6 +68,7 @@ clean:
 	rm -fr ./aleph-vm/opt/firecracker/
 	rm -fr ./aleph-vm/opt/kubo/
 	rm -fr ./aleph-vm/opt/aleph-vm/
+	rm -fr ./sevctl/target/
 
 all-podman-debian-11: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-debian-11:latest -f ./packaging/debian-11.dockerfile .
@@ -86,6 +93,8 @@ all-podman-debian-12: version
 	mv target/aleph-vm.deb target/aleph-vm.debian-12.deb
 
 all-podman-ubuntu-2204: version
+	# Ensure the sevctl submodule is checked out first.
+	git submodule init
 	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2204:latest -f ./packaging/ubuntu-22.04.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \

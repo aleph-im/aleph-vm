@@ -1,4 +1,4 @@
-FROM debian:bullseye
+FROM rust:1.79.0-bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     make \

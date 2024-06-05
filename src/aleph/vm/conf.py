@@ -177,6 +177,7 @@ class Settings(BaseSettings):
 
     FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
     JAILER_PATH = Path("/opt/firecracker/jailer")
+    SEV_CTL_PATH = Path("/opt/sevctl")
     LINUX_PATH = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
