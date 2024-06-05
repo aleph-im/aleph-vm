@@ -475,7 +475,7 @@ class Settings(BaseSettings):
         if not self.JAILER_BASE_DIR:
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
         if not self.CONFIDENTIAL_DIRECTORY:
-            self.CONFIDENTIAL_DIRECTORY = self.EXECUTION_ROOT / "confidential"
+            self.CONFIDENTIAL_DIRECTORY = self.CACHE_ROOT / "confidential"
 
     class Config:
         env_prefix = "ALEPH_VM_"
