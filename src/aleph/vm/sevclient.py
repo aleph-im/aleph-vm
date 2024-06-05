@@ -19,4 +19,4 @@ class SevClient:
         return result
 
     async def export_certificates(self):
-        _ = await self.sevctl_cmd("export", self.certificates_archive)
+        _ = await self.sevctl_cmd("export", str(self.certificates_archive))
