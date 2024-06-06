@@ -18,10 +18,11 @@ from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
+from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
 
 from .metrics import create_tables, setup_engine
-from .resources import about_system_usage
+from .resources import about_certificates, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
     start_watch_for_messages_task,
@@ -95,6 +96,7 @@ def setup_webapp():
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
+        web.get("/about/certificates", about_certificates),
         web.get("/about/config", about_config),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
@@ -158,6 +160,12 @@ def run():
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
     app["vm_pool"] = pool
+
+    # Store sevctl app singleton only if confidential feature is enabled
+    if settings.ENABLE_CONFIDENTIAL_COMPUTING:
+        sev_client = SevClient(settings.CONFIDENTIAL_DIRECTORY)
+        app["sev_client"] = sev_client
+        # TODO: Review and check sevctl first initialization steps, like (sevctl generate and sevctl provision)
 
     logger.debug(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
