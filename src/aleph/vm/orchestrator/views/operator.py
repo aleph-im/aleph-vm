@@ -90,8 +90,8 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
 async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
     """Allow authentication via HEADER or via websocket"""
-    if authenticate_api_request(request):
-        logger.debug(f"Accepted request to access logs via the allocatioan api key on {vm_hash}")
+    if authenticate_api_request(request, raises_on_missing_header=False):
+        logger.debug(f"Accepted request to access logs via the allocation api key on {vm_hash}")
         return True
 
     first_message = await ws.receive_json()

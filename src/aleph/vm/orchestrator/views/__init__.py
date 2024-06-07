@@ -337,11 +337,11 @@ async def status_public_config(request: web.Request):
     )
 
 
-def authenticate_api_request(request: web.Request) -> bool:
+def authenticate_api_request(request: web.Request, raises_on_missing_header=True) -> bool:
     """Authenticate an API request to update the VM allocations."""
     signature: bytes = request.headers.get("X-Auth-Signature", "").encode()
 
-    if not signature:
+    if not signature and raises_on_missing_header:
         raise web.HTTPUnauthorized(text="Authentication token is missing")
 
     # Use a simple authentication method: the hash of the signature should match the value in the settings
