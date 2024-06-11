@@ -136,7 +136,7 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_start(request: web.Request, authenticated_sender: str) -> web.Response:
+async def operate_confidential_initialize(request: web.Request, authenticated_sender: str) -> web.Response:
     """Start the confidential virtual machine if possible."""
     # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
