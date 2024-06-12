@@ -7,7 +7,7 @@ from typing import Optional
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.conf import initialize_settings, settings
+from aleph.vm.conf import settings
 from aleph.vm.controllers.__main__ import configuration_from_file, execute_persistent_vm
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
@@ -50,10 +50,10 @@ async def test_create_qemu_instance():
     Create an instance and check that it start / init / stop properly.
     """
 
-    initialize_settings()
     settings.USE_FAKE_INSTANCE_BASE = True
     settings.FAKE_INSTANCE_MESSAGE = settings.FAKE_INSTANCE_QEMU_MESSAGE
     settings.FAKE_INSTANCE_BASE = settings.FAKE_QEMU_INSTANCE_BASE
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = False
     settings.ALLOW_VM_NETWORKING = False
     settings.USE_JAILER = False
 
@@ -106,10 +106,10 @@ async def test_create_qemu_instance_online():
     Create an instance and check that it start / init / stop properly.
     """
 
-    initialize_settings()
     settings.USE_FAKE_INSTANCE_BASE = True
     settings.FAKE_INSTANCE_MESSAGE = settings.FAKE_INSTANCE_QEMU_MESSAGE
     settings.FAKE_INSTANCE_BASE = settings.FAKE_QEMU_INSTANCE_BASE
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = False
     settings.ALLOW_VM_NETWORKING = True
     settings.USE_JAILER = False
 
