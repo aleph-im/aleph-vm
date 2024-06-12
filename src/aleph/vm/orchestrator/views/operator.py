@@ -182,7 +182,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
             await create_vm_execution(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:
-        return web.Response(status=200, body="Starting VM (was not running) with ref {vm_hash}")
+        return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
 
 
 @cors_allow_all
