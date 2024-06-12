@@ -492,5 +492,10 @@ def make_db_url():
     return f"sqlite+aiosqlite:///{settings.EXECUTION_DATABASE}"
 
 
+def initialize_settings():
+    global settings
+    settings = Settings()
+
+
 # Settings singleton
 settings = Settings()
