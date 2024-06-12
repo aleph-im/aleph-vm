@@ -47,6 +47,7 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
+    operate_confidential_initialize,
     operate_erase,
     operate_expire,
     operate_reboot,
@@ -102,6 +103,7 @@ def setup_webapp():
         web.post("/control/allocation/notify", notify_allocation),
         web.get("/control/machine/{ref}/logs", stream_logs),
         web.post("/control/machine/{ref}/expire", operate_expire),
+        web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),

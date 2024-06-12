@@ -272,6 +272,8 @@ class Settings(BaseSettings):
         description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
     )
 
+    CONFIDENTIAL_SESSION_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/sessions")
+
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Optional[Path] = None
@@ -416,6 +418,7 @@ class Settings(BaseSettings):
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
         os.makedirs(self.CONFIDENTIAL_DIRECTORY, exist_ok=True)
+        os.makedirs(self.CONFIDENTIAL_SESSION_DIRECTORY, exist_ok=True)
 
         self.API_SERVER = self.API_SERVER.rstrip("/")
 
@@ -464,6 +467,8 @@ class Settings(BaseSettings):
             self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
         if not self.DATA_CACHE:
             self.DATA_CACHE = self.CACHE_ROOT / "data"
+        if not self.CONFIDENTIAL_DIRECTORY:
+            self.CONFIDENTIAL_DIRECTORY = self.CACHE_ROOT / "confidential"
         if not self.JAILER_BASE_DIRECTORY:
             self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
         if not self.PERSISTENT_VOLUMES_DIR:
@@ -474,8 +479,8 @@ class Settings(BaseSettings):
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
         if not self.JAILER_BASE_DIR:
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
-        if not self.CONFIDENTIAL_DIRECTORY:
-            self.CONFIDENTIAL_DIRECTORY = self.CACHE_ROOT / "confidential"
+        if not self.CONFIDENTIAL_SESSION_DIRECTORY:
+            self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
 
     class Config:
         env_prefix = "ALEPH_VM_"
