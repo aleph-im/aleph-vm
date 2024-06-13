@@ -1,7 +1,7 @@
 { modulesPath, pkgs, config, lib,... }:
 let
   myPythonEnv = (
-    pkgs.python311.withPackages(ps: with ps; [
+    pkgs.python312.withPackages(ps: with ps; [
       ( callPackage ./aleph-vm.nix {} )
     ])
   );
@@ -154,5 +154,5 @@ in
     PYTHONPATH = "${myPythonEnv}/lib/";
   };
 
-  system.stateVersion = "22.11";
+  system.stateVersion = "24.11";
 }
