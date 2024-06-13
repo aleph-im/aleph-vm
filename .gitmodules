@@ -1,0 +1,3 @@
+[submodule "packaging/sevctl"]
+	path = packaging/sevctl
+	url = https://github.com/virtee/sevctl

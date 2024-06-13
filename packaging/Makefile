@@ -18,7 +18,7 @@ debian-package-code:
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo sevctl
+debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo target/sevctl
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
@@ -46,9 +46,9 @@ download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
 	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
-sevctl:
+target/sevctl:
 	cd ./sevctl && cargo build --release --target x86_64-unknown-linux-gnu
-	./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl ok
+	./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl -V
 	cp ./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl ./target/sevctl
 
 sevctl-podman:
@@ -73,6 +73,7 @@ clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
 	rm -fr ./aleph-vm/opt/aleph-vm/
+	rm -fr ./sevctl/target/
 
 all-podman-debian-11: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-debian-11:latest -f ./packaging/debian-11.dockerfile .
