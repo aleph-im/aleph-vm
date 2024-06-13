@@ -47,7 +47,6 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
-    get_sev_certificate,
     operate_confidential_initialize,
     operate_erase,
     operate_expire,
@@ -112,7 +111,6 @@ def setup_webapp():
         web.post("/control/machine/{ref}/reboot", operate_reboot),
         web.get("/control/machine/{ref}/sev/measurement", operate_sev_measurement),
         web.post("/control/machine/{ref}/sev/inject_disk_secret", operate_sev_inject_secret),
-        web.get("/about/sev/certificate", get_sev_certificate),  # no auth
         # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
