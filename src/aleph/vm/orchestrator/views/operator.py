@@ -10,7 +10,9 @@ from aleph_message.models.execution import BaseExecutableContent
 
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.run import create_vm_execution
+from aleph.vm.orchestrator.run import (
+    create_vm_execution_or_raise_http_error,
+)
 from aleph.vm.orchestrator.views import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
