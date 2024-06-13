@@ -8,7 +8,7 @@ in
 
   python312.pkgs.buildPythonPackage rec {
     pname = "aleph-vm";
-    version = "0.4.0";
+    version = "0.4.1";
     src = ../..;
     format = "pyproject";
     #src = fetchPypi {
@@ -27,7 +27,7 @@ in
       pkgs.firecracker
       pkgs.git
       pkgs.git
-      pkgs.hatch
+      # pkgs.hatch
       pkgs.ndppd
       pkgs.redis
       pkgs.squashfsTools
@@ -40,13 +40,14 @@ in
       pkgs.python312Packages.alembic
       pkgs.python312Packages.cryptography
       pkgs.python312Packages.dbus-python
-      pkgs.python312Packages.eth-account
+      # pkgs.python312Packages.eth-account
       pkgs.python312Packages.eth-hash
       pkgs.python312Packages.eth-typing
       pkgs.python312Packages.hatch-vcs
       pkgs.python312Packages.hatchling
       pkgs.python312Packages.jsonschema
       pkgs.python312Packages.msgpack
+      pkgs.python312Packages.jwcrypto
       pkgs.python312Packages.nftables
       pkgs.python312Packages.packaging
       pkgs.python312Packages.psutil
@@ -59,6 +60,7 @@ in
       pkgs.python312Packages.setuptools
       pkgs.python312Packages.sqlalchemy
       pkgs.python312Packages.systemd
+      pkgs.python312Packages.sentry-sdk
 
       # Test dependencies
       pkgs.python312Packages.pytest
@@ -69,7 +71,7 @@ in
       # Specific versions from PyPI
       aioredis
       aleph-message
-      jwskate
+      # jwskate
       nftablesPyPI
       qmp
       superfluid
@@ -113,7 +115,12 @@ in
     superfluid = python312.pkgs.buildPythonPackage rec {
       pname = "superfluid";
       version = "0.2.1";
-      src = /home/sepal/Repos/aleph-im/superfluid.py;
+      #src = /home/sepal/Repos/aleph-im/superfluid.py;
+      src = pkgs.fetchgit {
+        url = "https://github.com/aleph-im/superfluid.py";
+        rev = "ddf95fe13ebc30e631d005ce8b1cde260ab7be8c";
+        hash = "sha256-IQBSj9hD+1W/sJjw6IuCVbp59s9bboPQFfyTI73FNnc=";
+      };
       propagatedBuildInputs = [
         python312.pkgs.setuptools
         decouple
@@ -130,21 +137,22 @@ in
       };
     };
 
-    jwskate = python312.pkgs.buildPythonPackage rec {
-      pname = "jwskate";
-      version = "0.11.1";
-      pyproject = true;
-      src = python312.pkgs.fetchPypi {
-        inherit pname version;
-        sha256 = "sha256-NTVLSHyOg1/dV77+pek+nlL+JYadiE/HZFEdIgYeZoU=";
-      };
+    # jwskate = python312.pkgs.buildPythonPackage rec {
+    #   pname = "jwskate";
+    #   version = "0.11.1";
+    #   pyproject = true;
+    #   src = python312.pkgs.fetchPypi {
+    #     inherit pname version;
+    #     sha256 = "sha256-NTVLSHyOg1/dV77+pek+nlL+JYadiE/HZFEdIgYeZoU=";
+    #   };
 
-      propagatedBuildInputs = [
-        pkgs.python312Packages.hatchling
-        pkgs.python312Packages.hatch-vcs
-        binapy
-      ];
-    };
+    #   propagatedBuildInputs = [
+    #     pkgs.python312Packages.hatchling
+    #     pkgs.python312Packages.hatch-vcs
+    #     pkgs.python312Packages.cryptography
+    #     binapy
+    #   ];
+    # };
 
     binapy = python312.pkgs.buildPythonPackage rec {
       pname = "binapy";
@@ -157,6 +165,7 @@ in
 
       propagatedBuildInputs = [
         pkgs.python312Packages.poetry-core
+        pkgs.python312Packages.typing-extensions
       ];
     };
 
@@ -171,6 +180,8 @@ in
 
       propagatedBuildInputs = [
         python312.pkgs.setuptools
+        python312.pkgs.async-timeout
+        python312.pkgs.hiredis
       ];
     };
   }
