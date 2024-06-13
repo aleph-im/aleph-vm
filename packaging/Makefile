@@ -18,7 +18,7 @@ debian-package-code:
 	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.4' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo sevctl-podman
+debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo sevctl
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
