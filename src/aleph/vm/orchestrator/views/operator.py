@@ -1,25 +1,27 @@
+import json
 import logging
 from datetime import timedelta
 
 import aiohttp.web_exceptions
+import pydantic
 from aiohttp import web
 from aiohttp.web_urldispatcher import UrlMappingMatchInfo
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 from aleph_message.models.execution import BaseExecutableContent
+from pydantic import BaseModel
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.run import (
-    create_vm_execution_or_raise_http_error,
-)
+from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
-from aleph.vm.utils import cors_allow_all
+from aleph.vm.utils import cors_allow_all, dumps_for_json
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +140,50 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
 
 @cors_allow_all
 @require_jwk_authentication
+async def operate_start(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Start the confidential virtual machine if possible."""
+    # TODO: Add user authentication
+    vm_hash = get_itemhash_or_400(request.match_info)
+
+    pool: VmPool = request.app["vm_pool"]
+    logger.debug(f"Iterating through running executions... {pool.executions}")
+    execution = get_execution_or_404(vm_hash, pool=pool)
+
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    if execution.is_running:
+        return web.Response(status=403, body=f"VM with ref {vm_hash} already running")
+
+    if not execution.is_confidential:
+        return web.Response(status=403, body=f"Operation not allowed for VM {vm_hash} because it isn't confidential")
+
+    post = await request.post()
+
+    vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash
+    vm_session_path.mkdir(exist_ok=True)
+
+    session_file_content = post.get("session")
+    if not session_file_content:
+        return web.Response(status=403, body=f"Session file required for VM with ref {vm_hash}")
+
+    session_file_path = vm_session_path / "vm_session.b64"
+    session_file_path.write_bytes(session_file_content.file.read())
+
+    godh_file_content = post.get("godh")
+    if not godh_file_content:
+        return web.Response(status=403, body=f"GODH file required for VM with ref {vm_hash}")
+
+    godh_file_path = vm_session_path / "vm_godh.b64"
+    godh_file_path.write_bytes(godh_file_content.file.read())
+
+    pool.systemd_manager.enable_and_start(execution.controller_service)
+
+    return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
+
+
+@cors_allow_all
+@require_jwk_authentication
 async def operate_confidential_initialize(request: web.Request, authenticated_sender: str) -> web.Response:
     """Start the confidential virtual machine if possible."""
     # TODO: Add user authentication
@@ -226,10 +272,103 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
             await pool.stop_vm(vm_hash)
             pool.forget_vm(vm_hash)
 
-            await create_vm_execution(vm_hash=vm_hash, pool=pool)
+            await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:
         return web.Response(status=200, body="Starting VM (was not running) with ref {vm_hash}")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_sev_measurement(request: web.Request, authenticated_sender) -> web.Response:
+    """
+    Fetch the sev measurement for the VM
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
+
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    if not execution.is_running:
+        raise web.HTTPForbidden(body="Operation not running")
+    vm_client = QemuVmClient(execution.vm)
+    vm_sev_info = vm_client.query_sev_info()
+    launch_measure = vm_client.query_launch_measure()
+
+    return web.json_response(
+        data={"sev_info": vm_sev_info, "launch_measure": launch_measure},
+        status=200,
+        dumps=dumps_for_json,
+    )
+
+
+class InjectSecretParams(BaseModel):
+    """
+    packet_header: as base64 string
+    secret : encrypted secret table as base64 string
+    """
+
+    packet_header: str
+    secret: str
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_sev_inject_secret(request: web.Request, authenticated_sender) -> web.Response:
+    """
+    Send secret to the VM and start it
+    """
+    try:
+        data = await request.json()
+        params = InjectSecretParams.parse_obj(data)
+    except json.JSONDecodeError:
+        return web.HTTPBadRequest(reason="Body is not valid JSON")
+    except pydantic.ValidationError as error:
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+
+    vm_hash = get_itemhash_or_400(request.match_info)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    # if not execution.is_running:
+    #     raise web.HTTPForbidden(body="Operation not running")
+    vm_client = QemuVmClient(execution.vm)
+    vm_client.inject_secret(params.packet_header, params.secret)
+    vm_client.continue_execution()
+
+    status = vm_client.query_status()
+    print(status["status"] != "running")
+
+    return web.json_response(
+        data={"status": status},
+        status=200,
+        dumps=dumps_for_json,
+    )
+
+
+@cors_allow_all
+async def get_sev_certificate(request: web.Request) -> web.Response:
+    """
+    Download the platform certificate as base64 encoded string.
+    """
+    sevctl_bin = "/home/olivier/.cargo/bin/sevctl"
+    cmd = f"sudo {sevctl_bin} export /dev/stdout"
+    process = await asyncio.create_subprocess_shell(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL
+    )
+    stdout, stderr = await process.communicate()
+    b64_certificate = base64.b64encode(stdout)
+    if process.returncode != 0:
+        logger.warning(
+            f"Could not extract certificates: {stderr.decode()}",
+        )
+        raise web.HTTPInternalServerError(reason="Impossible to extract the certificate, check with the platform owner")
+
+    return web.Response(status=200, body=b64_certificate)
 
 
 @cors_allow_all

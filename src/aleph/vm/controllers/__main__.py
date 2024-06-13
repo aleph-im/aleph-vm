@@ -10,11 +10,13 @@ from typing import Union
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
+from aleph.vm.hypervisors.qemu_confidential.qemuvm import QemuConfidentialVM
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 from .configuration import (
     Configuration,
     HypervisorType,
+    QemuConfidentialVMConfiguration,
     QemuVMConfiguration,
     VMConfiguration,
 )
@@ -70,6 +72,10 @@ async def execute_persistent_vm(config: Configuration):
 
         execution.prepare_start()
         process = await execution.start(config.vm_configuration.config_file_path)
+    elif isinstance(config.vm_configuration, QemuConfidentialVMConfiguration):  # FIXME
+        assert isinstance(config.vm_configuration, QemuConfidentialVMConfiguration)
+        execution = QemuConfidentialVM(config.vm_configuration)
+        process = await execution.start()
     else:
         assert isinstance(config.vm_configuration, QemuVMConfiguration)
         execution = QemuVM(config.vm_configuration)
