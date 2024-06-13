@@ -1,0 +1,51 @@
+{
+    "chain": "ETH",
+    "item_hash": "fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-fake-hash-hash",
+    "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+    "type": "INSTANCE",
+    "channel": "Fun-dApps",
+    "confirmed": true,
+    "content": {
+        "address": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+        "allow_amend": false,
+        "variables": {
+            "VM_CUSTOM_NUMBER": "32"
+        },
+        "environment": {
+            "reproducible": true,
+            "internet": true,
+            "aleph_api": true,
+            "shared_cache": true
+        },
+        "resources": {
+            "vcpus": 1,
+            "memory": 512,
+            "seconds": 30
+        },
+        "rootfs": {
+            "parent": {
+                "ref": "549ec451d9b099cad112d4aaa2c00ac40fb6729a92ff252ff22eef0b5c3cb613",
+                "use_latest": true
+            },
+            "persistence": "host",
+            "size_mib": 5000
+        },
+        "authorized_keys": [
+            "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDj95BHGUx0/z2G/tTrEi8o49i70xvjcEUdSs3j4A33jE7pAphrfRVbuFMgFubcm8n9r5ftd/H8SjjTL4hY9YvWV5ZuMf92GUga3n4wgevvPlBszYZCy/idxFl0vtHYC1CcK9v4tVb9onhDt8FOJkf2m6PmDyvC+6tl6LwoerXTeeiKr5VnTB4KOBkammtFmix3d1X1SZd/cxdwZIHcQ7BNsqBm2w/YzVba6Z4ZnFUelBkQtMQqNs2aV51O1pFFqtZp2mM71D5d8vn9pOtqJ5QmY5IW6NypcyqKJZg5o6QguK5rdXLkc7AWro27BiaHIENl3w0wazp9EDO9zPAGJ6lz olivier@lanius"
+        ],
+
+        "time": 1619017773.8950517
+    },
+    "item_content": "{\"address\":\"0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba\",\"allow_amend\":false,\"variables\":{\"VM_CUSTOM_NUMBER\":\"32\"},\"environment\":{\"reproducible\":true,\"internet\":true,\"aleph_api\":true,\"shared_cache\":true},\"resources\":{\"vcpus\":1,\"memory\":128,\"seconds\":30},\"rootfs\":{\"parent\":{\"ref\":\"549ec451d9b099cad112d4aaa2c00ac40fb6729a92ff252ff22eef0b5c3cb613\",\"use_latest\":true},\"persistence\":\"host\",\"size_mib\":20000},\"cloud_config\":{\"password\":\"password\",\"chpasswd\":{\"expire\":\"False\"}},\"volumes\":[{\"mount\":\"/opt/venv\",\"ref\":\"5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51\",\"use_latest\":false},{\"comment\":\"Working data persisted on the VM supervisor, not available on other nodes\",\"mount\":\"/var/lib/example\",\"name\":\"data\",\"persistence\":\"host\",\"size_mib\":5}],\"replaces\":\"0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba\",\"time\":1619017773.8950517}",
+    "item_type": "inline",
+    "signature": "0x372da8230552b8c3e65c05b31a0ff3a24666d66c575f8e11019f62579bf48c2b7fe2f0bbe907a2a5bf8050989cdaf8a59ff8a1cbcafcdef0656c54279b4aa0c71b",
+    "size": 749,
+    "time": 1619017773.8950577,
+    "confirmations": [
+        {
+            "chain": "ETH",
+            "height": 12284734,
+            "hash": "0x67f2f3cde5e94e70615c92629c70d22dc959a118f46e9411b29659c2fce87cdc"
+        }
+    ]
+}

@@ -26,6 +26,9 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
+from aleph.vm.controllers.qemu_confidential.instance import (
+    AlephQemuConfidentialInstance,
+)
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
@@ -236,7 +239,7 @@ class VmExecution:
                 )
             elif self.hypervisor == HypervisorType.qemu:
                 assert isinstance(self.resources, AlephQemuResources)
-                self.vm = vm = AlephQemuInstance(
+                self.vm = vm = AlephQemuConfidentialInstance(
                     vm_id=vm_id,
                     vm_hash=self.vm_hash,
                     resources=self.resources,

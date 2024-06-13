@@ -51,6 +51,7 @@ dependencies = [
   "aiohttp_cors~=0.7.0",
   "pyroute2==0.7.12",
   "jwcrypto==1.5.6",
+  "python-cpuid==0.1.0"
 ]
 
 [project.urls]

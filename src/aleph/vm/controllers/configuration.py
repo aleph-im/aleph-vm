@@ -29,6 +29,20 @@ class QemuVMConfiguration(BaseModel):
     interface_name: Optional[str]
 
 
+class QemuConfidentialVMConfiguration(BaseModel):
+    qemu_bin_path: str
+    cloud_init_drive_path: Optional[str]
+    image_path: str
+    monitor_socket_path: Path
+    qmp_socket_path: Path
+    vcpu_count: int
+    mem_size_mb: int
+    interface_name: Optional[str]
+    ovmf_path: Path
+    sev_session_file: Path
+    sev_dh_cert_file: Path
+
+
 class HypervisorType(str, Enum):
     qemu = "qemu"
     firecracker = "firecracker"
@@ -37,7 +51,7 @@ class HypervisorType(str, Enum):
 class Configuration(BaseModel):
     vm_id: int
     settings: Settings
-    vm_configuration: Union[QemuVMConfiguration, VMConfiguration]
+    vm_configuration: Union[QemuConfidentialVMConfiguration, QemuVMConfiguration, VMConfiguration]
     hypervisor: HypervisorType = HypervisorType.firecracker
 
 

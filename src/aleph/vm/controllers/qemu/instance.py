@@ -149,7 +149,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     is_instance: bool
     qemu_process: Optional[Process]
     support_snapshot = False
-    qmp_socket_path = None
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
@@ -219,7 +218,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
         logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
-        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
+
         cloud_init_drive = await self._create_cloud_init_drive()
 
         image_path = str(self.resources.rootfs_path)
@@ -237,7 +236,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             cloud_init_drive_path=cloud_init_drive_path,
             image_path=image_path,
             monitor_socket_path=monitor_socket_path,
-            qmp_socket_path=qmp_socket_path,
+            qmp_socket_path=self.qmp_socket_path,
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
@@ -246,7 +245,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         configuration = Configuration(
             vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
         )
-
+        logger.debug(configuration)
         save_controller_configuration(self.vm_hash, configuration)
 
     def save_controller_configuration(self):
@@ -259,6 +258,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     @property
     def _journal_stdout_name(self) -> str:
         return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def qmp_socket_path(self) -> Path:
+        return settings.EXECUTION_ROOT / f"{self.vm_id}-qmp.socket"
 
     @property
     def _journal_stderr_name(self) -> str:
@@ -276,7 +279,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         if not ip:
             msg = "Host IP not available"
             raise ValueError(msg)
-
         ip = ip.split("/", 1)[0]
 
         attempts = 30

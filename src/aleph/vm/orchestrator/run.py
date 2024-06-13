@@ -57,31 +57,12 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
 
     logger.debug(f"Message: {message.json(indent=4, sort_keys=True, exclude_none=True)}")
 
-    try:
-        execution = await pool.create_a_vm(
-            vm_hash=vm_hash,
-            message=message.content,
-            original=original_message.content,
-            persistent=persistent,
-        )
-    except ResourceDownloadError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
-    except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0]) from error
-    except VmSetupError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except MicroVMFailedInitError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
-    except HostNotFoundError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
+    execution = await pool.create_a_vm(
+        vm_hash=vm_hash,
+        message=message.content,
+        original=original_message.content,
+        persistent=persistent,
+    )
 
     return execution
 
