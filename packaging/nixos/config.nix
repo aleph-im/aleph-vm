@@ -130,7 +130,7 @@ in
     which
 
     # User tools
-    hatch
+    # python312Packages.hatchling
     helix
     ndppd
     vim
