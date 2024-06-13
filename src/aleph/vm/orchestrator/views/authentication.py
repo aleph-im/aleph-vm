@@ -237,6 +237,7 @@ def require_jwk_authentication(
             logging.exception(e)
             raise
 
+        # authenticated_sender is the authenticted wallet address of the requester (as a string)
         response = await handler(request, authenticated_sender)
         return response
 
