@@ -132,7 +132,7 @@ class QemuVM:
                 return
             for queue in self.log_queues:
                 await queue.put(("stdout", line))
-            print(self, line.decode().strip())
+            print(self, line)
 
     def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
