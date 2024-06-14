@@ -23,6 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          submodules: true
           # Fetch the whole history for all tags and branches (required for aleph.__version__)
           fetch-depth: 0
 
