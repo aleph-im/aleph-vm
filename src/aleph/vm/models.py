@@ -28,6 +28,7 @@ from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
+    AlephQemuConfidentialResources,
 )
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
@@ -238,15 +239,26 @@ class VmExecution:
                     prepare_jailer=prepare,
                 )
             elif self.hypervisor == HypervisorType.qemu:
-                assert isinstance(self.resources, AlephQemuResources)
-                self.vm = vm = AlephQemuConfidentialInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=self.message.environment.internet,
-                    hardware_resources=self.message.resources,
-                    tap_interface=tap_interface,
-                )
+                if self.is_confidential:
+                    assert isinstance(self.resources, AlephQemuConfidentialResources)
+                    self.vm = vm = AlephQemuConfidentialInstance(
+                        vm_id=vm_id,
+                        vm_hash=self.vm_hash,
+                        resources=self.resources,
+                        enable_networking=self.message.environment.internet,
+                        hardware_resources=self.message.resources,
+                        tap_interface=tap_interface,
+                    )
+                else:
+                    assert isinstance(self.resources, AlephQemuResources)
+                    self.vm = vm = AlephQemuInstance(
+                        vm_id=vm_id,
+                        vm_hash=self.vm_hash,
+                        resources=self.resources,
+                        enable_networking=self.message.environment.internet,
+                        hardware_resources=self.message.resources,
+                        tap_interface=tap_interface,
+                    )
             else:
                 raise Exception("Unknown VM")
         else:
