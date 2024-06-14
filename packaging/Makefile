@@ -99,6 +99,8 @@ all-podman-debian-12: version
 	mv target/aleph-vm.deb target/aleph-vm.debian-12.deb
 
 all-podman-ubuntu-2204: version
+	# Ensure the sevctl submodule is checked out first.
+	git submodule init
 	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2204:latest -f ./packaging/ubuntu-22.04.dockerfile .
 	mkdir -p ./target
 	podman run --rm -ti \
