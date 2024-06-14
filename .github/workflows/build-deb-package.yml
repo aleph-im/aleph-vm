@@ -27,6 +27,11 @@ jobs:
           # Fetch the whole history for all tags and branches (required for aleph.__version__)
           fetch-depth: 0
 
+      - name: Install Rust tools to build `sevctl`
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
           ls packaging/target

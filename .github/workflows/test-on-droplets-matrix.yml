@@ -75,6 +75,11 @@ jobs:
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
+      - name: Install Rust tools to build `sevctl`
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
       - name: Setup SSH private key
         run: |
           mkdir ~/.ssh
