@@ -47,7 +47,7 @@ download-ipfs-kubo: target-dir build-dir
 	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 target/sevctl:
-	# Ensure you did `git submodule init` before running this target.
+	git submodule init
 	cd ./sevctl && cargo build --release --target x86_64-unknown-linux-gnu
 	./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl -V
 	cp ./sevctl/target/x86_64-unknown-linux-gnu/release/sevctl ./target/sevctl
