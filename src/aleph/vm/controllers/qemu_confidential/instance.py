@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuConfidentialResources(AlephQemuResources):
+    # TODO: Implement download of the custom OVMF bootloader to use if specified, if not only use the default one.
     pass
 
 
