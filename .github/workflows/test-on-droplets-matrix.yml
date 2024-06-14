@@ -176,4 +176,9 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          doctl compute droplet delete -f aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }}
+          DROPLET_IDS=$(doctl compute droplet list --format "ID,Name" --no-header | grep "aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }}" | awk '{print $1}')
+
+          for DROPLET_ID in $DROPLET_IDS; do
+            echo "Deleting droplet with ID: $DROPLET_ID"
+            doctl compute droplet delete --force $DROPLET_ID
+          done
