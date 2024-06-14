@@ -1,4 +1,4 @@
-FROM debian:bookworm
+FROM rust:bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     make \

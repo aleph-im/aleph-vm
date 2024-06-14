@@ -1,4 +1,4 @@
-FROM debian:bullseye
+FROM rust:bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     make \
@@ -6,6 +6,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     curl \
     sudo \
     python3-pip \
+    cargo \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
