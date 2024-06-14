@@ -7,6 +7,7 @@ jobs:
     name: "Build ${{ matrix.os }} Package"
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         os: ["debian-11", "debian-12", "ubuntu-22.04"]
         include:
