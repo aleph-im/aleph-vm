@@ -1,0 +1,58 @@
+From b3f1d358cc4098fb59a778d5340018a4e73ff87f Mon Sep 17 00:00:00 2001
+From: Olivier Desenfans <desenfans.olivier@gmail.com>
+Date: Thu, 30 Jun 2022 10:38:18 +0200
+Subject: [PATCH] Fix invokation of cryptomount -s for AMD SEV
+
+The current implementation targeted the first version of James
+Bottomley's Grub patches. These patches have since been updated
+to move the secret loading part from a dedicated command to
+a secret-finding module that must be invoked with
+
+cryptomount -s MOD
+
+Fixed the name of the Grub module which was renamed from sevsecret
+to efisecret.
+---
+ OvmfPkg/AmdSev/Grub/grub.cfg | 10 ++--------
+ OvmfPkg/AmdSev/Grub/grub.sh  |  2 +-
+ 2 files changed, 3 insertions(+), 9 deletions(-)
+
+diff --git a/OvmfPkg/AmdSev/Grub/grub.cfg b/OvmfPkg/AmdSev/Grub/grub.cfg
+index 17be94277a..331baf798c 100644
+--- a/OvmfPkg/AmdSev/Grub/grub.cfg
++++ b/OvmfPkg/AmdSev/Grub/grub.cfg
+@@ -10,16 +10,10 @@
+ ##
+ 
+ echo "Entering grub config"
+-sevsecret
++cryptomount -s efisecret
+ if [ $? -ne 0 ]; then
+-    echo "Failed to locate anything in the SEV secret area, prompting for password"
++    echo "Failed to mount root securely, retrying with password prompt"
+     cryptomount -a
+-else
+-    cryptomount -s
+-    if [ $? -ne 0 ]; then
+-        echo "Failed to mount root securely, retrying with password prompt"
+-        cryptomount -a
+-    fi
+ fi
+ set root=
+ for f in (crypto*); do
+diff --git a/OvmfPkg/AmdSev/Grub/grub.sh b/OvmfPkg/AmdSev/Grub/grub.sh
+index 99807d7291..abec80d7da 100644
+--- a/OvmfPkg/AmdSev/Grub/grub.sh
++++ b/OvmfPkg/AmdSev/Grub/grub.sh
+@@ -44,7 +44,7 @@ GRUB_MODULES="
+             linux
+             linuxefi
+             reboot
+-            sevsecret
++            efisecret
+             "
+ basedir=$(dirname -- "$0")
+ 
+-- 
+2.25.1
+
