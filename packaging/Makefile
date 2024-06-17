@@ -59,6 +59,9 @@ clean:
 	rm -fr ./target/*
 	rm -fr ./build/*
 	rm -fr ./aleph-vm/opt/aleph-vm/
+	rm -fr ./aleph-vm/opt/firecracker/
+	rm -fr ./aleph-vm/opt/kubo/
+	rm -fr ./aleph-vm/opt/aleph-vm/
 
 all-podman-debian-11: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-debian-11:latest -f ./packaging/debian-11.dockerfile .
