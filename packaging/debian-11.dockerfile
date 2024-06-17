@@ -1,4 +1,4 @@
-FROM rust:bullseye
+FROM rust:1.79.0-bullseye
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     make \
@@ -6,7 +6,6 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     curl \
     sudo \
     python3-pip \
-    cargo \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
