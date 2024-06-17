@@ -41,6 +41,7 @@ jobs:
           cd packaging && make sevctl-podman
           pwd
           ls
+          mkdir -p ./aleph-vm/opt
           cp -p ./target/sevctl ./aleph-vm/opt/sevctl
 
       - run: |
