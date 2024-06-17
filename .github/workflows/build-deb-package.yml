@@ -39,7 +39,9 @@ jobs:
       - name: Build the sevctl binary
         run: |
           cd packaging && make sevctl-podman
-          cp -p target/sevctl aleph-vm/opt/sevctl
+          pwd
+          ls
+          cp -p ./target/sevctl ./aleph-vm/opt/sevctl
 
       - run: |
           cd packaging make ${{ matrix.make_target }} && cd ..
