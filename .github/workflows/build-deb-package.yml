@@ -48,6 +48,14 @@ jobs:
           cd packaging && make ${{ matrix.make_target }} && cd ..
           ls packaging/target
 
+      - name: Ensure that the relevant files are present in the package
+        run: |
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/kubo/ipfs
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/firecracker
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/jailer
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/vmlinux.bin
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/sevctl
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
