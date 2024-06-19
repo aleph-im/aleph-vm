@@ -42,7 +42,7 @@ as the owner of the directory.
 ```shell
 export ROOT_DIR=./extracted
 mkdir ${ROOT_DIR}
-sudo cp -R /mnt/debian/* ${ROOT_DIR}
+sudo cp --archive /mnt/debian/* ${ROOT_DIR}
 sudo chown -R ${USER}:${USER} ${ROOT_DIR}
 ```
 

@@ -137,7 +137,7 @@ sudo mkfs.ext4 "${MAPPED_DEVICE_ID}"
 echo "Copying root file system to the new OS partition..."
 sudo mkdir -p "${MOUNT_POINT}"
 sudo mount "${MAPPED_DEVICE_ID}" "${MOUNT_POINT}"
-sudo cp -R "${ROOTFS_DIR}"/* "${MOUNT_POINT}"
+sudo cp --archive "${ROOTFS_DIR}"/* "${MOUNT_POINT}"
 
 echo "Configuring root file system..."
 for m in run sys proc dev; do sudo mount --bind /$m ${MOUNT_POINT}/$m; done
