@@ -11,8 +11,13 @@ MAPPER_NAME="cr_root"
 LOOP_DEVICE_ID=""
 MAPPED_DEVICE_ID=""
 MOUNT_POINT=""
+CLEANUP_DONE=false
 
 cleanup() {
+  if [ "$CLEANUP_DONE" = true ]; then
+    return
+  fi
+  CLEANUP_DONE=true
   echo "Cleaning up..."
   if mountpoint -q "${MOUNT_POINT}"; then
     sudo umount --recursive "${MOUNT_POINT}" || echo "Failed to unmount ${MOUNT_POINT}"
@@ -36,7 +41,7 @@ cleanup() {
 # - QUIT (SIGQUIT): Signal 3, sent when the user requests the process to quit and perform a core dump (e.g., pressing Ctrl+\).
 # - PIPE (SIGPIPE): Signal 13, sent when attempting to write to a pipe without a reader (e.g., in scripts using pipelines if a command in the pipeline exits prematurely).
 # - TERM (SIGTERM): Signal 15, sent by the kill command to request the process to terminate gracefully.
-trap cleanup HUP INT QUIT PIPE TERM
+trap cleanup EXIT HUP INT QUIT PIPE TERM
 
 usage() {
   cat <<USAGE >&2
