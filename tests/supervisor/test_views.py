@@ -135,7 +135,7 @@ async def test_about_certificates_missing_setting(aiohttp_client):
     settings.ENABLE_CONFIDENTIAL_COMPUTING = False
 
     app = setup_webapp()
-    app["sev_client"] = SevClient(Path().resolve())
+    app["sev_client"] = SevClient(Path().resolve(), Path("/opt/sevctl").resolve())
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/certificates")
     assert response.status == 400
@@ -160,7 +160,7 @@ async def test_about_certificates(aiohttp_client):
         ) as export_mock:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 app = setup_webapp()
-                sev_client = SevClient(Path(tmp_dir))
+                sev_client = SevClient(Path(tmp_dir), Path("/opt/sevctl"))
                 app["sev_client"] = sev_client
                 # Create mock file to return it
                 Path(sev_client.certificates_archive).touch(exist_ok=True)
