@@ -36,14 +36,12 @@ sudo guestmount \
   -i /mnt/debian
 ```
 
-Then, you can simply copy the root file system to any directory, set your own user
-as the owner of the directory.
+Then, you can simply copy the root file system to any directory, take caution to preserve the proper permission like the setuid bit with the --archive option.
 
 ```shell
 export ROOT_DIR=./extracted
 mkdir ${ROOT_DIR}
 sudo cp --archive /mnt/debian/* ${ROOT_DIR}
-sudo chown -R ${USER}:${USER} ${ROOT_DIR}
 ```
 
 Clean up the mount
