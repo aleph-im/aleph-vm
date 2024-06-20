@@ -72,7 +72,7 @@ async def execute_persistent_vm(config: Configuration):
         process = await execution.start(config.vm_configuration.config_file_path)
     else:
         assert isinstance(config.vm_configuration, QemuVMConfiguration)
-        execution = QemuVM(config.vm_configuration)
+        execution = QemuVM(config.vm_hash, config.vm_configuration)
         process = await execution.start()
 
     return execution, process
