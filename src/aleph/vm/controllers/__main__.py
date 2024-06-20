@@ -84,7 +84,7 @@ async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, 
     loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
 
     if config.settings.PRINT_SYSTEM_LOGS:
-        execution.start_printing_logs()
+        execution.start_processing_logs(print_values=config.settings.PRINT_SYSTEM_LOGS)
 
     await process.wait()
     logger.info(f"Process terminated with {process.returncode}")

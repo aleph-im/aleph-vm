@@ -266,7 +266,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         vm_hash: ItemHash,
         resources: AlephProgramResources,
         enable_networking: bool = False,
-        enable_console: bool | None = None,
+        enable_console: bool = True,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: TapInterface | None = None,
         persistent: bool = False,

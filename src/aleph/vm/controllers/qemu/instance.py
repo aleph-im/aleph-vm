@@ -166,15 +166,13 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         vm_hash: ItemHash,
         resources: AlephQemuResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
+        enable_console: bool = True,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
         self.resources = resources
-        if enable_console is None:
-            enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources

@@ -141,8 +141,10 @@ class Settings(BaseSettings):
     CONNECTIVITY_DNS_HOSTNAME = "example.org"
 
     USE_JAILER = True
-    # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS = False
+    # System logs make boot ~2x slower in the case of programs
+    PRINT_SYSTEM_LOGS: bool = Field(
+        default=False, description="Print system logs from virtual machines on stdout. Useful for troubleshooting."
+    )
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
     DEBUG_ASYNCIO = False
 

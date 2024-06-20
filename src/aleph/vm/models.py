@@ -213,6 +213,7 @@ class VmExecution:
                 vm_hash=self.vm_hash,
                 resources=self.resources,
                 enable_networking=self.message.environment.internet,
+                enable_console=True,
                 hardware_resources=self.message.resources,
                 tap_interface=tap_interface,
                 persistent=self.persistent,
@@ -226,6 +227,7 @@ class VmExecution:
                     vm_hash=self.vm_hash,
                     resources=self.resources,
                     enable_networking=self.message.environment.internet,
+                    enable_console=True,
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
                     prepare_jailer=prepare,
@@ -237,6 +239,7 @@ class VmExecution:
                     vm_hash=self.vm_hash,
                     resources=self.resources,
                     enable_networking=self.message.environment.internet,
+                    enable_console=...,
                     hardware_resources=self.message.resources,
                     tap_interface=tap_interface,
                 )

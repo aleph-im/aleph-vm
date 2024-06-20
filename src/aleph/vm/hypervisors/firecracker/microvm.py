@@ -361,7 +361,7 @@ class MicroVM:
         self.drives.append(drive)
         return drive
 
-    async def print_logs(self):
+    async def process_logs_stdout(self, print_values: bool):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
@@ -369,14 +369,15 @@ class MicroVM:
             line = await self.proc.stdout.readline()
             if not line:  # EOF, FD is closed nothing more will come
                 return
+            if print_values:
+                print(self, line.decode().strip())
             for queue in self.log_queues:
                 if queue.full():
                     logger.warning("Log queue is full")
                 else:
                     await queue.put(("stdout", line))
-            print(self, line.decode().strip())
 
-    async def print_logs_stderr(self):
+    async def process_logs_stderr(self, print_values: bool):
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
@@ -384,18 +385,19 @@ class MicroVM:
             line = await self.proc.stderr.readline()
             if not line:  # EOF, FD is closed nothing more will come
                 return
+            if print_values:
+                print(self, line.decode().strip(), file=sys.stderr)
             for queue in self.log_queues:
                 if queue.full():
                     logger.warning("Log queue is full")
                 else:
                     await queue.put(("stderr", line))
                 await queue.put(("stderr", line))
-            print(self, line.decode().strip(), file=sys.stderr)
 
-    def start_printing_logs(self) -> tuple[Task, Task]:
+    def start_processing_logs(self, print_values: bool) -> tuple[Task, Task]:
         loop = asyncio.get_running_loop()
-        self.stdout_task = loop.create_task(self.print_logs())
-        self.stderr_task = loop.create_task(self.print_logs_stderr())
+        self.stdout_task = loop.create_task(self.process_logs_stdout(print_values=print_values))
+        self.stderr_task = loop.create_task(self.process_logs_stderr(print_values=print_values))
         return self.stdout_task, self.stderr_task
 
     async def wait_for_init(self) -> None:

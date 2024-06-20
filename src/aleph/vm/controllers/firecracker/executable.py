@@ -169,7 +169,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         vm_hash: ItemHash,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
+        enable_console: bool = True,
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
         persistent: bool = False,
@@ -178,8 +178,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         self.vm_id = vm_id
         self.vm_hash = vm_hash
         self.resources = resources
-        if enable_console is None:
-            enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources or MachineResources()
@@ -259,8 +257,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
                 await self.tap_interface.delete()
             raise
 
-        if self.enable_console:
-            self.fvm.start_printing_logs()
+        if self.enable_console and settings.PRINT_SYSTEM_LOGS:
+            self.fvm.start_processing_logs()
 
         await self.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")

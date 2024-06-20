@@ -66,7 +66,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         vm_hash: ItemHash,
         resources: AlephInstanceResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
+        enable_console: bool = True,
         hardware_resources: Optional[MachineResources] = None,
         tap_interface: Optional[TapInterface] = None,
         prepare_jailer: bool = True,
