@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import shutil
-import sys
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
