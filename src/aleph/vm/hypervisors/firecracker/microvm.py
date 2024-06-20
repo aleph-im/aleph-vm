@@ -16,6 +16,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Optional
 
 import msgpack
+from systemd import journal
 
 from .config import Drive, FirecrackerConfig
 
@@ -84,7 +85,6 @@ class MicroVM:
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
-    log_queues: list[asyncio.Queue]
     config_file_path: Optional[Path] = None
     drives: list[Drive]
     init_timeout: float
@@ -121,6 +121,14 @@ class MicroVM:
         else:
             return f"{VSOCK_PATH}"
 
+    @property
+    def journal_message_id_prefix(self) -> str:
+        """Prefix the message ids used when sending logs to the journal.
+
+        The prefix will be appended with `-stdout` or `-stderr` to differentiate between the two.
+        """
+        return f"firecracker-{self.vm_id}"
+
     def __init__(
         self,
         vm_id: int,
@@ -138,7 +146,6 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
-        self.log_queues: list[asyncio.Queue] = []
 
     def to_dict(self) -> dict:
         return {
@@ -362,6 +369,7 @@ class MicroVM:
         return drive
 
     async def process_logs_stdout(self, print_values: bool):
+        """Forward the stdout of the firecracker process to journal and print to stdout."""
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
@@ -369,15 +377,12 @@ class MicroVM:
             line = await self.proc.stdout.readline()
             if not line:  # EOF, FD is closed nothing more will come
                 return
+            journal.send(line.decode().strip(), SYSLOG_IDENTIFIER=f"{self.journal_message_id_prefix}-stdout")
             if print_values:
                 print(self, line.decode().strip())
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stdout", line))
 
     async def process_logs_stderr(self, print_values: bool):
+        """Forward the stderr of the firecracker process to journal and print to stderr."""
         while not self.proc:
             await asyncio.sleep(0.01)  # Todo: Use signal here
         while True:
@@ -387,12 +392,7 @@ class MicroVM:
                 return
             if print_values:
                 print(self, line.decode().strip(), file=sys.stderr)
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stderr", line))
-                await queue.put(("stderr", line))
+            journal.send(line.decode().strip(), SYSLOG_IDENTIFIER=f"{self.journal_message_id_prefix}-stderr")
 
     def start_processing_logs(self, print_values: bool) -> tuple[Task, Task]:
         loop = asyncio.get_running_loop()

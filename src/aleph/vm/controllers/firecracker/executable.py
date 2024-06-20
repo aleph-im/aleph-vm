@@ -257,8 +257,8 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
                 await self.tap_interface.delete()
             raise
 
-        if self.enable_console and settings.PRINT_SYSTEM_LOGS:
-            self.fvm.start_processing_logs()
+        if self.enable_console:
+            self.fvm.start_processing_logs(print_values=settings.PRINT_SYSTEM_LOGS)
 
         await self.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")
