@@ -92,7 +92,7 @@ class EntryDict(TypedDict):
     MESSAGE: str
 
 
-def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> tuple[asyncio.Queue, Callable[[], None]]:
+def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=False) -> tuple[asyncio.Queue, Callable[[], None]]:
     """Create a queue which streams the logs for the process.
 
     @param stdout_identifier: journald identifier for process stdout
@@ -131,6 +131,7 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=True) -> tup
     loop.add_reader(r.fileno(), _ready_for_read)
 
     def do_cancel():
+        logger.info(f"cancelling reader {r}")
         loop.remove_reader(r.fileno())
         r.close()
 
@@ -244,7 +245,11 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         )
 
         configuration = Configuration(
-            vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
+            vm_id=self.vm_id,
+            vm_hash=self.vm_hash,
+            settings=settings,
+            vm_configuration=vm_configuration,
+            hypervisor=HypervisorType.qemu,
         )
 
         save_controller_configuration(self.vm_hash, configuration)
