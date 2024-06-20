@@ -48,11 +48,11 @@ from .views import (
 )
 from .views.operator import (
     operate_confidential_initialize,
+    operate_confidential_inject_secret,
+    operate_confidential_measurement,
     operate_erase,
     operate_expire,
     operate_reboot,
-    operate_confidential_inject_secret,
-    operate_confidential_measurement,
     operate_stop,
     stream_logs,
 )
