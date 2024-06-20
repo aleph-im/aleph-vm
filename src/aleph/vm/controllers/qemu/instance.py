@@ -320,18 +320,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         """Print logs to our output for debugging"""
         queue = self.get_log_queue()
 
-        async def print_logs():
-            try:
-                while True:
-                    log_type, message = await queue.get()
-                    fd = sys.stderr if log_type == "stderr" else sys.stdout
-                    print(self, message, file=fd)
-            finally:
-                self.unregister_queue(queue)
-
-        loop = asyncio.get_running_loop()
-        self.print_task = loop.create_task(print_logs(), name=f"{self}-print-logs")
-
     def get_log_queue(self) -> asyncio.Queue:
         queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
         self._queue_cancellers[queue] = canceller
