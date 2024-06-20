@@ -109,8 +109,8 @@ def setup_webapp():
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
-        web.get("/control/machine/{ref}/sev/measurement", operate_sev_measurement),
-        web.post("/control/machine/{ref}/sev/inject_disk_secret", operate_sev_inject_secret),
+        web.get("/control/machine/{ref}/confidential/measurement", operate_sev_measurement),
+        web.post("/control/machine/{ref}/confidential/inject_secret", operate_sev_inject_secret),
         # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
