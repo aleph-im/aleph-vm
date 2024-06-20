@@ -107,8 +107,11 @@ import aiohttp
 def on_message(content):
     try:
         msg = json.loads(content)
-        fd = sys.stderr if msg["type"] == "stderr" else sys.stdout
-        print("<", msg["message"], file=fd, end="")
+        if msg.get('status'):
+            print(msg)
+        else:
+            fd = sys.stderr if msg["type"] == "stderr" else sys.stdout
+            print("<", msg["message"], file=fd, end="")
     except:
         print("unable to parse", content)
 
@@ -125,7 +128,6 @@ async def tail_websocket(url):
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     print("Error", msg)
-                    break
 
 
 vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
