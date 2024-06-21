@@ -236,7 +236,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_sev_measurement(request: web.Request, authenticated_sender) -> web.Response:
+async def operate_confidential_measurement(request: web.Request, authenticated_sender) -> web.Response:
     """
     Fetch the sev measurement for the VM
     """
@@ -272,7 +272,7 @@ class InjectSecretParams(BaseModel):
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_sev_inject_secret(request: web.Request, authenticated_sender) -> web.Response:
+async def operate_confidential_inject_secret(request: web.Request, authenticated_sender) -> web.Response:
     """
     Send secret to the VM and start it
     """
