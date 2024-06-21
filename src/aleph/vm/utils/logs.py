@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import TypedDict, Callable
+from typing import Callable, TypedDict
 
 from systemd import journal
 
