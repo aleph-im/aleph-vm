@@ -1,15 +1,13 @@
-import asyncio
 import json
 import logging
 import shutil
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Callable, Generic, Optional, TypeVar, Union
+from typing import Generic, Optional, TypeVar, Union
 
 import psutil
 
-from aleph.vm.utils.logs import make_logs_queue
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
@@ -101,7 +99,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     support_snapshot = False
     qmp_socket_path = None
     persistent = True
-    _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
 
     def __repr__(self):
@@ -121,7 +118,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
-        self.vm_hash = vm_hash
         self.resources = resources
         if enable_console is None:
             enable_console = settings.PRINT_SYSTEM_LOGS
@@ -130,6 +126,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
         self.qemu_process = None
+
+        self.vm_hash = vm_hash
 
     # TODO : wait for andress soltion for pid handling
     def to_dict(self):
@@ -210,14 +208,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         path.chmod(0o644)
         return path
 
-    @property
-    def _journal_stdout_name(self) -> str:
-        return f"vm-{self.vm_hash}-stdout"
-
-    @property
-    def _journal_stderr_name(self) -> str:
-        return f"vm-{self.vm_hash}-stderr"
-
     async def start(self):
         # Start via systemd not here
         raise NotImplementedError()
@@ -253,7 +243,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         pass
 
     print_task: Optional[Task] = None
-    log_queues: list[asyncio.Queue] = []
 
     async def teardown(self):
         if self.print_task:
@@ -268,21 +257,3 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     def print_logs(self) -> None:
         """Print logs to our output for debugging"""
         queue = self.get_log_queue()
-
-    def get_log_queue(self) -> asyncio.Queue:
-        queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
-        self._queue_cancellers[queue] = canceller
-        # Limit the number of queues per VM
-        # TODO : fix
-        if len(self.log_queues) > 20:
-            logger.warning("Too many log queues, dropping the oldest one")
-            self.unregister_queue(self.log_queues[1])
-        self.log_queues.append(queue)
-        return queue
-
-    def unregister_queue(self, queue: asyncio.Queue) -> None:
-        if queue in self.log_queues:
-            self._queue_cancellers[queue]()
-            del self._queue_cancellers[queue]
-            self.log_queues.remove(queue)
-        queue.empty()

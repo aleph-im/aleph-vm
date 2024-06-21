@@ -61,6 +61,7 @@ async def execute_persistent_vm(config: Configuration):
         assert isinstance(config.vm_configuration, VMConfiguration)
         execution = MicroVM(
             vm_id=config.vm_id,
+            vm_hash=config.vm_hash,
             firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
             jailer_base_directory=config.settings.JAILER_BASE_DIR,
             use_jailer=config.vm_configuration.use_jailer,
@@ -82,9 +83,6 @@ async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, 
     # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
     loop = asyncio.get_event_loop()
     loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
-
-    if config.settings.PRINT_SYSTEM_LOGS:
-        execution.start_printing_logs()
 
     await process.wait()
     logger.info(f"Process terminated with {process.returncode}")
