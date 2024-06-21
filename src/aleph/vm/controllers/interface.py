@@ -3,14 +3,14 @@ import logging
 from abc import ABC
 from asyncio.subprocess import Process
 from collections.abc import Coroutine
-from typing import Any, Optional, Callable
+from typing import Any, Callable, Optional
 
-from aleph.vm.utils.logs import make_logs_queue
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.utils.logs import make_logs_queue
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,6 @@ class AlephVmControllerInterface(ABC):
             del self._queue_cancellers[queue]
             self.log_queues.remove(queue)
         queue.empty()
-
 
     @property
     def _journal_stdout_name(self) -> str:
