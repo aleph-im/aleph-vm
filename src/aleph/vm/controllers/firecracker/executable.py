@@ -194,6 +194,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
+            enable_log=enable_console,
         )
         if prepare_jailer:
             self.fvm.prepare_jailer()
