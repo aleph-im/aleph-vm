@@ -16,9 +16,9 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Optional, TextIO
 
 import msgpack
+from aleph_message.models import ItemHash
 from systemd import journal
 
-from aleph_message.models import ItemHash
 from .config import Drive, FirecrackerConfig
 
 logger = logging.getLogger(__name__)
@@ -218,11 +218,11 @@ class MicroVM:
             str(config_path),
         )
         if self.enable_log:
-            journal_stdout: Optional[TextIO] = journal.stream(self._journal_stdout_name)
-            journal_stderr: Optional[TextIO] = journal.stream(self._journal_stderr_name)
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
         else:
-            journal_stdout = None
-            journal_stderr = None
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         logger.debug(" ".join(options))
 
@@ -251,11 +251,11 @@ class MicroVM:
 
         self.config_file_path = config_path
         if self.enable_log:
-            journal_stdout: Optional[TextIO] = journal.stream(self._journal_stdout_name)
-            journal_stderr: Optional[TextIO] = journal.stream(self._journal_stderr_name)
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
         else:
-            journal_stdout = None
-            journal_stderr = None
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         options = (
             str(self.jailer_bin_path),

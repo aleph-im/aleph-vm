@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Generic, Optional, TypeVar, Union
 
 import psutil
-
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
