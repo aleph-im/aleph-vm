@@ -1,5 +1,6 @@
 import asyncio
 from asyncio.subprocess import Process
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, TextIO
 
@@ -8,6 +9,12 @@ from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
+
+
+@dataclass
+class HostVolume:
+    path_on_host: Path
+    read_only: bool
 
 
 class QemuVM:
@@ -20,6 +27,8 @@ class QemuVM:
     mem_size_mb: int
     interface_name: str
     qemu_process: Optional[Process] = None
+    host_volumes: list[HostVolume]
+
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -37,6 +46,14 @@ class QemuVM:
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
         self.vm_hash = vm_hash
+
+        self.host_volumes = [
+            HostVolume(
+                path_on_host=volume.path_on_host,
+                read_only=volume.read_only,
+            )
+            for volume in config.host_volumes
+        ]
 
     @property
     def _journal_stdout_name(self) -> str:
@@ -88,6 +105,9 @@ class QemuVM:
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
         ]
+        for volume in self.host_volumes:
+            args += "-drive"
+            args += f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}"
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]

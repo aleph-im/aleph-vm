@@ -3,6 +3,7 @@ from asyncio.subprocess import Process
 from pathlib import Path
 from typing import TextIO
 
+from aleph_message.models.execution.environment import AMDSEVPolicy
 from cpuid.features import secure_encryption_info
 from systemd import journal
 
@@ -13,9 +14,9 @@ from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 
 class QemuConfidentialVM(QemuVM):
 
-    sev_policy: str = "0x1"  # FIXME have it passed from guest
+    sev_policy: str = hex(AMDSEVPolicy.NO_DBG)
     sev_dh_cert_file: Path  # "vm_godh.b64"
-    sev_session_file: Path  #  "vm_session.b64"
+    sev_session_file: Path  # "vm_session.b64"
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -37,6 +38,7 @@ class QemuConfidentialVM(QemuVM):
         self.ovmf_path: Path = config.ovmf_path
         self.sev_session_file = config.sev_session_file
         self.sev_dh_cert_file = config.sev_dh_cert_file
+        self.sev_policy = hex(config.sev_policy)
 
     def prepare_start(self):
         pass
@@ -108,6 +110,9 @@ class QemuConfidentialVM(QemuVM):
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
         ]
+        for volume in self.host_volumes:
+            args += "-drive"
+            args += f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}"
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
