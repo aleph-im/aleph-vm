@@ -16,6 +16,7 @@ from aleph.vm.orchestrator.views.authentication import (
 )
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import cors_allow_all
+from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,27 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     finally:
         if queue:
             execution.vm.unregister_queue(queue)
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_logs(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
+    """Logs of a VM (not streaming)"""
+    vm_hash = get_itemhash_or_400(request.match_info)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    response = web.StreamResponse()
+    response.headers["Content-Type"] = "text/plain"
+    await response.prepare(request)
+
+    for entry in execution.vm.past_logs():
+        msg = entry["__REALTIME_TIMESTAMP"].isoformat() + "> " + entry["MESSAGE"] + "\n"
+        await response.write(msg.encode())
+    await response.write_eof()
+    return response
 
 
 async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: ItemHash, ws: web.WebSocketResponse):

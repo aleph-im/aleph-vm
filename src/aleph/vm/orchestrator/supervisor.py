@@ -49,6 +49,7 @@ from .views import (
 from .views.operator import (
     operate_erase,
     operate_expire,
+    operate_logs,
     operate_reboot,
     operate_stop,
     stream_logs,
