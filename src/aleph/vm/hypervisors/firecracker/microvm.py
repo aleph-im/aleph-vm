@@ -92,6 +92,7 @@ class MicroVM:
     runtime_config: Optional[RuntimeConfiguration]
     mounted_rootfs: Optional[Path] = None
     _unix_socket: Optional[Server] = None
+    enable_log: bool
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
@@ -131,6 +132,7 @@ class MicroVM:
         use_jailer: bool = True,
         jailer_bin_path: Optional[Path] = None,
         init_timeout: float = 5.0,
+        enable_log: bool = True,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -141,6 +143,7 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
+        self.enable_log = enable_log
 
     def to_dict(self) -> dict:
         return {
@@ -214,9 +217,12 @@ class MicroVM:
             "--config-file",
             str(config_path),
         )
-
-        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
-        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
+        if self.enable_log:
+            journal_stdout: Optional[TextIO] = journal.stream(self._journal_stdout_name)
+            journal_stderr: Optional[TextIO] = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = None
+            journal_stderr = None
 
         logger.debug(" ".join(options))
 
@@ -244,8 +250,12 @@ class MicroVM:
         gid = str(getpwnam("jailman").pw_gid)
 
         self.config_file_path = config_path
-        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
-        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
+        if self.enable_log:
+            journal_stdout: Optional[TextIO] = journal.stream(self._journal_stdout_name)
+            journal_stderr: Optional[TextIO] = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = None
+            journal_stderr = None
 
         options = (
             str(self.jailer_bin_path),
