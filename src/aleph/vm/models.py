@@ -110,7 +110,7 @@ class VmExecution:
 
     @property
     def is_confidential(self) -> bool:
-        return self.uses_payment_stream  # TODO: check also if the VM message is confidential
+        return True if self.message.environment.trusted_execution else False
 
     @property
     def hypervisor(self) -> HypervisorType:
@@ -186,14 +186,19 @@ class VmExecution:
                 return
 
             self.times.preparing_at = datetime.now(tz=timezone.utc)
-            resources: Union[AlephProgramResources, AlephInstanceResources, AlephQemuResources]
+            resources: Union[
+                AlephProgramResources, AlephInstanceResources, AlephQemuResources, AlephQemuConfidentialInstance
+            ]
             if self.is_program:
                 resources = AlephProgramResources(self.message, namespace=self.vm_hash)
             elif self.is_instance:
                 if self.hypervisor == HypervisorType.firecracker:
                     resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
                 elif self.hypervisor == HypervisorType.qemu:
-                    resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+                    if self.is_confidential:
+                        resources = AlephQemuConfidentialResources(self.message, namespace=self.vm_hash)
+                    else:
+                        resources = AlephQemuResources(self.message, namespace=self.vm_hash)
                 else:
                     raise ValueError(f"Unknown hypervisor type {self.hypervisor}")
             else:

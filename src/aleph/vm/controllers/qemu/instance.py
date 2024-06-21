@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import shutil
@@ -17,6 +18,7 @@ from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
     QemuVMConfiguration,
+    QemuVMHostVolume,
     save_controller_configuration,
 )
 from aleph.vm.controllers.firecracker.executable import (
@@ -34,10 +36,16 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    async def download_all(self) -> None:
+    async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
         parent_image_path = await get_rootfs_base_path(volume.parent.ref)
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
+
+    async def download_all(self):
+        await asyncio.gather(
+            self.download_runtime(),
+            self.download_volumes(),
+        )
 
     async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
@@ -181,6 +189,14 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
+            host_volumes=[
+                QemuVMHostVolume(
+                    mount=volume.mount,
+                    path_on_host=volume.path_on_host,
+                    read_only=volume.read_only,
+                )
+                for volume in self.resources.volumes
+            ],
         )
 
         configuration = Configuration(

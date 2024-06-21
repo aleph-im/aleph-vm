@@ -2,10 +2,11 @@ import asyncio
 import logging
 import shutil
 from asyncio.subprocess import Process
+from pathlib import Path
 from typing import Callable, Optional
 
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
+from aleph_message.models.execution.environment import AMDSEVPolicy, MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -21,19 +22,30 @@ from aleph.vm.controllers.qemu.instance import (
     logger,
 )
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.storage import get_existing_file
 
 logger = logging.getLogger(__name__)
 
 
 class AlephQemuConfidentialResources(AlephQemuResources):
-    # TODO: Implement download of the custom OVMF bootloader to use if specified, if not only use the default one.
-    pass
+    firmware_path: Path
+
+    async def download_firmware(self):
+        firmware = self.message_content.environment.trusted_execution.firmware
+        self.firmware_path = await get_existing_file(firmware)
+
+    async def download_all(self):
+        await asyncio.gather(
+            self.download_runtime(),
+            self.download_firmware(),
+            self.download_volumes(),
+        )
 
 
 class AlephQemuConfidentialInstance(AlephQemuInstance):
     vm_id: int
     vm_hash: ItemHash
-    resources: AlephQemuResources
+    resources: AlephQemuConfidentialResources
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
@@ -45,6 +57,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
+    confidential_policy: int
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -56,12 +69,17 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         self,
         vm_id: int,
         vm_hash: ItemHash,
-        resources: AlephQemuResources,
+        resources: AlephQemuConfidentialResources,
         enable_networking: bool = False,
+        confidential_policy: int = AMDSEVPolicy.NO_DBG,
         enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
+        super().__init__(
+            vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface
+        )
+        self.confidential_policy = confidential_policy
         super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
 
     async def setup(self):
@@ -76,6 +94,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         cloud_init_drive = await self._create_cloud_init_drive()
 
         image_path = str(self.resources.rootfs_path)
+        firmware_path = str(self.resources.firmware_path)
         vcpu_count = self.hardware_resources.vcpus
         mem_size_mib = self.hardware_resources.memory
         mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
@@ -98,9 +117,10 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
-            ovmf_path="/home/olivier/custom-OVMF.fd",
+            ovmf_path=firmware_path,
             sev_session_file=session_file_path,
             sev_dh_cert_file=godh_file_path,
+            sev_policy=self.confidential_policy,
         )
 
         configuration = Configuration(
