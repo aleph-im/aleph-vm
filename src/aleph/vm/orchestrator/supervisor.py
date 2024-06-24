@@ -102,6 +102,7 @@ def setup_webapp():
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
         web.get("/control/machine/{ref}/logs", stream_logs),
+        web.get("/control/machine/{ref}/logs2", operate_logs),
         web.post("/control/machine/{ref}/expire", operate_expire),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
