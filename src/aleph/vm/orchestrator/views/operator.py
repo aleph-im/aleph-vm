@@ -103,7 +103,7 @@ async def operate_logs(request: web.Request, authenticated_sender: str) -> web.S
     await response.prepare(request)
 
     for entry in execution.vm.past_logs():
-        msg = entry["__REALTIME_TIMESTAMP"].isoformat() + "> " + entry["MESSAGE"] + "\n"
+        msg = f"{entry["__REALTIME_TIMESTAMP"].isoformat()}> {entry["MESSAGE"]}"
         await response.write(msg.encode())
     await response.write_eof()
     return response

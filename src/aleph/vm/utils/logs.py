@@ -60,18 +60,15 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=False) -> tu
     return queue, do_cancel
 
 
-def get_past_vm_logs(stdout_identifier, stderr_identifier, skip_past=False) -> Generator[EntryDict, None, None]:
-    """Create a queue which streams the logs for the process.
+def get_past_vm_logs(stdout_identifier, stderr_identifier) -> Generator[EntryDict, None, None]:
+    """Get existing log for the VM identifiers.
 
     @param stdout_identifier: journald identifier for process stdout
     @param stderr_identifier: journald identifier for process stderr
-    @return: queue and function to cancel the queue.
-
-    The consumer is required to call the queue cancel function when it's done consuming the queue.
+    @return: an iterator of log entry
 
     Works by creating a journald reader, and using `add_reader` to call a callback when
     data is available for reading.
-    In the callback we check the message type and fill the queue accordingly
 
     For more information refer to the sd-journal(3) manpage
     and systemd.journal module documentation.
