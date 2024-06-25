@@ -13,6 +13,7 @@ from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
     QemuConfidentialVMConfiguration,
+    QemuVMHostVolume,
     save_controller_configuration,
 )
 from aleph.vm.controllers.qemu import AlephQemuInstance
@@ -121,6 +122,14 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
             sev_session_file=session_file_path,
             sev_dh_cert_file=godh_file_path,
             sev_policy=self.confidential_policy,
+            host_volumes=[
+                QemuVMHostVolume(
+                    mount=volume.mount,
+                    path_on_host=volume.path_on_host,
+                    read_only=volume.read_only,
+                )
+                for volume in self.resources.volumes
+            ],
         )
 
         configuration = Configuration(
