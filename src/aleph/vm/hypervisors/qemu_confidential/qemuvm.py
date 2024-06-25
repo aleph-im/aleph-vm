@@ -111,8 +111,10 @@ class QemuConfidentialVM(QemuVM):
             # "-snapshot",  # Do not save anything to disk
         ]
         for volume in self.host_volumes:
-            args += "-drive"
-            args += f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}"
+            args += [
+                "-drive",
+                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}",
+            ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
