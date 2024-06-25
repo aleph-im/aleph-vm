@@ -29,7 +29,6 @@ class QemuVM:
     qemu_process: Optional[Process] = None
     host_volumes: list[HostVolume]
 
-
     def __repr__(self) -> str:
         if self.qemu_process:
             return f"<QemuVM: {self.qemu_process.pid}>"
@@ -108,7 +107,7 @@ class QemuVM:
         for volume in self.host_volumes:
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}",
+                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
             ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself

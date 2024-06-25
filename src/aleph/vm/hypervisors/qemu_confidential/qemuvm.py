@@ -113,7 +113,7 @@ class QemuConfidentialVM(QemuVM):
         for volume in self.host_volumes:
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'}",
+                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
             ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
