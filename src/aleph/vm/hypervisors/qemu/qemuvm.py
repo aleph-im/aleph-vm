@@ -19,7 +19,7 @@ class QemuVM:
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
-    qemu_process = None
+    qemu_process: Optional[Process] = None
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -95,6 +95,7 @@ class QemuVM:
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
         print(*args)
+
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,

@@ -62,9 +62,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
-        super().__init__(
-            vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface
-        )
+        super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
 
     async def setup(self):
         pass
@@ -106,7 +104,11 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         )
 
         configuration = Configuration(
-            vm_id=self.vm_id, settings=settings, vm_configuration=vm_configuration, hypervisor=HypervisorType.qemu
+            vm_id=self.vm_id,
+            vm_hash=self.vm_hash,
+            settings=settings,
+            vm_configuration=vm_configuration,
+            hypervisor=HypervisorType.qemu,
         )
         logger.debug(configuration)
 

@@ -16,7 +16,7 @@ class QemuVmClient:
     def __init__(self, vm):
         self.vm = vm
         if not (vm.qmp_socket_path and vm.qmp_socket_path.exists()):
-            raise Exception
+            raise Exception("VM is not running")
         client = qmp.QEMUMonitorProtocol(str(vm.qmp_socket_path))
         client.connect()
 

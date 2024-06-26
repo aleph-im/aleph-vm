@@ -1,8 +1,10 @@
 import asyncio
 from asyncio.subprocess import Process
 from pathlib import Path
+from typing import TextIO
 
 from cpuid.features import secure_encryption_info
+from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
@@ -21,8 +23,8 @@ class QemuConfidentialVM(QemuVM):
         else:
             return "<QemuConfidentialVM: not running>"
 
-    def __init__(self, config: QemuConfidentialVMConfiguration):
-        super().__init__(config)
+    def __init__(self, vm_hash, config: QemuConfidentialVMConfiguration):
+        super().__init__(vm_hash, config)
         self.qemu_bin_path = config.qemu_bin_path
         self.cloud_init_drive_path = config.cloud_init_drive_path
         self.image_path = config.image_path
@@ -47,6 +49,8 @@ class QemuConfidentialVM(QemuVM):
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
+        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
+        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
 
         # TODO : ensure this is ok at launch
         sev_info = secure_encryption_info()
@@ -114,9 +118,11 @@ class QemuConfidentialVM(QemuVM):
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
 
-        logger.debug(f"started QemuConfidentialVM vm {self}, {proc}")
+        print(
+            f"Started QemuVm {self}, {proc}. Log available with: journalctl -t  {self._journal_stdout_name} -t {self._journal_stderr_name}"
+        )
         return proc
