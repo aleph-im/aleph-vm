@@ -58,7 +58,6 @@ async def test_create_qemu_instance():
     settings.USE_JAILER = False
 
     logging.basicConfig(level=logging.DEBUG)
-    settings.PRINT_SYSTEM_LOGS = True
 
     # Ensure that the settings are correct and required files present.
     settings.setup()
@@ -114,7 +113,6 @@ async def test_create_qemu_instance_online():
     settings.USE_JAILER = False
 
     logging.basicConfig(level=logging.DEBUG)
-    settings.PRINT_SYSTEM_LOGS = True
 
     # Ensure that the settings are correct and required files present.
     settings.setup()

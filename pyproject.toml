@@ -7,7 +7,7 @@ name = "aleph-vm"
 dynamic = ["version"]
 description = "Aleph.im VM execution engine"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 keywords = []
 authors = [
@@ -87,10 +87,10 @@ check = "aleph-vm controller run {args:--help}"
 type = "virtual"
 system-packages = true
 dependencies = [
-  "pytest==8.0.1",
-  "pytest-cov==4.1.0",
-  "pytest-mock==3.12.0",
-  "pytest-asyncio==0.23.5",
+  "pytest==8.2.1",
+  "pytest-cov==5.0.0",
+  "pytest-mock==3.14.0",
+  "pytest-asyncio==0.23.7",
   "pytest-aiohttp==1.0.5",
 ]
 [tool.hatch.envs.testing.scripts]
@@ -106,14 +106,14 @@ cov = [
 ]
 
 [[tool.hatch.envs.all.matrix]]
-python = ["3.9", "3.10", "3.11", "3.12"]
+python = ["3.10", "3.11", "3.12"]
 
 [tool.hatch.envs.lint]
 detached = true
 dependencies = [
-  "black==24.1.1",
+  "black==24.3.0",
   "mypy==1.8.0",
-  "ruff==0.1.15",
+  "ruff==0.4.6",
   "isort==5.13.2",
 ]
 [tool.hatch.envs.lint.scripts]
@@ -152,7 +152,7 @@ line-length = 120
 #skip-string-normalization = true
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 install_types = true
 non_interactive = true
 ignore_missing_imports = true
@@ -160,8 +160,9 @@ explicit_package_bases = true
 check_untyped_defs = true
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
+[tool.ruff.lint]
 select = [
   "A",
   "ARG",
@@ -206,13 +207,12 @@ ignore = [
 #  "F401",
 #]
 
-[tool.ruff.isort]
-known-first-party = ["aleph.vm"]
+isort.known-first-party = ["aleph.vm"]
 
 #[tool.ruff.flake8-tidy-imports]
 #ban-relative-imports = "all"
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 # Tests can use magic values, assertions, and relative imports
 "tests/**/*" = ["PLR2004", "S101", "TID252"]
 

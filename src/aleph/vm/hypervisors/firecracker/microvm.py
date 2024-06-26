@@ -13,9 +13,11 @@ from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Any, Optional
+from typing import Any, Optional, TextIO
 
 import msgpack
+from aleph_message.models import ItemHash
+from systemd import journal
 
 from .config import Drive, FirecrackerConfig
 
@@ -84,13 +86,13 @@ class MicroVM:
     proc: Optional[asyncio.subprocess.Process] = None
     stdout_task: Optional[Task] = None
     stderr_task: Optional[Task] = None
-    log_queues: list[asyncio.Queue]
     config_file_path: Optional[Path] = None
     drives: list[Drive]
     init_timeout: float
     runtime_config: Optional[RuntimeConfiguration]
     mounted_rootfs: Optional[Path] = None
     _unix_socket: Optional[Server] = None
+    enable_log: bool
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
@@ -124,13 +126,16 @@ class MicroVM:
     def __init__(
         self,
         vm_id: int,
+        vm_hash: ItemHash,
         firecracker_bin_path: Path,
         jailer_base_directory: Path,
         use_jailer: bool = True,
         jailer_bin_path: Optional[Path] = None,
         init_timeout: float = 5.0,
+        enable_log: bool = True,
     ):
         self.vm_id = vm_id
+        self.vm_hash = vm_hash
         self.use_jailer = use_jailer
         self.jailer_base_directory = jailer_base_directory
         self.firecracker_bin_path = firecracker_bin_path
@@ -138,7 +143,7 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
-        self.log_queues: list[asyncio.Queue] = []
+        self.enable_log = enable_log
 
     def to_dict(self) -> dict:
         return {
@@ -212,16 +217,30 @@ class MicroVM:
             "--config-file",
             str(config_path),
         )
+        if self.enable_log:
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         logger.debug(" ".join(options))
 
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
         return self.proc
+
+    @property
+    def _journal_stdout_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def _journal_stderr_name(self) -> str:
+        return f"vm-{self.vm_hash}-stderr"
 
     async def start_jailed_firecracker(self, config_path: Path) -> asyncio.subprocess.Process:
         if not self.jailer_bin_path:
@@ -231,6 +250,12 @@ class MicroVM:
         gid = str(getpwnam("jailman").pw_gid)
 
         self.config_file_path = config_path
+        if self.enable_log:
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         options = (
             str(self.jailer_bin_path),
@@ -254,8 +279,8 @@ class MicroVM:
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
         return self.proc
 
@@ -360,43 +385,6 @@ class MicroVM:
         )
         self.drives.append(drive)
         return drive
-
-    async def print_logs(self):
-        while not self.proc:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.proc.stdout, "Process stdout is missing"
-            line = await self.proc.stdout.readline()
-            if not line:  # EOF, FD is closed nothing more will come
-                return
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stdout", line))
-            print(self, line.decode().strip())
-
-    async def print_logs_stderr(self):
-        while not self.proc:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.proc.stderr, "Process stderr is missing"
-            line = await self.proc.stderr.readline()
-            if not line:  # EOF, FD is closed nothing more will come
-                return
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stderr", line))
-                await queue.put(("stderr", line))
-            print(self, line.decode().strip(), file=sys.stderr)
-
-    def start_printing_logs(self) -> tuple[Task, Task]:
-        loop = asyncio.get_running_loop()
-        self.stdout_task = loop.create_task(self.print_logs())
-        self.stderr_task = loop.create_task(self.print_logs_stderr())
-        return self.stdout_task, self.stderr_task
 
     async def wait_for_init(self) -> None:
         """Wait for a connection from the init in the VM"""

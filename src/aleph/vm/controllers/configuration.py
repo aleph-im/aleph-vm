@@ -50,6 +50,7 @@ class HypervisorType(str, Enum):
 
 class Configuration(BaseModel):
     vm_id: int
+    vm_hash: str
     settings: Settings
     vm_configuration: Union[QemuConfidentialVMConfiguration, QemuVMConfiguration, VMConfiguration]
     hypervisor: HypervisorType = HypervisorType.firecracker

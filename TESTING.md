@@ -44,3 +44,30 @@ hatch env create testing
 ```shell
 hatch run testing:test
 ```
+
+
+## Debugging the tests
+Some tricks and options that might help debugging problematic tests.
+
+Only launch pytest with a test name and more verbose debugging
+```shell
+hatch run testing:pytest -vv --log-level=DEBUG --full-trace -o log_cli=true -k <TEST NAME>
+```
+
+
+Specify `--capture=no` to pytest so it launch. This way you get the full output, including firecracker logs
+
+## Debugging runtimes
+If the error is in the runtime:
+Modify the #!  to pass the -v option to python, which will print all the debugging info
+`#!/usr/bin/python3 -vOO`
+
+To have these modification take effect you need to rebuild the runtime file using `create_disk_image.sh` as _root_
+
+```shell
+sudo bash create_disk_image.sh
+```
+
+Don't forget to have the print system log option set `ALEPH_VM_PRINT_SYSTEM_LOGS=1`
+
+`aleph-debian-12-python` is used in test_create_execution

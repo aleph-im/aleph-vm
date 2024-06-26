@@ -7,6 +7,7 @@ jobs:
     name: "Build ${{ matrix.os }} Package"
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         os: ["debian-11", "debian-12", "ubuntu-22.04"]
         include:
@@ -26,12 +27,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          submodules: true
           # Fetch the whole history for all tags and branches (required for aleph.__version__)
           fetch-depth: 0
+
+      - name: Initialize git submodules
+        run: git submodule init
 
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
           ls packaging/target
+
+      - name: Ensure that the relevant files are present in the package
+        run: |
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/kubo/ipfs
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/firecracker
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/jailer
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/vmlinux.bin
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/sevctl
 
       - uses: actions/upload-artifact@v4
         with:

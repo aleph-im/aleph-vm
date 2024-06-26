@@ -15,7 +15,6 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
-from aleph.vm.orchestrator.views import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -73,7 +72,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         try:
-            await authenticate_for_vm_or_403(execution, request, vm_hash, ws)
+            await authenticate_websocket_for_vm_or_403(execution, vm_hash, ws)
             await ws.send_json({"status": "connected"})
 
             queue = execution.vm.get_log_queue()
@@ -93,12 +92,12 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             execution.vm.unregister_queue(queue)
 
 
-async def authenticate_for_vm_or_403(execution, request, vm_hash, ws):
-    """Allow authentication via HEADER or via websocket"""
-    if authenticate_api_request(request):
-        logger.debug(f"Accepted request to access logs via the allocatioan api key on {vm_hash}")
-        return True
+async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: ItemHash, ws: web.WebSocketResponse):
+    """Authenticate a websocket connection.
 
+    Web browsers do not allow setting headers in WebSocket requests, so the authentication
+    relies on the first message sent by the client.
+    """
     first_message = await ws.receive_json()
     credentials = first_message["auth"]
     authenticated_sender = await authenticate_websocket_message(credentials)
@@ -231,7 +230,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
             await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
         return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
     else:
-        return web.Response(status=200, body="Starting VM (was not running) with ref {vm_hash}")
+        return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
 
 
 @cors_allow_all

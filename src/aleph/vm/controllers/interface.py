@@ -3,18 +3,22 @@ import logging
 from abc import ABC
 from asyncio.subprocess import Process
 from collections.abc import Coroutine
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.utils.logs import make_logs_queue
 
 logger = logging.getLogger(__name__)
 
 
 class AlephVmControllerInterface(ABC):
+    log_queues: list[asyncio.Queue] = []
+    _queue_cancellers: dict[asyncio.Queue, Callable] = {}
+
     vm_id: int
     """id in the VMPool, attributed at execution"""
     vm_hash: ItemHash
@@ -89,8 +93,28 @@ class AlephVmControllerInterface(ABC):
         """Must be implement if self.support_snapshot is True"""
         raise NotImplementedError()
 
-    async def get_log_queue(self) -> asyncio.Queue:
-        raise NotImplementedError()
+    def get_log_queue(self) -> asyncio.Queue:
+        queue, canceller = make_logs_queue(self._journal_stdout_name, self._journal_stderr_name)
+        self._queue_cancellers[queue] = canceller
+        # Limit the number of queues per VM
+        # TODO : fix
+        if len(self.log_queues) > 20:
+            logger.warning("Too many log queues, dropping the oldest one")
+            self.unregister_queue(self.log_queues[1])
+        self.log_queues.append(queue)
+        return queue
 
-    async def unregister_queue(self, queue: asyncio.Queue):
-        raise NotImplementedError()
+    def unregister_queue(self, queue: asyncio.Queue) -> None:
+        if queue in self.log_queues:
+            self._queue_cancellers[queue]()
+            del self._queue_cancellers[queue]
+            self.log_queues.remove(queue)
+        queue.empty()
+
+    @property
+    def _journal_stdout_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def _journal_stderr_name(self) -> str:
+        return f"vm-{self.vm_hash}-stderr"
