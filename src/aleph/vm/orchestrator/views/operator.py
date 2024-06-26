@@ -16,7 +16,6 @@ from aleph.vm.orchestrator.views.authentication import (
 )
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import cors_allow_all
-from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +65,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     queue = None
     try:
         ws = web.WebSocketResponse()
+        logger.info(f"starting websocket: {request.path}")
         await ws.prepare(request)
         try:
             await authenticate_websocket_for_vm_or_403(execution, vm_hash, ws)
@@ -76,6 +76,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             while True:
                 log_type, message = await queue.get()
                 assert log_type in ("stdout", "stderr")
+                logger.debug(message)
 
                 await ws.send_json({"type": log_type, "message": message})
 
