@@ -16,7 +16,12 @@ from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph.vm.utils import check_system_module, file_hashes_differ, is_command_available
+from aleph.vm.utils import (
+    check_amd_sev_es_supported,
+    check_amd_sev_supported,
+    file_hashes_differ,
+    is_command_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -384,11 +389,11 @@ class Settings(BaseSettings):
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
         if self.ENABLE_CONFIDENTIAL_COMPUTING:
-            assert check_system_module("kvm_amd/parameters/sev") == "Y", "SEV feature isn't enabled, enable it in BIOS"
-            assert (
-                check_system_module("kvm_amd/parameters/sev_es") == "Y"
-            ), "SEV-ES feature isn't enabled, enable it in BIOS"
             assert self.SEV_CTL_PATH.is_file(), f"File not found {self.SEV_CTL_PATH}"
+            assert check_amd_sev_supported(), "SEV feature isn't enabled, enable it in BIOS"
+            assert check_amd_sev_es_supported(), "SEV-ES feature isn't enabled, enable it in BIOS"
+            # Not available on the test machine yet
+            # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
             "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
 
