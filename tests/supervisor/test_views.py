@@ -1,5 +1,5 @@
 import tempfile
-from pathlib import Path
+from pathlib import Path, PosixPath
 from unittest import mock
 from unittest.mock import call
 
@@ -171,5 +171,5 @@ async def test_about_certificates(aiohttp_client):
                 is_file_mock.assert_has_calls([call(), call()])
                 certificates_expected_dir = sev_client.certificates_archive
                 export_mock.assert_called_once_with(
-                    ["/opt/sevctl", "export", str(certificates_expected_dir)], check=True
+                    [PosixPath('/opt/sevctl'), "export", str(certificates_expected_dir)], check=True
                 )
