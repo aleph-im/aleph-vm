@@ -143,7 +143,7 @@ def check_amd_sev_supported() -> bool:
     AMD Secure Encrypted Virtualization (SEV)
     Uses one key per virtual machine to isolate guests and the hypervisor from one another.
     """
-    return check_system_module("kvm_amd/parameters/sev") == "Y"
+    return (check_system_module("kvm_amd/parameters/sev") == "Y") and Path("/dev/sev").exists()
 
 
 def check_amd_sev_es_supported() -> bool:
@@ -152,7 +152,7 @@ def check_amd_sev_es_supported() -> bool:
     AMD Secure Encrypted Virtualization-Encrypted State (SEV-ES)
     Encrypts all CPU register contents when a VM stops running.
     """
-    return check_system_module("kvm_amd/parameters/sev_es") == "Y"
+    return (check_system_module("kvm_amd/parameters/sev_es") == "Y") and Path("/dev/sev").exists()
 
 
 def check_amd_sev_snp_supported() -> bool:
