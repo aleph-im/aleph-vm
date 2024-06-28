@@ -105,7 +105,6 @@ async def test_require_jwk_authentication_expired(aiohttp_client):
     pubkey = {
         "pubkey": json.loads(key.export_public()),
         "alg": "ECDSA",
-        "domain": "localhost",
         "address": signer_account.address,
         "expires": "2023-05-02T10:44:42.754994Z",
     }
@@ -155,7 +154,7 @@ async def test_require_jwk_authentication_wrong_key(aiohttp_client, patch_dateti
             )
         )
     }
-    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/", "domain": "localhost"}
     headers["X-SignedOperation"] = json.dumps(
         {
             "payload": bytes.hex(json.dumps(payload).encode("utf-8")),
@@ -189,7 +188,6 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     pubkey = {
         "pubkey": json.loads(key.export_public()),
         "alg": "ECDSA",
-        "domain": "localhost",
         "address": signer_account.address,
         "expires": "2023-05-02T10:44:42.754994Z",
     }
@@ -198,26 +196,22 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     signed_message: SignedMessage = signer_account.sign_message(signable_message)
     pubkey_signature = to_0x_hex(signed_message.signature)
 
-    # Modify the payload to render the signature invalid
-    pubkey["domain"] = "baddomain"
-    invalid_pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
-
     app.router.add_get("", view)
     client = await aiohttp_client(app)
     headers = {
         "X-SignedPubKey": (
             json.dumps(
                 {
-                    "payload": invalid_pubkey_payload,
+                    "payload": pubkey_payload,
                     "signature": pubkey_signature,
                 }
             )
         )
     }
-    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    invalid_operation_payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/", "domain": "baddomain"}
     headers["X-SignedOperation"] = json.dumps(
         {
-            "payload": bytes.hex(json.dumps(payload).encode("utf-8")),
+            "payload": bytes.hex(json.dumps(invalid_operation_payload).encode("utf-8")),
             "signature": "96ffdbbd1704d5f6bfe4698235a0de0d2f58668deaa4371422bee26664f313f51fd483c78c34c6b317fc209779f9ddd9c45accf558e3bf881b49ad970ebf0ade",
         }
     )
@@ -226,7 +220,7 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     assert resp.status == 401, await resp.text()
 
     r = await resp.json()
-    assert {"error": "Invalid signature"} == r
+    assert {"error": "Invalid domain"} == r
 
 
 @pytest.mark.asyncio
@@ -269,7 +263,6 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     pubkey = {
         "pubkey": json.loads(key.export_public()),
         "alg": "ECDSA",
-        "domain": "localhost",
         "address": signer_account.address,
         "expires": (patch_datetime_now.FAKE_TIME + datetime.timedelta(days=1)).isoformat() + "Z",
     }
@@ -292,7 +285,7 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     app.router.add_get("", view)
     client = await aiohttp_client(app)
 
-    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/", "domain": "localhost"}
 
     payload_as_bytes = json.dumps(payload).encode("utf-8")
     headers = {"X-SignedPubKey": pubkey_signature_header}
