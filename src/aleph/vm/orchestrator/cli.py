@@ -294,10 +294,6 @@ def main():
         if args.profile
         else "%(asctime)s | %(levelname)s | %(message)s"
     )
-    logging.basicConfig(
-        level=args.loglevel,
-        format=log_format,
-    )
 
     settings.update(
         USE_JAILER=args.use_jailer,
@@ -307,6 +303,12 @@ def main():
         FAKE_DATA_PROGRAM=args.fake_data_program,
         DEBUG_ASYNCIO=args.debug_asyncio,
         FAKE_INSTANCE_BASE=args.fake_instance_base,
+        LOG_LEVEL=logging.getLevelName(args.loglevel),
+    )
+
+    logging.basicConfig(
+        level=settings.loglevel,
+        format=log_format,
     )
 
     if args.run_fake_instance:
