@@ -73,15 +73,11 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         resources: AlephQemuConfidentialResources,
         enable_networking: bool = False,
         confidential_policy: int = AMDSEVPolicy.NO_DBG,
-        enable_console: Optional[bool] = None,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: Optional[TapInterface] = None,
     ):
-        super().__init__(
-            vm_id, vm_hash, resources, enable_networking, enable_console, hardware_resources, tap_interface
-        )
-        self.confidential_policy = confidential_policy
         super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
+        self.confidential_policy = confidential_policy
 
     async def setup(self):
         pass
