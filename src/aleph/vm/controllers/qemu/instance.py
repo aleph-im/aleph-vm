@@ -247,7 +247,3 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()
-
-    def print_logs(self) -> None:
-        """Print logs to our output for debugging"""
-        queue = self.get_log_queue()
