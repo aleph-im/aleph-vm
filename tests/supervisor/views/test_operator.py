@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.utils.logs import EntryDict
-from tests.supervisor.test_authentication import (
+from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
     patch_datetime_now,
 )
