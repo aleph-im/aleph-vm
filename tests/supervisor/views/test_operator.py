@@ -2,7 +2,6 @@ import asyncio
 import datetime
 import json
 from asyncio import Queue
-from typing import Any
 
 import aiohttp
 import pytest
