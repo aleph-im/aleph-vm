@@ -1,6 +1,8 @@
 import asyncio
 import datetime
 import json
+from asyncio import Queue
+from typing import Any
 
 import aiohttp
 import pytest
@@ -110,7 +112,7 @@ async def test_websocket_logs(aiohttp_client, mocker):
         "aleph.vm.orchestrator.views.operator.authenticate_websocket_message",
         return_value=mock_address,
     )
-    fake_queue = asyncio.Queue()
+    fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
     fakeVmPool = mocker.Mock(
@@ -152,7 +154,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
     mock_address = "mock_address"
     mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
 
-    fake_queue = asyncio.Queue()
+    fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
     fakeVmPool = mocker.Mock(
@@ -192,7 +194,7 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     mock_address = "mock_address"
     mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
 
-    fake_queue = asyncio.Queue()
+    fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
     fakeVmPool = mocker.Mock(
@@ -232,7 +234,7 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
     mock_address = signer_account.address
     mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
 
-    fake_queue = asyncio.Queue()
+    fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
     fakeVmPool = mocker.Mock(

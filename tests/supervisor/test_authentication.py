@@ -278,7 +278,7 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
 
 async def generate_signer_and_signed_headers_for_operation(
     patch_datetime_now, operation_payload: dict
-) -> (LocalAccount, dict):
+) -> tuple[LocalAccount, dict]:
     """Generate a temporary eth_account for testing and sign the operation with it"""
     account = eth_account.Account()
     signer_account = account.create()
