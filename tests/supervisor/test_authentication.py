@@ -6,6 +6,7 @@ import eth_account.messages
 import pytest
 from aiohttp import web
 from eth_account.datastructures import SignedMessage
+from eth_account.signers.local import LocalAccount
 from jwcrypto import jwk, jws
 from jwcrypto.common import base64url_decode
 from jwcrypto.jwa import JWA
@@ -257,7 +258,28 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     """An HTTP request to a view decorated by `@require_jwk_authentication`
     auth correctly a temporary key signed by a wallet and an operation signed by that key"""
     app = web.Application()
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    signer_account, headers = await generate_signer_and_signed_headers_for_operation(patch_datetime_now, payload)
 
+    @require_jwk_authentication
+    async def view(request, authenticated_sender):
+        assert authenticated_sender == signer_account.address
+        return web.Response(text="ok")
+
+    app.router.add_get("", view)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/", headers=headers)
+    assert resp.status == 200, await resp.text()
+
+    r = await resp.text()
+    assert "ok" == r
+
+
+async def generate_signer_and_signed_headers_for_operation(
+    patch_datetime_now, operation_payload: dict
+) -> (LocalAccount, dict):
+    """Generate a temporary eth_account for testing and sign the operation with it"""
     account = eth_account.Account()
     signer_account = account.create()
     key = jwk.JWK.generate(
@@ -265,7 +287,6 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
         crv="P-256",
         # key_ops=["verify"],
     )
-
     pubkey = {
         "pubkey": json.loads(key.export_public()),
         "alg": "ECDSA",
@@ -283,32 +304,19 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
             "signature": pubkey_signature,
         }
     )
+    payload_as_bytes = json.dumps(operation_payload).encode("utf-8")
 
-    @require_jwk_authentication
-    async def view(request, authenticated_sender):
-        assert authenticated_sender == signer_account.address
-        return web.Response(text="ok")
-
-    app.router.add_get("", view)
-    client = await aiohttp_client(app)
-
-    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
-
-    payload_as_bytes = json.dumps(payload).encode("utf-8")
-    headers = {"X-SignedPubKey": pubkey_signature_header}
     payload_signature = JWA.signing_alg("ES256").sign(key, payload_as_bytes)
-    headers["X-SignedOperation"] = json.dumps(
-        {
-            "payload": payload_as_bytes.hex(),
-            "signature": payload_signature.hex(),
-        }
-    )
-
-    resp = await client.get("/", headers=headers)
-    assert resp.status == 200, await resp.text()
-
-    r = await resp.text()
-    assert "ok" == r
+    headers = {
+        "X-SignedPubKey": pubkey_signature_header,
+        "X-SignedOperation": json.dumps(
+            {
+                "payload": payload_as_bytes.hex(),
+                "signature": payload_signature.hex(),
+            }
+        ),
+    }
+    return signer_account, headers
 
 
 @pytest.fixture

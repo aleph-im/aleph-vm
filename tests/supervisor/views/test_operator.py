@@ -1,13 +1,18 @@
 import asyncio
 import datetime
+import json
 
-import pytest
 import aiohttp
+import pytest
 from aiohttp.test_utils import TestClient
 
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.utils.logs import EntryDict
+from tests.supervisor.test_authentication import (
+    generate_signer_and_signed_headers_for_operation,
+    patch_datetime_now,
+)
 
 
 @pytest.mark.asyncio
@@ -215,4 +220,54 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     response = await websocket.receive()
     # Subject to change in the future, for now the connexion si broken and closed
     assert response.type == aiohttp.WSMsgType.CLOSE
+    assert websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_now):
+    "Test valid authentification for websocket logs endpoint"
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    signer_account, headers = await generate_signer_and_signed_headers_for_operation(patch_datetime_now, payload)
+
+    mock_address = signer_account.address
+    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+
+    fake_queue = asyncio.Queue()
+    await fake_queue.put(("stdout", "this is a first log entry"))
+
+    fakeVmPool = mocker.Mock(
+        executions={
+            mock_hash: mocker.Mock(
+                vm_hash=mock_hash,
+                message=mocker.Mock(address=mock_address),
+                is_confidential=False,
+                is_running=True,
+                vm=mocker.Mock(
+                    get_log_queue=mocker.Mock(return_value=fake_queue),
+                ),
+            ),
+        },
+    )
+    app = setup_webapp()
+    app["vm_pool"] = fakeVmPool
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+    websocket = await client.ws_connect(
+        f"/control/machine/{mock_hash}/stream_logs",
+    )
+    # Need to deserialize since we pass a json otherwhise it get double json encoded
+    # which is not what the endpoint expect
+    auth_package = {
+        "X-SignedPubKey": json.loads(headers["X-SignedPubKey"]),
+        "X-SignedOperation": json.loads(headers["X-SignedOperation"]),
+    }
+
+    await websocket.send_json({"auth": auth_package})
+    response = await websocket.receive_json()
+    assert response == {"status": "connected"}
+
+    response = await websocket.receive_json()
+    assert response == {"message": "this is a first log entry", "type": "stdout"}
+
+    await websocket.close()
     assert websocket.closed
