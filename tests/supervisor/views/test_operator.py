@@ -2,6 +2,8 @@ import asyncio
 import datetime
 
 import pytest
+import aiohttp
+from aiohttp.test_utils import TestClient
 
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
@@ -104,13 +106,10 @@ async def test_websocket_logs(aiohttp_client, mocker):
         return_value=mock_address,
     )
     fake_queue = asyncio.Queue()
+    await fake_queue.put(("stdout", "this is a first log entry"))
 
-    # noinspection PyMissingConstructor
-    class FakeVmPool(VmPool):
-        def __init__(self):
-            pass
-
-        executions = {
+    fakeVmPool = mocker.Mock(
+        executions={
             mock_hash: mocker.Mock(
                 vm_hash=mock_hash,
                 message=mocker.Mock(address=mock_address),
@@ -120,13 +119,11 @@ async def test_websocket_logs(aiohttp_client, mocker):
                     get_log_queue=mocker.Mock(return_value=fake_queue),
                 ),
             ),
-        }
-        systemd_manager = mocker.Mock(restart=mocker.Mock())
-
+        },
+    )
     app = setup_webapp()
-    pool = FakeVmPool()
-    app["vm_pool"] = pool
-    app["pubsub"] = FakeVmPool()
+    app["vm_pool"] = fakeVmPool
+    app["pubsub"] = None
     client = await aiohttp_client(app)
     websocket = await client.ws_connect(
         f"/control/machine/{mock_hash}/stream_logs",
@@ -135,7 +132,6 @@ async def test_websocket_logs(aiohttp_client, mocker):
     response = await websocket.receive_json()
     assert response == {"status": "connected"}
 
-    await fake_queue.put(("stdout", "this is a first log entry"))
     response = await websocket.receive_json()
     assert response == {"message": "this is a first log entry", "type": "stdout"}
 
@@ -143,4 +139,80 @@ async def test_websocket_logs(aiohttp_client, mocker):
     response = await websocket.receive_json()
     assert response == {"message": "this is a second log entry", "type": "stdout"}
     await websocket.close()
+    assert websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
+    mock_address = "mock_address"
+    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+
+    fake_queue = asyncio.Queue()
+    await fake_queue.put(("stdout", "this is a first log entry"))
+
+    fakeVmPool = mocker.Mock(
+        executions={
+            mock_hash: mocker.Mock(
+                vm_hash=mock_hash,
+                message=mocker.Mock(address=mock_address),
+                is_confidential=False,
+                is_running=True,
+                vm=mocker.Mock(
+                    get_log_queue=mocker.Mock(return_value=fake_queue),
+                ),
+            ),
+        },
+    )
+    app = setup_webapp()
+    app["vm_pool"] = fakeVmPool
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+    websocket = await client.ws_connect(
+        f"/control/machine/{mock_hash}/stream_logs",
+    )
+    # Wait for message without sending an auth package.
+    # Test with a timeout because we receive nothing
+    with pytest.raises(TimeoutError):
+        response = await websocket.receive_json(timeout=1)
+        assert False
+
+    # It's totally reachable with the pytest.raises
+    # noinspection PyUnreachableCode
+    await websocket.close()
+    assert websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
+    mock_address = "mock_address"
+    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+
+    fake_queue = asyncio.Queue()
+    await fake_queue.put(("stdout", "this is a first log entry"))
+
+    fakeVmPool = mocker.Mock(
+        executions={
+            mock_hash: mocker.Mock(
+                vm_hash=mock_hash,
+                message=mocker.Mock(address=mock_address),
+                is_confidential=False,
+                is_running=True,
+                vm=mocker.Mock(
+                    get_log_queue=mocker.Mock(return_value=fake_queue),
+                ),
+            ),
+        },
+    )
+    app = setup_webapp()
+    app["vm_pool"] = fakeVmPool
+    app["pubsub"] = None
+    client: TestClient = await aiohttp_client(app)
+    websocket = await client.ws_connect(
+        f"/control/machine/{mock_hash}/stream_logs",
+    )
+
+    await websocket.send_json({"auth": "invalid auth package"})
+    response = await websocket.receive()
+    # Subject to change in the future, for now the connexion si broken and closed
+    assert response.type == aiohttp.WSMsgType.CLOSE
     assert websocket.closed
