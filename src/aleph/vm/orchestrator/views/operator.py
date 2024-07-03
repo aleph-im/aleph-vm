@@ -116,9 +116,14 @@ async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: 
     Web browsers do not allow setting headers in WebSocket requests, so the authentication
     relies on the first message sent by the client.
     """
-    first_message = await ws.receive_json()
+    try:
+        first_message = await ws.receive_json()
+    except TypeError as error:
+        logging.exception(error)
+        raise web.HTTPForbidden(body="Invalid auth package")
     credentials = first_message["auth"]
     authenticated_sender = await authenticate_websocket_message(credentials)
+
     if is_sender_authorized(authenticated_sender, execution.message):
         logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
         return True

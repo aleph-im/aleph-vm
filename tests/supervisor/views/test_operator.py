@@ -178,7 +178,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
     )
     # Wait for message without sending an auth package.
     # Test with a timeout because we receive nothing
-    with pytest.raises(TimeoutError):
+    with pytest.raises((TimeoutError, asyncio.exceptions.TimeoutError)):
         response = await websocket.receive_json(timeout=1)
         assert False
 
