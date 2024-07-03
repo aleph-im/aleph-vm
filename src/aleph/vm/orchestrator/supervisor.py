@@ -169,7 +169,7 @@ def run():
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
-        sev_client = SevClient(settings.CONFIDENTIAL_DIRECTORY)
+        sev_client = SevClient(settings.CONFIDENTIAL_DIRECTORY, settings.SEV_CTL_PATH)
         app["sev_client"] = sev_client
         # TODO: Review and check sevctl first initialization steps, like (sevctl generate and sevctl provision)
 

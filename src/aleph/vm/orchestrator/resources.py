@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
 from aleph.vm.sevclient import SevClient
-from aleph.vm.utils import cors_allow_all
+from aleph.vm.utils import (
+    check_amd_sev_es_supported,
+    check_amd_sev_snp_supported,
+    check_amd_sev_supported,
+    cors_allow_all,
+)
 
 
 class Period(BaseModel):
@@ -90,6 +95,16 @@ def get_machine_properties() -> MachineProperties:
         cpu=CpuProperties(
             architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
             vendor=cpu_info.get("vendor_id", cpu_info.get("vendor_id_raw")),
+            features=list(
+                filter(
+                    None,
+                    (
+                        "sev" if check_amd_sev_supported() else None,
+                        "sev_es" if check_amd_sev_es_supported() else None,
+                        "sev_snp" if check_amd_sev_snp_supported() else None,
+                    ),
+                )
+            ),
         ),
     )
 
