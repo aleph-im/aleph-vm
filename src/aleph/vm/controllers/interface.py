@@ -10,7 +10,7 @@ from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.utils.logs import make_logs_queue
+from aleph.vm.utils.logs import get_past_vm_logs, make_logs_queue
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +118,6 @@ class AlephVmControllerInterface(ABC):
     @property
     def _journal_stderr_name(self) -> str:
         return f"vm-{self.vm_hash}-stderr"
+
+    def past_logs(self):
+        yield from get_past_vm_logs(self._journal_stdout_name, self._journal_stderr_name)

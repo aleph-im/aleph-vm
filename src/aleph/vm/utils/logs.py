@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Callable, TypedDict
+from datetime import datetime
+from typing import Callable, Generator, TypedDict
 
 from systemd import journal
 
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 class EntryDict(TypedDict):
     SYSLOG_IDENTIFIER: str
     MESSAGE: str
+    __REALTIME_TIMESTAMP: datetime
 
 
 def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=False) -> tuple[asyncio.Queue, Callable[[], None]]:
@@ -56,3 +58,25 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=False) -> tu
         r.close()
 
     return queue, do_cancel
+
+
+def get_past_vm_logs(stdout_identifier, stderr_identifier) -> Generator[EntryDict, None, None]:
+    """Get existing log for the VM identifiers.
+
+    @param stdout_identifier: journald identifier for process stdout
+    @param stderr_identifier: journald identifier for process stderr
+    @return: an iterator of log entry
+
+    Works by creating a journald reader, and using `add_reader` to call a callback when
+    data is available for reading.
+
+    For more information refer to the sd-journal(3) manpage
+    and systemd.journal module documentation.
+    """
+    r = journal.Reader()
+    r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
+    r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
+
+    r.seek_head()
+    for entry in r:
+        yield entry
