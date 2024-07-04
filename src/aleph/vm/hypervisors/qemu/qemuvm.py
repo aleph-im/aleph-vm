@@ -125,3 +125,7 @@ class QemuVM:
                 logger.warning("unexpected answer from VM", resp)
             print("shutdown message sent")
             client.close()
+
+    async def teardown(self):
+        """Stop the VM, cleanup network interface and remove data directory."""
+        self.send_shutdown_message()

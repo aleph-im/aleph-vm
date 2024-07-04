@@ -82,7 +82,11 @@ async def execute_persistent_vm(config: Configuration):
 async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, QemuVM], process: Process):
     # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
     loop = asyncio.get_event_loop()
-    loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
+
+    def callback():
+        """Callback for the signal handler to stop the VM and cleanup properly on SIGTERM."""
+        loop.create_task(execution.teardown())
+    loop.add_signal_handler(signal.SIGTERM, callback)
 
     await process.wait()
     logger.info(f"Process terminated with {process.returncode}")
