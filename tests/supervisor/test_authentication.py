@@ -1,4 +1,3 @@
-import datetime
 import json
 from typing import Any
 
@@ -8,22 +7,16 @@ from aiohttp import web
 from eth_account.datastructures import SignedMessage
 from jwcrypto import jwk, jws
 from jwcrypto.common import base64url_decode
-from jwcrypto.jwa import JWA
 
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_jwk,
     require_jwk_authentication,
 )
-
-
-def to_0x_hex(b: bytes) -> str:
-    """
-    Convert the bytes to a 0x-prefixed hex string
-    """
-
-    # force this for compat between different hexbytes versions which behave differenty
-    # and conflict with other package don't allow us to have the version we want
-    return "0x" + bytes.hex(b)
+from aleph.vm.utils.test_helpers import (
+    generate_signer_and_signed_headers_for_operation,
+    patch_datetime_now,
+    to_0x_hex,
+)
 
 
 @pytest.mark.asyncio
@@ -65,30 +58,6 @@ async def test_require_jwk_authentication_invalid_json_bugkey(aiohttp_client):
 
     r = await resp.json()
     assert {"error": "Invalid X-SignedPubKey format"} == r
-
-
-@pytest.fixture
-def patch_datetime_now(monkeypatch):
-    """Fixture for patching the datetime.now() and datetime.utcnow() methods
-    to return a fixed datetime object.
-    This fixture creates a subclass of `datetime.datetime` called `mydatetime`,
-    which overrides the `now()` and `utcnow()` class methods to return a fixed
-    datetime object specified by `FAKE_TIME`.
-    """
-
-    class MockDateTime(datetime.datetime):
-        FAKE_TIME = datetime.datetime(2010, 12, 25, 17, 5, 55)
-
-        @classmethod
-        def now(cls, tz=None, *args, **kwargs):
-            return cls.FAKE_TIME.replace(tzinfo=tz)
-
-        @classmethod
-        def utcnow(cls, *args, **kwargs):
-            return cls.FAKE_TIME
-
-    monkeypatch.setattr(datetime, "datetime", MockDateTime)
-    return MockDateTime
 
 
 @pytest.mark.asyncio
@@ -257,32 +226,8 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     """An HTTP request to a view decorated by `@require_jwk_authentication`
     auth correctly a temporary key signed by a wallet and an operation signed by that key"""
     app = web.Application()
-
-    account = eth_account.Account()
-    signer_account = account.create()
-    key = jwk.JWK.generate(
-        kty="EC",
-        crv="P-256",
-        # key_ops=["verify"],
-    )
-
-    pubkey = {
-        "pubkey": json.loads(key.export_public()),
-        "alg": "ECDSA",
-        "domain": "localhost",
-        "address": signer_account.address,
-        "expires": (patch_datetime_now.FAKE_TIME + datetime.timedelta(days=1)).isoformat() + "Z",
-    }
-    pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
-    signable_message = eth_account.messages.encode_defunct(hexstr=pubkey_payload)
-    signed_message: SignedMessage = signer_account.sign_message(signable_message)
-    pubkey_signature = to_0x_hex(signed_message.signature)
-    pubkey_signature_header = json.dumps(
-        {
-            "payload": pubkey_payload,
-            "signature": pubkey_signature,
-        }
-    )
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
+    signer_account, headers = await generate_signer_and_signed_headers_for_operation(patch_datetime_now, payload)
 
     @require_jwk_authentication
     async def view(request, authenticated_sender):
@@ -291,18 +236,6 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
 
     app.router.add_get("", view)
     client = await aiohttp_client(app)
-
-    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/"}
-
-    payload_as_bytes = json.dumps(payload).encode("utf-8")
-    headers = {"X-SignedPubKey": pubkey_signature_header}
-    payload_signature = JWA.signing_alg("ES256").sign(key, payload_as_bytes)
-    headers["X-SignedOperation"] = json.dumps(
-        {
-            "payload": payload_as_bytes.hex(),
-            "signature": payload_signature.hex(),
-        }
-    )
 
     resp = await client.get("/", headers=headers)
     assert resp.status == 200, await resp.text()
