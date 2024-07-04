@@ -70,6 +70,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     queue = None
     try:
         ws = web.WebSocketResponse()
+        logger.info(f"starting websocket: {request.path}")
         await ws.prepare(request)
         try:
             await authenticate_websocket_for_vm_or_403(execution, vm_hash, ws)
@@ -80,6 +81,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             while True:
                 log_type, message = await queue.get()
                 assert log_type in ("stdout", "stderr")
+                logger.debug(message)
 
                 await ws.send_json({"type": log_type, "message": message})
 
@@ -92,15 +94,41 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
             execution.vm.unregister_queue(queue)
 
 
+@cors_allow_all
+@require_jwk_authentication
+async def operate_logs(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
+    """Logs of a VM (not streaming)"""
+    vm_hash = get_itemhash_or_400(request.match_info)
+    pool: VmPool = request.app["vm_pool"]
+    execution = get_execution_or_404(vm_hash, pool=pool)
+    if not is_sender_authorized(authenticated_sender, execution.message):
+        return web.Response(status=403, body="Unauthorized sender")
+
+    response = web.StreamResponse()
+    response.headers["Content-Type"] = "text/plain"
+    await response.prepare(request)
+
+    for entry in execution.vm.past_logs():
+        msg = f'{entry["__REALTIME_TIMESTAMP"].isoformat()}> {entry["MESSAGE"]}'
+        await response.write(msg.encode())
+    await response.write_eof()
+    return response
+
+
 async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: ItemHash, ws: web.WebSocketResponse):
     """Authenticate a websocket connection.
 
     Web browsers do not allow setting headers in WebSocket requests, so the authentication
     relies on the first message sent by the client.
     """
-    first_message = await ws.receive_json()
+    try:
+        first_message = await ws.receive_json()
+    except TypeError as error:
+        logging.exception(error)
+        raise web.HTTPForbidden(body="Invalid auth package")
     credentials = first_message["auth"]
     authenticated_sender = await authenticate_websocket_message(credentials)
+
     if is_sender_authorized(authenticated_sender, execution.message):
         logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
         return True
