@@ -19,7 +19,7 @@ class SevClient:
     async def sev_ctl_cmd(self, *args) -> bytes:
         """Run a command of the 'sevctl' tool."""
         return await run_in_subprocess(
-            [self.sev_ctl_executable, *args],
+            [str(self.sev_ctl_executable), *args],
             check=True,
         )
 

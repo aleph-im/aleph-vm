@@ -171,5 +171,5 @@ async def test_about_certificates(aiohttp_client):
                 is_file_mock.assert_has_calls([call()])
                 certificates_expected_dir = sev_client.certificates_archive
                 export_mock.assert_called_once_with(
-                    [PosixPath("/opt/sevctl"), "export", str(certificates_expected_dir)], check=True
+                    ["/opt/sevctl", "export", str(certificates_expected_dir)], check=True
                 )
