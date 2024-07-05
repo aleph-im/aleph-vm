@@ -100,6 +100,7 @@ def create_task_log_exceptions(coro: Coroutine, *, name=None):
 
 async def run_in_subprocess(command: list[str], check: bool = True, stdin_input: Optional[bytes] = None) -> bytes:
     """Run the specified command in a subprocess, returns the stdout of the process."""
+    command = [str(arg) for arg in command]
     logger.debug(f"command: {' '.join(command)}")
 
     process = await asyncio.create_subprocess_exec(

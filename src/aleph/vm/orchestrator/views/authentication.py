@@ -46,7 +46,6 @@ class SignedPubKeyPayload(BaseModel):
     # {'pubkey': {'alg': 'ES256', 'crv': 'P-256', 'ext': True, 'key_ops': ['verify'], 'kty': 'EC',
     #  'x': '4blJBYpltvQLFgRvLE-2H7dsMr5O0ImHkgOnjUbG2AU', 'y': '5VHnq_hUSogZBbVgsXMs0CjrVfMy4Pa3Uv2BEBqfrN4'}
     # alg: Literal["ECDSA"]
-    domain: str
     address: str
     expires: str
 
@@ -100,6 +99,7 @@ class SignedPubKeyHeader(BaseModel):
 class SignedOperationPayload(BaseModel):
     time: datetime.datetime
     method: Union[Literal["POST"], Literal["GET"]]
+    domain: str
     path: str
     # body_sha256: str  # disabled since there is no body
 
@@ -201,8 +201,8 @@ async def authenticate_jwk(request: web.Request) -> str:
     """Authenticate a request using the X-SignedPubKey and X-SignedOperation headers."""
     signed_pubkey = get_signed_pubkey(request)
     signed_operation = get_signed_operation(request)
-    if signed_pubkey.content.domain != settings.DOMAIN_NAME:
-        logger.debug(f"Invalid domain '{signed_pubkey.content.domain}' != '{settings.DOMAIN_NAME}'")
+    if signed_operation.content.domain != settings.DOMAIN_NAME:
+        logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
         raise web.HTTPUnauthorized(reason="Invalid domain")
     if signed_operation.content.path != request.path:
         logger.debug(f"Invalid path '{signed_operation.content.path}' != '{request.path}'")
@@ -217,8 +217,8 @@ async def authenticate_websocket_message(message) -> str:
     """Authenticate a websocket message since JS cannot configure headers on WebSockets."""
     signed_pubkey = SignedPubKeyHeader.parse_obj(message["X-SignedPubKey"])
     signed_operation = SignedOperation.parse_obj(message["X-SignedOperation"])
-    if signed_pubkey.content.domain != settings.DOMAIN_NAME:
-        logger.debug(f"Invalid domain '{signed_pubkey.content.domain}' != '{settings.DOMAIN_NAME}'")
+    if signed_operation.content.domain != settings.DOMAIN_NAME:
+        logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
         raise web.HTTPUnauthorized(reason="Invalid domain")
     return verify_signed_operation(signed_operation, signed_pubkey)
 
@@ -237,6 +237,7 @@ def require_jwk_authentication(
             logging.exception(e)
             raise
 
+        # authenticated_sender is the authenticted wallet address of the requester (as a string)
         response = await handler(request, authenticated_sender)
         return response
 

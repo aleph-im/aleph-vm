@@ -47,6 +47,9 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
+    operate_confidential_initialize,
+    operate_confidential_inject_secret,
+    operate_confidential_measurement,
     operate_erase,
     operate_expire,
     operate_logs,
@@ -107,6 +110,9 @@ def setup_webapp():
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
+        web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
+        web.get("/control/machine/{ref}/confidential/measurement", operate_confidential_measurement),
+        web.post("/control/machine/{ref}/confidential/inject_secret", operate_confidential_inject_secret),
         # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
