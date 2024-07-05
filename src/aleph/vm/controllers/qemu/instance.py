@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import shutil
@@ -17,6 +18,7 @@ from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
     QemuVMConfiguration,
+    QemuVMHostVolume,
     save_controller_configuration,
 )
 from aleph.vm.controllers.firecracker.executable import (
@@ -34,10 +36,16 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    async def download_all(self) -> None:
+    async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
         parent_image_path = await get_rootfs_base_path(volume.parent.ref)
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
+
+    async def download_all(self):
+        await asyncio.gather(
+            self.download_runtime(),
+            self.download_volumes(),
+        )
 
     async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
@@ -95,7 +103,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     is_instance: bool
     qemu_process: Optional[Process]
     support_snapshot = False
-    qmp_socket_path = None
     persistent = True
     controller_configuration: Configuration
 
@@ -115,13 +122,12 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         tap_interface: Optional[TapInterface] = None,
     ):
         self.vm_id = vm_id
+        self.vm_hash = vm_hash
         self.resources = resources
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
         self.hardware_resources = hardware_resources
         self.tap_interface = tap_interface
         self.qemu_process = None
-
-        self.vm_hash = vm_hash
 
     # TODO : wait for andress soltion for pid handling
     def to_dict(self):
@@ -161,7 +167,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
         logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
-        self.qmp_socket_path = qmp_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-qmp.socket")
+
         cloud_init_drive = await self._create_cloud_init_drive()
 
         image_path = str(self.resources.rootfs_path)
@@ -179,10 +185,18 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             cloud_init_drive_path=cloud_init_drive_path,
             image_path=image_path,
             monitor_socket_path=monitor_socket_path,
-            qmp_socket_path=qmp_socket_path,
+            qmp_socket_path=self.qmp_socket_path,
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
+            host_volumes=[
+                QemuVMHostVolume(
+                    mount=volume.mount,
+                    path_on_host=volume.path_on_host,
+                    read_only=volume.read_only,
+                )
+                for volume in self.resources.volumes
+            ],
         )
 
         configuration = Configuration(
@@ -192,7 +206,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             vm_configuration=vm_configuration,
             hypervisor=HypervisorType.qemu,
         )
-
+        logger.debug(configuration)
         save_controller_configuration(self.vm_hash, configuration)
 
     def save_controller_configuration(self):
@@ -201,6 +215,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         path.open("w").write(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4))
         path.chmod(0o644)
         return path
+
+    @property
+    def qmp_socket_path(self) -> Path:
+        return settings.EXECUTION_ROOT / f"{self.vm_id}-qmp.socket"
 
     async def start(self):
         # Start via systemd not here
@@ -214,7 +232,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         if not ip:
             msg = "Host IP not available"
             raise ValueError(msg)
-
         ip = ip.split("/", 1)[0]
 
         attempts = 30
