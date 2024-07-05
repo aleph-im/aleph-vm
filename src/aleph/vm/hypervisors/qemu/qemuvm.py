@@ -127,5 +127,5 @@ class QemuVM:
             client.close()
 
     async def teardown(self):
-        """Stop the VM, cleanup network interface and remove data directory."""
+        """Stop the VM."""
         self.send_shutdown_message()
