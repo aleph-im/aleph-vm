@@ -124,7 +124,7 @@ class VmPool:
 
                 # Start VM and snapshots automatically
                 # If the execution is confidential, don't start it because we need to wait for the session certificate
-                # files, use the endpoint /control/machine/{ref}/start to get session files and start the VM
+                # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
                 if execution.persistent and not execution.is_confidential:
                     self.systemd_manager.enable_and_start(execution.controller_service)
                     await execution.wait_for_init()
