@@ -181,6 +181,7 @@ class MicroVM:
         system(f"rm -fr {self.jailer_path}/dev/net/")
         system(f"rm -fr {self.jailer_path}/dev/kvm")
         system(f"rm -fr {self.jailer_path}/dev/urandom")
+        system(f"rm -fr {self.jailer_path}/dev/userfaultfd")
         system(f"rm -fr {self.jailer_path}/run/")
 
         if os.path.exists(path=self.vsock_path):

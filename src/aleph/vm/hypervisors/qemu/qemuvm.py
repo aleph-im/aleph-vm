@@ -146,6 +146,6 @@ class QemuVM:
             print("shutdown message sent")
             client.close()
 
-    async def teardown(self):
+    async def stop(self):
         """Stop the VM."""
         self.send_shutdown_message()
