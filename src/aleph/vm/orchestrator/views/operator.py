@@ -125,17 +125,23 @@ async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: 
         first_message = await ws.receive_json()
     except TypeError as error:
         logging.exception(error)
+        await ws.send_json({"status": "failed", "reason": str(error)})
         raise web.HTTPForbidden(body="Invalid auth package")
     credentials = first_message["auth"]
-    authenticated_sender = await authenticate_websocket_message(credentials)
 
-    if is_sender_authorized(authenticated_sender, execution.message):
-        logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
-        return True
+    try:
+        authenticated_sender = await authenticate_websocket_message(credentials)
 
-    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-    raise web.HTTPForbidden(body="Unauthorized sender")
+        if is_sender_authorized(authenticated_sender, execution.message):
+            logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
+            return True
+
+            logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
+            await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+            raise web.HTTPForbidden(body="Unauthorized sender")
+    except Exception as error:
+        await ws.send_json({"status": "failed", "reason": str(error)})
+        raise web.HTTPForbidden(body="Unauthorized sender")
 
 
 @cors_allow_all
