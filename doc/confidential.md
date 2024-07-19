@@ -1,12 +1,12 @@
 # Confidential computing
 
-Aleph-vm offers to launch confidential VM with AMD SEV. This is also know as TEE, Trusted Execution Environment.
+Aleph-vm offers to launch confidential VM with AMD SEV. This is also known as TEE, Trusted Execution Environment.
 
-This is only supported for instances with the Qemu as the hypervisor.
+This is only supported for instances using Qemu as their hypervisor.
 
 ## Life cycle
 First, a user creates a VM message and sends it with notify_allocate. This notifies the orchestrator about the creation of the new VM.  
-The user fetches the platform certificate, validates it's chain again AMD root certificate.
+The user fetches the platform certificate, validates its chain again AMD root certificate.
 The user must then upload so-called Guest Owner certificates (created with sevctl) to create an encrypted channel between the user and the Security Processor.
 
 Once  uploaded, the VM is started in Qemu in stopped mode: Qemu will allocate the RAM for the VM, load the firmware inside it and then let the AMD Security Processor encrypt the memory. Once this is done, the SEV endpoints allow to retrieve a measure of the memory of the VM and to decide whether to inject a user secret in the VM. Upon secret injection, the VM is launched, i.e. the VM CPU is started and goes through the boot sequence of the VM.
@@ -36,12 +36,12 @@ Note that the [4004 Series Processors do not provide SEV](https://www.amd.com/en
 > ℹ️ The 4th Generation requirement stems from security vulnerabilities discovered in SEV on Zen3 and earlier architectures.
 
 ## Requirements for the CRN
-* Support must be enabled in the computer BIOS
-* The kernel and platform must support SEV.
+* Support must be [enabled in the computer BIOS](https://www.amd.com/content/dam/amd/en/documents/epyc-technical-docs/tuning-guides/58207-using-sev-with-amd-epyc-processors.pdf) (see Section 2.1). 
+* The kernel and platform must support SEV. (e.g Ubuntu 24.04 support it by default) 
 * [sevctl](https://github.com/virtee/sevctl) must be installed. A copy is included in the aleph-vm Debian package and installed as `/opt/sevctl`.
 * QEMU must be installed.
 
-Check with the `sevctl ok` command that the system is supporting AMD SEV properly, you need at least:
+Check with the `sevctl ok` command that the system is supporting AMD SEV properly,  at least:
 
 ```[ PASS ]   - Secure Encrypted Virtualization (SEV)```
 
@@ -65,7 +65,7 @@ http://localhost:4020/status/config and verify that ENABLE_CONFIDENTIAL_COMPUTIN
 
 
 # User side
-The user wanting to launch the VM, refered as the Guest Owner.
+The user wanting to launch the VM, referred as the Guest Owner.
 
 The aleph-sdk-python and the aleph-client provide way to launch , validate and start the VM.
 
@@ -75,14 +75,17 @@ The user must create a virtual machine disk image that has been encrypted using 
 Follow the instruction here: https://github.com/aleph-im/aleph-vm/blob/dev-confidential/examples/example_confidential_image/README.md
 
 ## OVMF Launcher Firmware
-Aleph.im provide a customized OMVF, a UEFI firmware for virtual machines, destined to work with the confidential image created above,
-which can receive the Decryption key in a secure manner and pass it to the VM bootloaded (see Boot process section).
+The OMVF file, a UEFI firmware for virtual machines, handle launching the confidential VM.
+It receives the secret (decryption key) in a secure manner and pass it to the VM bootloader (see Boot process section).
 
-You will need the hash from the Firmware to know if it's the one launched the CRN.
+Aleph.im provide a default one, destined to work with confidential image created following the procedure described above.
 
-Normally you can just create an encrypted VM image but you might also provide your own customised firmware in the `firmare`  field  of `trusted_execution`.    
+
+In the usual case a user would just create an encrypted VM image but they might also provide a customised firmware in the `firmare` field  of `trusted_execution`.    
 
 See [the instructions on how the Firmware is built](runtimes/ovmf/README.md)
+
+The hash from the Firmware is needed to validate if it's the one launched the CRN.
 
 
 # Implementation details
@@ -96,7 +99,7 @@ on Instance type message, we check if the `content.environment.trusted_execution
     }
 ```
 
-* Firmware is an [IPFS CID](https://docs.ipfs.tech/concepts/content-addressing/) reference to the OVMF firmware side (see OVMF firmware section)
+* Firmware is an [IPFS CID](https://docs.ipfs.tech/concepts/content-addressing/) reference to the OVMF firmware file (see OVMF firmware section)
 * policy is an AMD SEV Policy (for now we only expose if AMD SEV and SEV-ES are supported)
 
 
@@ -257,7 +260,7 @@ RUST_LOG=trace sevctl measurement build
   ```
 
 ### Debug
-To enable debubbing log,  set the enviroment variable 
+To enable debugging log,  set the environment variable 
 ```env
 RUST_LOG=trace
 ```
