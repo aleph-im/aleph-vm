@@ -187,7 +187,7 @@ and see the logs with
 
 **Important**
  
-If you modify your base image between test you will need to delete the image file on disk (which is a delta of the base image)
+If you modify your base image between tests, you will need to delete the image file on disk (which is a delta of the base image)
 For example using :
 `sudo rm /var/lib/aleph/vm/volumes/persistent/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/rootfs.qcow2`
 
