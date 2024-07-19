@@ -53,7 +53,7 @@ https://www.amd.com/fr/developer/sev.html
 
 ## Enabling the confidential computing feature in aleph-vm
 
-Set the following environment variables to launch aleph-vm:
+Enable SEV in the configuration of `aleph-vm`, by default in `/etc/aleph-vm/supervisor.env`:
 ```
 ALEPH_VM_ENABLE_QEMU_SUPPORT=1
 ALEPH_VM_ENABLE_CONFIDENTIAL_COMPUTING=1
