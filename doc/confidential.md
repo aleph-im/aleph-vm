@@ -6,7 +6,7 @@ This is only supported for instances with the Qemu as the hypervisor.
 
 ## Life cycle
 First, a user creates a VM message and sends it with notify_allocate. This notifies the orchestrator about the creation of the new VM.  
-The user fetch the platform certificate, validate it's chain again AMD root certificate.
+The user fetches the platform certificate, validates it's chain again AMD root certificate.
 The user must then upload so-called Guest Owner certificates (created with sevctl) to create an encrypted channel between the user and the Security Processor.
 
 Once  uploaded, the VM is started in Qemu in stopped mode: Qemu will allocate the RAM for the VM, load the firmware inside it and then let the AMD Security Processor encrypt the memory. Once this is done, the SEV endpoints allow to retrieve a measure of the memory of the VM and to decide whether to inject a user secret in the VM. Upon secret injection, the VM is launched, i.e. the VM CPU is started and goes through the boot sequence of the VM.
