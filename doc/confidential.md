@@ -212,7 +212,7 @@ Accept: application/json
 ```
 
 ## Sevctl
-Most operation done by sevctl are implemented in aleph-sdk-python, either by calling it, calling the relevant endpoint
+Most operations done by `sevctl` are implemented in [aleph-sdk-python](https://github.com/aleph-im/aleph-sdk-python), either by calling it, calling the relevant endpoint
 or by reimplementing the functionality in python. Here is a primer in case you need to call it manually.
 
 ### Install `sevctl`
