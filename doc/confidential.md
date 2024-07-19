@@ -96,7 +96,7 @@ on Instance type message, we check if the `content.environment.trusted_execution
     }
 ```
 
-* Firmware is an ipfs hash reference to the OVMF firmware side (see OVMF firmware section)
+* Firmware is an [IPFS CID](https://docs.ipfs.tech/concepts/content-addressing/) reference to the OVMF firmware side (see OVMF firmware section)
 * policy is an AMD SEV Policy (for now we only expose if AMD SEV and SEV-ES are supported)
 
 
