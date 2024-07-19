@@ -71,7 +71,7 @@ The aleph-sdk-python and the aleph-client provide way to launch , validate and s
 
 ## Create an encrypted VM image
 
-For the user it is necessary to create a VM dick image which is encrypted with a password of their chosing.
+The user must create a virtual machine disk image that has been encrypted using a password of their choice.
 Follow the instruction here: https://github.com/aleph-im/aleph-vm/blob/dev-confidential/examples/example_confidential_image/README.md
 
 ## OVMF Launcher Firmware
