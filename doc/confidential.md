@@ -2,7 +2,7 @@
 
 Aleph-vm offers to launch confidential VM with AMD SEV. This is also know as TEE, Trusted Execution Environment.
 
-This is only supported for instance with the qemu hypervisor.
+This is only supported for instances with the Qemu as the hypervisor.
 
 ## Life cycle
 First, a user creates a VM message and sends it with notify_allocate. This notifies the orchestrator about the creation of the new VM.  
