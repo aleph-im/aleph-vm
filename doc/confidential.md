@@ -38,7 +38,7 @@ Note that the [4004 Series Processors do not provide SEV](https://www.amd.com/en
 ## Requirements for the CRN
 * Support must be enabled in the computer BIOS
 * The kernel and platform must support SEV.
-* sevctl must be installed. A copy is included in the aleph-vm Debian package
+* [sevctl](https://github.com/virtee/sevctl) must be installed. A copy is included in the aleph-vm Debian package and installed as `/opt/sevctl`.
 * QEMU must be installed.
 
 Check with the `sevctl ok` command that the system is supporting AMD SEV properly, you need at least:
