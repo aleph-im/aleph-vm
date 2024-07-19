@@ -5,7 +5,7 @@ Aleph-vm offers to launch confidential VM with AMD SEV. This is also know as TEE
 This is only supported for instance with the qemu hypervisor.
 
 ## Life cycle
-First, a user creates a VM message and send it with notify_allocate. This simply notifies the API of the new VM.  
+First, a user creates a VM message and sends it with notify_allocate. This notifies the orchestrator about the creation of the new VM.  
 The user fetch the platform certificate, validate it's chain again AMD root certificate.
 The user must then upload so-called Guest Owner certificates (created with sevctl) to create an encrypted channel between the user and the Security Processor.
 
