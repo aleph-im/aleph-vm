@@ -233,7 +233,7 @@ To configure which bin aleph-vm use, set the environment variable
 ALEPH_VM_SEV_CTL_PATH=/home/olivier/.cargo/bin/sevctl
 ```
 
-Alternatively you can build it from git : ```cargo install  --git  https://github.com/virtee/sevctl```
+Alternatively, `sevctl` can be build from `git` : ```cargo install  --git  https://github.com/virtee/sevctl```
 
 
 ## Example Commands
