@@ -27,7 +27,13 @@ flowchart TD
 # CRN Side
 
 ## Hardware requirement
-An AMD process supporting SEV, minimum Epyc 3
+4th Generation AMD EPYC™ Processors with SEV support.
+
+This includes the [9004 Series Processors and 8004 Series Processors](https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series.html#tabs-4380fde236-item-2130f0d757-tab).
+
+Note that the [4004 Series Processors do not provide SEV](https://www.amd.com/en/products/processors/server/epyc/infinity-guard.html) and are therefore not supported.
+
+> ℹ️ The 4th Generation requirement stems from security vulnerabilities discovered in SEV on Zen3 and earlier architectures.
 
 ## Requirements for the CRN
 * Support must be enabled in the computer BIOS
