@@ -1,6 +1,6 @@
 # Confidential computing
 
-Aleph vm offer to launch confidential VM with AMD SEV. This is also know as TEE, Trusted Execution Environment
+Aleph-vm offers to launch confidential VM with AMD SEV. This is also know as TEE, Trusted Execution Environment.
 
 This is only supported for instance with the qemu hypervisor.
 
