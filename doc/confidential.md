@@ -106,8 +106,8 @@ The following diagram describes the different pieces of the VM boot process.
 ![Boot process](./images/boot_process.drawio.png)
 
 * OVMF: UEFI firmware (see section above), finds the bootloader and launches it
-* Grub, the bootloader, decrypts the VM image and jumps to it.
-* Grub configuration files: the unencrypted script looks for the user disk decryption password injected during
+* GRUB, the boot loader, decrypts the VM image and jumps to it.
+* GRUB configuration files: the unencrypted script looks for the user disk decryption password injected during
   the SEV boot process, then jumps to a complete Grub configuration file provided by the user inside the VM
   image.
 * Kernel + initrd + root filesystem: The OS of the VM.
