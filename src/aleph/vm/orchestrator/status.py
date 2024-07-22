@@ -120,7 +120,7 @@ async def check_internet(session: ClientSession, vm_id: ItemHash) -> bool:
     try:
         response: dict = await get_json_from_vm(session, vm_id, "/internet")
 
-        if not hasattr(response, "headers"):
+        if "headers" not in response:
             logger.error("The server cannot connect to Internet")
             return False
 
