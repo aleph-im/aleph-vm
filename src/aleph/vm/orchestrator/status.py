@@ -120,6 +120,9 @@ async def check_internet(session: ClientSession, vm_id: ItemHash) -> bool:
     try:
         response: dict = await get_json_from_vm(session, vm_id, "/internet")
 
+        if "headers" not in response:
+            raise ValueError("The server cannot connect to Internet")
+
         # The HTTP Header "Server" must always be present in the result.
         if "Server" not in response["headers"]:
             raise ValueError("Server header not found in the result.")
