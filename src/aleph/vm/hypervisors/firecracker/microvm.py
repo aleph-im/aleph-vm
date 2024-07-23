@@ -472,12 +472,16 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
+        # Clean mounted block devices
         if self.mounted_rootfs:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
-            root_fs = self.mounted_rootfs.name
-            system(f"dmsetup remove {root_fs}")
-            system(f"dmsetup remove {root_fs}_base")
+            if self.mounted_rootfs.is_block_device():
+                root_fs = self.mounted_rootfs.name
+                system(f"dmsetup remove {root_fs}")
+            base_device = Path(self.mounted_rootfs.name.replace("_rootfs", "_base"))
+            if base_device.is_block_device():
+                system(f"dmsetup remove {base_device}")
             if self.use_jailer and Path(self.jailer_path).is_dir():
                 shutil.rmtree(self.jailer_path)
 
