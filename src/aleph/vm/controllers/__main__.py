@@ -91,7 +91,7 @@ async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, 
 
     def callback():
         """Callback for the signal handler to stop the VM and cleanup properly on SIGTERM."""
-        loop.create_task(execution.teardown())
+        loop.create_task(execution.stop())
 
     loop.add_signal_handler(signal.SIGTERM, callback)
 
