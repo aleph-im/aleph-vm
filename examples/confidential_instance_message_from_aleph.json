@@ -6,7 +6,7 @@
   "channel": "Fun-dApps",
   "confirmed": true,
   "content": {
-    "address": "0x2b0eE984F821C710104e575953634b3f3d364Ec4",
+    "address": "0xE0178501683a4C321cAE8263839F349e0f07dECd",
     "allow_amend": false,
     "variables": {
       "VM_CUSTOM_NUMBER": "32"

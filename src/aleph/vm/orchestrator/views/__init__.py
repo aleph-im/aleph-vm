@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.orchestrator import status
+from aleph.vm.orchestrator import status, payment
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
@@ -464,35 +464,45 @@ async def notify_allocation(request: web.Request):
     if message.type != MessageType.instance:
         return web.HTTPBadRequest(reason="Message is not an instance")
 
-    if not message.content.payment:
+    is_confidential = message.content.environment.trusted_execution is not None
+    if not message.content.payment and not is_confidential:
         return web.HTTPBadRequest(reason="Message does not have payment information")
 
-    if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
-        return web.HTTPBadRequest(reason="Message is not for this instance")
+    if not message.content.payment and is_confidential:
+        # At the moment we will allow hold for PAYG
+        logger.info("No PAYG but confidential")
+        # FIXME check account balance
+        payment.fetch_balance_of_address
+        payment.compute_required_balance
+        ...
+    else:
 
-    # Check that there is a payment stream for this instance
-    try:
-        active_flow: Decimal = await get_stream(
-            sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
-        )
-    except InvalidAddressError as error:
-        logger.warning(f"Invalid address {error}", exc_info=True)
-        return web.HTTPBadRequest(reason=f"Invalid address {error}")
+        if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
+            return web.HTTPBadRequest(reason="Message is not for this instance")
 
-    if not active_flow:
-        raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
+        # Check that there is a payment stream for this instance
+        try:
+            active_flow: Decimal = await get_stream(
+                sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
+            )
+        except InvalidAddressError as error:
+            logger.warning(f"Invalid address {error}", exc_info=True)
+            return web.HTTPBadRequest(reason=f"Invalid address {error}")
 
-    required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        if not active_flow:
+            raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
-    if active_flow < required_flow:
-        active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-        required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-        return web.HTTPPaymentRequired(
-            reason="Insufficient payment stream",
-            text="Insufficient payment stream for this instance\n\n"
-            f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
-            f"Present: {active_flow_per_month} / month (flow = {active_flow})",
-        )
+        required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+
+        if active_flow < required_flow:
+            active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+            required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            return web.HTTPPaymentRequired(
+                reason="Insufficient payment stream",
+                text="Insufficient payment stream for this instance\n\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Present: {active_flow_per_month} / month (flow = {active_flow})",
+            )
 
     # Exceptions that can be raised when starting a VM:
     vm_creation_exceptions = (
