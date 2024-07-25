@@ -23,7 +23,12 @@ from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
 from .messages import load_updated_message
-from .payment import compute_required_flow, get_stream, fetch_balance_of_address, compute_required_balance
+from .payment import (
+    compute_required_balance,
+    compute_required_flow,
+    fetch_balance_of_address,
+    get_stream,
+)
 from .pubsub import PubSub
 from .reactor import Reactor
 
