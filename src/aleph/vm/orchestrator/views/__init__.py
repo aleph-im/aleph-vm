@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash, MessageType
+from aleph_message.models import ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -464,19 +464,25 @@ async def notify_allocation(request: web.Request):
     if message.type != MessageType.instance:
         return web.HTTPBadRequest(reason="Message is not an instance")
 
+    payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
+
     is_confidential = message.content.environment.trusted_execution is not None
-    if not message.content.payment and not is_confidential:
-        return web.HTTPBadRequest(reason="Message does not have payment information")
 
-    if not message.content.payment and is_confidential:
+    if payment_type == PaymentType.hold and is_confidential:
         # At the moment we will allow hold for PAYG
-        logger.info("No PAYG but confidential")
-        # FIXME check account balance
-        payment.fetch_balance_of_address
-        payment.compute_required_balance
-        ...
-    else:
-
+        logger.debug("Confidential instance not using PAYG")
+        user_balance = await payment.fetch_balance_of_address(message.sender)
+        hold_price = await payment.fetch_execution_hold_price(item_hash)
+        logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
+        if hold_price > user_balance:
+            return web.HTTPPaymentRequired(
+                reason="Insufficient balance",
+                text="Insufficient balance for this instance\n\n"
+                f"Required: {hold_price} token \n"
+                f"Current user balance: {user_balance}",
+            )
+    elif payment_type == PaymentType.superfluid:
+        # Payment via PAYG
         if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
             return web.HTTPBadRequest(reason="Message is not for this instance")
 
@@ -503,6 +509,8 @@ async def notify_allocation(request: web.Request):
                 f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
                 f"Present: {active_flow_per_month} / month (flow = {active_flow})",
             )
+    else:
+        return web.HTTPBadRequest(reason="Invalid payment method")
 
     # Exceptions that can be raised when starting a VM:
     vm_creation_exceptions = (
@@ -516,6 +524,7 @@ async def notify_allocation(request: web.Request):
 
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
+        logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
         await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
     except vm_creation_exceptions as error:
