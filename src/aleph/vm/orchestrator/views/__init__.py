@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash, MessageType
+from aleph_message.models import ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.orchestrator import status
+from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
@@ -464,35 +464,53 @@ async def notify_allocation(request: web.Request):
     if message.type != MessageType.instance:
         return web.HTTPBadRequest(reason="Message is not an instance")
 
-    if not message.content.payment:
-        return web.HTTPBadRequest(reason="Message does not have payment information")
+    payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
-    if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
-        return web.HTTPBadRequest(reason="Message is not for this instance")
+    is_confidential = message.content.environment.trusted_execution is not None
 
-    # Check that there is a payment stream for this instance
-    try:
-        active_flow: Decimal = await get_stream(
-            sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
-        )
-    except InvalidAddressError as error:
-        logger.warning(f"Invalid address {error}", exc_info=True)
-        return web.HTTPBadRequest(reason=f"Invalid address {error}")
+    if payment_type == PaymentType.hold and is_confidential:
+        # At the moment we will allow hold for PAYG
+        logger.debug("Confidential instance not using PAYG")
+        user_balance = await payment.fetch_balance_of_address(message.sender)
+        hold_price = await payment.fetch_execution_hold_price(item_hash)
+        logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
+        if hold_price > user_balance:
+            return web.HTTPPaymentRequired(
+                reason="Insufficient balance",
+                text="Insufficient balance for this instance\n\n"
+                f"Required: {hold_price} token \n"
+                f"Current user balance: {user_balance}",
+            )
+    elif payment_type == PaymentType.superfluid:
+        # Payment via PAYG
+        if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
+            return web.HTTPBadRequest(reason="Message is not for this instance")
 
-    if not active_flow:
-        raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
+        # Check that there is a payment stream for this instance
+        try:
+            active_flow: Decimal = await get_stream(
+                sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
+            )
+        except InvalidAddressError as error:
+            logger.warning(f"Invalid address {error}", exc_info=True)
+            return web.HTTPBadRequest(reason=f"Invalid address {error}")
 
-    required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        if not active_flow:
+            raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
-    if active_flow < required_flow:
-        active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-        required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-        return web.HTTPPaymentRequired(
-            reason="Insufficient payment stream",
-            text="Insufficient payment stream for this instance\n\n"
-            f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
-            f"Present: {active_flow_per_month} / month (flow = {active_flow})",
-        )
+        required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+
+        if active_flow < required_flow:
+            active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+            required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            return web.HTTPPaymentRequired(
+                reason="Insufficient payment stream",
+                text="Insufficient payment stream for this instance\n\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Present: {active_flow_per_month} / month (flow = {active_flow})",
+            )
+    else:
+        return web.HTTPBadRequest(reason="Invalid payment method")
 
     # Exceptions that can be raised when starting a VM:
     vm_creation_exceptions = (
@@ -506,6 +524,7 @@ async def notify_allocation(request: web.Request):
 
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
+        logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
         await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
     except vm_creation_exceptions as error:
