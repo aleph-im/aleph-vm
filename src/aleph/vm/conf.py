@@ -248,7 +248,7 @@ class Settings(BaseSettings):
     )
 
     SNAPSHOT_FREQUENCY: int = Field(
-        default=60,
+        default=0,
         description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes. "
         "If set to zero, snapshots are disabled.",
     )
@@ -261,7 +261,7 @@ class Settings(BaseSettings):
     # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
-    ENABLE_QEMU_SUPPORT: bool = Field(default=False)
+    ENABLE_QEMU_SUPPORT: bool = Field(default=True)
     INSTANCE_DEFAULT_HYPERVISOR: Optional[HypervisorType] = Field(
         default=HypervisorType.firecracker,  # User Firecracker
         description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
