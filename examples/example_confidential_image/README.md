@@ -53,11 +53,14 @@ sudo rm -r /mnt/debian
 
 Run the build_debian_image.sh that will create the image with the encrypted disk 
 > This script will require sudo for certain commands
+
+The password option is the *secret* password key, with which the disk will be encrypted, you will need to pass it to launch the VM.  
+
 ```shell
-bash ./build_debian_image.sh -o ~/destination-image.img --password your-password -r $ROOT_DIR
+bash ./build_debian_image.sh  --rootfs-dir  $ROOT_DIR -o ~/destination-image.img --password your-password
 ```
 
-> If you need debuging you can pass the -x option to bash before the script name
+> Tip: To debug the image creation, pass the `-x` option to bash in front of the script name
 
 ## To test and further customise you image you can also boot it inside qemu
 ```shell

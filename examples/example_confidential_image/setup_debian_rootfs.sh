@@ -106,9 +106,9 @@ update-initramfs -u
 # Generate system SSH keys
 ssh-keygen -A
 
-# Example to add a sudo user
-useradd -m -s /bin/bash username
-echo 'username:password' | chpasswd
-usermod -aG sudo username
+### Example to add a user with sudo right
+#useradd -m -s /bin/bash username
+#echo 'username:password' | chpasswd
+#usermod -aG sudo username
 
 umount /tmp
