@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
+    LOG_LEVEL = "WARNING"
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
