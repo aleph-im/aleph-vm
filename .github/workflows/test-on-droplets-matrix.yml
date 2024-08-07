@@ -52,6 +52,13 @@ jobs:
             package_name: "aleph-vm.ubuntu-22.04.deb"
             concurrency_group: "droplet-aleph-vm-ubuntu-22-04"
 
+          - os_name: "Ubuntu 24.04"
+            os_image: "ubuntu-24-04-x64"
+            alias: "ubuntu-24-04"
+            package_build_command: "all-podman-ubuntu-2404"
+            package_name: "aleph-vm.ubuntu-24.04.deb"
+            concurrency_group: "droplet-aleph-vm-ubuntu-24-04"
+
         # Check compatibility with all supported runtimes.
         check_vm:
           - alias: "runtime-6770"  # Old runtime, using Debian 11
