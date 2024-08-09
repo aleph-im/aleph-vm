@@ -47,7 +47,7 @@ sudo cp --archive /mnt/debian/* ${ROOT_DIR}
 Clean up the mount
 ```shell
 sudo guestunmount /mnt/debian
-sudo rm -r /mnt/debian
+sudo rmdir /mnt/debian
 ```
 
 
