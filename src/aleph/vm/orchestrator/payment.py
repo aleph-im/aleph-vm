@@ -29,7 +29,7 @@ async def fetch_balance_of_address(address: str) -> Decimal:
     """
 
     async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/{address}/balance"
+        url = f"{settings.API_SERVER}/api/v0/addresses/{address}/balance"
         resp = await session.get(url)
 
         # Consider the balance as null if the address is not found
