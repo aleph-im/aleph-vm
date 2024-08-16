@@ -96,7 +96,7 @@ dependencies = [
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
-test-cov = "pytest --cov {args:tests}"
+test-cov = "pytest --durations=10 --cov  {args:tests}"
 cov-report = [
   "- coverage combine",
   "coverage report",
