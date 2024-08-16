@@ -52,7 +52,8 @@ jobs:
           chmod +x /opt/firecracker/firecracker
           chmod +x /opt/firecracker/jailer
 
-          find /opt
+          # this produces a 33 MB log
+          #  find /opt
 
       - name: "Build custom runtimes"
         run: |
@@ -71,6 +72,11 @@ jobs:
         run: |
           sudo python3 -m pip install hatch hatch-vcs coverage
           sudo hatch run testing:cov
+      - name: Output modules used and their version
+        if:  always()
+        run: |
+           sudo hatch -e testing run pip freeze
+
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
