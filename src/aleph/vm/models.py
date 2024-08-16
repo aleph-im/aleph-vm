@@ -97,6 +97,10 @@ class VmExecution:
         )
 
     @property
+    def is_allocated(self) -> bool:
+        return bool(self.times.starting_at and not self.times.stopping_at)
+
+    @property
     def is_stopping(self) -> bool:
         return bool(self.times.stopping_at and not self.times.stopped_at)
 
