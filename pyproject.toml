@@ -87,6 +87,7 @@ check = "aleph-vm controller run {args:--help}"
 type = "virtual"
 system-packages = true
 dependencies = [
+  "eth_typing==4.3.1", # Temp fix for bug in CI with 5.0.0
   "pytest==8.2.1",
   "pytest-cov==5.0.0",
   "pytest-mock==3.14.0",
