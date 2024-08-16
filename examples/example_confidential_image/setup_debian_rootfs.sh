@@ -107,8 +107,26 @@ update-initramfs -u
 ssh-keygen -A
 
 ### Example to add a user with sudo right
-#useradd -m -s /bin/bash username
-#echo 'username:password' | chpasswd
-#usermod -aG sudo username
+#USER="username"
+#PASSWORD="password"
+#SSH_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArQslTrAf9A... user@example.com"
 
+## Create a new user with a home directory and Bash shell
+#useradd -m -s /bin/bash "$USER"
+#
+## Set the user's password
+#echo "$USER:$PASSWORD" | chpasswd
+#
+## Add the user to the sudo group
+#usermod -aG sudo "$USER"
+#
+## Install ssh key
+#USER_HOME="/home/$USER"
+#mkdir -p "$USER_HOME/.ssh"
+#chmod 700 "$USER_HOME/.ssh"
+#echo "$SSH_KEY" >> "$USER_HOME/.ssh/authorized_keys"
+#chmod 600 "$USER_HOME/.ssh/authorized_keys"
+#chown -R $USER:$USER "$USER_HOME/.ssh"
+
+### END example
 umount /tmp
