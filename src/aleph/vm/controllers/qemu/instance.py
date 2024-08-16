@@ -166,7 +166,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         """Configure the VM by saving controller service configuration"""
 
         logger.debug(f"Making  Qemu configuration: {self} ")
-        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
+        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_hash) + "-monitor.socket")
 
         cloud_init_drive = await self._create_cloud_init_drive()
 
@@ -218,7 +218,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
     @property
     def qmp_socket_path(self) -> Path:
-        return settings.EXECUTION_ROOT / f"{self.vm_id}-qmp.socket"
+        return settings.EXECUTION_ROOT / f"{self.vm_hash}-qmp.socket"
 
     async def start(self):
         # Start via systemd not here
