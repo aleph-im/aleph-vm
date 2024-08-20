@@ -161,9 +161,7 @@ class VmPool:
             #
             # We therefore recycle vm_id values from executions that are not running
             # anymore.
-            currently_used_vm_ids = {
-                execution.vm_id for execution in self.executions.values() if execution.is_allocated
-            }
+            currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
             for i in range(settings.START_ID_INDEX, 255**2):
 
                 if self.network:
