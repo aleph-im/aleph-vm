@@ -135,13 +135,15 @@ async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: 
         if is_sender_authorized(authenticated_sender, execution.message):
             logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
             return True
-
-            logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-            await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-            raise web.HTTPForbidden(body="Unauthorized sender")
     except Exception as error:
+        # Error occurred (invalid auth packet or other
         await ws.send_json({"status": "failed", "reason": str(error)})
         raise web.HTTPForbidden(body="Unauthorized sender")
+
+    # Auth was valid but not the correct user
+    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
+    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+    raise web.HTTPForbidden(body="Unauthorized sender")
 
 
 @cors_allow_all
@@ -175,7 +177,6 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
 @require_jwk_authentication
 async def operate_confidential_initialize(request: web.Request, authenticated_sender: str) -> web.Response:
     """Start the confidential virtual machine if possible."""
-    # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
 
     pool: VmPool = request.app["vm_pool"]
@@ -219,7 +220,6 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
 @require_jwk_authentication
 async def operate_stop(request: web.Request, authenticated_sender: str) -> web.Response:
     """Stop the virtual machine, smoothly if possible."""
-    # TODO: Add user authentication
     vm_hash = get_itemhash_or_400(request.match_info)
 
     pool: VmPool = request.app["vm_pool"]
