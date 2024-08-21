@@ -1,7 +1,7 @@
 import asyncio
 import copy
 
-from aiohttp import ClientSession, ClientConnectorError, ClientResponseError
+from aiohttp import ClientConnectorError, ClientResponseError, ClientSession
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph_message.models import ExecutableMessage, ItemHash, MessageType
 from aleph_message.status import MessageStatus

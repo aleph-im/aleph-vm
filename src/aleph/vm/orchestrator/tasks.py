@@ -23,7 +23,7 @@ from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from .messages import load_updated_message, get_message_status
+from .messages import get_message_status, load_updated_message
 from .payment import (
     compute_required_balance,
     compute_required_flow,
