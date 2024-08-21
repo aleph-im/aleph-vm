@@ -57,6 +57,10 @@ jobs:
           # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
           while ssh root@${{ matrix.staging_servers.hostname }} lsof /var/lib/apt/lists/lock; do sleep 1; done
 
+          # Copy the artifact package to opt folder.
           scp packaging/target/${{ matrix.staging_servers.artifact_name }} root@${{ matrix.staging_servers.hostname }}:/opt
+          
+          # Stop Aleph VM supervisor service before install the new package again.
+          ssh root@${{ matrix.staging_servers.hostname }} DEBIAN_FRONTEND=noninteractive "systemctl stop aleph-vm-supervisor"
           ssh root@${{ matrix.staging_servers.hostname }} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y --allow-downgrades /opt/${{ matrix.staging_servers.artifact_name }}"
 
