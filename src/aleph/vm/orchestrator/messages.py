@@ -1,10 +1,12 @@
 import asyncio
 import copy
 
-from aiohttp import ClientConnectorError, ClientResponseError
+from aiohttp import ClientSession, ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph_message.models import ExecutableMessage, ItemHash, MessageType
+from aleph_message.status import MessageStatus
 
+from aleph.vm.conf import settings
 from aleph.vm.storage import get_latest_amend, get_message
 
 
@@ -69,3 +71,15 @@ async def load_updated_message(
     message = copy.deepcopy(original_message)
     await update_message(message)
     return message, original_message
+
+
+async def get_message_status(item_hash: ItemHash) -> MessageStatus:
+    """Fetch the status of an execution from the reference API server."""
+    async with ClientSession() as session:
+        url = f"{settings.API_SERVER}/api/v0/messages/{item_hash}"
+        resp = await session.get(url)
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
+        resp_data = await resp.json()
+        return resp_data["status"]
