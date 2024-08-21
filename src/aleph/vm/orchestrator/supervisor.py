@@ -175,7 +175,7 @@ def run():
         app["sev_client"] = sev_client
         # TODO: Review and check sevctl first initialization steps, like (sevctl generate and sevctl provision)
 
-    logger.debug(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
+    logger.info(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     try:
         if settings.WATCH_FOR_MESSAGES:
