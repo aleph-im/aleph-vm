@@ -229,8 +229,8 @@ class VmPool:
         for saved_execution in saved_executions:
             vm_hash = ItemHash(saved_execution.vm_hash)
 
-            if vm_hash in self.executions:
-                # The execution is already loaded, skip it
+            if vm_hash in self.executions or not saved_execution.persistent:
+                # The execution is already loaded or isn't persistent, skip it
                 continue
 
             vm_id = saved_execution.vm_id
