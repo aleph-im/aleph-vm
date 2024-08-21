@@ -114,7 +114,8 @@ class VmExecution:
 
     @property
     def is_confidential(self) -> bool:
-        return True if self.message.environment.trusted_execution else False
+        # FunctionEnvironment has no trusted_execution
+        return True if getattr(self.message.environment, "trusted_execution", None) else False
 
     @property
     def hypervisor(self) -> HypervisorType:
