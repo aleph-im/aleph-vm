@@ -15,7 +15,7 @@ debian-package-code:
 	cp ../examples/instance_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/instance_message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.9' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12' 'python-cpuid==0.1.0'
+	pip3 install --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.4.9' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid==0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12' 'python-cpuid==0.1.0'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bin/sevctl

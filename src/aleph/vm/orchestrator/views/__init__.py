@@ -24,10 +24,12 @@ from aleph.vm.controllers.firecracker.executable import (
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import payment, status
+from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
+    InvalidChainError,
     fetch_execution_flow_price,
     get_stream,
 )
@@ -52,6 +54,7 @@ from aleph.vm.utils import (
 )
 from aleph.vm.version import __version__
 from packaging.version import InvalidVersion, Version
+from aleph.vm.orchestrator.payment import InvalidChainError
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +302,17 @@ async def status_check_version(request: web.Request):
 @cors_allow_all
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
+
+    available_payments = {}
+    for chain_name, chain_info in STREAM_CHAINS.items():
+        if chain_info.active:
+            available_payments[str(chain_name)] = {
+                "chain_id": chain_info.chain_id,
+                "rpc": chain_info.rpc,
+                "token": chain_info.token,
+                "super_token": chain_info.super_token,
+            }
+
     return web.json_response(
         {
             "DOMAIN_NAME": settings.DOMAIN_NAME,
@@ -329,8 +343,7 @@ async def status_public_config(request: web.Request):
             },
             "payment": {
                 "PAYMENT_RECEIVER_ADDRESS": settings.PAYMENT_RECEIVER_ADDRESS,
-                "PAYMENT_SUPER_TOKEN": settings.PAYMENT_SUPER_TOKEN,
-                "PAYMENT_CHAIN_ID": settings.PAYMENT_CHAIN_ID,
+                "AVAILABLE_PAYMENTS": available_payments,
                 "PAYMENT_MONITOR_INTERVAL": settings.PAYMENT_MONITOR_INTERVAL,
             },
             "computing": {
@@ -494,6 +507,9 @@ async def notify_allocation(request: web.Request):
         except InvalidAddressError as error:
             logger.warning(f"Invalid address {error}", exc_info=True)
             return web.HTTPBadRequest(reason=f"Invalid address {error}")
+        except InvalidChainError as error:
+            logger.warning(f"Invalid chain {error}", exc_info=True)
+            return web.HTTPBadRequest(reason=f"Invalid Chain {error}")
 
         if not active_flow:
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
