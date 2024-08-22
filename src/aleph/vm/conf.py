@@ -9,8 +9,9 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType, Optional, Union
+from typing import Any, Dict, Literal, NewType, Optional, Union
 
+from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
@@ -231,16 +232,15 @@ class Settings(BaseSettings):
     )
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
-    PAYMENT_RPC_API: HttpUrl = Field(
-        default="https://api.avax.network/ext/bc/C/rpc",
-        # default="https://api.avax-test.network/ext/bc/C/rpc",
-        description="Default to Avalanche Testnet RPC",
-    )
-    PAYMENT_CHAIN_ID: int = Field(
-        default=43114,  # Avalanche Mainnet
-        # default=43113,  # Avalanche Fuji Testnet
-        description="Avalanche chain ID",
-    )
+    PAYMENT_CHAIN_ID: Dict[Chain, int] = {
+        Chain.AVAX: 43114,
+        Chain.BASE: 8453,
+    }
+
+    PAYMENT_RPC_API: Dict[Chain, str] = {
+        Chain.AVAX: "https://api.avax.network/ext/bc/C/rpc",
+        Chain.BASE: "https://base-rpc.publicnode.com",
+    }
 
     PAYMENT_BUFFER: Decimal = Field(
         default=Decimal("0.0000000001"),

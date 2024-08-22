@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 import aiohttp
-from aleph_message.models import ItemHash, PaymentType
+from aleph_message.models import Chain, ItemHash, PaymentType
 from eth_typing import HexAddress
 from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
@@ -87,13 +87,36 @@ class InvalidAddressError(ValueError):
     pass
 
 
+def get_rpc_for_chain(chain: Chain):
+    """Returns the RPC to use for a given Ethereum based blockchain"""
+    if not chain:
+        return None
+
+    if chain in settings.PAYMENT_RPC_API:
+        return settings.PAYMENT_RPC_API[chain]
+    else:
+        raise ValueError(f"Unknown RPC for chain {chain}")
+
+
+def get_chain_id_for_chain(chain: Chain):
+    """Returns the chain ID of a given Ethereum based blockchain"""
+    if not chain:
+        return None
+
+    if chain in settings.PAYMENT_CHAIN_ID:
+        return settings.PAYMENT_CHAIN_ID[chain]
+    else:
+        raise ValueError(f"Unknown RPC for chain {chain}")
+
+
 async def get_stream(sender: str, receiver: str, chain) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    chain_id = settings.PAYMENT_CHAIN_ID
-    superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
+    chain_id = get_chain_id_for_chain(chain)
+    rpc = get_rpc_for_chain(chain)
+    superfluid_instance = CFA_V1(rpc, chain_id)
 
     try:
         super_token: HexAddress = to_normalized_address(settings.PAYMENT_SUPER_TOKEN)
