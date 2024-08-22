@@ -74,7 +74,11 @@ async def load_updated_message(
 
 
 async def get_message_status(item_hash: ItemHash) -> MessageStatus:
-    """Fetch the status of an execution from the reference API server."""
+    """
+    Fetch the status of an execution from the reference API server.
+    We use a normal API call to the CCN instead to use the connector because we want to get the updated status of the
+    message and bypass the messages cache.
+    """
     async with ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/messages/{item_hash}"
         resp = await session.get(url)
