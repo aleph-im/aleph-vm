@@ -16,13 +16,14 @@ from aleph_message.models import (
     ProgramMessage,
     parse_message,
 )
+from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from .messages import load_updated_message
+from .messages import get_message_status, load_updated_message
 from .payment import (
     compute_required_balance,
     compute_required_flow,
@@ -148,6 +149,14 @@ async def monitor_payments(app: web.Application):
     while True:
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
 
+        # Check if the executions continues existing or are forgotten before checking the payment
+        for vm_hash in pool.executions.keys():
+            message_status = await get_message_status(vm_hash)
+            if message_status != MessageStatus.PROCESSED:
+                logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
+                await pool.stop_vm(vm_hash)
+                pool.forget_vm(vm_hash)
+
         # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
         for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
             for chain, executions in chains.items():
@@ -171,6 +180,7 @@ async def monitor_payments(app: web.Application):
                 logger.debug(
                     f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
                 )
+
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
