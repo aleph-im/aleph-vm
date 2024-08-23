@@ -115,6 +115,9 @@ class VmPool:
                 if self.network:
                     vm_type = VmType.from_message_content(message)
                     tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                    # If the network interface already exists, remove it and then re-create it.
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
                 else:
                     tap_interface = None
@@ -163,12 +166,6 @@ class VmPool:
             # anymore.
             currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
             for i in range(settings.START_ID_INDEX, 255**2):
-
-                if self.network:
-                    # Check the network interface don't already exists, otherwise it will cause a crash
-                    if self.network.interface_exists(i):
-                        continue
-
                 if i not in currently_used_vm_ids:
                     return i
             else:
@@ -229,8 +226,8 @@ class VmPool:
         for saved_execution in saved_executions:
             vm_hash = ItemHash(saved_execution.vm_hash)
 
-            if vm_hash in self.executions:
-                # The execution is already loaded, skip it
+            if vm_hash in self.executions or not saved_execution.persistent:
+                # The execution is already loaded or isn't persistent, skip it
                 continue
 
             vm_id = saved_execution.vm_id
