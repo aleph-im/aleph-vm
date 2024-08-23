@@ -324,7 +324,7 @@ class MicroVM:
             rootfs_filename = Path(path_on_host).name
             jailer_path_on_host = f"/opt/{rootfs_filename}"
             try:
-                os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+                os.symlink(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
             return Path(jailer_path_on_host)
