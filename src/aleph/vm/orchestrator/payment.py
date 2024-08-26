@@ -106,7 +106,7 @@ def get_chain_id_for_chain(chain: Chain):
     if chain in settings.PAYMENT_CHAIN_ID:
         return settings.PAYMENT_CHAIN_ID[chain]
     else:
-        raise ValueError(f"Unknown RPC for chain {chain}")
+        raise ValueError(f"Unknown chain id for chain {chain}")
 
 
 async def get_stream(sender: str, receiver: str, chain) -> Decimal:
