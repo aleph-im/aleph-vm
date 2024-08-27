@@ -8,6 +8,7 @@ import aiohttp
 from aleph_message.models import Chain, ItemHash, PaymentType
 from eth_typing import HexAddress
 from eth_utils import from_wei
+from pydantic import BaseModel
 from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
@@ -15,6 +16,19 @@ from aleph.vm.models import VmExecution
 from aleph.vm.utils import to_normalized_address
 
 logger = logging.getLogger(__name__)
+
+
+class ChainInfo(BaseModel):
+    """
+    A chain information.
+    """
+
+    chain_id: int
+    rpc: str
+    token: str
+    super_token: Optional[str] = None
+    testnet: bool = False
+    active: bool = True
 
 
 async def fetch_balance_of_address(address: str) -> Decimal:
@@ -83,39 +97,24 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
 
 class InvalidAddressError(ValueError):
     """The blockchain address could not be parsed."""
-
     pass
 
 
-def get_rpc_for_chain(chain: Chain):
-    """Returns the RPC to use for a given Ethereum based blockchain"""
-    if not chain:
-        return None
-
-    if chain in settings.PAYMENT_RPC_API:
-        return settings.PAYMENT_RPC_API[chain]
-    else:
-        raise ValueError(f"Unknown RPC for chain {chain}")
-
-
-def get_chain_id_for_chain(chain: Chain):
-    """Returns the chain ID of a given Ethereum based blockchain"""
-    if not chain:
-        return None
-
-    if chain in settings.PAYMENT_CHAIN_ID:
-        return settings.PAYMENT_CHAIN_ID[chain]
+def get_chain(chain: str) -> ChainInfo:
+    if chain in settings.STREAM_CHAINS.keys():
+        return settings.STREAM_CHAINS[chain]
     else:
         raise ValueError(f"Unknown chain id for chain {chain}")
 
 
-async def get_stream(sender: str, receiver: str, chain) -> Decimal:
+async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    chain_id = get_chain_id_for_chain(chain)
-    rpc = get_rpc_for_chain(chain)
+    chain_info: ChainInfo = get_chain(chain=chain)
+    chain_id = chain_info.chain_id
+    rpc = chain_info.rpc
     superfluid_instance = CFA_V1(rpc, chain_id)
 
     try:

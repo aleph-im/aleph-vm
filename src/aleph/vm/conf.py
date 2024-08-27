@@ -24,6 +24,8 @@ from aleph.vm.utils import (
     is_command_available,
 )
 
+from src.aleph.vm.orchestrator.payment import ChainInfo
+
 logger = logging.getLogger(__name__)
 
 Url = NewType("Url", str)
@@ -231,6 +233,38 @@ class Settings(BaseSettings):
         description="Address of the ALEPH SuperToken on SuperFluid",
     )
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
+
+
+    STREAM_CHAINS: Dict[Union[Chain, str], ChainInfo] = {
+        # TESTNETS
+        "SEPOLIA": ChainInfo(
+            chain_id=11155111,
+            rpc="https://eth-sepolia.public.blastapi.io",
+            token="0xc4bf5cbdabe595361438f8c6a187bdc330539c60",
+            super_token="0x22064a21fee226d8ffb8818e7627d5ff6d0fc33a",
+            active=False,
+            testnet=True
+        ),
+        # MAINNETS
+        Chain.ETH: ChainInfo(
+            chain_id=1,
+            rpc="https://eth-mainnet.public.blastapi.io",
+            token="0x27702a26126e0B3702af63Ee09aC4d1A084EF628",
+            active=False,
+        ),
+        Chain.AVAX: ChainInfo(
+            chain_id=43114,
+            rpc="https://api.avax.network/ext/bc/C/rpc",
+            token="0xc0Fbc4967259786C743361a5885ef49380473dCF",
+            super_token="0xc0Fbc4967259786C743361a5885ef49380473dCF",
+        ),
+        Chain.BASE: ChainInfo(
+            chain_id=8453,
+            rpc="https://base-mainnet.public.blastapi.io",
+            token="0xc0Fbc4967259786C743361a5885ef49380473dCF",
+            super_token="0xc0Fbc4967259786C743361a5885ef49380473dCF",
+        )
+    }
 
     PAYMENT_CHAIN_ID: Dict[Chain, int] = {
         Chain.AVAX: 43114,
