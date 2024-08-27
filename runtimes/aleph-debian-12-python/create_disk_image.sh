@@ -36,7 +36,7 @@ locale-gen en_US.UTF-8
 
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
-pip3 install --target /opt/aleph/libs 'aleph-sdk-python==0.9.0' 'aleph-message==0.4.7' 'fastapi~=0.109.2'
+pip3 install --target /opt/aleph/libs 'aleph-sdk-python==1.0.0' 'aleph-message==0.4.9' 'fastapi~=0.109.2'
 
 # Compile Python code to bytecode for faster execution
 # -o2 is needed to compile with optimization level 2 which is what we launch init1.py ("python -OO")
