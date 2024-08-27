@@ -86,7 +86,7 @@ is used to parse and validate Aleph messages.
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
 pip3 install pydantic[dotenv]
-pip3 install 'aleph-message==0.4.7'
+pip3 install 'aleph-message==0.4.9'
 ```
 
 ### 2.f. Create the jailer working directory:
