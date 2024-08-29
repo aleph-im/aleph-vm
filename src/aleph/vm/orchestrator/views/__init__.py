@@ -54,7 +54,6 @@ from aleph.vm.utils import (
 )
 from aleph.vm.version import __version__
 from packaging.version import InvalidVersion, Version
-from aleph.vm.orchestrator.payment import InvalidChainError
 
 logger = logging.getLogger(__name__)
 
