@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Optional, Union
 
 from aleph_message.models import Chain
-from pydantic import BaseModel
+from pydantic import BaseModel, root_validator
 
 logger = logging.getLogger(__name__)
 
