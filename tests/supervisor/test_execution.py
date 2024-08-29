@@ -91,8 +91,9 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
         persistent=False,
     )
 
-    # Downloading the resources required may take some time, limit it to 10 seconds
-    await asyncio.wait_for(execution.prepare(), timeout=30)
+    # Downloading the resources required may take some time, limit it to 120 seconds
+    # since it is a bit slow in GitHub Actions
+    await asyncio.wait_for(execution.prepare(), timeout=120)
 
     vm = execution.create(vm_id=3, tap_interface=None)
 
