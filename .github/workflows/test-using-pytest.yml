@@ -7,6 +7,12 @@ jobs:
   tests-python:
     name: "Test Python code"
     runs-on: ubuntu-22.04
+    services:
+      # Run vm connector for the execution tests
+      vm-connector:
+        image: alephim/vm-connector:alpha
+        ports:
+          - 4021:4021
 
     steps:
       - uses: actions/checkout@v4

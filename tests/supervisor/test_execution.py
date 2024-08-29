@@ -63,6 +63,7 @@ async def test_create_execution(mocker):
     await execution.stop()
 
 
+# This test depends on having a vm-connector running on port 4021
 @pytest.mark.asyncio
 async def test_create_execution_online(vm_hash: ItemHash = None):
     """
@@ -105,6 +106,7 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
     await execution.stop()
 
 
+# This test depends on having a vm-connector running on port 4021
 @pytest.mark.asyncio
 async def test_create_execution_legacy():
     """
