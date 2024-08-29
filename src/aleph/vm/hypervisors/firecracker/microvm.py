@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import logging
 import os.path
@@ -318,7 +319,8 @@ class MicroVM:
     def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
-        Creates a symlink to the rootfs file if jailer is in use.
+        If jailer is in use, try to create a hardlink
+        If it is not possible to create a link because the dir are in separate device made a copy.
         """
         if self.use_jailer:
             rootfs_filename = Path(path_on_host).name
@@ -327,6 +329,13 @@ class MicroVM:
                 os.symlink(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
+            except OSError as err:
+                if err.errno == errno.EXDEV:
+                    #  Invalid cross-device link:
+                    # cannot make hard link between partition. Make a copy instead
+                    shutil.copyfile(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+                else:
+                    raise
             return Path(jailer_path_on_host)
         else:
             return path_on_host
