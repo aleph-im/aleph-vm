@@ -303,15 +303,9 @@ async def status_check_version(request: web.Request):
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
 
-    available_payments = {}
-    for chain_name, chain_info in STREAM_CHAINS.items():
-        if chain_info.active:
-            available_payments[str(chain_name)] = {
-                "chain_id": chain_info.chain_id,
-                "rpc": chain_info.rpc,
-                "token": chain_info.token,
-                "super_token": chain_info.super_token,
-            }
+    available_payments = {
+        str(chain_name): chain_info for chain_name, chain_info in STREAM_CHAINS.items() if chain_info.active
+    }
 
     return web.json_response(
         {
