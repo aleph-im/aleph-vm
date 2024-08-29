@@ -89,6 +89,10 @@ class InvalidAddressError(ValueError):
     pass
 
 
+class InvalidChainError(ValueError):
+    pass
+
+
 async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
@@ -96,7 +100,7 @@ async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     chain_info: ChainInfo = get_chain(chain=chain)
     if not chain_info.active:
-        raise ValueError(f"Chain : {chain} is not active for superfluid")
+        raise InvalidChainError(f"Chain : {chain} is not active for superfluid")
 
     superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)
 
