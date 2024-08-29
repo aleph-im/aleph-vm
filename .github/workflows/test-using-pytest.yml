@@ -1,4 +1,4 @@
-name: "Test on DigitalOcean Droplets"
+name: "py.test and linting"
 
 on:
   push
