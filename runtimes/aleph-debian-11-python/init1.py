@@ -247,6 +247,7 @@ async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> A
         module = __import__(module_name)
         for level in module_name.split(".")[1:]:
             module = getattr(module, level)
+        logger.debug("import done")
         app = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint

@@ -25,7 +25,6 @@ from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel, HttpUrl
 from starlette.responses import JSONResponse
 
-from aleph.sdk.chains.ethereum import get_fallback_account
 from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephHttpClient, AuthenticatedAlephHttpClient
 from aleph.sdk.query.filters import MessageFilter
@@ -292,6 +291,7 @@ async def post_with_remote_account():
 @app.post("/post_a_message_local_account")
 async def post_with_local_account():
     """Post a message on the Aleph.im network using a local private key."""
+    from aleph.sdk.chains.ethereum import get_fallback_account
 
     account = get_fallback_account()
 
@@ -326,6 +326,8 @@ async def post_with_local_account():
 
 @app.post("/post_a_file")
 async def post_a_file():
+    from aleph.sdk.chains.ethereum import get_fallback_account
+
     account = get_fallback_account()
     file_path = Path(__file__).absolute()
     async with AuthenticatedAlephHttpClient(
@@ -351,6 +353,8 @@ async def post_a_file():
 async def sign_a_message():
     """Sign a message using a locally managed account within the virtual machine."""
     # FIXME: Broken, fixing this depends on https://github.com/aleph-im/aleph-sdk-python/pull/120
+    from aleph.sdk.chains.ethereum import get_fallback_account
+
     account = get_fallback_account()
     message = {"hello": "world", "chain": "ETH"}
     signed_message = await account.sign_message(message)

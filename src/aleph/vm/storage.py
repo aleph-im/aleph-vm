@@ -148,6 +148,7 @@ async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
         cache_path = settings.FAKE_INSTANCE_MESSAGE
     elif settings.FAKE_DATA_PROGRAM:
         cache_path = settings.FAKE_DATA_MESSAGE
+        logger.debug("Using the fake data message")
     else:
         cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
         url = f"{settings.CONNECTOR_URL}/download/message/{ref}"

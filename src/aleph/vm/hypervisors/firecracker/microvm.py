@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import logging
 import os.path
@@ -318,7 +319,8 @@ class MicroVM:
     def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
-        Creates a symlink to the rootfs file if jailer is in use.
+        If jailer is in use, try to create a hardlink
+        If it is not possible to create a link because the dir are in separate device made a copy.
         """
         if self.use_jailer:
             rootfs_filename = Path(path_on_host).name
@@ -327,6 +329,13 @@ class MicroVM:
                 os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
+            except OSError as err:
+                if err.errno == errno.EXDEV:
+                    # Invalid cross-device link: cannot make hard link between partition.
+                    # In this case, copy the file instead:
+                    shutil.copyfile(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+                else:
+                    raise
             return Path(jailer_path_on_host)
         else:
             return path_on_host
@@ -489,7 +498,12 @@ class MicroVM:
         if self._unix_socket:
             logger.debug("Closing unix socket")
             self._unix_socket.close()
-            await self._unix_socket.wait_closed()
+            try:
+                await asyncio.wait_for(self._unix_socket.wait_closed(), 2)
+            except asyncio.TimeoutError:
+                # In  Python < 3.11 wait_closed() was broken and returned immediatly
+                # It is supposedly fixed in Python 3.12.1, but it hangs indefinitely during tests.
+                logger.info("f{self} unix socket closing timeout")
 
         logger.debug("Removing files")
         if self.config_file_path:
