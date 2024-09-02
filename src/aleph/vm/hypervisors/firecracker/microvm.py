@@ -331,8 +331,8 @@ class MicroVM:
                 logger.debug(f"File {jailer_path_on_host} already exists")
             except OSError as err:
                 if err.errno == errno.EXDEV:
-                    #  Invalid cross-device link:
-                    # cannot make hard link between partition. Make a copy instead
+                    # Invalid cross-device link: cannot make hard link between partition.
+                    # In this case, copy the file instead:
                     shutil.copyfile(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
                 else:
                     raise
