@@ -307,7 +307,7 @@ def main():
     )
 
     logging.basicConfig(
-        level=settings.loglevel,
+        level=settings.LOG_LEVEL,
         format=log_format,
     )
 
