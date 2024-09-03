@@ -109,9 +109,11 @@ class SignedOperationPayload(BaseModel):
         max_past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(minutes=2)
         max_future = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(minutes=2)
         if v < max_past:
-            raise ValueError("Time is too far in the past")
+            msg = "Time is too far in the past"
+            raise ValueError(msg)
         if v > max_future:
-            raise ValueError("Time is too far in the future")
+            msg = "Time is too far in the future"
+            raise ValueError(msg)
         return v
 
 

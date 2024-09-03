@@ -56,12 +56,14 @@ class QemuConfidentialVM(QemuVM):
         # TODO : ensure this is ok at launch
         sev_info = secure_encryption_info()
         if sev_info is None:
-            raise ValueError("Not running on an AMD SEV platform?")
+            msg = "Not running on an AMD SEV platform?"
+            raise ValueError(msg)
         godh = self.sev_dh_cert_file
         launch_blob = self.sev_session_file
 
         if not (godh.is_file() and launch_blob.is_file()):
-            raise FileNotFoundError("Missing guest owner certificates, cannot start the VM.`")
+            msg = "Missing guest owner certificates, cannot start the VM.`"
+            raise FileNotFoundError(msg)
         args = [
             self.qemu_bin_path,
             "-enable-kvm",

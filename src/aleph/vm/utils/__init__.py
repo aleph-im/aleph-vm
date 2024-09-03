@@ -206,7 +206,8 @@ async def get_path_size(path: Path) -> int:
     elif path.is_file():
         return path.stat().st_size
     else:
-        raise ValueError(f"Unknown path type for {path}")
+        msg = f"Unknown path type for {path}"
+        raise ValueError(msg)
 
 
 async def get_block_device_size(device: str) -> int:
@@ -226,11 +227,13 @@ def to_normalized_address(value: str) -> HexAddress:
     try:
         hex_address = hexstr_if_str(to_hex, value).lower()
     except AttributeError:
-        raise TypeError(f"Value must be any string, instead got type {type(value)}")
+        msg = f"Value must be any string, instead got type {type(value)}"
+        raise TypeError(msg)
     if is_address(hex_address):
         return HexAddress(HexStr(hex_address))
     else:
-        raise ValueError(f"Unknown format {value}, attempted to normalize to {hex_address}")
+        msg = f"Unknown format {value}, attempted to normalize to {hex_address}"
+        raise ValueError(msg)
 
 
 def md5sum(file_path: Path) -> str:
@@ -241,7 +244,8 @@ def md5sum(file_path: Path) -> str:
 def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path], str] = md5sum) -> bool:
     """Check if the MD5 hash of two files differ."""
     if not source.exists():
-        raise FileNotFoundError(f"Source file does not exist: {source}")
+        msg = f"Source file does not exist: {source}"
+        raise FileNotFoundError(msg)
 
     if not destination.exists():
         return True

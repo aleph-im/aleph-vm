@@ -200,9 +200,11 @@ class VmExecution:
                     else:
                         resources = AlephQemuResources(self.message, namespace=self.vm_hash)
                 else:
-                    raise ValueError(f"Unknown hypervisor type {self.hypervisor}")
+                    msg = f"Unknown hypervisor type {self.hypervisor}"
+                    raise ValueError(msg)
             else:
-                raise ValueError("Unknown executable message type")
+                msg = "Unknown executable message type"
+                raise ValueError(msg)
 
             if not resources:
                 msg = "Unknown executable message type"
@@ -265,9 +267,11 @@ class VmExecution:
                         tap_interface=tap_interface,
                     )
             else:
-                raise Exception("Unknown VM")
+                msg = "Unknown VM"
+                raise Exception(msg)
         else:
-            raise Exception("Unknown VM")
+            msg = "Unknown VM"
+            raise Exception(msg)
 
         return vm
 

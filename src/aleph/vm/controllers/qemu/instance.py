@@ -51,7 +51,8 @@ class AlephQemuResources(AlephFirecrackerResources):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
         qemu_img_path: str | None = shutil.which("qemu-img")
         if not qemu_img_path:
-            raise VmSetupError("qemu-img not found in PATH")
+            msg = "qemu-img not found in PATH"
+            raise VmSetupError(msg)
 
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
 
@@ -60,9 +61,11 @@ class AlephQemuResources(AlephFirecrackerResources):
         out = json.loads(out_json)
         parent_format = out.get("format", None)
         if parent_format is None:
-            raise VmSetupError(f"Failed to detect format for {volume}: {out_json}")
+            msg = f"Failed to detect format for {volume}: {out_json}"
+            raise VmSetupError(msg)
         if parent_format not in ("qcow2", "raw"):
-            raise VmSetupError(f"Format {parent_format} for {volume} unhandled by QEMU hypervisor")
+            msg = f"Format {parent_format} for {volume} unhandled by QEMU hypervisor"
+            raise VmSetupError(msg)
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
         # Do not override if user asked for host persistance.
