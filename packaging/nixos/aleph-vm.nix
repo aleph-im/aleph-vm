@@ -52,7 +52,7 @@ in
       pkgs.python312Packages.packaging
       pkgs.python312Packages.psutil
       pkgs.python312Packages.py-cpuinfo
-      pkgs.python312Packages.pydantic
+      pkgs.python312Packages.pydantic_1
       pkgs.python312Packages.pyroute2
       pkgs.python312Packages.pyyaml
       pkgs.python312Packages.schedule
@@ -75,18 +75,19 @@ in
       nftablesPyPI
       qmp
       superfluid
+      python-cpuid
     ];
 
     aleph-message = python312.pkgs.buildPythonPackage rec {
       pname = "aleph-message";
-      version = "0.4.4";
+      version = "0.4.8";
       src = python312.pkgs.fetchPypi {
         inherit pname version;
-        sha256 = "sha256-0WKvQpVd8hWezks+fdeYpMtzCqCtsYtP2aVTiQcltQg=";
+        sha256 = "sha256-Q6aWhAeZtgNpXJ0YT4xEtZLqzWpQI/3dg7nVrzC1/RM=";
       };
       doCheck = false;
       propagatedBuildInputs = [
-        pkgs.python312Packages.pydantic
+        pkgs.python312Packages.pydantic_1
       ];
     };
 
@@ -135,6 +136,20 @@ in
         inherit pname version;
         sha256 = "sha256-um4mV9TzduzEb3ejphXgWNk7peRlwBu+Vyib+3zOaA8=";
       };
+    };
+
+    python-cpuid = python312.pkgs.buildPythonPackage rec {
+      pname = "python_cpuid";
+      version = "0.1.1";
+      src = python312.pkgs.fetchPypi {
+        pname = "python_cpuid";
+        inherit version;
+        sha256 = "sha256-CSrfDVZ6LOBo8Q/1sLCFsb4jz6SsWsaJC8lrTxU5q78="; # 0.1.1
+        # sha256 = "sha256-mMamlO36fCwhmaJ8iF1p10XawRB//CFCA7BzccKSycQ="; # 0.1.0
+      };
+      propagatedBuildInputs = [
+        # python312.pkgs.setuptools
+      ];
     };
 
     # jwskate = python312.pkgs.buildPythonPackage rec {
