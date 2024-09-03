@@ -79,5 +79,4 @@ def get_past_vm_logs(stdout_identifier, stderr_identifier) -> Generator[EntryDic
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
 
     r.seek_head()
-    for entry in r:
-        yield entry
+    yield from r
