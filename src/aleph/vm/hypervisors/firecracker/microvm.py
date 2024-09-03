@@ -296,10 +296,7 @@ class MicroVM:
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
 
             try:
-                if sys.version_info >= (3, 10):
-                    Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
-                else:
-                    kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+                Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
             except FileExistsError:
                 logger.debug(f"File {jailer_kernel_image_path} already exists")
 
@@ -379,10 +376,7 @@ class MicroVM:
             jailer_path_on_host = f"/opt/{drive_filename}"
 
             try:
-                if sys.version_info >= (3, 10):
-                    Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
-                else:
-                    drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+                Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
             drive_path = Path(jailer_path_on_host)
