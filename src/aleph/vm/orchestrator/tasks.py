@@ -184,7 +184,7 @@ async def monitor_payments(app: web.Application):
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
-                while stream < (required_stream + settings.PAYMENT_BUFFER):
+                while (stream + settings.PAYMENT_BUFFER) < required_stream:
                     try:
                         last_execution = executions.pop(-1)
                     except IndexError:  # Empty list
