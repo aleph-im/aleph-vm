@@ -11,11 +11,13 @@ from pathlib import Path
 from subprocess import CalledProcessError, check_output
 from typing import Any, Literal, NewType, Optional, Union
 
+from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
+from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,
@@ -224,22 +226,17 @@ class Settings(BaseSettings):
         description="Address of the account receiving payments",
     )
     # This address is the ALEPH SuperToken on SuperFluid Testnet
-    PAYMENT_SUPER_TOKEN: str = Field(
-        default="0xc0Fbc4967259786C743361a5885ef49380473dCF",  # Mainnet
-        # default="0x1290248e01ed2f9f863a9752a8aad396ef3a1b00",  # Testnet
-        description="Address of the ALEPH SuperToken on SuperFluid",
-    )
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
-    PAYMENT_RPC_API: HttpUrl = Field(
-        default="https://api.avax.network/ext/bc/C/rpc",
-        # default="https://api.avax-test.network/ext/bc/C/rpc",
-        description="Default to Avalanche Testnet RPC",
+    # Use to check PAYG payment
+    RPC_AVAX: HttpUrl = Field(
+        default=STREAM_CHAINS[Chain.AVAX].rpc,
+        description="RPC API Endpoint for AVAX chain",
     )
-    PAYMENT_CHAIN_ID: int = Field(
-        default=43114,  # Avalanche Mainnet
-        # default=43113,  # Avalanche Fuji Testnet
-        description="Avalanche chain ID",
+
+    RPC_BASE: HttpUrl = Field(
+        default=STREAM_CHAINS[Chain.BASE].rpc,
+        description="RPC API Endpoint for BASE chain",
     )
 
     PAYMENT_BUFFER: Decimal = Field(
@@ -401,6 +398,13 @@ class Settings(BaseSettings):
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
+
+        # Update chain RPC
+        STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
+        STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
+
+        logger.info(STREAM_CHAINS)
+
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)

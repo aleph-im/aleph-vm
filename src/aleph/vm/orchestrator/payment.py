@@ -14,6 +14,8 @@ from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.utils import to_normalized_address
 
+from .chain import ChainInfo, get_chain
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,18 +89,25 @@ class InvalidAddressError(ValueError):
     pass
 
 
-async def get_stream(sender: str, receiver: str, chain) -> Decimal:
+class InvalidChainError(ValueError):
+    pass
+
+
+async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    chain_id = settings.PAYMENT_CHAIN_ID
-    superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
+    chain_info: ChainInfo = get_chain(chain=chain)
+    if not chain_info.active:
+        raise InvalidChainError(f"Chain : {chain} is not active for superfluid")
+
+    superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)
 
     try:
-        super_token: HexAddress = to_normalized_address(settings.PAYMENT_SUPER_TOKEN)
+        super_token: HexAddress = to_normalized_address(chain_info.super_token)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid token address '{settings.PAYMENT_SUPER_TOKEN}' - {error.args}") from error
+        raise InvalidAddressError(f"Invalid token address '{chain_info.super_token}' - {error.args}") from error
 
     try:
         sender_address: HexAddress = to_normalized_address(sender)
