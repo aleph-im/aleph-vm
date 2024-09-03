@@ -23,9 +23,10 @@ class ChainInfo(BaseModel):
         return self.super_token or self.standard_token
 
     @root_validator(pre=True)
-    def check_tokens(cls, values):
+    def check_tokens(self, values):
         if not values.get("standard_token") and not values.get("super_token"):
-            raise ValueError("At least one of standard_token or super_token must be provided.")
+            msg = "At least one of standard_token or super_token must be provided."
+            raise ValueError(msg)
         return values
 
 
@@ -63,4 +64,5 @@ def get_chain(chain: str) -> ChainInfo:
     try:
         return STREAM_CHAINS[chain]
     except KeyError:
-        raise ValueError(f"Unknown chain id for chain {chain}")
+        msg = f"Unknown chain id for chain {chain}"
+        raise ValueError(msg)

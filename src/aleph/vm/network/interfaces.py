@@ -48,7 +48,8 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Inter
     returns without error."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
-        raise MissingInterfaceError(f"Interface {device_name} does not exist, can't add address {ip} to it.")
+        msg = f"Interface {device_name} does not exist, can't add address {ip} to it."
+        raise MissingInterfaceError(msg)
     try:
         ipr.addr("add", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
     except NetlinkError as e:
@@ -64,7 +65,8 @@ def delete_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6In
     """Delete an IP address to the given interface."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
-        raise MissingInterfaceError(f"Interface {device_name} does not exist, can't delete address {ip} to it.")
+        msg = f"Interface {device_name} does not exist, can't delete address {ip} to it."
+        raise MissingInterfaceError(msg)
     try:
         ipr.addr("del", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
     except NetlinkError as e:
@@ -77,7 +79,8 @@ def set_link_up(ipr: IPRoute, device_name: str):
     """Set the given interface up."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
-        raise MissingInterfaceError(f"Interface {device_name} does not exist, can't set it up.")
+        msg = f"Interface {device_name} does not exist, can't set it up."
+        raise MissingInterfaceError(msg)
     try:
         ipr.link("set", index=interface_index[0], state="up")
     except NetlinkError as e:
@@ -144,7 +147,8 @@ class TapInterface:
 
         ip_command = shutil.which("ip")
         if not ip_command:
-            raise FileNotFoundError("ip command not found")
+            msg = "ip command not found"
+            raise FileNotFoundError(msg)
 
         ipv6_gateway = self.host_ipv6
 
