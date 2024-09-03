@@ -72,16 +72,19 @@ jobs:
       - name: "Build example volume"
         run: |
           cd examples/volumes && bash build_squashfs.sh
-        
+
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
           sudo python3 -m pip install hatch hatch-vcs coverage
           sudo hatch run testing:cov
+
       - name: Output modules used and their version
         if:  always()
         run: |
-           sudo hatch -e testing run pip freeze
+          # re-install hatch in case previous job failed and hatch didn't get installed
+          sudo python3 -m pip install hatch hatch-vcs coverage
+          sudo hatch -e testing run pip freeze
 
 
       - name: Upload coverage reports to Codecov
@@ -107,4 +110,4 @@ jobs:
       - name: Run Shellcheck on all shell scripts
         run: |
           find ./ -type f -name "*.sh" -exec shellcheck {} \;
-  
+
