@@ -235,7 +235,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         ip = ip.split("/", 1)[0]
 
         attempts = 30
-        timeout_seconds = 2.0
+        timeout_seconds = 2
 
         for attempt in range(attempts):
             try:
