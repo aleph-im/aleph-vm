@@ -1,7 +1,7 @@
 import logging
 from ipaddress import IPv6Network
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 import pyroute2
 from aleph_message.models import ItemHash
@@ -105,8 +105,8 @@ def make_ipv6_allocator(
 
 
 class Network:
-    ipv4_forward_state_before_setup: Optional[int] = None
-    ipv6_forward_state_before_setup: Optional[int] = None
+    ipv4_forward_state_before_setup: int | None = None
+    ipv6_forward_state_before_setup: int | None = None
     external_interface: str
     ipv4_forwarding_enabled: bool
     ipv6_forwarding_enabled: bool
@@ -114,7 +114,7 @@ class Network:
     ipv4_address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
     ipv6_address_pool: IPv6Network
     network_size: int
-    ndp_proxy: Optional[NdpProxy] = None
+    ndp_proxy: NdpProxy | None = None
 
     IPV6_SUBNET_PREFIX: int = 124
 

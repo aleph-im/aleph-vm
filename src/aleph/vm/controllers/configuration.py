@@ -1,7 +1,6 @@
 import logging
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Union
 
 from pydantic import BaseModel
 
@@ -26,26 +25,26 @@ class QemuVMHostVolume(BaseModel):
 
 class QemuVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: Optional[str]
+    cloud_init_drive_path: str | None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: Optional[str]
-    host_volumes: List[QemuVMHostVolume]
+    interface_name: str | None
+    host_volumes: list[QemuVMHostVolume]
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: Optional[str]
+    cloud_init_drive_path: str | None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: Optional[str]
-    host_volumes: List[QemuVMHostVolume]
+    interface_name: str | None
+    host_volumes: list[QemuVMHostVolume]
     ovmf_path: Path
     sev_session_file: Path
     sev_dh_cert_file: Path
@@ -61,7 +60,7 @@ class Configuration(BaseModel):
     vm_id: int
     vm_hash: str
     settings: Settings
-    vm_configuration: Union[QemuConfidentialVMConfiguration, QemuVMConfiguration, VMConfiguration]
+    vm_configuration: QemuConfidentialVMConfiguration | QemuVMConfiguration | VMConfiguration
     hypervisor: HypervisorType = HypervisorType.firecracker
 
 

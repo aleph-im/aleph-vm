@@ -7,7 +7,6 @@ import asyncio
 import logging
 import sys
 from collections.abc import Hashable
-from typing import Union
 
 from aleph_message.models import AlephMessage, ChainRef, ItemHash
 
@@ -59,6 +58,6 @@ class PubSub:
                 if self.subscribers.get(key) == set():
                     self.subscribers.pop(key)
 
-    async def publish(self, key: Union[ItemHash, str, ChainRef], value: AlephMessage):
+    async def publish(self, key: ItemHash | str | ChainRef, value: AlephMessage):
         for queue in self.subscribers.get(key, ()):
             await queue.put(value)

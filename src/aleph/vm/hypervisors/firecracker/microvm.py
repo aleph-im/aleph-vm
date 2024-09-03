@@ -14,7 +14,7 @@ from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Any, Optional, TextIO
+from typing import Any
 
 import msgpack
 from aleph_message.models import ItemHash
@@ -83,16 +83,16 @@ class MicroVM:
     vm_id: int
     use_jailer: bool
     firecracker_bin_path: Path
-    jailer_bin_path: Optional[Path]
-    proc: Optional[asyncio.subprocess.Process] = None
-    stdout_task: Optional[Task] = None
-    stderr_task: Optional[Task] = None
-    config_file_path: Optional[Path] = None
+    jailer_bin_path: Path | None
+    proc: asyncio.subprocess.Process | None = None
+    stdout_task: Task | None = None
+    stderr_task: Task | None = None
+    config_file_path: Path | None = None
     drives: list[Drive]
     init_timeout: float
-    runtime_config: Optional[RuntimeConfiguration]
-    mounted_rootfs: Optional[Path] = None
-    _unix_socket: Optional[Server] = None
+    runtime_config: RuntimeConfiguration | None
+    mounted_rootfs: Path | None = None
+    _unix_socket: Server | None = None
     enable_log: bool
 
     def __repr__(self):
@@ -131,7 +131,7 @@ class MicroVM:
         firecracker_bin_path: Path,
         jailer_base_directory: Path,
         use_jailer: bool = True,
-        jailer_bin_path: Optional[Path] = None,
+        jailer_bin_path: Path | None = None,
         init_timeout: float = 5.0,
         enable_log: bool = True,
     ):

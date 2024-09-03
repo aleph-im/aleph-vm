@@ -1,6 +1,5 @@
 import logging
 from pathlib import Path
-from typing import Optional
 
 from aleph_message.models import ItemHash
 
@@ -35,7 +34,7 @@ class CompressedDiskVolumeSnapshot(DiskVolumeFile):
 
 
 class DiskVolumeSnapshot(DiskVolumeFile):
-    compressed: Optional[CompressedDiskVolumeSnapshot]
+    compressed: CompressedDiskVolumeSnapshot | None
 
     def delete(self) -> None:
         if self.compressed:

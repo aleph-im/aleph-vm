@@ -5,9 +5,10 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from statistics import mean
-from typing import Callable, Optional, cast
+from typing import cast
 
 import alembic.command
 import alembic.config
@@ -238,7 +239,7 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
-async def start_instance(item_hash: ItemHash, pubsub: Optional[PubSub], pool) -> VmExecution:
+async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> VmExecution:
     """Run an instance from an InstanceMessage."""
     return await start_persistent_vm(item_hash, pubsub, pool)
 
@@ -251,7 +252,7 @@ async def run_instances(instances: list[ItemHash]) -> None:
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
     # Watching for updates on this instance will therefore not work.
-    pubsub: Optional[PubSub] = None
+    pubsub: PubSub | None = None
 
     await asyncio.gather(*[start_instance(instance_id, pubsub, pool) for instance_id in instances])
 

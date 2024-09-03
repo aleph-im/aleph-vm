@@ -6,7 +6,6 @@ import signal
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Union
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
@@ -85,7 +84,7 @@ async def execute_persistent_vm(config: Configuration):
     return execution, process
 
 
-async def handle_persistent_vm(config: Configuration, execution: Union[MicroVM, QemuVM], process: Process):
+async def handle_persistent_vm(config: Configuration, execution: MicroVM | QemuVM, process: Process):
     # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
     loop = asyncio.get_event_loop()
 

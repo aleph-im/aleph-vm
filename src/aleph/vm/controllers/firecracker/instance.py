@@ -4,7 +4,6 @@ import json
 import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional, Union
 
 import yaml
 from aleph_message.models import ItemHash
@@ -56,7 +55,7 @@ class AlephInstanceResources(AlephFirecrackerResources):
 class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     vm_configuration: BaseConfiguration
     resources: AlephInstanceResources
-    latest_snapshot: Optional[DiskVolumeSnapshot]
+    latest_snapshot: DiskVolumeSnapshot | None
     is_instance = True
     support_snapshot = False
 
@@ -66,9 +65,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         vm_hash: ItemHash,
         resources: AlephInstanceResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
-        hardware_resources: Optional[MachineResources] = None,
-        tap_interface: Optional[TapInterface] = None,
+        enable_console: bool | None = None,
+        hardware_resources: MachineResources | None = None,
+        tap_interface: TapInterface | None = None,
         prepare_jailer: bool = True,
     ):
         self.latest_snapshot = None
@@ -169,13 +168,13 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
     def _encode_user_data(self) -> bytes:
         """Creates user data configuration file for cloud-init tool"""
 
-        ssh_authorized_keys: Optional[list[str]]
+        ssh_authorized_keys: list[str] | None
         if settings.USE_DEVELOPER_SSH_KEYS:
             ssh_authorized_keys = settings.DEVELOPER_SSH_KEYS or []
         else:
             ssh_authorized_keys = self.resources.message_content.authorized_keys or []
 
-        config: dict[str, Union[str, bool, list[str]]] = {
+        config: dict[str, str | bool | list[str]] = {
             "hostname": self._get_hostname(),
             "disable_root": False,
             "ssh_pwauth": False,
