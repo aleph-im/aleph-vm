@@ -2,7 +2,6 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 import aiohttp
 import aioredis
@@ -20,7 +19,7 @@ ALEPH_VM_CONNECTOR = "http://localhost:4021"
 CACHE_EXPIRES_AFTER = 7 * 24 * 3600  # Seconds
 REDIS_ADDRESS = "redis://localhost"
 
-_redis: Optional[aioredis.Redis] = None
+_redis: aioredis.Redis | None = None
 
 
 async def get_redis(address: str = REDIS_ADDRESS) -> aioredis.Redis:
@@ -105,7 +104,7 @@ async def sign(request: web.Request):
 
 async def get_from_cache(request: web.Request):
     prefix: str = request.app["meta_vm_hash"]
-    key: Optional[str] = request.match_info.get("key")
+    key: str | None = request.match_info.get("key")
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
@@ -119,7 +118,7 @@ async def get_from_cache(request: web.Request):
 
 async def put_in_cache(request: web.Request):
     prefix: str = request.app["meta_vm_hash"]
-    key: Optional[str] = request.match_info.get("key")
+    key: str | None = request.match_info.get("key")
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
@@ -131,7 +130,7 @@ async def put_in_cache(request: web.Request):
 
 async def delete_from_cache(request: web.Request):
     prefix: str = request.app["meta_vm_hash"]
-    key: Optional[str] = request.match_info.get("key")
+    key: str | None = request.match_info.get("key")
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
@@ -154,9 +153,9 @@ async def list_keys_from_cache(request: web.Request):
 
 def run_guest_api(
     unix_socket_path: Path,
-    vm_hash: Optional[str] = None,
-    sentry_dsn: Optional[str] = None,
-    server_name: Optional[str] = None,
+    vm_hash: str | None = None,
+    sentry_dsn: str | None = None,
+    server_name: str | None = None,
 ):
     # This function runs in a separate process, requiring to reinitialize the Sentry SDK
     if sentry_sdk and sentry_dsn:

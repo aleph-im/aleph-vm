@@ -1,5 +1,4 @@
 import logging
-from typing import Dict, Optional, Union
 
 from aleph_message.models import Chain
 from pydantic import BaseModel, root_validator
@@ -14,13 +13,13 @@ class ChainInfo(BaseModel):
 
     chain_id: int
     rpc: str
-    standard_token: Optional[str] = None
-    super_token: Optional[str] = None
+    standard_token: str | None = None
+    super_token: str | None = None
     testnet: bool = False
     active: bool = True
 
     @property
-    def token(self) -> Optional[str]:
+    def token(self) -> str | None:
         return self.super_token or self.standard_token
 
     @root_validator(pre=True)
@@ -30,7 +29,7 @@ class ChainInfo(BaseModel):
         return values
 
 
-STREAM_CHAINS: Dict[Union[Chain, str], ChainInfo] = {
+STREAM_CHAINS: dict[Chain | str, ChainInfo] = {
     # TESTNETS
     "SEPOLIA": ChainInfo(
         chain_id=11155111,
@@ -63,5 +62,5 @@ STREAM_CHAINS: Dict[Union[Chain, str], ChainInfo] = {
 def get_chain(chain: str) -> ChainInfo:
     try:
         return STREAM_CHAINS[chain]
-    except KeyError as error:
+    except KeyError:
         raise ValueError(f"Unknown chain id for chain {chain}")

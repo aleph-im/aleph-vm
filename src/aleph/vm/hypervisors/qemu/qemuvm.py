@@ -2,7 +2,7 @@ import asyncio
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import TextIO
 
 import qmp
 from systemd import journal
@@ -19,14 +19,14 @@ class HostVolume:
 
 class QemuVM:
     qemu_bin_path: str
-    cloud_init_drive_path: Optional[str]
+    cloud_init_drive_path: str | None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
-    qemu_process: Optional[Process] = None
+    qemu_process: Process | None = None
     host_volumes: list[HostVolume]
 
     def __repr__(self) -> str:
@@ -129,7 +129,7 @@ class QemuVM:
         )
         return proc
 
-    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
+    def _get_qmpclient(self) -> qmp.QEMUMonitorProtocol | None:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
             return None
         client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))

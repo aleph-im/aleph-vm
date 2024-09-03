@@ -5,12 +5,12 @@ import json
 import logging
 import subprocess
 from base64 import b16encode, b32decode
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
 from pathlib import Path
 from shutil import disk_usage
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import aiodns
 import msgpack
@@ -80,7 +80,7 @@ def to_json(o: Any):
         return str(o)
 
 
-def dumps_for_json(o: Any, indent: Optional[int] = None):
+def dumps_for_json(o: Any, indent: int | None = None):
     return json.dumps(o, default=to_json, indent=indent)
 
 
@@ -98,7 +98,7 @@ def create_task_log_exceptions(coro: Coroutine, *, name=None):
     return asyncio.create_task(run_and_log_exception(coro), name=name)
 
 
-async def run_in_subprocess(command: list[str], check: bool = True, stdin_input: Optional[bytes] = None) -> bytes:
+async def run_in_subprocess(command: list[str], check: bool = True, stdin_input: bytes | None = None) -> bytes:
     """Run the specified command in a subprocess, returns the stdout of the process."""
     command = [str(arg) for arg in command]
     logger.debug(f"command: {' '.join(command)}")
@@ -131,7 +131,7 @@ def is_command_available(command):
         return False
 
 
-def check_system_module(module_path: str) -> Optional[str]:
+def check_system_module(module_path: str) -> str | None:
     p = Path("/sys/module") / module_path
     if not p.exists():
         return None

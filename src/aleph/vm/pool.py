@@ -5,7 +5,6 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Optional
 
 from aleph_message.models import (
     Chain,
@@ -40,8 +39,8 @@ class VmPool:
     counter: int  # Used to provide distinct ids to network interfaces
     executions: dict[ItemHash, VmExecution]
     message_cache: dict[str, ExecutableMessage]
-    network: Optional[Network]
-    snapshot_manager: Optional[SnapshotManager] = None
+    network: Network | None
+    snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
 
@@ -168,11 +167,10 @@ class VmPool:
             for i in range(settings.START_ID_INDEX, 255**2):
                 if i not in currently_used_vm_ids:
                     return i
-            else:
-                msg = "No available value for vm_id."
-                raise ValueError(msg)
+            msg = "No available value for vm_id."
+            raise ValueError(msg)
 
-    def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
@@ -181,7 +179,7 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if execution:

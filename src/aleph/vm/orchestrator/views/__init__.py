@@ -192,7 +192,7 @@ async def index(request: web.Request):
 
 
 @cors_allow_all
-async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] = None):
+async def status_check_fastapi(request: web.Request, vm_id: ItemHash | None = None):
     """Check that the FastAPI diagnostic VM runs correctly"""
 
     # Retro-compatibility mode ignores some of the newer checks. It is used to check the status of legacy VMs.
@@ -276,7 +276,7 @@ async def status_check_ipv6(request: web.Request):
 @cors_allow_all
 async def status_check_version(request: web.Request):
     """Check if the software is running a version equal or newer than the given one"""
-    reference_str: Optional[str] = request.query.get("reference")
+    reference_str: str | None = request.query.get("reference")
     if not reference_str:
         raise web.HTTPBadRequest(text="Query field '?reference=` must be specified")
     try:

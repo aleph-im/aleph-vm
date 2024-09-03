@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
 from subprocess import CalledProcessError
-from typing import Union
 
 import aiohttp
 from aleph_message.models import (
@@ -142,7 +141,7 @@ async def get_latest_amend(item_hash: str) -> str:
             return result or item_hash
 
 
-async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
+async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
     if ref == settings.FAKE_INSTANCE_ID:
         logger.debug("Using the fake instance message since the ref matches")
         cache_path = settings.FAKE_INSTANCE_MESSAGE
@@ -256,7 +255,7 @@ async def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_volume_file(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
     path = settings.PERSISTENT_VOLUMES_DIR / namespace / f"{volume_name}.btrfs"
@@ -300,7 +299,7 @@ async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> No
     await run_in_subprocess(["umount", str(mount_path)])
 
 
-async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2
     """

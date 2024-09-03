@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType, Optional, Union
+from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -17,7 +17,7 @@ from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
+from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,
@@ -85,7 +85,7 @@ def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
             yield server
 
 
-def get_default_interface() -> Optional[str]:
+def get_default_interface() -> str | None:
     """Returns the default network interface"""
     with open("/proc/net/route") as f:
         for line in f.readlines():
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
 
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
-    NETWORK_INTERFACE: Optional[str] = None
+    NETWORK_INTERFACE: str | None = None
     IPV4_ADDRESS_POOL = Field(
         default="172.16.0.0/12",
         description="IPv4 address range used to provide networks to VMs.",
@@ -179,8 +179,8 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.detect
-    DNS_NAMESERVERS: Optional[list[str]] = None
+    DNS_RESOLUTION: DnsResolver | None = DnsResolver.detect
+    DNS_NAMESERVERS: list[str] | None = None
 
     FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
     JAILER_PATH = Path("/opt/firecracker/jailer")
@@ -259,7 +259,7 @@ class Settings(BaseSettings):
     ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
     ENABLE_QEMU_SUPPORT: bool = Field(default=True)
-    INSTANCE_DEFAULT_HYPERVISOR: Optional[HypervisorType] = Field(
+    INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
         default=HypervisorType.firecracker,  # User Firecracker
         description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
     )
@@ -279,19 +279,17 @@ class Settings(BaseSettings):
 
     # Tests on programs
 
-    FAKE_DATA_PROGRAM: Optional[Path] = None
+    FAKE_DATA_PROGRAM: Path | None = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
     FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
-    FAKE_DATA_DATA: Optional[Path] = Path(abspath(join(__file__, "../../../../examples/data/")))
+    FAKE_DATA_DATA: Path | None = Path(abspath(join(__file__, "../../../../examples/data/")))
     FAKE_DATA_RUNTIME = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
-    FAKE_DATA_VOLUME: Optional[Path] = Path(
-        abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs"))
-    )
+    FAKE_DATA_VOLUME: Path | None = Path(abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs")))
 
     # Tests on instances
 
-    TEST_INSTANCE_ID: Optional[str] = Field(
+    TEST_INSTANCE_ID: str | None = Field(
         default=None,  # TODO: Use a valid item_hash here
         description="Identifier of the instance message used when testing the launch of an instance from the network",
     )
@@ -312,11 +310,11 @@ class Settings(BaseSettings):
 
     # Developer options
 
-    SENTRY_DSN: Optional[str] = None
+    SENTRY_DSN: str | None = None
     SENTRY_TRACES_SAMPLE_RATE: float = Field(ge=0, le=1.0, default=0.1)
-    DEVELOPER_SSH_KEYS: Optional[list[str]] = []
+    DEVELOPER_SSH_KEYS: list[str] | None = []
     # Using an object here forces the value to come from Python code and not from an environment variable.
-    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = False
+    USE_DEVELOPER_SSH_KEYS: Literal[False] | object = False
 
     # Fields
     SENSITIVE_FIELDS: list[str] = Field(
@@ -461,10 +459,10 @@ class Settings(BaseSettings):
 
     def __init__(
         self,
-        _env_file: Optional[DotenvType] = env_file_sentinel,
-        _env_file_encoding: Optional[str] = None,
-        _env_nested_delimiter: Optional[str] = None,
-        _secrets_dir: Optional[StrPath] = None,
+        _env_file: DotenvType | None = env_file_sentinel,
+        _env_file_encoding: str | None = None,
+        _env_nested_delimiter: str | None = None,
+        _secrets_dir: StrPath | None = None,
         **values: Any,
     ) -> None:
         super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)

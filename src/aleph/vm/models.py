@@ -2,10 +2,9 @@ import asyncio
 import logging
 import uuid
 from asyncio import Task
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional, Union
 
 from aleph_message.models import (
     ExecutableContent,
@@ -48,12 +47,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VmExecutionTimes:
     defined_at: datetime
-    preparing_at: Optional[datetime] = None
-    prepared_at: Optional[datetime] = None
-    starting_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    stopping_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
+    preparing_at: datetime | None = None
+    prepared_at: datetime | None = None
+    starting_at: datetime | None = None
+    started_at: datetime | None = None
+    stopping_at: datetime | None = None
+    stopped_at: datetime | None = None
 
     def to_dict(self):
         return self.__dict__
@@ -70,8 +69,8 @@ class VmExecution:
     vm_hash: ItemHash
     original: ExecutableContent
     message: ExecutableContent
-    resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[Union[AlephFirecrackerExecutable, AlephQemuInstance]] = None
+    resources: AlephFirecrackerResources | None = None
+    vm: AlephFirecrackerExecutable | AlephQemuInstance | None = None
 
     times: VmExecutionTimes
 
@@ -80,11 +79,11 @@ class VmExecution:
     runs_done_event: asyncio.Event
     stop_pending_lock: asyncio.Lock
     stop_event: asyncio.Event
-    expire_task: Optional[asyncio.Task] = None
-    update_task: Optional[asyncio.Task] = None
+    expire_task: asyncio.Task | None = None
+    update_task: asyncio.Task | None = None
 
-    snapshot_manager: Optional[SnapshotManager]
-    systemd_manager: Optional[SystemDManager]
+    snapshot_manager: SnapshotManager | None
+    systemd_manager: SystemDManager | None
 
     persistent: bool = False
 
@@ -126,7 +125,7 @@ class VmExecution:
         return self.ready_event.wait
 
     @property
-    def vm_id(self) -> Optional[int]:
+    def vm_id(self) -> int | None:
         return self.vm.vm_id if self.vm else None
 
     @property
@@ -151,8 +150,8 @@ class VmExecution:
         vm_hash: ItemHash,
         message: ExecutableContent,
         original: ExecutableContent,
-        snapshot_manager: Optional[SnapshotManager],
-        systemd_manager: Optional[SystemDManager],
+        snapshot_manager: SnapshotManager | None,
+        systemd_manager: SystemDManager | None,
         persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
@@ -176,7 +175,7 @@ class VmExecution:
             **self.__dict__,
         }
 
-    def to_json(self, indent: Optional[int] = None) -> str:
+    def to_json(self, indent: int | None = None) -> str:
         return dumps_for_json(self.to_dict(), indent=indent)
 
     async def prepare(self) -> None:
@@ -187,9 +186,9 @@ class VmExecution:
                 return
 
             self.times.preparing_at = datetime.now(tz=timezone.utc)
-            resources: Union[
-                AlephProgramResources, AlephInstanceResources, AlephQemuResources, AlephQemuConfidentialInstance
-            ]
+            resources: (
+                AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance
+            )
             if self.is_program:
                 resources = AlephProgramResources(self.message, namespace=self.vm_hash)
             elif self.is_instance:
@@ -213,7 +212,7 @@ class VmExecution:
             self.resources = resources
 
     def create(
-        self, vm_id: int, tap_interface: Optional[TapInterface] = None, prepare: bool = True
+        self, vm_id: int, tap_interface: TapInterface | None = None, prepare: bool = True
     ) -> AlephVmControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
@@ -296,7 +295,7 @@ class VmExecution:
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
         await self.vm.wait_for_init()
 
-    def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
+    def stop_after_timeout(self, timeout: float = 5.0) -> Task | None:
         if self.persistent:
             logger.debug("VM marked as long running. Ignoring timeout.")
             return None
@@ -439,7 +438,7 @@ class VmExecution:
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
 
-    async def run_code(self, scope: Optional[dict] = None) -> bytes:
+    async def run_code(self, scope: dict | None = None) -> bytes:
         if not self.vm:
             msg = "The VM has not been created yet"
             raise ValueError(msg)
