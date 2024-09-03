@@ -44,7 +44,7 @@ vmlinux:
 
 download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
-	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.24.0/kubo_v0.24.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 target/bin/sevctl:
 	# Release 0.4.3 matches revision c41c9172be013d6f10b9e1d7286fcb021805d5a5
