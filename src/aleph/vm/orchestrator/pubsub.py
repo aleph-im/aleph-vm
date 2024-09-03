@@ -14,11 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class PubSub:
-    if sys.version_info >= (3, 9):
-        subscribers: dict[Hashable, set[asyncio.Queue[set]]]
-    else:
-        # Support for Python 3.8 (Ubuntu 20.04)
-        subscribers: dict[Hashable, set[asyncio.Queue]]
+    subscribers: dict[Hashable, set[asyncio.Queue[set]]]
 
     def __init__(self):
         self.subscribers = {}
