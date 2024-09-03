@@ -5,7 +5,7 @@ import shutil
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Generic, Optional, TypeVar, Union
+from typing import Generic, TypeVar
 
 import psutil
 from aleph_message.models import ItemHash
@@ -47,9 +47,9 @@ class AlephQemuResources(AlephFirecrackerResources):
             self.download_volumes(),
         )
 
-    async def make_writable_volume(self, parent_image_path, volume: Union[PersistentVolume, RootfsVolume]):
+    async def make_writable_volume(self, parent_image_path, volume: PersistentVolume | RootfsVolume):
         """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
-        qemu_img_path: Optional[str] = shutil.which("qemu-img")
+        qemu_img_path: str | None = shutil.which("qemu-img")
         if not qemu_img_path:
             raise VmSetupError("qemu-img not found in PATH")
 
@@ -98,10 +98,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     resources: AlephQemuResources
     enable_networking: bool
     hardware_resources: MachineResources
-    tap_interface: Optional[TapInterface] = None
-    vm_configuration: Optional[ConfigurationType]
+    tap_interface: TapInterface | None = None
+    vm_configuration: ConfigurationType | None
     is_instance: bool
-    qemu_process: Optional[Process]
+    qemu_process: Process | None
     support_snapshot = False
     persistent = True
     controller_configuration: Configuration
@@ -119,7 +119,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         resources: AlephQemuResources,
         enable_networking: bool = False,
         hardware_resources: MachineResources = MachineResources(),
-        tap_interface: Optional[TapInterface] = None,
+        tap_interface: TapInterface | None = None,
     ):
         self.vm_id = vm_id
         self.vm_hash = vm_hash
@@ -253,7 +253,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def stop_guest_api(self):
         pass
 
-    print_task: Optional[Task] = None
+    print_task: Task | None = None
 
     async def teardown(self):
         if self.print_task:

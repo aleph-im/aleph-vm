@@ -1,7 +1,8 @@
 import asyncio
 import logging
+from collections.abc import Callable, Generator
 from datetime import datetime
-from typing import Callable, Generator, TypedDict
+from typing import TypedDict
 
 from systemd import journal
 

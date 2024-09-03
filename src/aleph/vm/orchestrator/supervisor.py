@@ -8,10 +8,9 @@ evolve in the future.
 
 import asyncio
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from secrets import token_urlsafe
-from typing import Callable
 
 from aiohttp import web
 from aiohttp_cors import ResourceOptions, setup

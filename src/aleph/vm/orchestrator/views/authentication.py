@@ -3,15 +3,15 @@ import datetime
 import functools
 import json
 import logging
-from collections.abc import Awaitable, Coroutine
-from typing import Any, Callable, Literal, Union
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, Literal
 
 import cryptography.exceptions
 import pydantic
 from aiohttp import web
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from jwcrypto import jwk, jws
+from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from pydantic import BaseModel, ValidationError, root_validator, validator
 
@@ -98,7 +98,7 @@ class SignedPubKeyHeader(BaseModel):
 
 class SignedOperationPayload(BaseModel):
     time: datetime.datetime
-    method: Union[Literal["POST"], Literal["GET"]]
+    method: Literal["POST"] | Literal["GET"]
     domain: str
     path: str
     # body_sha256: str  # disabled since there is no body
@@ -166,8 +166,7 @@ def get_signed_pubkey(request: web.Request) -> SignedPubKeyHeader:
                 raise web.HTTPUnauthorized(reason="Token expired") from errors
             if str(err.exc) == "Invalid signature":
                 raise web.HTTPUnauthorized(reason="Invalid signature") from errors
-        else:
-            raise errors
+        raise errors
 
 
 def get_signed_operation(request: web.Request) -> SignedOperation:

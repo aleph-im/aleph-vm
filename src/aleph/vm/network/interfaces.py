@@ -3,7 +3,6 @@ import errno
 import logging
 import shutil
 from ipaddress import IPv4Interface, IPv6Interface, IPv6Network
-from typing import Optional, Union
 
 from pyroute2 import IPRoute, NetlinkError
 
@@ -44,7 +43,7 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
             logger.error(f"Unknown exception while creating interface {device_name}: {error}")
 
 
-def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
+def add_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
     """Add an IP address to the given interface. If the address already exists, a warning is logged and the function
     returns without error."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
@@ -61,7 +60,7 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6
         logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
 
 
-def delete_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
+def delete_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
     """Delete an IP address to the given interface."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
     if not interface_index:
@@ -110,7 +109,7 @@ class TapInterface:
         device_name: str,
         ip_network: IPv4NetworkWithInterfaces,
         ipv6_network: IPv6Network,
-        ndp_proxy: Optional[NdpProxy],
+        ndp_proxy: NdpProxy | None,
     ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Generic, Optional, TypeVar
+from typing import Generic, TypeVar
 
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
@@ -75,18 +75,18 @@ class HostVolume:
 @dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
-    ip: Optional[str] = None
-    route: Optional[str] = None
+    ip: str | None = None
+    route: str | None = None
     dns_servers: list[str] = field(default_factory=list)
     volumes: list[Volume] = field(default_factory=list)
-    variables: Optional[dict[str, str]] = None
+    variables: dict[str, str] | None = None
 
 
 @dataclass
 class ConfigurationResponse:
     success: bool
-    error: Optional[str] = None
-    traceback: Optional[str] = None
+    error: str | None = None
+    traceback: str | None = None
 
 
 class AlephFirecrackerResources:
@@ -149,14 +149,14 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    tap_interface: Optional[TapInterface] = None
+    tap_interface: TapInterface | None = None
     fvm: MicroVM
-    vm_configuration: Optional[ConfigurationType]
-    guest_api_process: Optional[Process] = None
+    vm_configuration: ConfigurationType | None
+    guest_api_process: Process | None = None
     is_instance: bool
     persistent: bool
-    _firecracker_config: Optional[FirecrackerConfig] = None
-    controller_configuration: Optional[Configuration] = None
+    _firecracker_config: FirecrackerConfig | None = None
+    controller_configuration: Configuration | None = None
     support_snapshot: bool
 
     @property
@@ -169,9 +169,9 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         vm_hash: ItemHash,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
-        hardware_resources: Optional[MachineResources] = None,
-        tap_interface: Optional[TapInterface] = None,
+        enable_console: bool | None = None,
+        hardware_resources: MachineResources | None = None,
+        tap_interface: TapInterface | None = None,
         persistent: bool = False,
         prepare_jailer: bool = True,
     ):

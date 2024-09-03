@@ -2,8 +2,8 @@ import asyncio
 import logging
 import shutil
 from asyncio.subprocess import Process
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import AMDSEVPolicy, MachineResources
@@ -50,10 +50,10 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    tap_interface: Optional[TapInterface] = None
-    vm_configuration: Optional[ConfigurationType]
+    tap_interface: TapInterface | None = None
+    vm_configuration: ConfigurationType | None
     is_instance: bool
-    qemu_process: Optional[Process]
+    qemu_process: Process | None
     support_snapshot = False
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
@@ -74,7 +74,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         enable_networking: bool = False,
         confidential_policy: int = AMDSEVPolicy.NO_DBG,
         hardware_resources: MachineResources = MachineResources(),
-        tap_interface: Optional[TapInterface] = None,
+        tap_interface: TapInterface | None = None,
     ):
         super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
         self.confidential_policy = confidential_policy

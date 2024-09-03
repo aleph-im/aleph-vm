@@ -2,8 +2,8 @@ import asyncio
 import logging
 from abc import ABC
 from asyncio.subprocess import Process
-from collections.abc import Coroutine
-from typing import Any, Callable, Optional
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import MachineResources
@@ -31,26 +31,26 @@ class AlephVmControllerInterface(ABC):
     hardware_resources: MachineResources
     support_snapshot: bool
     """Does this controller support snapshotting"""
-    guest_api_process: Optional[Process] = None
-    tap_interface: Optional[TapInterface] = None
+    guest_api_process: Process | None = None
+    tap_interface: TapInterface | None = None
     """Network interface used for this VM"""
 
-    def get_ip(self) -> Optional[str]:
+    def get_ip(self) -> str | None:
         if self.tap_interface:
             return self.tap_interface.guest_ip.with_prefixlen
         return None
 
-    def get_ip_route(self) -> Optional[str]:
+    def get_ip_route(self) -> str | None:
         if self.tap_interface:
             return str(self.tap_interface.host_ip).split("/", 1)[0]
         return None
 
-    def get_ipv6(self) -> Optional[str]:
+    def get_ipv6(self) -> str | None:
         if self.tap_interface:
             return self.tap_interface.guest_ipv6.with_prefixlen
         return None
 
-    def get_ipv6_gateway(self) -> Optional[str]:
+    def get_ipv6_gateway(self) -> str | None:
         if self.tap_interface:
             return str(self.tap_interface.host_ipv6.ip)
         return None

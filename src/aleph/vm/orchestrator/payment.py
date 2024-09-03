@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import Optional
 
 import aiohttp
 from aleph_message.models import ItemHash, PaymentType
@@ -55,7 +54,7 @@ async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
 
         resp_data = await resp.json()
         required_flow: float = resp_data["required_tokens"]
-        payment_type: Optional[str] = resp_data["payment_type"]
+        payment_type: str | None = resp_data["payment_type"]
 
         if payment_type is None:
             raise ValueError("Payment type must be specified in the message")
@@ -75,7 +74,7 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
 
         resp_data = await resp.json()
         required_hold: float = resp_data["required_tokens"]
-        payment_type: Optional[str] = resp_data["payment_type"]
+        payment_type: str | None = resp_data["payment_type"]
 
         if payment_type not in (None, PaymentType.hold):
             raise ValueError(f"Payment type {payment_type} is not supported")

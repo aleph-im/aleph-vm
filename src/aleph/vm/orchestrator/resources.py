@@ -1,7 +1,6 @@
 import math
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Optional
 
 import cpuinfo
 import psutil
@@ -157,8 +156,8 @@ class Allocation(BaseModel):
 
     persistent_vms: set[ItemHash] = Field(default_factory=set)
     instances: set[ItemHash] = Field(default_factory=set)
-    on_demand_vms: Optional[set[ItemHash]] = None
-    jobs: Optional[set[ItemHash]] = None
+    on_demand_vms: set[ItemHash] | None = None
+    jobs: set[ItemHash] | None = None
 
 
 class VMNotification(BaseModel):
