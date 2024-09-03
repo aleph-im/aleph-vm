@@ -161,7 +161,7 @@ async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
             msg = fix_message_validation(msg)
 
         result = parse_message(message_dict=msg)
-        assert isinstance(result, (InstanceMessage, ProgramMessage)), "Parsed message is not executable"
+        assert isinstance(result, InstanceMessage | ProgramMessage), "Parsed message is not executable"
         return result
 
 
@@ -369,7 +369,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         return await get_existing_file(ref)
-    elif isinstance(volume, (PersistentVolume, RootfsVolume)):
+    elif isinstance(volume, PersistentVolume | RootfsVolume):
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
         if volume.persistence != VolumePersistence.host:
             msg = "Only 'host' persistence is supported"
