@@ -177,7 +177,7 @@ class HostNotFoundError(Exception):
     pass
 
 
-async def ping(host: str, packets: int, timeout: float):
+async def ping(host: str, packets: int, timeout: int):
     """
     Waits for a host to respond to a ping request.
     """
