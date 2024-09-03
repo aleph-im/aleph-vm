@@ -57,9 +57,11 @@ async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
         payment_type: str | None = resp_data["payment_type"]
 
         if payment_type is None:
-            raise ValueError("Payment type must be specified in the message")
+            msg = "Payment type must be specified in the message"
+            raise ValueError(msg)
         elif payment_type != PaymentType.superfluid:
-            raise ValueError(f"Payment type {payment_type} is not supported")
+            msg = f"Payment type {payment_type} is not supported"
+            raise ValueError(msg)
 
         return Decimal(required_flow)
 
@@ -77,7 +79,8 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
         payment_type: str | None = resp_data["payment_type"]
 
         if payment_type not in (None, PaymentType.hold):
-            raise ValueError(f"Payment type {payment_type} is not supported")
+            msg = f"Payment type {payment_type} is not supported"
+            raise ValueError(msg)
 
         return Decimal(required_hold)
 
@@ -99,24 +102,28 @@ async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     chain_info: ChainInfo = get_chain(chain=chain)
     if not chain_info.active:
-        raise InvalidChainError(f"Chain : {chain} is not active for superfluid")
+        msg = f"Chain : {chain} is not active for superfluid"
+        raise InvalidChainError(msg)
 
     superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)
 
     try:
         super_token: HexAddress = to_normalized_address(chain_info.super_token)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid token address '{chain_info.super_token}' - {error.args}") from error
+        msg = f"Invalid token address '{chain_info.super_token}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     try:
         sender_address: HexAddress = to_normalized_address(sender)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid sender address '{sender}' - {error.args}") from error
+        msg = f"Invalid sender address '{sender}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     try:
         receiver_address: HexAddress = to_normalized_address(receiver)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid receiver address '{receiver}' - {error.args}") from error
+        msg = f"Invalid receiver address '{receiver}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     # Run the network request in a background thread and wait for it to complete.
     loop = asyncio.get_event_loop()
