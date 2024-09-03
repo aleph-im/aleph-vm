@@ -228,14 +228,15 @@ class Settings(BaseSettings):
     # This address is the ALEPH SuperToken on SuperFluid Testnet
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
+    # Use to check PAYG payment
     RPC_AVAX: HttpUrl = Field(
-        default=None,
-        description="Replace chain RPC for AVAX",
+        default=STREAM_CHAINS[Chain.AVAX].rpc,
+        description="RPC API Endpoint for AVAX chain",
     )
 
     RPC_BASE: HttpUrl = Field(
-        default=None,
-        description="Replace chain RPC for BASE",
+        default=STREAM_CHAINS[Chain.BASE].rpc,
+        description="RPC API Endpoint for BASE chain",
     )
 
     PAYMENT_BUFFER: Decimal = Field(
@@ -399,10 +400,8 @@ class Settings(BaseSettings):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
 
         # Update chain RPC
-        if self.RPC_BASE is not None:
-            STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
-        if self.RPC_AVAX is not None:
-            STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
+        STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
+        STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
 
         logger.info(STREAM_CHAINS)
 
