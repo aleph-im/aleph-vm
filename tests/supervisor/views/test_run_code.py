@@ -21,7 +21,7 @@ async def test_run_code_from_invalid_path(aiohttp_client):
 
     app = web.Application()
 
-    app.router.add_route("*", "/vm/{ref}{suffix:.*}", run_code_from_path),
+    app.router.add_route("*", "/vm/{ref}{suffix:.*}", run_code_from_path)
     client = await aiohttp_client(app)
 
     invalid_hash_request: web.Request = make_mocked_request(
