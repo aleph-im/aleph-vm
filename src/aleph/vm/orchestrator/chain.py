@@ -23,7 +23,7 @@ class ChainInfo(BaseModel):
         return self.super_token or self.standard_token
 
     @root_validator(pre=True)
-    def check_tokens(self, values):
+    def check_tokens(cls, values):
         if not values.get("standard_token") and not values.get("super_token"):
             msg = "At least one of standard_token or super_token must be provided."
             raise ValueError(msg)
