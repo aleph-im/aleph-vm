@@ -1,6 +1,6 @@
 # This is mainly a copy of the installation instructions from [orchestrator/README.md]
 
-FROM debian:bullseye
+FROM debian:bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl squashfs-tools git \

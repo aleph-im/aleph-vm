@@ -1,4 +1,4 @@
-FROM debian:bullseye
+FROM debian:bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     python3-venv \

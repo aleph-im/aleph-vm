@@ -70,17 +70,6 @@ clean:
 	rm -fr ./aleph-vm/opt/aleph-vm/
 	rm -fr ./sevctl/target/
 
-all-podman-debian-11: version
-	cd .. && podman build -t localhost/aleph-vm-packaging-debian-11:latest -f ./packaging/debian-11.dockerfile .
-	mkdir -p ./target
-	podman run --rm -ti \
-		-w /opt/packaging \
-		-v ./target:/opt/packaging/target \
-		localhost/aleph-vm-packaging-debian-11:latest \
-		make
-	file target/aleph-vm.deb
-	mv target/aleph-vm.deb target/aleph-vm.debian-11.deb
-
 all-podman-debian-12: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-debian-12:latest -f ./packaging/debian-12.dockerfile .
 	mkdir -p ./target
@@ -116,22 +105,13 @@ all-podman-ubuntu-2404: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-24.04.deb
 
-# extract Python requirements from Debian 11 container
-requirements-debian-11: all-podman-debian-11
-	podman run --rm -ti \
-		-v ./target/aleph-vm.debian-11.deb:/opt/packaging/target/aleph-vm.deb:ro \
-		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
-		-v ./requirements-debian-11.txt:/mnt/requirements-debian-11.txt \
-		debian:bullseye \
-		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-11.txt"
-
 # extract Python requirements from Debian 12 container
 requirements-debian-12: all-podman-debian-12
 	podman run --rm -ti \
 		-v ./target/aleph-vm.debian-12.deb:/opt/packaging/target/aleph-vm.deb:ro \
 		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
 		-v ./requirements-debian-12.txt:/mnt/requirements-debian-12.txt \
-		debian:bullseye \
+		debian:bookworm \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-12.txt"
 
 # extract Python requirements from Ubuntu 22.04 container
@@ -153,13 +133,18 @@ requirements-ubuntu-24.04: all-podman-ubuntu-2404
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-24.04.txt"
 
 # run on host in order to sign with GPG
-repository-bullseye:
-	cd ./repositories/bullseye && reprepro -Vb . includedeb bullseye ../../target/aleph-vm.debian-11.deb && cd ..
+repository-bookworm:
+	cd ./repositories/bookworm && reprepro -Vb . includedeb bookworm ../../target/aleph-vm.debian-12.deb && cd ..
 
 # run on host in order to sign with GPG
 repository-jammy:
 	cd ./repositories/jammy && reprepro -Vb . includedeb jammy ../../target/aleph-vm.ubuntu-22.04.deb && cd ..
 
-repositories: repository-bullseye repository-jammy
+# run on host in order to sign with GPG
+repository-noble:
+	cd ./repositories/noble && reprepro -Vb . includedeb noble ../../target/aleph-vm.ubuntu-24.04.deb && cd ..
 
-all-podman: all-podman-debian-11 all-podman-ubuntu-2204 repositories
+repositories: repository-bookworm repository-jammy repository-noble
+ 
+all-podman: all-podman-debian-12 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
+
