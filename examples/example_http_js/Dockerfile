@@ -1,4 +1,4 @@
-FROM node:16-bullseye
+FROM node:16-bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
      libsecp256k1-dev \

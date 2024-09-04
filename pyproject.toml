@@ -148,7 +148,7 @@ norecursedirs = [
 ]
 
 [tool.black]
-target-version = ["py39"]
+target-version = ["py310"]
 line-length = 120
 #skip-string-normalization = true
 
