@@ -5,7 +5,6 @@ Used to trigger VM shutdown on updates.
 
 import asyncio
 import logging
-import sys
 from collections.abc import Hashable
 
 from aleph_message.models import AlephMessage, ChainRef, ItemHash

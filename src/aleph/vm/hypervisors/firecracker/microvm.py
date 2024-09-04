@@ -5,7 +5,6 @@ import logging
 import os.path
 import shutil
 import string
-import sys
 import traceback
 from asyncio import Task
 from asyncio.base_events import Server
