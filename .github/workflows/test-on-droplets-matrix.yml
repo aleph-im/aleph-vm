@@ -98,10 +98,6 @@ jobs:
 
       - name: Build Package
         run: |
-          echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
-          echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
-          echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
-          echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> packaging/aleph-vm/etc/aleph-vm/supervisor.env
           cd packaging && make ${{ matrix.os_config.package_build_command }} && cd ..
           ls packaging/target
 
@@ -116,6 +112,13 @@ jobs:
       - name: Install Aleph-VM on the Droplet
         run: |
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
+
+          # Configuration
+          echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
+          echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> supervisor.env
+          echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> supervisor.env
+          echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> supervisor.env
+          scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor/supervisor.env
 
           # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our comands:
           sleep 5
