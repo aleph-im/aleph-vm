@@ -31,13 +31,6 @@ jobs:
 
         # Check compatibility with all supported OSes.
         os_config:
-          - os_name: "Debian 11"
-            os_image: "debian-11-x64"
-            alias: "debian-11"
-            package_build_command: "all-podman-debian-11"
-            package_name: "aleph-vm.debian-11.deb"
-            concurrency_group: "droplet-aleph-vm-debian-11"
-
           - os_name: "Debian 12"
             os_image: "debian-12-x64"
             alias: "debian-12"
