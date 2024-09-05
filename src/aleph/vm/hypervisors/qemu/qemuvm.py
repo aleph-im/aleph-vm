@@ -132,9 +132,15 @@ class QemuVM:
     def _get_qmpclient(self) -> qmp.QEMUMonitorProtocol | None:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
             return None
-        client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
-        client.connect()
-        return client
+        try:
+            client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
+            # Class only used to STOP the VM, so checking the capabilities are not needed and prevent to show and error.
+            # TODO: Use the already existing QEmuClient class.
+            client.connect(negotiate=False)
+            return client
+        except Exception as e:
+            logger.error(e)
+            return None
 
     def send_shutdown_message(self):
         print("sending shutdown message to vm")
