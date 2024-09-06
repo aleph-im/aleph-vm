@@ -503,13 +503,3 @@ class MicroVM:
             self.config_file_path.unlink(missing_ok=True)
         if Path(self.namespace_path).exists():
             system(f"rm -fr {self.namespace_path}")
-
-    def __del__(self):
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.teardown())
-        except RuntimeError as error:
-            if error.args == ("no running event loop",):
-                return
-            else:
-                raise
