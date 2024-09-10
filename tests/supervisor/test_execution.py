@@ -23,6 +23,9 @@ async def test_create_execution(mocker):
     mocker.patch("aleph.vm.controllers.firecracker.executable.settings", new=mock_settings)
     mocker.patch("aleph.vm.controllers.firecracker.program.settings", new=mock_settings)
 
+    if not mock_settings.FAKE_DATA_RUNTIME.exists():
+        pytest.xfail("Test Runtime not setup. run `cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh`")
+
     mock_settings.FAKE_DATA_PROGRAM = mock_settings.BENCHMARK_FAKE_DATA_PROGRAM
     mock_settings.ALLOW_VM_NETWORKING = False
     mock_settings.USE_JAILER = False
