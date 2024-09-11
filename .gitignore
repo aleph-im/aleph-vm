@@ -22,6 +22,7 @@ node_modules
 /packaging/repositories/*/db/
 /packaging/repositories/*/dists/
 /packaging/repositories/*/pool/
+/packaging/nixos/result
 /kernels/linux-*/
 /kernels/linux-*.tar
 /kernels/linux-*.tar.sign
