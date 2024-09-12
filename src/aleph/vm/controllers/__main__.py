@@ -90,6 +90,7 @@ async def handle_persistent_vm(config: Configuration, execution: MicroVM | QemuV
 
     def callback():
         """Callback for the signal handler to stop the VM and cleanup properly on SIGTERM."""
+        print("Received SIGTERM")
         loop.create_task(execution.stop())
 
     loop.add_signal_handler(signal.SIGTERM, callback)

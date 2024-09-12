@@ -11,6 +11,12 @@ WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 ExecStart=/usr/bin/python3 -m aleph.vm.controllers --config=/var/lib/aleph/vm/%i-controller.json
 Restart=on-failure
+# Kill Mixed mode is used there so at first only the python controller process receive the SIGTERM signal
+#  That process catch it and send a qemu command to shut down the Guest VM (for QEMU VM), giving it a
+#  change to clean up properly and prevent disk corruption.
+# After 30s (TimeoutStopSec) if the process is not stopped, the controller and subproccess will be SIGKILL
+KillMode=mixed
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
