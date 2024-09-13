@@ -150,7 +150,7 @@ async def monitor_payments(app: web.Application):
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
 
         # Check if the executions continues existing or are forgotten before checking the payment
-        for vm_hash in pool.executions.keys():
+        for vm_hash in list(pool.executions.keys()):
             message_status = await get_message_status(vm_hash)
             if message_status != MessageStatus.PROCESSED:
                 logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
