@@ -118,8 +118,8 @@ jobs:
           echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> supervisor.env
           echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${{ matrix.check_vm.item_hash }} >> supervisor.env
           echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> supervisor.env
-          ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/supervisor/
-          scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor/supervisor.env
+          ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
+          scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
 
           # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our comands:
           sleep 5
