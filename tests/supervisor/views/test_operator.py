@@ -61,7 +61,7 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_operator_confidential_initialize_already_running(aiohttp_client):
+async def test_operator_confidential_initialize_already_running(aiohttp_client, mocker):
     """Test that the confidential initialize endpoint rejects if the VM is already running. Auth needed"""
 
     settings.ENABLE_QEMU_SUPPORT = True
@@ -71,30 +71,31 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    class FakeExecution:
-        message = instance_message.content
-        is_running: bool = True
-        is_confidential: bool = False
+    fake_vm_pool = mocker.Mock(
+        executions={
+            vm_hash: mocker.Mock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_confidential=False,
+                is_running=True,
+            ),
+        },
+    )
 
-    class FakeVmPool:
-        executions: dict[ItemHash, FakeExecution] = {}
-
-        def __init__(self):
-            self.executions[vm_hash] = FakeExecution()
-
-    with mock.patch(
+    # Disable auth
+    mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
-    ):
-        app = setup_webapp()
-        app["vm_pool"] = FakeVmPool()
-        client = await aiohttp_client(app)
-        response = await client.post(
-            f"/control/machine/{vm_hash}/confidential/initialize",
-            json={"persistent_vms": []},
-        )
-        assert response.status == 403
-        assert await response.text() == f"VM with ref {vm_hash} already running"
+    )
+    app = setup_webapp()
+    app["vm_pool"] = fake_vm_pool
+    client = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/confidential/initialize",
+        json={"persistent_vms": []},
+    )
+    assert response.status == 403
+    assert await response.text() == f"VM with ref {vm_hash} already running"
 
 
 @pytest.mark.asyncio
