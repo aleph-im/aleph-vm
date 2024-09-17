@@ -1,3 +1,10 @@
+"""Functions for authentications
+
+See /doc/operator_auth.md for the explaination of how the operator authentication works.
+
+Can be enabled on an endpoint using the @require_jwk_authentication decorator
+"""
+
 # Keep datetime import as is as it allow patching in test
 import datetime
 import functools
@@ -216,6 +223,8 @@ async def authenticate_jwk(request: web.Request) -> str:
 
 async def authenticate_websocket_message(message) -> str:
     """Authenticate a websocket message since JS cannot configure headers on WebSockets."""
+    if not isinstance(message, dict):
+        raise Exception("Invalid format for auth packet, see /doc/operator_auth.md")
     signed_pubkey = SignedPubKeyHeader.parse_obj(message["X-SignedPubKey"])
     signed_operation = SignedOperation.parse_obj(message["X-SignedOperation"])
     if signed_operation.content.domain != settings.DOMAIN_NAME:
