@@ -133,7 +133,7 @@ jobs:
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
 
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y /opt/${{ matrix.os_config.package_name }}"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
 
           # Allow some time for IPFS Kubo to start
           sleep 5
