@@ -350,7 +350,9 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     response = await websocket.receive()
     # Subject to change in the future, for now the connexion si broken and closed
     assert response.type == aiohttp.WSMsgType.TEXT
-    assert response.data == '{"status": "failed", "reason": "string indices must be integers"}'
+    assert (
+        response.data == '{"status": "failed", "reason": "Invalid format for auth packet, see /doc/operator_auth.md"}'
+    )
     response = await websocket.receive()
     assert response.type == aiohttp.WSMsgType.CLOSE
     assert websocket.closed
