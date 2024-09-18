@@ -1,6 +1,6 @@
 """Functions for authentications
 
-See /doc/operator_auth.md for the explaination of how the operator authentication works.
+See /doc/operator_auth.md for the explanation of how the operator authentication works.
 
 Can be enabled on an endpoint using the @require_jwk_authentication decorator
 """
@@ -236,6 +236,26 @@ async def authenticate_websocket_message(message) -> str:
 def require_jwk_authentication(
     handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]
 ) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+    """A decorator to enforce JWK-based authentication for HTTP requests.
+
+    The decorator ensures that the incoming request includes valid authentication headers
+    (as per the VM owner authentication protocol) and provides the authenticated wallet address (`authenticated_sender`)
+    to the handler. The handler can then use this address to verify access to the requested resource.
+
+    Args:
+        handler (Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]):
+            The request handler function that will receive the `authenticated_sender` (the authenticated wallet address)
+            as an additional argument.
+
+    Returns:
+        Callable[[web.Request], Awaitable[web.StreamResponse]]:
+            A wrapped handler that verifies the authentication and passes the wallet address to the handler.
+
+    Note:
+        Refer to the "Authentication protocol for VM owner" documentation for detailed information on the authentication
+        headers and validation process.
+    """
+
     @functools.wraps(handler)
     async def wrapper(request):
         try:
@@ -247,7 +267,7 @@ def require_jwk_authentication(
             logging.exception(e)
             raise
 
-        # authenticated_sender is the authenticted wallet address of the requester (as a string)
+        # authenticated_sender is the authenticate wallet address of the requester (as a string)
         response = await handler(request, authenticated_sender)
         return response
 
