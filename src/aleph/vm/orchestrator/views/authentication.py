@@ -11,16 +11,19 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, Literal
+from typing import Any, Literal, Union
 
 import cryptography.exceptions
 import pydantic
 from aiohttp import web
+from aleph_message.models import Chain
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
-from pydantic import BaseModel, ValidationError, root_validator, validator
+from nacl.exceptions import BadSignatureError
+from pydantic import BaseModel, Field, ValidationError, root_validator, validator
+from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
 
@@ -55,6 +58,12 @@ class SignedPubKeyPayload(BaseModel):
     # alg: Literal["ECDSA"]
     address: str
     expires: str
+    chain: Chain = Chain.ETH
+
+    def check_chain(self, v: Chain):
+        if v not in (Chain.ETH, Chain.SOL):
+            raise ValueError("Chain not supported")
+        return v
 
     @property
     def json_web_key(self) -> jwk.JWK:
@@ -89,12 +98,23 @@ class SignedPubKeyHeader(BaseModel):
     @root_validator(pre=False, skip_on_failure=True)
     def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
-        signature: bytes = values["signature"]
+        signature: list = values["signature"]
         payload: bytes = values["payload"]
         content = SignedPubKeyPayload.parse_raw(payload)
-        if not verify_wallet_signature(signature, payload.hex(), content.address):
-            msg = "Invalid signature"
-            raise ValueError(msg)
+
+        if content.chain == Chain.SOL:
+
+            try:
+                verify_signature(content.address, signature, payload.hex())
+            except BadSignatureError:
+                msg = "Invalid signature"
+                raise ValueError(msg)
+        elif content.chain == "ETH":
+            if not verify_wallet_signature(signature, payload.hex(), content.address):
+                msg = "Invalid signature"
+                raise ValueError(msg)
+        else:
+            raise ValueError("Unsupported chain")
         return values
 
     @property
@@ -208,6 +228,7 @@ def verify_signed_operation(signed_operation: SignedOperation, signed_pubkey: Si
 async def authenticate_jwk(request: web.Request) -> str:
     """Authenticate a request using the X-SignedPubKey and X-SignedOperation headers."""
     signed_pubkey = get_signed_pubkey(request)
+
     signed_operation = get_signed_operation(request)
     if signed_operation.content.domain != settings.DOMAIN_NAME:
         logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
