@@ -27,6 +27,8 @@ classifiers = [
   "Topic :: System :: Distributed Computing",
 ]
 dynamic = [ "version" ]
+
+# Upon adding or updating dependencies, update `packaging/Makefile` for the Debian package
 dependencies = [
   "aiodns==3.1",
   "aiohttp==3.9.5",
