@@ -70,9 +70,9 @@ def delete_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6In
     try:
         ipr.addr("del", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
     except NetlinkError as e:
-        logger.error(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
+        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
     except OSError as e:
-        logger.error(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
+        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
 
 
 def set_link_up(ipr: IPRoute, device_name: str):
