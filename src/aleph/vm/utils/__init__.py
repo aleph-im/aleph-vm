@@ -69,7 +69,7 @@ async def get_ref_from_dns(domain):
     return record[0].text
 
 
-def to_json(o: Any):
+def to_json(o: Any) -> dict | str:
     if hasattr(o, "to_dict"):  # default method
         return o.to_dict()
     elif hasattr(o, "dict"):  # Pydantic
