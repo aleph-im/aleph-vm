@@ -109,7 +109,7 @@ cov = [
 [[tool.hatch.envs.all.matrix]]
 python = ["3.10", "3.11", "3.12"]
 
-[tool.hatch.envs.lint]
+[tool.hatch.envs.linting]
 detached = true
 dependencies = [
   "black==24.3.0",
@@ -117,7 +117,7 @@ dependencies = [
   "ruff==0.4.6",
   "isort==5.13.2",
 ]
-[tool.hatch.envs.lint.scripts]
+[tool.hatch.envs.linting.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
 style = [
 #  "ruff {args:.}",

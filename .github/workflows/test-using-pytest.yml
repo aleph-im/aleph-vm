@@ -33,11 +33,11 @@ jobs:
 
       - name: Test style wth ruff, black and isort
         run: |
-          hatch run lint:style
+          hatch run linting:style
 
       - name: Test typing with Mypy
         run: |
-          hatch run lint:typing
+          hatch run linting:typing
 
       - name: Install required system packages for installing and running tests
         run: |
