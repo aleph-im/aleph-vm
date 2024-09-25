@@ -116,6 +116,7 @@ dependencies = [
   "mypy==1.8.0",
   "ruff==0.4.6",
   "isort==5.13.2",
+  "pyproject-fmt==2.2.1",
 ]
 [tool.hatch.envs.lint.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
@@ -123,11 +124,13 @@ style = [
 #  "ruff {args:.}",
   "black --check --diff {args:.}",
   "isort --check-only --profile black {args:.}",
+  "pyproject-fmt --check pyproject.toml",
 ]
 fmt = [
   "black {args:.}",
 #  "ruff --fix {args:.}",
   "isort --profile black {args:.}",
+  "pyproject-fmt pyproject.toml",
   "style",
 ]
 all = [
