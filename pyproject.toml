@@ -116,6 +116,7 @@ dependencies = [
   "mypy==1.8.0",
   "ruff==0.4.6",
   "isort==5.13.2",
+  "yamlfix==1.16.1",
   "pyproject-fmt==2.2.1",
 ]
 [tool.hatch.envs.lint.scripts]
@@ -124,12 +125,14 @@ style = [
   #  "ruff {args:.}",
   "black --check --diff {args:.}",
   "isort --check-only --profile black {args:.}",
+  "yamlfix --check .",
   "pyproject-fmt --check pyproject.toml",
 ]
 fmt = [
   "black {args:.}",
   #  "ruff --fix {args:.}",
   "isort --profile black {args:.}",
+  "yamlfix .",
   "pyproject-fmt pyproject.toml",
   "style",
 ]
@@ -233,3 +236,9 @@ non_interactive = true
 ignore_missing_imports = true
 explicit_package_bases = true
 check_untyped_defs = true
+
+[tool.yamlfix]
+sequence_style = "keep_style"
+preserve_quotes = true
+whitelines = 1
+section_whitelines = 2
