@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import timedelta
+from http import HTTPStatus
 
 import aiohttp.web_exceptions
 import pydantic
@@ -187,10 +188,15 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         return web.Response(status=403, body="Unauthorized sender")
 
     if execution.is_running:
-        return web.Response(status=403, body=f"VM with ref {vm_hash} already running")
-
+        return web.json_response(
+            {"code": "vm_running", "description": "Operation not allowed, instance already running"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
     if not execution.is_confidential:
-        return web.Response(status=403, body=f"Operation not allowed for VM {vm_hash} because it isn't confidential")
+        return web.json_response(
+            {"code": "not_confidential", "description": "Instance is not a confidential instance"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
 
     post = await request.post()
 
@@ -199,14 +205,20 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
 
     session_file_content = post.get("session")
     if not session_file_content:
-        return web.Response(status=403, body=f"Session file required for VM with ref {vm_hash}")
+        return web.json_response(
+            {"code": "field_missing", "description": "Session field is missing"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
 
     session_file_path = vm_session_path / "vm_session.b64"
     session_file_path.write_bytes(session_file_content.file.read())
 
     godh_file_content = post.get("godh")
     if not godh_file_content:
-        return web.Response(status=403, body=f"GODH file required for VM with ref {vm_hash}")
+        return web.json_response(
+            {"code": "field_missing", "description": "godh field is missing. Please provide a GODH file"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
 
     godh_file_path = vm_session_path / "vm_godh.b64"
     godh_file_path.write_bytes(godh_file_content.file.read())

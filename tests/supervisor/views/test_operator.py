@@ -89,13 +89,59 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
     )
     app = setup_webapp()
     app["vm_pool"] = fake_vm_pool
-    client = await aiohttp_client(app)
+    client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
         json={"persistent_vms": []},
     )
-    assert response.status == 403
-    assert await response.text() == f"VM with ref {vm_hash} already running"
+    assert response.status == 400
+    assert response.content_type == "application/json"
+    assert await response.json() == {
+        "code": "vm_running",
+        "description": "Operation not allowed, instance already running",
+    }
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_initialize_not_confidential(aiohttp_client, mocker):
+    """Test that the confidential initialize endpoint rejects if the VM is not confidential"""
+
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.Mock(
+        executions={
+            vm_hash: mocker.Mock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_confidential=False,
+                is_running=False,
+            ),
+        },
+    )
+
+    # Disable auth
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    app = setup_webapp()
+    app["vm_pool"] = fake_vm_pool
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/confidential/initialize",
+        json={"persistent_vms": []},
+    )
+    assert response.status == 400
+    assert response.content_type == "application/json"
+    assert await response.json() == {
+        "code": "not_confidential",
+        "description": "Instance is not a confidential instance",
+    }
 
 
 @pytest.mark.asyncio
