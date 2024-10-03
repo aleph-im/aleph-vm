@@ -1,10 +1,13 @@
+---
 # This workflow automatically deploys main on staging
 name: "Deploy `main` automatically on staging"
+
 
 on:
   push:
     branches:
       - main
+
 
 jobs:
   deploy_staging_servers:
@@ -51,7 +54,7 @@ jobs:
           STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
 
       - name: Install Aleph-VM on the Staging servers
-        run: |
+        run: |-
           echo ${{ matrix.staging_servers.host_keys }} | base64 --decode > ~/.ssh/known_hosts
 
           # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
@@ -59,4 +62,3 @@ jobs:
 
           scp packaging/target/${{ matrix.staging_servers.artifact_name }} root@${{ matrix.staging_servers.hostname }}:/opt
           ssh root@${{ matrix.staging_servers.hostname }} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y --allow-downgrades /opt/${{ matrix.staging_servers.artifact_name }}"
-
