@@ -1,3 +1,4 @@
+---
 # These are end-to-end tests running on ephemeral DigitalOcean "Droplet" virtual machines
 # with the different operating systems that are supported.
 #
@@ -18,11 +19,14 @@ on:
       - "ready_for_review"
   workflow_dispatch:
 
+
 jobs:
   run_on_droplet:
-    name: "Test Droplet with ${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias }}"
+    name: "Test Droplet with ${{ matrix.os_config.os_name }}-${{ matrix.check_vm.alias\
+      \ }}"
     runs-on: ubuntu-latest
-    concurrency: "${{ matrix.os_config.concurrency_group }}-${{ matrix.check_vm.alias }}"
+    concurrency: "${{ matrix.os_config.concurrency_group }}-${{ matrix.check_vm.alias\
+      \ }}"
     timeout-minutes: 10
 
     strategy:
@@ -169,12 +173,10 @@ jobs:
           curl -X GET -H "Content-Type: application/json" \
             "http://${DROPLET_IPV4}:4020/about/usage/system"
 
-
       - name: Run the sevctl command to ensure it's properly packaged and working
         run: |
           export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh root@${DROPLET_IPV4} "/opt/sevctl --version"
-
 
       - name: Export aleph logs
         if: always()
@@ -183,7 +185,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
+        run: |-
           DROPLET_IDS=$(doctl compute droplet list --format "ID,Name" --no-header | grep "aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }}" | awk '{print $1}')
 
           for DROPLET_ID in $DROPLET_IDS; do

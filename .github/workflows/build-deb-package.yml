@@ -1,6 +1,7 @@
+---
 name: "Build Packages"
-on:
-  push
+on: push
+
 
 jobs:
   build_deb:
