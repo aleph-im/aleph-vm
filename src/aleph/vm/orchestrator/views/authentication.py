@@ -11,7 +11,7 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 import cryptography.exceptions
 import pydantic
@@ -22,7 +22,7 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import BaseModel, Field, ValidationError, root_validator, validator
+from pydantic import BaseModel, ValidationError, root_validator, validator
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
@@ -40,13 +40,28 @@ def is_token_still_valid(datestr: str):
     return expiry_datetime > current_datetime
 
 
-def verify_wallet_signature(signature, message, address):
+def verify_eth_wallet_signature(signature, message, address):
     """
     Verifies a signature issued by a wallet
     """
     enc_msg = encode_defunct(hexstr=message)
     computed_address = Account.recover_message(enc_msg, signature=signature)
     return computed_address.lower() == address.lower()
+
+
+def check_wallet_signature_or_raise(address, chain, payload, signature):
+    if chain == Chain.SOL:
+        try:
+            verify_signature(address, signature, payload.hex())
+        except BadSignatureError:
+            msg = "Invalid signature"
+            raise ValueError(msg)
+    elif chain == "ETH":
+        if not verify_eth_wallet_signature(signature, payload.hex(), address):
+            msg = "Invalid signature"
+            raise ValueError(msg)
+    else:
+        raise ValueError("Unsupported chain")
 
 
 class SignedPubKeyPayload(BaseModel):
@@ -101,20 +116,7 @@ class SignedPubKeyHeader(BaseModel):
         signature: list = values["signature"]
         payload: bytes = values["payload"]
         content = SignedPubKeyPayload.parse_raw(payload)
-
-        if content.chain == Chain.SOL:
-
-            try:
-                verify_signature(content.address, signature, payload.hex())
-            except BadSignatureError:
-                msg = "Invalid signature"
-                raise ValueError(msg)
-        elif content.chain == "ETH":
-            if not verify_wallet_signature(signature, payload.hex(), content.address):
-                msg = "Invalid signature"
-                raise ValueError(msg)
-        else:
-            raise ValueError("Unsupported chain")
+        check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
         return values
 
     @property
