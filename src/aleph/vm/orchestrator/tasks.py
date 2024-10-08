@@ -123,12 +123,12 @@ async def start_watch_for_messages_task(app: web.Application):
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
-    sample_message, _ = await load_updated_message(
-        ref=ItemHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
-    )
-    if isinstance(sample_message, ProgramMessage):
-        assert sample_message.content.on.message, sample_message
-        reactor.register(sample_message)
+    # sample_message, _ = await load_updated_message(
+    #     ref=ItemHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+    # )
+    # if isinstance(sample_message, ProgramMessage):
+    #     assert sample_message.content.on.message, sample_message
+    #     reactor.register(sample_message)
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
