@@ -1,56 +1,59 @@
  Authentication protocol for VM owner
 =======================================
 
-This custom protocol allows a user (owner of a VM) to securely authenticate to a CRN, using their Ethereum wallet.
-This scheme was designed in a way that's convenient to be integrated in the console web page.
+This custom protocol allows a user (owner of a VM) to securely authenticate to a CRN, using their Ethereum or Solana
+wallet. This scheme was designed in a way that's convenient to be integrated into the console web page.
 
-It allows the user to control their VM. e.g : stop reboot, view their log, etc…
+It allows the user to control their VM. e.g: stop, reboot, view their log, etc.
 
 ## Motivations
 
 This protocol ensures secure authentication between a blockchain wallet owner and an aleph.im compute node.
 
-Signing operations is typically gated by prompts requiring manual approval for each operation.
-With hardware wallets, users are prompted both by the software on their device and the hardware wallet itself.
+Signing operations are typically gated by prompts requiring manual approval for each operation. With hardware wallets,
+users are prompted both by the software on their device and the hardware wallet itself.
 
 ## Overview
 
-The client generates a [JSON Web Key](https://www.rfc-editor.org/rfc/rfc7517) (JWK) key pair and signs the public key with their Ethereum account. The signed public key is sent
-in the `X-SignedPubKey` header. The client also signs the operation payload with the private JWK, sending it in the
-`X-SignedOperation` header. The server verifies both the public key and payload signatures, ensuring the request's
-integrity and authenticity. If validation fails (e.g., expired key or invalid signature), the server returns a 401
-Unauthorized error.
+The client generates a [JSON Web Key](https://www.rfc-editor.org/rfc/rfc7517) (JWK) key pair and signs the public key
+with their Ethereum or Solana account. The signed public key is sent in the `X-SignedPubKey` header. The client also
+signs the operation payload with the private JWK, sending it in the `X-SignedOperation` header. The server verifies both
+the public key and payload signatures, ensuring the request's integrity and authenticity. If validation fails (e.g.,
+expired key or invalid signature), the server returns a 401 Unauthorized error.
 
-Support for Solana wallets is planned in the near future.
 
 ## Authentication Method for HTTP Endpoints
 
 Two custom headers are added to each authenticated request:
 
-* X-SignedPubKey: This contains the public key and its associated metadata (such as the sender’s address and expiration
-  date), along with a signature that ensures its authenticity.
-* X-SignedOperation: This includes the payload of the operation and its cryptographic signature, ensuring that the
+- **X-SignedPubKey**: This contains the public key and its associated metadata (such as the sender’s address, chain, and
+  expiration date), along with a signature that ensures its authenticity.
+- **X-SignedOperation**: This includes the payload of the operation and its cryptographic signature, ensuring that the
   operation itself has not been tampered with.
 
-### 1. Generate and Sign Public Key
+### 1. Generate an ephemeral keys and Sign Public Key
 
-A new JWK is generated using elliptic curve cryptography (EC, P-256).
+An ephemeral key pair (as JWK) is generated using elliptic curve cryptography (EC, P-256).
 
 The use of a temporary JWK key allows the user to delegate limited control to the console without needing to sign every
-individual request with their Ethereum wallet. This is crucial for improving the user experience, as constantly signing
-each operation would be cumbersome and inefficient. By generating a temporary key, the user can provide permission for a
-set period of time (until the key expires), enabling the console to perform actions like stopping or rebooting the VM on
-their behalf. This maintains security while streamlining interactions with the console, as the server verifies each
-operation using the temporary key without requiring ongoing involvement from the user's wallet.
+individual request with their Ethereum or Solana wallet. This is crucial for improving the user experience, as
+constantly signing each operation would be cumbersome and inefficient. By generating a temporary key, the user can
+provide permission for a set period of time (until the key expires), enabling the console to perform actions like
+stopping or rebooting the VM on their behalf. This maintains security while streamlining interactions with the console,
+as the server verifies each operation using the temporary key without requiring ongoing involvement from the user's
+wallet.
 
 The generated public key is converted into a JSON structure with additional metadata:
-* `pubkey`: The public key information.
-* `alg`: The signing algorithm, ECDSA.
-* `domain`: The domain for which the key is valid.
-* `address`: The Ethereum address of the sender, binding the public key to this identity.
-* `expires`: The expiration time of the key.
 
-Example
+- **`pubkey`**: The public key information.
+- **`alg`**: The signing algorithm, ECDSA.
+- **`domain`**: The domain for which the key is valid.
+- **`address`**: The wallet address of the sender, binding the temporary key to this identity.
+- **`chain`**: Indicates the blockchain used for signing (`ETH` or `SOL`). Defaults to `ETH`.
+- **`expires`**: The expiration time of the key.
+
+Example:
+
 ```json
 {
   "pubkey": {
@@ -62,12 +65,13 @@ Example
   "alg": "ECDSA",
   "domain": "localhost",
   "address": "0x8Dd070629F107e7946dD68BDcb8ABE8475F47B0E",
+  "chain": "ETH",
   "expires": "2010-12-26T17:05:55Z"
 }
 ```
 
-This public key is signed using the Ethereum account to ensure its authenticity. The resulting signature is
-combined with the public key into a payload and sent as the `X-SignedPubKey` header.
+This public key is signed using either the Ethereum or Solana account, depending on the `chain` parameter. The resulting
+signature is combined with the public key into a payload and sent as the `X-SignedPubKey` header.
 
 ### 2. Sign Operation Payload
 
@@ -83,7 +87,7 @@ integrity can be verified through signing. Below are the fields included:
 - **`domain`**: (string) The domain associated with the request. This ensures the request is valid for the intended
   CRN. (e.g., `localhost`).
 
-Example
+Example:
 
 ```json
 {
@@ -97,55 +101,61 @@ Example
 It is sent serialized as a hex string.
 
 #### Signature
-This payload is serialized in JSON, signed, and sent in the `X-SignedOperation` header to ensure the integrity and authenticity
-of the request.
-
-* The operation payload (containing details such as time, method, path, and domain) is serialized and converted into a byte array.
-* The JWK (private key) is used to sign this operation payload, ensuring its integrity. This signature is then included in the X-SignedOperation header.
 
 
-###  3. Include authentication Headers
-These two headers are to be added to the HTTP Request:
+- The operation payload (containing details such as time, method, path, and domain) is JSON serialized and converted into a
+  hex string.
+- The ephemeral key  (private key) is used to sign this operation payload, ensuring its integrity. This signature is then included
+  in the `X-SignedOperation` header.
 
-1. **`X-SignedPubKey` Header:**
-    - This header contains the public key payload and the signature of the public key generated by the Ethereum account.
+### 3. Include Authentication Headers
+
+These two headers are to be added to the HTTP request:
+
+1. **`X-SignedPubKey` Header**:
+    - This header contains the public key payload and the signature of the public key generated by the Ethereum or
+      Solana account.
 
    Example:
+
    ```json
    {
-      "payload": "<hexadecimal string of the public key payload>",
-      "signature": "<Ethereum signed public key>"
+     "payload": "<hexadecimal string of the public key payload>",
+     "signature": "<Ethereum or Solana signed public key>"
    }
    ```
 
-2. **`X-SignedOperation` Header:**
+2. **`X-SignedOperation` Header**:
     - This header contains the operation payload and the signature of the operation payload generated using the private
       JWK.
 
    Example:
+
    ```json
    {
-      "payload": "<hexadecimal string of the operation payload>",
-      "signature": "<JWK signed operation payload>"
+     "payload": "<hexadecimal string of the operation payload>",
+     "signature": "<JWK signed operation payload>"
    }
    ```
 
 ### Expiration and Validation
 
 - The public key has an expiration date, ensuring that keys are not used indefinitely.
-- Both the public key and the operation signature are validated for authenticity and integrity at the server side.
+- Both the public key and the operation signature are validated for authenticity and integrity at the server side,
+  taking into account the specified blockchain (Ethereum or Solana).
 - Requests failing verification or expired keys are rejected with `401 Unauthorized` status, providing an error message
   indicating the reason.
 
-### WebSocket Authentication Protocol
+## WebSocket Authentication Protocol
 
 In the WebSocket variant of the authentication protocol, the client establishes a connection and authenticates through
-an initial message that includes their Ethereum-signed identity, ensuring secure communication.
+an initial message that includes their Ethereum or Solana-signed identity, ensuring secure communication.
 
-Due to web browsers not allowing custom HTTP headers in WebSocket connections, 
-the two header are sent in one json packet, under the `auth` key.
+Due to web browsers not allowing custom HTTP headers in WebSocket connections, the two headers are sent in one JSON
+packet, under the `auth` key.
 
-Example authentication packet 
+Example authentication packet:
+
 ```json
 {
     "auth": {

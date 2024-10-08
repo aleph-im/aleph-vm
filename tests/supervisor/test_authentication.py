@@ -1,8 +1,10 @@
+import datetime
 import json
 from typing import Any
 
 import eth_account.messages
 import pytest
+import solathon
 from aiohttp import web
 from eth_account.datastructures import SignedMessage
 from jwcrypto import jwk, jws
@@ -226,6 +228,78 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
     @require_jwk_authentication
     async def view(request, authenticated_sender):
         assert authenticated_sender == signer_account.address
+        return web.Response(text="ok")
+
+    app.router.add_get("", view)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/", headers=headers)
+    assert resp.status == 200, await resp.text()
+
+    r = await resp.text()
+    assert "ok" == r
+
+
+async def generate_sol_signer_and_signed_headers_for_operation(
+    patch_datetime_now, operation_payload: dict
+) -> tuple[solathon.Keypair, dict]:
+    """Generate a temporary eth_account for testing and sign the operation with it"""
+
+    kp = solathon.Keypair()
+    key = jwk.JWK.generate(
+        kty="EC",
+        crv="P-256",
+        # key_ops=["verify"],
+    )
+
+    pubkey = {
+        "pubkey": json.loads(key.export_public()),
+        "alg": "ECDSA",
+        "domain": "localhost",
+        "address": str(kp.public_key),
+        "expires": (patch_datetime_now.FAKE_TIME + datetime.timedelta(days=1)).isoformat() + "Z",
+        "chain": "SOL",
+    }
+    pubkey_payload = json.dumps(pubkey).encode("utf-8").hex()
+    import nacl.signing
+
+    signed_message: nacl.signing.SignedMessage = kp.sign(pubkey_payload)
+    pubkey_signature = to_0x_hex(signed_message.signature)
+    pubkey_signature_header = json.dumps(
+        {
+            "payload": pubkey_payload,
+            "signature": pubkey_signature,
+        }
+    )
+    payload_as_bytes = json.dumps(operation_payload).encode("utf-8")
+    from jwcrypto.jwa import JWA
+
+    payload_signature = JWA.signing_alg("ES256").sign(key, payload_as_bytes)
+    headers = {
+        "X-SignedPubKey": pubkey_signature_header,
+        "X-SignedOperation": json.dumps(
+            {
+                "payload": payload_as_bytes.hex(),
+                "signature": payload_signature.hex(),
+            }
+        ),
+    }
+    return kp, headers
+
+
+@pytest.mark.asyncio
+async def test_require_jwk_authentication_good_key_solana(aiohttp_client, patch_datetime_now):
+    """An HTTP request to a view decorated by `@require_jwk_authentication`
+    auth correctly a temporary key signed by a wallet and an operation signed by that key"""
+
+    app = web.Application()
+    payload = {"time": "2010-12-25T17:05:55Z", "method": "GET", "path": "/", "domain": "localhost"}
+
+    signer_account, headers = await generate_sol_signer_and_signed_headers_for_operation(patch_datetime_now, payload)
+
+    @require_jwk_authentication
+    async def view(request, authenticated_sender):
+        assert authenticated_sender == str(signer_account.public_key)
         return web.Response(text="ok")
 
     app.router.add_get("", view)

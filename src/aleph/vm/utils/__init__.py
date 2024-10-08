@@ -75,7 +75,7 @@ def to_json(o: Any) -> dict | str:
     elif hasattr(o, "dict"):  # Pydantic
         return o.dict()
     elif is_dataclass(o):
-        return dataclass_as_dict(o)
+        return dataclass_as_dict(o)  # type: ignore
     else:
         return str(o)
 

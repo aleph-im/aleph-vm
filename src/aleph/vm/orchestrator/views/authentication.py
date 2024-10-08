@@ -1,6 +1,6 @@
 """Functions for authentications
 
-See /doc/operator_auth.md for the explaination of how the operator authentication works.
+See /doc/operator_auth.md for the explanation of how the operator authentication works.
 
 Can be enabled on an endpoint using the @require_jwk_authentication decorator
 """
@@ -16,11 +16,14 @@ from typing import Any, Literal
 import cryptography.exceptions
 import pydantic
 from aiohttp import web
+from aleph_message.models import Chain
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
+from nacl.exceptions import BadSignatureError
 from pydantic import BaseModel, ValidationError, root_validator, validator
+from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
 
@@ -37,13 +40,28 @@ def is_token_still_valid(datestr: str):
     return expiry_datetime > current_datetime
 
 
-def verify_wallet_signature(signature, message, address):
+def verify_eth_wallet_signature(signature, message, address):
     """
     Verifies a signature issued by a wallet
     """
     enc_msg = encode_defunct(hexstr=message)
     computed_address = Account.recover_message(enc_msg, signature=signature)
     return computed_address.lower() == address.lower()
+
+
+def check_wallet_signature_or_raise(address, chain, payload, signature):
+    if chain == Chain.SOL:
+        try:
+            verify_signature(address, signature, payload.hex())
+        except BadSignatureError:
+            msg = "Invalid signature"
+            raise ValueError(msg)
+    elif chain == "ETH":
+        if not verify_eth_wallet_signature(signature, payload.hex(), address):
+            msg = "Invalid signature"
+            raise ValueError(msg)
+    else:
+        raise ValueError("Unsupported chain")
 
 
 class SignedPubKeyPayload(BaseModel):
@@ -55,6 +73,12 @@ class SignedPubKeyPayload(BaseModel):
     # alg: Literal["ECDSA"]
     address: str
     expires: str
+    chain: Chain = Chain.ETH
+
+    def check_chain(self, v: Chain):
+        if v not in (Chain.ETH, Chain.SOL):
+            raise ValueError("Chain not supported")
+        return v
 
     @property
     def json_web_key(self) -> jwk.JWK:
@@ -89,12 +113,10 @@ class SignedPubKeyHeader(BaseModel):
     @root_validator(pre=False, skip_on_failure=True)
     def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
-        signature: bytes = values["signature"]
+        signature: list = values["signature"]
         payload: bytes = values["payload"]
         content = SignedPubKeyPayload.parse_raw(payload)
-        if not verify_wallet_signature(signature, payload.hex(), content.address):
-            msg = "Invalid signature"
-            raise ValueError(msg)
+        check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
         return values
 
     @property
@@ -208,6 +230,7 @@ def verify_signed_operation(signed_operation: SignedOperation, signed_pubkey: Si
 async def authenticate_jwk(request: web.Request) -> str:
     """Authenticate a request using the X-SignedPubKey and X-SignedOperation headers."""
     signed_pubkey = get_signed_pubkey(request)
+
     signed_operation = get_signed_operation(request)
     if signed_operation.content.domain != settings.DOMAIN_NAME:
         logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
@@ -236,6 +259,26 @@ async def authenticate_websocket_message(message) -> str:
 def require_jwk_authentication(
     handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]
 ) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+    """A decorator to enforce JWK-based authentication for HTTP requests.
+
+    The decorator ensures that the incoming request includes valid authentication headers
+    (as per the VM owner authentication protocol) and provides the authenticated wallet address (`authenticated_sender`)
+    to the handler. The handler can then use this address to verify access to the requested resource.
+
+    Args:
+        handler (Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]):
+            The request handler function that will receive the `authenticated_sender` (the authenticated wallet address)
+            as an additional argument.
+
+    Returns:
+        Callable[[web.Request], Awaitable[web.StreamResponse]]:
+            A wrapped handler that verifies the authentication and passes the wallet address to the handler.
+
+    Note:
+        Refer to the "Authentication protocol for VM owner" documentation for detailed information on the authentication
+        headers and validation process.
+    """
+
     @functools.wraps(handler)
     async def wrapper(request):
         try:
@@ -247,7 +290,7 @@ def require_jwk_authentication(
             logging.exception(e)
             raise
 
-        # authenticated_sender is the authenticted wallet address of the requester (as a string)
+        # authenticated_sender is the authenticate wallet address of the requester (as a string)
         response = await handler(request, authenticated_sender)
         return response
 
