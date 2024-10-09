@@ -18,7 +18,6 @@ cleanup() {
     return
   fi
   CLEANUP_DONE=true
-  echo "Cleaning up..."
   if mountpoint -q "${MOUNT_POINT}"; then
     sudo umount --recursive "${MOUNT_POINT}" || echo "Failed to unmount ${MOUNT_POINT}"
   fi
@@ -42,6 +41,15 @@ cleanup() {
 # - PIPE (SIGPIPE): Signal 13, sent when attempting to write to a pipe without a reader (e.g., in scripts using pipelines if a command in the pipeline exits prematurely).
 # - TERM (SIGTERM): Signal 15, sent by the kill command to request the process to terminate gracefully.
 trap cleanup EXIT HUP INT QUIT PIPE TERM
+
+error_handler() {
+	echo ""
+	echo "An error occured while building the image and the process was not completed properly."
+	echo "Please check the log, fix any error if required and restart the script."
+	echo "For more help see https://docs.aleph.im/computing/confidential/encrypted-disk/"
+}
+
+trap error_handler ERR
 
 usage() {
   cat <<USAGE >&2
