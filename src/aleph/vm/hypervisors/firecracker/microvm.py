@@ -365,7 +365,7 @@ class MicroVM:
     def enable_drive(self, drive_path: Path, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
-        Creates a symlink to the volume file if jailer is in use.
+        Creates a hardlink or a copy to the volume file if jailer is in use.
         """
         index = len(self.drives)
         device_name = self.compute_device_name(index)
@@ -376,6 +376,11 @@ class MicroVM:
 
             try:
                 Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
+            except OSError as err:
+                if err.errno == errno.EXDEV:
+                    # Invalid cross-device link: cannot make hard link between partition.
+                    # In this case, copy the file instead:
+                    shutil.copyfile(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
             drive_path = Path(jailer_path_on_host)
