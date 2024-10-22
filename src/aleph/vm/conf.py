@@ -461,7 +461,7 @@ class Settings(BaseSettings):
             else:
                 attributes[attr] = getattr(self, attr)
 
-        return "\n".join(f"{attribute:<27} = {value}" for attribute, value in attributes.items())
+        return "\n".join(f"{self.Config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
 
     def __init__(
         self,
