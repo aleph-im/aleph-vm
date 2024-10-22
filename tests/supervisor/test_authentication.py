@@ -243,7 +243,7 @@ async def test_require_jwk_authentication_good_key(aiohttp_client, patch_datetim
 async def generate_sol_signer_and_signed_headers_for_operation(
     patch_datetime_now, operation_payload: dict
 ) -> tuple[solathon.Keypair, dict]:
-    """Generate a temporary eth_account for testing and sign the operation with it"""
+    """Generate a temporary sol account for testing and sign the operation with it"""
 
     kp = solathon.Keypair()
     key = jwk.JWK.generate(
