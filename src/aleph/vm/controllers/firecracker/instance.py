@@ -198,6 +198,11 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
         ipv6 = self.get_ipv6()
         ipv6_gateway = self.get_ipv6_gateway()
 
+        nameservers_ip = []
+        if ip:
+            nameservers_ip = settings.DNS_NAMESERVERS_IPV4
+        if ipv6:
+            nameservers_ip += settings.DNS_NAMESERVERS_IPV6
         network = {
             "ethernets": {
                 "eth0": {
@@ -207,7 +212,7 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                     "gateway4": route,
                     "gateway6": ipv6_gateway,
                     "nameservers": {
-                        "addresses": settings.DNS_NAMESERVERS,
+                        "addresses": nameservers_ip,
                     },
                 },
             },
