@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
-from aleph.vm.version import get_version_from_apt, get_version_from_git
+from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
 from .pubsub import PubSub
@@ -325,6 +325,7 @@ def main():
                 # of transactions for performance monitoring.
                 # We recommend adjusting this value in production.
                 traces_sample_rate=1.0,
+                release=__version__,
             )
             sentry_sdk.set_context(
                 "version",
