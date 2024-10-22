@@ -437,12 +437,13 @@ class Settings(BaseSettings):
             self.DNS_NAMESERVERS_IPV4 = []
         if not self.DNS_NAMESERVERS_IPV6:
             self.DNS_NAMESERVERS_IPV6 = []
-        for server in self.DNS_NAMESERVERS:
-            ip_addr = ipaddress.ip_address(server)
-            if isinstance(ip_addr, ipaddress.IPv4Address):
-                self.DNS_NAMESERVERS_IPV4.append(server)
-            if isinstance(ip_addr, ipaddress.IPv4Address):
-                self.DNS_NAMESERVERS_IPV6.append(server)
+        if self.DNS_NAMESERVERS:
+            for server in self.DNS_NAMESERVERS:
+                ip_addr = ipaddress.ip_address(server)
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    self.DNS_NAMESERVERS_IPV4.append(server)
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    self.DNS_NAMESERVERS_IPV6.append(server)
 
         if not settings.ENABLE_QEMU_SUPPORT:
             # If QEmu is not supported, ignore the setting and use Firecracker by default
