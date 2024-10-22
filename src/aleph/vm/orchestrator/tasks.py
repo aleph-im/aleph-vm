@@ -178,6 +178,8 @@ async def check_payment(pool: VmPool):
     # and forget the instance message. Compared to just stopping or decreasing the payment stream as the CRN don't know
     # which VM it affects.
     for vm_hash in list(pool.executions.keys()):
+        if vm_hash == settings.FAKE_INSTANCE_ID:
+            continue
         message_status = await get_message_status(vm_hash)
         if message_status != MessageStatus.PROCESSED:
             logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
@@ -188,11 +190,13 @@ async def check_payment(pool: VmPool):
     for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions if execution.is_confidential]
+            if not executions:
+                continue
             balance = await fetch_balance_of_address(sender)
 
             # Stop executions until the required balance is reached
             required_balance = await compute_required_balance(executions)
-            logger.debug(f"Required balance for Sender {sender} executions: {required_balance}")
+            logger.debug(f"Required balance for Sender {sender} executions: {required_balance}, {executions}")
             # Stop executions until the required balance is reached
             while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
