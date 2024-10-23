@@ -86,7 +86,7 @@ class VmPool:
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
-        """Create a new Aleph Firecracker VM from an Aleph function message."""
+        """Create a new VM from an Aleph function or instance message."""
         async with self.creation_lock:
             # Check if an execution is already present for this VM, then return it.
             # Do not `await` in this section.
