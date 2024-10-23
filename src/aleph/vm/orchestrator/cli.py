@@ -353,13 +353,14 @@ def main():
 
     settings.check()
 
-    logger.debug("Initialising the DB...")
-    # Check and create execution database
-    engine = metrics.setup_engine()
-    asyncio.run(metrics.create_tables(engine))
-    # After creating it run the DB migrations
-    asyncio.run(run_async_db_migrations())
-    logger.debug("DB up to date.")
+    if not args.do_not_run:
+        logger.debug("Initialising the DB...")
+        # Check and create execution database
+        engine = metrics.setup_engine()
+        asyncio.run(metrics.create_tables(engine))
+        # After creating it run the DB migrations
+        asyncio.run(run_async_db_migrations())
+        logger.debug("DB up to date.")
 
     if args.benchmark > 0:
         asyncio.run(benchmark(runs=args.benchmark), debug=args.debug_asyncio)
