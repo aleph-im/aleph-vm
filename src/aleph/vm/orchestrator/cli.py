@@ -282,7 +282,7 @@ def run_db_migrations(connection):
 
 
 async def run_async_db_migrations():
-    async_engine = create_async_engine(make_db_url(), echo=True)
+    async_engine = create_async_engine(make_db_url(), echo=False)
     async with async_engine.begin() as conn:
         await conn.run_sync(run_db_migrations)
 
