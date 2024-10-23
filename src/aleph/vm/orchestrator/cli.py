@@ -300,6 +300,9 @@ def main():
         format=log_format,
     )
 
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
     settings.update(
         USE_JAILER=args.use_jailer,
         PRINT_SYSTEM_LOGS=args.system_logs,
