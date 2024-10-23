@@ -293,8 +293,10 @@ def main():
     log_format = (
         "%(relativeCreated)4f | %(levelname)s | %(message)s"
         if args.profile
-        else "%(asctime)s | %(levelname)s | %(message)s"
+        else "%(asctime)s | %(levelname)s %(name)s:%(lineno)s | %(message)s"
     )
+    # log_format = "[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s"
+
     logging.basicConfig(
         level=args.loglevel,
         format=log_format,
