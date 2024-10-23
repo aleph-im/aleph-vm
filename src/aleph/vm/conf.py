@@ -396,8 +396,6 @@ class Settings(BaseSettings):
         STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
         STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
 
-        logger.info(STREAM_CHAINS)
-
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
