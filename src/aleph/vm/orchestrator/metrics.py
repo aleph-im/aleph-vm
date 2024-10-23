@@ -38,7 +38,7 @@ Base: Any = declarative_base()
 
 def setup_engine():
     global AsyncSessionMaker
-    engine = create_async_engine(make_db_url(), echo=True)
+    engine = create_async_engine(make_db_url(), echo=False)
     AsyncSessionMaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine
 
