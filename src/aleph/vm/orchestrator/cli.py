@@ -23,6 +23,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
+from .custom_logs import setup_handlers
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
 
@@ -297,10 +298,7 @@ def main():
     )
     # log_format = "[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s"
 
-    logging.basicConfig(
-        level=args.loglevel,
-        format=log_format,
-    )
+    setup_handlers(args, log_format)
 
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
