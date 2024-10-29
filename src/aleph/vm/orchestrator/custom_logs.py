@@ -51,8 +51,4 @@ def setup_handlers(args, log_format):
     non_execution_handler.setFormatter(
         logging.Formatter("%(asctime)s | %(levelname)s %(name)s:%(lineno)s | %(message)s ")
     )
-    logging.basicConfig(
-        level=args.loglevel,
-        format=log_format,
-        handlers=[non_execution_handler, execution_handler],
-    )
+    return [non_execution_handler, execution_handler]
