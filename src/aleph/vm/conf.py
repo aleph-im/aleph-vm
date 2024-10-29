@@ -442,7 +442,7 @@ class Settings(BaseSettings):
                 ip_addr = ipaddress.ip_address(server)
                 if isinstance(ip_addr, ipaddress.IPv4Address):
                     self.DNS_NAMESERVERS_IPV4.append(server)
-                if isinstance(ip_addr, ipaddress.IPv4Address):
+                if isinstance(ip_addr, ipaddress.IPv6Address):
                     self.DNS_NAMESERVERS_IPV6.append(server)
 
         if not settings.ENABLE_QEMU_SUPPORT:
