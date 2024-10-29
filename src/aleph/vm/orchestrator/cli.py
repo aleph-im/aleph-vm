@@ -66,7 +66,7 @@ def parse_args(args):
         help="set loglevel to INFO",
         action="store_const",
         const=logging.INFO,
-        default=logging.WARNING,
+        default=settings.LOG_LEVEL,
     )
     parser.add_argument(
         "-vv",
@@ -298,7 +298,12 @@ def main():
     )
     # log_format = "[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s"
 
-    setup_handlers(args, log_format)
+    handlers = setup_handlers(args, log_format)
+    logging.basicConfig(
+        level=args.loglevel,
+        format=log_format,
+        handlers=handlers,
+    )
 
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
