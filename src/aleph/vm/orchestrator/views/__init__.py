@@ -115,7 +115,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
                 return HTTPNotFound(reason="Invalid message reference")
 
     pool = request.app["vm_pool"]
-    return await run_code_on_request(message_ref, path, pool, request)
+    with set_vm_for_logging(vm_hash=message_ref):
+        return await run_code_on_request(message_ref, path, pool, request)
 
 
 def authenticate_request(request: web.Request) -> None:
