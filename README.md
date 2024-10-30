@@ -36,59 +36,79 @@ as a user.
 
 The rest of this document focuses on how to run an Aleph-VM node that hosts and executes the programs. 
 
-# Developer setup
-As aleph-vm is highly integrated with the Linux system, modify it with it and run as root; it is HIGHLY advised to deploy it in a separate machine or server in the cloud.
+# Developer Setup
 
-Note that aleph-vm do not run on Mac or Windows, not even the test suite. 
+Due to aleph-vm’s deep integration with the Linux system, it must be run with root privileges and configured
+specifically for Linux. **It is strongly recommended** to deploy aleph-vm on a dedicated machine or a cloud-based server
+to ensure security and stability.
 
-A typical development set up would be to have a copy of the repo on your local machine and a deployment on a remote computer   to run and test it.
-You can sync the remote dev using rsync or using the Remote interpreter option in pycharm.
+> **Note**: aleph-vm does not run on macOS or Windows, including for testing purposes.
 
-## Deploying for dev on the remote
-We use the Debian package as a base as it contain the binary such as firecracker and sevctl, system configuration and, will install the dependencies.
+### Recommended Development Environment
 
-Unless specifically working on the vm-connector, it's easier to use the image from Docker. (
-see [VM-Connector/READNE](./vm_connector/README.md) for detail)
+A typical setup for developing aleph-vm involves:
 
-```shell
-docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
-```
+1. Cloning the repository on your local machine for code editing.
+2. Setting up a remote Linux server for deployment and testing.
 
+You can synchronize changes to the remote server using tools like `rsync` or PyCharm’s Remote Interpreter feature.
 
-Then install the debian package. Replace 1.2.0 with the latest released version of course.
+## Remote Development Deployment
 
-On Debian 12 (Bookworm):
-```shell
-wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.debian-12.deb
-apt install /opt/aleph-vm.debian-12.deb
-```
+To deploy aleph-vm for development on a remote server, we start with the Debian package as it includes essential binaries like `firecracker` and `sevctl`, system
+   configuration, and dependencies.
 
-On Ubuntu 22.04 (Jammy Jellyfish):
-```
-sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-22.04.deb
-sudo apt install /opt/aleph-vm.ubuntu-22.04.deb
-```
+1. **Run the vm-connector.**
 
-On Ubuntu 24.04 (Noble Numbat):
-```
-sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-24.04.deb
-sudo apt install /opt/aleph-vm.ubuntu-24.04.deb
-```
+The vm-connector need to run for aleph-vm to works, even when running py.test.
 
-Deactivate the systemd service so the system version is not run and doesn't conflict with the version you will launch by hand.  
+Unless your focus is on developing the VM-Connector, using the Docker image is easier.
+   See [VM-Connector README](./vm_connector/README.md) for more details.
 
-```shell
-sudo systemctl disable aleph-vm-supervisor.service
-```
+   ```shell
+   docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
+   ```
 
-Clone the repository and create a virtual env to contain the dependency it.
+2. **Install the Debian Package**
+   Replace `1.2.0` with the latest release version.
 
-Inside the virtual env run
-```shell
-pip install -e .
-```
-This will install aleph-vm inside the  venv  in development mode, allowing you to run directly the aleph-vm command.
+   **On Debian 12 (Bookworm)**:
+   ```shell
+   wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.debian-12.deb
+   sudo apt install /opt/aleph-vm.debian-12.deb
+   ```
 
+   **On Ubuntu 22.04 (Jammy Jellyfish)**:
+   ```shell
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-22.04.deb
+   sudo apt install /opt/aleph-vm.ubuntu-22.04.deb
+   ```
+
+   **On Ubuntu 24.04 (Noble Numbat)**:
+   ```shell
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-24.04.deb
+   sudo apt install /opt/aleph-vm.ubuntu-24.04.deb
+   ```
+
+3. **Disable Systemd Service**  
+   To prevent conflicts, deactivate the system version of aleph-vm by disabling its `systemd` service.
+
+   ```shell
+   sudo systemctl disable aleph-vm-supervisor.service
+   ```
+
+4. **Clone the Repository and Set Up a Virtual Environment**
+    - Clone the aleph-vm repository to your development environment.
+    - Create a virtual environment to manage dependencies.
+
+   Inside the virtual environment, run:
+
+   ```shell
+   pip install -e .
+   ```
+
+   This installs aleph-vm in "editable" mode within the virtual environment, allowing you to use the `aleph-vm` command
+   directly during development.
 
 ## Testing
 see  [Testinc doc](./TESTING.md)
