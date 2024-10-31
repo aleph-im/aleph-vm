@@ -15,7 +15,7 @@ from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from pydantic import Field, HttpUrl
 from dotenv import load_dotenv
-from pydantic.typing import StrPath
+from pathlib import Path
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.utils import (
@@ -125,7 +125,7 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
 
 
 class Settings(BaseSettings):
-    SUPERVISOR_HOST = "127.0.0.1"
+    SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
     # Public domain name
@@ -137,29 +137,29 @@ class Settings(BaseSettings):
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
-    WATCH_FOR_MESSAGES = True
-    WATCH_FOR_UPDATES = True
+    WATCH_FOR_MESSAGES: bool = True
+    WATCH_FOR_UPDATES: bool = True
 
-    API_SERVER = "https://official.aleph.cloud"
+    API_SERVER: str = "https://official.aleph.cloud"
     # Connect to the Quad9 VPN provider using their IPv4 and IPv6 addresses.
-    CONNECTIVITY_IPV4_URL = "https://9.9.9.9/"
-    CONNECTIVITY_IPV6_URL = "https://[2620:fe::fe]/"
-    CONNECTIVITY_DNS_HOSTNAME = "example.org"
+    CONNECTIVITY_IPV4_URL: str = "https://9.9.9.9/"
+    CONNECTIVITY_IPV6_URL: str = "https://[2620:fe::fe]/"
+    CONNECTIVITY_DNS_HOSTNAME: str = "example.org"
 
-    USE_JAILER = True
+    USE_JAILER: bool = True
     # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS = False
-    IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
-    DEBUG_ASYNCIO = False
+    PRINT_SYSTEM_LOGS: bool = False
+    IGNORE_TRACEBACK_FROM_DIAGNOSTICS: bool = True
+    DEBUG_ASYNCIO: bool = False
 
     # Networking does not work inside Docker/Podman
-    ALLOW_VM_NETWORKING = True
+    ALLOW_VM_NETWORKING: bool = True
     NETWORK_INTERFACE: str | None = None
-    IPV4_ADDRESS_POOL = Field(
+    IPV4_ADDRESS_POOL: str = Field(
         default="172.16.0.0/12",
         description="IPv4 address range used to provide networks to VMs.",
     )
-    IPV4_NETWORK_PREFIX_LENGTH = Field(
+    IPV4_NETWORK_PREFIX_LENGTH: int = Field(
         default=24,
         description="Individual VM network prefix length in bits",
     )
@@ -177,7 +177,7 @@ class Settings(BaseSettings):
         default=True,
         description="Enable IPv6 forwarding on the host. Required for IPv6 connectivity in VMs.",
     )
-    NFTABLES_CHAIN_PREFIX = "aleph"
+    NFTABLES_CHAIN_PREFIX: str = "aleph"
     USE_NDP_PROXY: bool = Field(
         default=True,
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
@@ -186,15 +186,15 @@ class Settings(BaseSettings):
     DNS_RESOLUTION: DnsResolver | None = DnsResolver.detect
     DNS_NAMESERVERS: list[str] | None = None
 
-    FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
-    JAILER_PATH = Path("/opt/firecracker/jailer")
-    SEV_CTL_PATH = Path("/opt/sevctl")
-    LINUX_PATH = Path("/opt/firecracker/vmlinux.bin")
+    FIRECRACKER_PATH: Path = Path("/opt/firecracker/firecracker")
+    JAILER_PATH: Path = Path("/opt/firecracker/jailer")
+    SEV_CTL_PATH: Path = Path("/opt/sevctl")
+    LINUX_PATH: Path = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
-    CONNECTOR_URL = Url("http://localhost:4021")
+    CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
-    CACHE_ROOT = Path("/var/cache/aleph/vm")
+    CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
     MESSAGE_CACHE: Path = Field(
         None,
         description="Default to CACHE_ROOT/message",
@@ -203,12 +203,12 @@ class Settings(BaseSettings):
     RUNTIME_CACHE: Path = Field(None, description="Default to CACHE_ROOT/runtime")
     DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
 
-    EXECUTION_ROOT = Path("/var/lib/aleph/vm")
+    EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
     JAILER_BASE_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/jailer")
     EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
-    EXECUTION_LOG_ENABLED = False
+    EXECUTION_LOG_ENABLED: bool = False
     EXECUTION_LOG_DIRECTORY: Path = Field(
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
@@ -218,8 +218,8 @@ class Settings(BaseSettings):
     )
     JAILER_BASE_DIR: Path = Field(None)
 
-    MAX_PROGRAM_ARCHIVE_SIZE = 10_000_000  # 10 MB
-    MAX_DATA_ARCHIVE_SIZE = 10_000_000  # 10 MB
+    MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
+    MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
 
     PAYMENT_MONITOR_INTERVAL: float = Field(
         default=60.0,
@@ -260,7 +260,7 @@ class Settings(BaseSettings):
     )
 
     # hashlib.sha256(b"secret-token").hexdigest()
-    ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
+    ALLOCATION_TOKEN_HASH: str = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
     ENABLE_QEMU_SUPPORT: bool = Field(default=True)
     INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
@@ -284,11 +284,11 @@ class Settings(BaseSettings):
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Path | None = None
-    BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
+    BENCHMARK_FAKE_DATA_PROGRAM: Path = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
-    FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
+    FAKE_DATA_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
     FAKE_DATA_DATA: Path | None = Path(abspath(join(__file__, "../../../../examples/data/")))
-    FAKE_DATA_RUNTIME = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
+    FAKE_DATA_RUNTIME: Path = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
     FAKE_DATA_VOLUME: Path | None = Path(abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs")))
 
     # Tests on instances
@@ -298,19 +298,19 @@ class Settings(BaseSettings):
         description="Identifier of the instance message used when testing the launch of an instance from the network",
     )
 
-    USE_FAKE_INSTANCE_BASE = False
-    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/debian-12.btrfs")))
-    FAKE_QEMU_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/rootfs.img")))
+    USE_FAKE_INSTANCE_BASE: bool = False
+    FAKE_INSTANCE_BASE: Path = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/debian-12.btrfs")))
+    FAKE_QEMU_INSTANCE_BASE: Path = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/rootfs.img")))
     FAKE_INSTANCE_ID: str = Field(
         default="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
-    FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
-    FAKE_INSTANCE_QEMU_MESSAGE = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
+    FAKE_INSTANCE_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
 
-    CHECK_FASTAPI_VM_ID = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
-    LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
+    CHECK_FASTAPI_VM_ID: str = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
+    LEGACY_CHECK_FASTAPI_VM_ID: str = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
 
     # Developer options
 
@@ -466,7 +466,7 @@ class Settings(BaseSettings):
         _env_file: str | Path | None = None,
         _env_file_encoding: str | None = None,
         _env_nested_delimiter: str | None = None,
-        _secrets_dir: StrPath | None = None,
+        _secrets_dir: Path | None = None,
         **values: Any,
     ) -> None:
         super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)
