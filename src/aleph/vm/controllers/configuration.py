@@ -25,25 +25,25 @@ class QemuVMHostVolume(BaseModel):
 
 class QemuVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: str | None
+    cloud_init_drive_path: str | None = None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: str | None
+    interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: str | None
+    cloud_init_drive_path: str | None = None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: str | None
+    interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     ovmf_path: Path
     sev_session_file: Path

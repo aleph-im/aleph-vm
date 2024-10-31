@@ -1,7 +1,7 @@
 import logging
 
 from aleph_message.models import Chain
-from pydantic import BaseModel, root_validator
+from pydantic import model_validator, BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,8 @@ class ChainInfo(BaseModel):
     def token(self) -> str | None:
         return self.super_token or self.standard_token
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def check_tokens(cls, values):
         if not values.get("standard_token") and not values.get("super_token"):
             msg = "At least one of standard_token or super_token must be provided."

@@ -22,7 +22,7 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import BaseModel, ValidationError, root_validator, validator
+from pydantic import field_validator, model_validator, BaseModel, ValidationError
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
@@ -90,17 +90,20 @@ class SignedPubKeyHeader(BaseModel):
     signature: bytes
     payload: bytes
 
-    @validator("signature")
+    @field_validator("signature")
+    @classmethod
     def signature_must_be_hex(cls, v: bytes) -> bytes:
         """Convert the signature from hexadecimal to bytes"""
         return bytes.fromhex(v.removeprefix(b"0x").decode())
 
-    @validator("payload")
+    @field_validator("payload")
+    @classmethod
     def payload_must_be_hex(cls, v: bytes) -> bytes:
         """Convert the payload from hexadecimal to bytes"""
         return bytes.fromhex(v.decode())
 
-    @root_validator(pre=False, skip_on_failure=True)
+    @model_validator(skip_on_failure=True)
+    @classmethod
     def check_expiry(cls, values) -> dict[str, bytes]:
         """Check that the token has not expired"""
         payload: bytes = values["payload"]
@@ -110,7 +113,8 @@ class SignedPubKeyHeader(BaseModel):
             raise ValueError(msg)
         return values
 
-    @root_validator(pre=False, skip_on_failure=True)
+    @model_validator(skip_on_failure=True)
+    @classmethod
     def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
         signature: list = values["signature"]
@@ -132,7 +136,8 @@ class SignedOperationPayload(BaseModel):
     path: str
     # body_sha256: str  # disabled since there is no body
 
-    @validator("time")
+    @field_validator("time")
+    @classmethod
     def time_is_current(cls, v: datetime.datetime) -> datetime.datetime:
         """Check that the time is current and the payload is not a replay attack."""
         max_past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(minutes=2)
@@ -152,7 +157,8 @@ class SignedOperation(BaseModel):
     signature: bytes
     payload: bytes
 
-    @validator("signature")
+    @field_validator("signature")
+    @classmethod
     def signature_must_be_hex(cls, v) -> bytes:
         """Convert the signature from hexadecimal to bytes"""
         try:
@@ -162,7 +168,8 @@ class SignedOperation(BaseModel):
             logger.warning(v)
             raise error
 
-    @validator("payload")
+    @field_validator("payload")
+    @classmethod
     def payload_must_be_hex(cls, v) -> bytes:
         """Convert the payload from hexadecimal to bytes"""
         v = bytes.fromhex(v.decode())

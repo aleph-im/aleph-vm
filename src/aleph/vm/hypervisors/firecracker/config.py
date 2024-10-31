@@ -51,9 +51,11 @@ class FirecrackerConfig(BaseModel):
     boot_source: BootSource
     drives: list[Drive]
     machine_config: MachineConfig
-    vsock: Vsock | None
-    network_interfaces: list[NetworkInterface] | None
+    vsock: Vsock | None = None
+    network_interfaces: list[NetworkInterface] | None = None
 
+    # TODO[pydantic]: We couldn't refactor this class, please create the `model_config` manually.
+    # Check https://docs.pydantic.dev/dev-v2/migration/#changes-to-config for more information.
     class Config:
         allow_population_by_field_name = True
 

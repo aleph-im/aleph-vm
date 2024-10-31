@@ -13,8 +13,8 @@ from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
-from pydantic import BaseSettings, Field, HttpUrl
-from pydantic.env_settings import DotenvType, env_file_sentinel
+from pydantic import Field, HttpUrl
+from dotenv import load_dotenv
 from pydantic.typing import StrPath
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
@@ -24,6 +24,9 @@ from aleph.vm.utils import (
     file_hashes_differ,
     is_command_available,
 )
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +463,7 @@ class Settings(BaseSettings):
 
     def __init__(
         self,
-        _env_file: DotenvType | None = env_file_sentinel,
+        _env_file: str | Path | None = None,
         _env_file_encoding: str | None = None,
         _env_nested_delimiter: str | None = None,
         _secrets_dir: StrPath | None = None,
@@ -489,11 +492,7 @@ class Settings(BaseSettings):
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
         if not self.CONFIDENTIAL_SESSION_DIRECTORY:
             self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
-
-    class Config:
-        env_prefix = "ALEPH_VM_"
-        case_sensitive = False
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env")
 
 
 def make_db_url():
