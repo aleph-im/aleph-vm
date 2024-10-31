@@ -1,7 +1,7 @@
 import logging
 
 from aleph_message.models import Chain
-from pydantic import model_validator, BaseModel
+from pydantic import BaseModel, model_validator
 
 logger = logging.getLogger(__name__)
 

@@ -200,7 +200,6 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 #  # Don't touch unused imports
 #  "F401",
 #]
-lint.isort = [ "aleph.vm" ]
 
 [tool.pytest.ini_options]
 pythonpath = [

@@ -13,9 +13,9 @@ from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
-from pydantic import Field, HttpUrl
 from dotenv import load_dotenv
-from pathlib import Path
+from pydantic import Field, HttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.utils import (
@@ -24,7 +24,6 @@ from aleph.vm.utils import (
     file_hashes_differ,
     is_command_available,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
@@ -288,7 +287,9 @@ class Settings(BaseSettings):
 
     FAKE_DATA_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
     FAKE_DATA_DATA: Path | None = Path(abspath(join(__file__, "../../../../examples/data/")))
-    FAKE_DATA_RUNTIME: Path = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
+    FAKE_DATA_RUNTIME: Path = Path(
+        abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs"))
+    )
     FAKE_DATA_VOLUME: Path | None = Path(abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs")))
 
     # Tests on instances
@@ -307,7 +308,9 @@ class Settings(BaseSettings):
         "examples/instance_message_from_aleph.json",
     )
     FAKE_INSTANCE_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
-    FAKE_INSTANCE_QEMU_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE: Path = Path(
+        abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json"))
+    )
 
     CHECK_FASTAPI_VM_ID: str = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID: str = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
@@ -343,7 +346,7 @@ class Settings(BaseSettings):
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
         assert self.NETWORK_INTERFACE, "Network interface is not specified"
-        assert self.CONNECTOR_URL.startswith("http://") or self.CONNECTOR_URL.startswith("https://")
+        assert str(self.CONNECTOR_URL).startswith("http://") or str(self.CONNECTOR_URL).startswith("https://")
         if self.ALLOW_VM_NETWORKING:
             assert exists(
                 f"/sys/class/net/{self.NETWORK_INTERFACE}"
@@ -469,7 +472,13 @@ class Settings(BaseSettings):
         _secrets_dir: Path | None = None,
         **values: Any,
     ) -> None:
-        super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)
+        super().__init__(
+            _env_file,
+            _env_file_encoding,
+            _env_nested_delimiter,
+            _secrets_dir,
+            **values,
+        )
         if not self.MESSAGE_CACHE:
             self.MESSAGE_CACHE = self.CACHE_ROOT / "message"
         if not self.CODE_CACHE:
@@ -492,7 +501,10 @@ class Settings(BaseSettings):
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
         if not self.CONFIDENTIAL_SESSION_DIRECTORY:
             self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
-    model_config = SettingsConfigDict(env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env")
+
+    model_config = SettingsConfigDict(
+        env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env", validate_default=False
+    )
 
 
 def make_db_url():

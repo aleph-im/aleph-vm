@@ -22,7 +22,7 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import field_validator, model_validator, BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
@@ -102,7 +102,7 @@ class SignedPubKeyHeader(BaseModel):
         """Convert the payload from hexadecimal to bytes"""
         return bytes.fromhex(v.decode())
 
-    @model_validator(skip_on_failure=True)
+    @model_validator(mode="after")
     @classmethod
     def check_expiry(cls, values) -> dict[str, bytes]:
         """Check that the token has not expired"""
@@ -113,7 +113,7 @@ class SignedPubKeyHeader(BaseModel):
             raise ValueError(msg)
         return values
 
-    @model_validator(skip_on_failure=True)
+    @model_validator(mode="after")
     @classmethod
     def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
