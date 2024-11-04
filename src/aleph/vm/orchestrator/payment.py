@@ -40,7 +40,7 @@ async def fetch_balance_of_address(address: str) -> Decimal:
         # Raise an error if the request failed
         resp.raise_for_status()
 
-        resp_data = await resp.json()
+        resp_data = await resp.model_dump_json()
         return resp_data["balance"]
 
 
@@ -52,7 +52,7 @@ async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
         # Raise an error if the request failed
         resp.raise_for_status()
 
-        resp_data = await resp.json()
+        resp_data = await resp.model_dump_json()
         required_flow: float = resp_data["required_tokens"]
         payment_type: str | None = resp_data["payment_type"]
 
@@ -74,7 +74,7 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
         # Raise an error if the request failed
         resp.raise_for_status()
 
-        resp_data = await resp.json()
+        resp_data = await resp.model_dump_json()
         required_hold: float = resp_data["required_tokens"]
         payment_type: str | None = resp_data["payment_type"]
 

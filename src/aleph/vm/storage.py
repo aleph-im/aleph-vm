@@ -136,7 +136,7 @@ async def get_latest_amend(item_hash: str) -> str:
         async with aiohttp.ClientSession() as session:
             resp = await session.get(url)
             resp.raise_for_status()
-            result: str = await resp.json()
+            result: str = await resp.model_dump_json()
             assert isinstance(result, str)
             return result or item_hash
 

@@ -1,7 +1,7 @@
 import logging
 from typing import NewType
 
-from pydantic import BaseSettings
+from pydantic import BaseSettings, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,11 @@ class ConnectorSettings(BaseSettings):
             f"{annotation:<17} = {getattr(self, annotation)}" for annotation, value in self.__annotations__.items()
         )
 
-    class Config:
-        env_prefix = "ALEPH_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix = "ALEPH_",
+        case_sensitive = False,
         env_file = ".env"
-
+    )
 
 # Settings singleton
 settings = ConnectorSettings()

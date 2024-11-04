@@ -322,12 +322,12 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
     Send secret to the VM and start it
     """
     try:
-        data = await request.json()
-        params = InjectSecretParams.parse_obj(data)
+        data = await request.model_dump_json()
+        params = InjectSecretParams.model_validate(data)
     except json.JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except pydantic.ValidationError as error:
-        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+        return web.json_response(data=error.model_dump_json(), status=web.HTTPBadRequest.status_code)
 
     vm_hash = get_itemhash_or_400(request.match_info)
     pool: VmPool = request.app["vm_pool"]

@@ -76,7 +76,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                     except pydantic.error_wrappers.ValidationError as error:
                         item_hash = data.get("item_hash", "ITEM_HASH_NOT_FOUND")
                         logger.warning(
-                            f"Invalid Aleph message: {item_hash} \n  {error.json()}\n  {error.raw_errors}",
+                            f"Invalid Aleph message: {item_hash} \n  {error.model_dump_json()}\n  {error.raw_errors}",
                             exc_info=False,
                         )
                         continue

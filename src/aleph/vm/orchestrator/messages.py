@@ -85,5 +85,5 @@ async def get_message_status(item_hash: ItemHash) -> MessageStatus:
         # Raise an error if the request failed
         resp.raise_for_status()
 
-        resp_data = await resp.json()
+        resp_data = await resp.model_dump_json()
         return resp_data["status"]

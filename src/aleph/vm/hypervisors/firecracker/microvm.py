@@ -193,7 +193,7 @@ class MicroVM:
             if not self.use_jailer
             else open(f"{self.jailer_path}/tmp/config.json", "wb")
         ) as config_file:
-            config_file.write(config.json(by_alias=True, exclude_none=True, indent=4).encode())
+            config_file.write(config.model_dump_json(by_alias=True, exclude_none=True, indent=4).encode())
             config_file.flush()
             config_file_path = Path(config_file.name)
             config_file_path.chmod(0o644)

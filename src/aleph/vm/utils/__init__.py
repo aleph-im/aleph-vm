@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 def get_message_executable_content(message_dict: dict) -> ExecutableContent:
     try:
-        return ProgramContent.parse_obj(message_dict)
+        return ProgramContent.model_validate(message_dict)
     except ValueError:
-        return InstanceContent.parse_obj(message_dict)
+        return InstanceContent.model_validate(message_dict)
 
 
 def cors_allow_all(function):
