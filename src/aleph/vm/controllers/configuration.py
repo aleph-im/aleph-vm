@@ -69,7 +69,7 @@ def save_controller_configuration(vm_hash: str, configuration: Configuration) ->
     config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
     with config_file_path.open("w") as controller_config_file:
         controller_config_file.write(
-            configuration.json(
+            configuration.model_dump_json(
                 by_alias=True, exclude_none=True, indent=4, exclude={"settings": {"USE_DEVELOPER_SSH_KEYS"}}
             )
         )

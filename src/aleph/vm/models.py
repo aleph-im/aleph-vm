@@ -407,8 +407,8 @@ class VmExecution:
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
                     network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                 )
             )
@@ -431,8 +431,8 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                 )
             )
@@ -440,7 +440,7 @@ class VmExecution:
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
         if settings.EXECUTION_LOG_ENABLED:
-            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
+            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to.model_dump_json())
 
     async def run_code(self, scope: dict | None = None) -> bytes:
         if not self.vm:

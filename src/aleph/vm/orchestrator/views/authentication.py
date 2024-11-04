@@ -106,8 +106,8 @@ class SignedPubKeyHeader(BaseModel):
     @classmethod
     def check_expiry(cls, values) -> dict[str, bytes]:
         """Check that the token has not expired"""
-        payload: bytes = values["payload"]
-        content = SignedPubKeyPayload.parse_raw(payload)
+        payload: bytes = values.payload
+        content = SignedPubKeyPayload.model_validate_json(payload)
         if not is_token_still_valid(content.expires):
             msg = "Token expired"
             raise ValueError(msg)
@@ -117,16 +117,16 @@ class SignedPubKeyHeader(BaseModel):
     @classmethod
     def check_signature(cls, values) -> dict[str, bytes]:
         """Check that the signature is valid"""
-        signature: list = values["signature"]
-        payload: bytes = values["payload"]
-        content = SignedPubKeyPayload.parse_raw(payload)
+        signature: list = values.signature
+        payload: bytes = values.payload
+        content = SignedPubKeyPayload.model_validate_json(payload)
         check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
         return values
 
     @property
     def content(self) -> SignedPubKeyPayload:
         """Return the content of the header"""
-        return SignedPubKeyPayload.parse_raw(self.payload)
+        return SignedPubKeyPayload.model_validate_json(self.payload)
 
 
 class SignedOperationPayload(BaseModel):
@@ -173,13 +173,13 @@ class SignedOperation(BaseModel):
     def payload_must_be_hex(cls, v) -> bytes:
         """Convert the payload from hexadecimal to bytes"""
         v = bytes.fromhex(v.decode())
-        _ = SignedOperationPayload.parse_raw(v)
+        _ = SignedOperationPayload.model_validate_json(v)
         return v
 
     @property
     def content(self) -> SignedOperationPayload:
         """Return the content of the header"""
-        return SignedOperationPayload.parse_raw(self.payload)
+        return SignedOperationPayload.model_validate_json(self.payload)
 
 
 def get_signed_pubkey(request: web.Request) -> SignedPubKeyHeader:
@@ -189,29 +189,30 @@ def get_signed_pubkey(request: web.Request) -> SignedPubKeyHeader:
         raise web.HTTPBadRequest(reason="Missing X-SignedPubKey header")
 
     try:
-        return SignedPubKeyHeader.parse_raw(signed_pubkey_header)
+        data = json.loads(signed_pubkey_header)
+        if "expires" in data and isinstance(data["expires"], float):
+            data["expires"] = str(data["expires"])
+        return SignedPubKeyHeader.model_validate_json(json.dumps(data))
     except KeyError as error:
         logger.debug(f"Missing X-SignedPubKey header: {error}")
         raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey fields") from error
     except json.JSONDecodeError as error:
         raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format") from error
-    except ValueError as errors:
+    except ValidationError as errors:
         logging.debug(errors)
-        for err in errors.args[0]:
-            if isinstance(err.exc, json.JSONDecodeError):
-                raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey format") from errors
-            if str(err.exc) == "Token expired":
+        for err in errors.errors():
+            if err["type"] == "value_error" and "Token expired" in str(err["msg"]):
                 raise web.HTTPUnauthorized(reason="Token expired") from errors
-            if str(err.exc) == "Invalid signature":
+            elif err["type"] == "value_error" and "Invalid signature" in str(err["msg"]):
                 raise web.HTTPUnauthorized(reason="Invalid signature") from errors
-        raise errors
+        raise web.HTTPBadRequest(reason="Invalid X-SignedPubKey data")
 
 
 def get_signed_operation(request: web.Request) -> SignedOperation:
     """Get the signed operation public key that is signed by the ephemeral key from the request headers."""
     try:
         signed_operation = request.headers["X-SignedOperation"]
-        return SignedOperation.parse_raw(signed_operation)
+        return SignedOperation.model_validate_json(signed_operation)
     except KeyError as error:
         raise web.HTTPBadRequest(reason="Missing X-SignedOperation header") from error
     except json.JSONDecodeError as error:
@@ -255,8 +256,8 @@ async def authenticate_websocket_message(message) -> str:
     """Authenticate a websocket message since JS cannot configure headers on WebSockets."""
     if not isinstance(message, dict):
         raise Exception("Invalid format for auth packet, see /doc/operator_auth.md")
-    signed_pubkey = SignedPubKeyHeader.parse_obj(message["X-SignedPubKey"])
-    signed_operation = SignedOperation.parse_obj(message["X-SignedOperation"])
+    signed_pubkey = SignedPubKeyHeader.model_validate(message["X-SignedPubKey"])
+    signed_operation = SignedOperation.model_validate(message["X-SignedOperation"])
     if signed_operation.content.domain != settings.DOMAIN_NAME:
         logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
         raise web.HTTPUnauthorized(reason="Invalid domain")

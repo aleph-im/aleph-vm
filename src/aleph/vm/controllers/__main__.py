@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def configuration_from_file(path: Path):
     with open(path) as f:
         data = json.load(f)
-        return Configuration.parse_obj(data)
+        return Configuration.model_validate(data)
 
 
 def parse_args(args):

@@ -372,7 +372,7 @@ async def update_allocations(request: web.Request):
 
     try:
         data = await request.json()
-        allocation = Allocation.parse_obj(data)
+        allocation = Allocation.model_validate(data)
     except ValidationError as error:
         return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
@@ -456,7 +456,7 @@ async def notify_allocation(request: web.Request):
     """Notify instance allocation, only used for Pay as you Go feature"""
     try:
         data = await request.json()
-        vm_notification = VMNotification.parse_obj(data)
+        vm_notification = VMNotification.model_validate(data)
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:

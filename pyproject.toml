@@ -36,7 +36,7 @@ dependencies = [
   "aioredis==1.3.1",
   "aiosqlite==0.19",
   "alembic==1.13.1",
-  "aleph-message @ git+https://github.com/aleph-im/aleph-message#egg=main",
+  "aleph-message @ git+https://github.com/aleph-im/aleph-message@108-upgrade-pydantic-version#egg=main",
   "aleph-superfluid~=0.2.1",
   "dbus-python==1.3.2",
   "eth-account~=0.10",
@@ -48,9 +48,9 @@ dependencies = [
   "psutil==5.9.5",
   "py-cpuinfo==9",
   "pydantic-settings",
-  "python-dotenv",
   "pyroute2==0.7.12",
   "python-cpuid==0.1",
+  "python-dotenv",
   "pyyaml==6.0.1",
   "qmp==1.1",
   "schedule==1.2.1",
@@ -192,14 +192,15 @@ lint.ignore = [
   # Allow the use of assert statements
   "S101",
 ]
-# Tests can use magic values, assertions, and relative imports
-lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 #[tool.ruff.flake8-tidy-imports]
 #ban-relative-imports = "all"
 #unfixable = [
 #  # Don't touch unused imports
 #  "F401",
 #]
+
+# Tests can use magic values, assertions, and relative imports
+lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
