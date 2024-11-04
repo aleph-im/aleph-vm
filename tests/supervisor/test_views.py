@@ -10,6 +10,7 @@ from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.sevclient import SevClient
 
+
 @pytest.mark.asyncio
 async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid item_hash is provided."""
@@ -27,13 +28,12 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
             "loc": ["persistent_vms", 0],
             "msg": "Value error, Could not determine hash type: 'not-an-ItemHash'",
             "type": "value_error",
-            "ctx": {
-                "error": "Could not determine hash type: 'not-an-ItemHash'"
-            },
+            "ctx": {"error": "Could not determine hash type: 'not-an-ItemHash'"},
             "input": "not-an-ItemHash",
-            "url": "https://errors.pydantic.dev/2.9/v/value_error"
+            "url": "https://errors.pydantic.dev/2.9/v/value_error",
         },
     ]
+
 
 @pytest.mark.asyncio
 async def test_system_usage(aiohttp_client):
