@@ -440,7 +440,7 @@ class VmExecution:
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
         if settings.EXECUTION_LOG_ENABLED:
-            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
+            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to.model_dump_json())
 
     async def run_code(self, scope: dict | None = None) -> bytes:
         if not self.vm:
