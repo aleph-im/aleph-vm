@@ -15,7 +15,7 @@ debian-package-code:
 	cp ../examples/instance_message_from_aleph.json ./aleph-vm/opt/aleph-vm/examples/instance_message_from_aleph.json
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
-	pip3 install --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message @ git+https://github.com/aleph-im/aleph-message.git@andres-feature-add_new_evm_chains' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2'
+	pip3 install --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==0.5.0' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bin/sevctl
@@ -144,6 +144,6 @@ repository-noble:
 	cd ./repositories/noble && reprepro -Vb . includedeb noble ../../target/aleph-vm.ubuntu-24.04.deb && cd ..
 
 repositories: repository-bookworm repository-jammy repository-noble
- 
+
 all-podman: all-podman-debian-12 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
 
