@@ -1,7 +1,7 @@
 import logging
 
 from aleph_message.models import Chain
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, HttpUrl
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class ChainInfo(BaseModel):
     """
 
     chain_id: int
-    rpc: str
+    rpc: HttpUrl
     standard_token: str | None = None
     super_token: str | None = None
     testnet: bool = False
