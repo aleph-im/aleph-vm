@@ -13,13 +13,13 @@ async def test_check_internet_wrong_result_code():
     mock_session = Mock()
     mock_session.get = MagicMock()
 
-    mock_session.get.return_value.__aenter__.return_value.model_dump_json = AsyncMock(
+    mock_session.get.return_value.__aenter__.return_value.json = AsyncMock(
         return_value={"result": 200, "headers": {"Server": "nginx"}}
     )
 
     assert await check_internet(mock_session, vm_id) is True
 
-    mock_session.get.return_value.__aenter__.return_value.model_dump_json = AsyncMock(
+    mock_session.get.return_value.__aenter__.return_value.json = AsyncMock(
         return_value={"result": 400, "headers": {"Server": "nginx"}}
     )
     assert await check_internet(mock_session, vm_id) is False

@@ -43,7 +43,7 @@ async def proxy(request: web.Request):
 
 async def repost(request: web.Request):
     logger.debug("REPOST")
-    data_raw = await request.model_dump_json()
+    data_raw = await request.json()
     topic, message = data_raw["topic"], json.loads(data_raw["data"])
 
     content = json.loads(message["item_content"])
@@ -82,7 +82,7 @@ async def properties(request: web.Request):
 
 async def sign(request: web.Request):
     vm_hash = request.app["meta_vm_hash"]
-    message = await request.model_dump_json()
+    message = await request.json()
 
     # Ensure that the hash of the VM is used as sending address
     content = json.loads(message["item_content"])

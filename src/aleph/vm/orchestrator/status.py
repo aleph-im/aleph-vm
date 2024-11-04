@@ -26,7 +26,7 @@ async def get_json_from_vm(session: ClientSession, vm_id: ItemHash, suffix: str)
     url = f"{vm_url}{suffix}"
     async with session.get(url) as resp:
         resp.raise_for_status()
-        return await resp.model_dump_json()
+        return await resp.json()
 
 
 async def post_to_vm(session: ClientSession, vm_id: ItemHash, suffix: str, data: Any = None) -> Any:
@@ -35,7 +35,7 @@ async def post_to_vm(session: ClientSession, vm_id: ItemHash, suffix: str, data:
     url = f"{vm_url}{suffix}"
     async with session.post(url, json=data) as resp:
         resp.raise_for_status()
-        return await resp.model_dump_json()
+        return await resp.json()
 
 
 async def check_index(session: ClientSession, vm_id: ItemHash) -> bool:

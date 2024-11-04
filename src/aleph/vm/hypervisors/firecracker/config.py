@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel, PositiveInt, ConfigDict
+from pydantic import BaseModel, ConfigDict, PositiveInt
 
 VSOCK_PATH = "/tmp/v.sock"
 
@@ -54,8 +54,4 @@ class FirecrackerConfig(BaseModel):
     vsock: Vsock | None = None
     network_interfaces: list[NetworkInterface] | None = None
 
-    model_config = ConfigDict(
-        populate_by_name = True,
-        alias_generator=lambda x: x.replace("_", "-")
-    )
-
+    model_config = ConfigDict(populate_by_name=True, alias_generator=lambda x: x.replace("_", "-"))

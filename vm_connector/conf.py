@@ -27,11 +27,8 @@ class ConnectorSettings(BaseSettings):
             f"{annotation:<17} = {getattr(self, annotation)}" for annotation, value in self.__annotations__.items()
         )
 
-    model_config = ConfigDict(
-        env_prefix = "ALEPH_",
-        case_sensitive = False,
-        env_file = ".env"
-    )
+    model_config = ConfigDict(env_prefix="ALEPH_", case_sensitive=False, env_file=".env")
+
 
 # Settings singleton
 settings = ConnectorSettings()
