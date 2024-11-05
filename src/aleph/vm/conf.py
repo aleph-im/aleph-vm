@@ -76,17 +76,6 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
         yield server.strip()
 
 
-def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
-    """
-    Use resolvectl to list available IPv4 DNS servers.
-    VMs only support IPv4 networking for now, we must exclude IPv6 DNS from their config.
-    """
-    for server in resolvectl_dns_servers(interface):
-        ip_addr = ipaddress.ip_address(server)
-        if isinstance(ip_addr, ipaddress.IPv4Address):
-            yield server
-
-
 def get_default_interface() -> str | None:
     """Returns the default network interface"""
     with open("/proc/net/route") as f:
@@ -104,7 +93,7 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         # Use a try-except approach since resolvectl can be present but disabled and raise the following
         # "Failed to get global data: Unit dbus-org.freedesktop.resolve1.service not found."
         try:
-            return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+            return list(resolvectl_dns_servers(interface=network_interface))
         except (FileNotFoundError, CalledProcessError) as error:
             if Path("/etc/resolv.conf").exists():
                 return list(etc_resolv_conf_dns_servers())
@@ -116,7 +105,7 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         return list(etc_resolv_conf_dns_servers())
 
     elif dns_resolver == DnsResolver.resolvectl:
-        return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+        return list(resolvectl_dns_servers(interface=network_interface))
 
     else:
         msg = "No DNS resolve defined, this should never happen."
@@ -182,8 +171,13 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: DnsResolver | None = DnsResolver.detect
+    DNS_RESOLUTION: DnsResolver | None = Field(
+        default=DnsResolver.detect,
+        description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
+    )
     DNS_NAMESERVERS: list[str] | None = None
+    DNS_NAMESERVERS_IPV4: list[str] | None
+    DNS_NAMESERVERS_IPV6: list[str] | None
 
     FIRECRACKER_PATH: Path = Path("/opt/firecracker/firecracker")
     JAILER_PATH: Path = Path("/opt/firecracker/jailer")
@@ -445,6 +439,18 @@ class Settings(BaseSettings):
                 network_interface=self.NETWORK_INTERFACE,
             )
 
+        if not self.DNS_NAMESERVERS_IPV4:
+            self.DNS_NAMESERVERS_IPV4 = []
+        if not self.DNS_NAMESERVERS_IPV6:
+            self.DNS_NAMESERVERS_IPV6 = []
+        if self.DNS_NAMESERVERS:
+            for server in self.DNS_NAMESERVERS:
+                ip_addr = ipaddress.ip_address(server)
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    self.DNS_NAMESERVERS_IPV4.append(server)
+                if isinstance(ip_addr, ipaddress.IPv6Address):
+                    self.DNS_NAMESERVERS_IPV6.append(server)
+
         if not settings.ENABLE_QEMU_SUPPORT:
             # If QEmu is not supported, ignore the setting and use Firecracker by default
             settings.INSTANCE_DEFAULT_HYPERVISOR = HypervisorType.firecracker
@@ -462,7 +468,7 @@ class Settings(BaseSettings):
             else:
                 attributes[attr] = getattr(self, attr)
 
-        return "\n".join(f"{attribute:<27} = {value}" for attribute, value in attributes.items())
+        return "\n".join(f"{self.Config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
 
     def __init__(
         self,
