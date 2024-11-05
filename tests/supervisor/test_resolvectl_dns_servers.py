@@ -2,7 +2,7 @@
 import os
 from unittest import mock
 
-from aleph.vm.conf import resolvectl_dns_servers, resolvectl_dns_servers_ipv4
+from aleph.vm.conf import resolvectl_dns_servers
 
 os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
 
@@ -17,9 +17,6 @@ def test_resolvectl():
         dns_servers = set(resolvectl_dns_servers("eth0"))
         assert dns_servers == servers
 
-        dns_servers_ipv4 = set(resolvectl_dns_servers_ipv4("eth0"))
-        assert dns_servers_ipv4 == servers
-
 
 def test_resolvectl_ipv6():
     with mock.patch(
@@ -31,6 +28,3 @@ def test_resolvectl_ipv6():
 
         dns_servers = set(resolvectl_dns_servers("eth0"))
         assert dns_servers == ipv4_servers | ipv6_servers
-
-        dns_servers_ipv4 = set(resolvectl_dns_servers_ipv4("eth0"))
-        assert dns_servers_ipv4 == ipv4_servers
