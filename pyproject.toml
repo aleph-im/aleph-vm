@@ -24,6 +24,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: System :: Distributed Computing",
 ]
 dynamic = [ "version" ]
@@ -191,8 +192,6 @@ lint.ignore = [
   # Allow the use of assert statements
   "S101",
 ]
-# Tests can use magic values, assertions, and relative imports
-lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 #[tool.ruff.flake8-tidy-imports]
 #ban-relative-imports = "all"
 #unfixable = [
@@ -200,6 +199,9 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 #  "F401",
 #]
 #lint.isort = [ "aleph.vm" ]
+
+# Tests can use magic values, assertions, and relative imports
+lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
