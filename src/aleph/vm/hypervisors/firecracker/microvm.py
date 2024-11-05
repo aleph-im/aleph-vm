@@ -1,10 +1,10 @@
 import asyncio
+import errno
 import json
 import logging
 import os.path
 import shutil
 import string
-import sys
 import traceback
 from asyncio import Task
 from asyncio.base_events import Server
@@ -13,9 +13,11 @@ from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Any, Optional
+from typing import Any
 
 import msgpack
+from aleph_message.models import ItemHash
+from systemd import journal
 
 from .config import Drive, FirecrackerConfig
 
@@ -80,17 +82,17 @@ class MicroVM:
     vm_id: int
     use_jailer: bool
     firecracker_bin_path: Path
-    jailer_bin_path: Optional[Path]
-    proc: Optional[asyncio.subprocess.Process] = None
-    stdout_task: Optional[Task] = None
-    stderr_task: Optional[Task] = None
-    log_queues: list[asyncio.Queue]
-    config_file_path: Optional[Path] = None
+    jailer_bin_path: Path | None
+    proc: asyncio.subprocess.Process | None = None
+    stdout_task: Task | None = None
+    stderr_task: Task | None = None
+    config_file_path: Path | None = None
     drives: list[Drive]
     init_timeout: float
-    runtime_config: Optional[RuntimeConfiguration]
-    mounted_rootfs: Optional[Path] = None
-    _unix_socket: Optional[Server] = None
+    runtime_config: RuntimeConfiguration | None
+    mounted_rootfs: Path | None = None
+    _unix_socket: Server | None = None
+    enable_log: bool
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
@@ -104,18 +106,18 @@ class MicroVM:
         return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_id))
 
     @property
-    def jailer_path(self):
+    def jailer_path(self) -> str:
         return os.path.join(self.namespace_path, "root")
 
     @property
-    def socket_path(self):
+    def socket_path(self) -> str:
         if self.use_jailer:
             return f"{self.jailer_path}/run/firecracker.socket"
         else:
             return f"/tmp/firecracker-{self.vm_id}.socket"
 
     @property
-    def vsock_path(self):
+    def vsock_path(self) -> str:
         if self.use_jailer:
             return f"{self.jailer_path}{VSOCK_PATH}"
         else:
@@ -124,13 +126,16 @@ class MicroVM:
     def __init__(
         self,
         vm_id: int,
+        vm_hash: ItemHash,
         firecracker_bin_path: Path,
         jailer_base_directory: Path,
         use_jailer: bool = True,
-        jailer_bin_path: Optional[Path] = None,
+        jailer_bin_path: Path | None = None,
         init_timeout: float = 5.0,
+        enable_log: bool = True,
     ):
         self.vm_id = vm_id
+        self.vm_hash = vm_hash
         self.use_jailer = use_jailer
         self.jailer_base_directory = jailer_base_directory
         self.firecracker_bin_path = firecracker_bin_path
@@ -138,9 +143,9 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
-        self.log_queues: list[asyncio.Queue] = []
+        self.enable_log = enable_log
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "jailer_path": self.jailer_path,
             "socket_path": self.socket_path,
@@ -148,9 +153,9 @@ class MicroVM:
             **self.__dict__,
         }
 
-    def prepare_jailer(self):
+    def prepare_jailer(self) -> None:
         if not self.use_jailer:
-            return False
+            return
         system(f"rm -fr {self.jailer_path}")
 
         # system(f"rm -fr {self.jailer_path}/run/")
@@ -176,6 +181,7 @@ class MicroVM:
         system(f"rm -fr {self.jailer_path}/dev/net/")
         system(f"rm -fr {self.jailer_path}/dev/kvm")
         system(f"rm -fr {self.jailer_path}/dev/urandom")
+        system(f"rm -fr {self.jailer_path}/dev/userfaultfd")
         system(f"rm -fr {self.jailer_path}/run/")
 
         if os.path.exists(path=self.vsock_path):
@@ -212,16 +218,30 @@ class MicroVM:
             "--config-file",
             str(config_path),
         )
+        if self.enable_log:
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         logger.debug(" ".join(options))
 
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
         return self.proc
+
+    @property
+    def _journal_stdout_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def _journal_stderr_name(self) -> str:
+        return f"vm-{self.vm_hash}-stderr"
 
     async def start_jailed_firecracker(self, config_path: Path) -> asyncio.subprocess.Process:
         if not self.jailer_bin_path:
@@ -231,6 +251,12 @@ class MicroVM:
         gid = str(getpwnam("jailman").pw_gid)
 
         self.config_file_path = config_path
+        if self.enable_log:
+            journal_stdout = journal.stream(self._journal_stdout_name)
+            journal_stderr = journal.stream(self._journal_stderr_name)
+        else:
+            journal_stdout = asyncio.subprocess.DEVNULL
+            journal_stderr = asyncio.subprocess.DEVNULL
 
         options = (
             str(self.jailer_bin_path),
@@ -254,8 +280,8 @@ class MicroVM:
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
         return self.proc
 
@@ -269,10 +295,7 @@ class MicroVM:
             jailer_kernel_image_path = f"/opt/{kernel_filename}"
 
             try:
-                if sys.version_info >= (3, 10):
-                    Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
-                else:
-                    kernel_image_path.link_to(f"{self.jailer_path}{jailer_kernel_image_path}")
+                Path(f"{self.jailer_path}{jailer_kernel_image_path}").hardlink_to(kernel_image_path)
             except FileExistsError:
                 logger.debug(f"File {jailer_kernel_image_path} already exists")
 
@@ -292,7 +315,8 @@ class MicroVM:
     def enable_file_rootfs(self, path_on_host: Path) -> Path:
         """Make a rootfs available to the VM.
 
-        Creates a symlink to the rootfs file if jailer is in use.
+        If jailer is in use, try to create a hardlink
+        If it is not possible to create a link because the dir are in separate device made a copy.
         """
         if self.use_jailer:
             rootfs_filename = Path(path_on_host).name
@@ -301,6 +325,13 @@ class MicroVM:
                 os.link(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
+            except OSError as err:
+                if err.errno == errno.EXDEV:
+                    # Invalid cross-device link: cannot make hard link between partition.
+                    # In this case, copy the file instead:
+                    shutil.copyfile(path_on_host, f"{self.jailer_path}/{jailer_path_on_host}")
+                else:
+                    raise
             return Path(jailer_path_on_host)
         else:
             return path_on_host
@@ -334,7 +365,7 @@ class MicroVM:
     def enable_drive(self, drive_path: Path, read_only: bool = True) -> Drive:
         """Make a volume available to the VM.
 
-        Creates a symlink to the volume file if jailer is in use.
+        Creates a hardlink or a copy to the volume file if jailer is in use.
         """
         index = len(self.drives)
         device_name = self.compute_device_name(index)
@@ -344,10 +375,12 @@ class MicroVM:
             jailer_path_on_host = f"/opt/{drive_filename}"
 
             try:
-                if sys.version_info >= (3, 10):
-                    Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
-                else:
-                    drive_path.link_to(f"{self.jailer_path}/{jailer_path_on_host}")
+                Path(f"{self.jailer_path}/{jailer_path_on_host}").hardlink_to(drive_path)
+            except OSError as err:
+                if err.errno == errno.EXDEV:
+                    # Invalid cross-device link: cannot make hard link between partition.
+                    # In this case, copy the file instead:
+                    shutil.copyfile(drive_path, f"{self.jailer_path}/{jailer_path_on_host}")
             except FileExistsError:
                 logger.debug(f"File {jailer_path_on_host} already exists")
             drive_path = Path(jailer_path_on_host)
@@ -360,43 +393,6 @@ class MicroVM:
         )
         self.drives.append(drive)
         return drive
-
-    async def print_logs(self):
-        while not self.proc:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.proc.stdout, "Process stdout is missing"
-            line = await self.proc.stdout.readline()
-            if not line:  # EOF, FD is closed nothing more will come
-                return
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stdout", line))
-            print(self, line.decode().strip())
-
-    async def print_logs_stderr(self):
-        while not self.proc:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.proc.stderr, "Process stderr is missing"
-            line = await self.proc.stderr.readline()
-            if not line:  # EOF, FD is closed nothing more will come
-                return
-            for queue in self.log_queues:
-                if queue.full():
-                    logger.warning("Log queue is full")
-                else:
-                    await queue.put(("stderr", line))
-                await queue.put(("stderr", line))
-            print(self, line.decode().strip(), file=sys.stderr)
-
-    def start_printing_logs(self) -> tuple[Task, Task]:
-        loop = asyncio.get_running_loop()
-        self.stdout_task = loop.create_task(self.print_logs())
-        self.stderr_task = loop.create_task(self.print_logs_stderr())
-        return self.stdout_task, self.stderr_task
 
     async def wait_for_init(self) -> None:
         """Wait for a connection from the init in the VM"""
@@ -484,31 +480,31 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
+        # Clean mounted block devices
         if self.mounted_rootfs:
             logger.debug("Waiting for one second for the VM to shutdown")
             await asyncio.sleep(1)
-            root_fs = self.mounted_rootfs.name
-            system(f"dmsetup remove {root_fs}")
+            if self.mounted_rootfs.is_block_device():
+                root_fs = self.mounted_rootfs.name
+                system(f"dmsetup remove {root_fs}")
+            base_device = Path(self.mounted_rootfs.name.replace("_rootfs", "_base"))
+            if base_device.is_block_device():
+                system(f"dmsetup remove {base_device}")
             if self.use_jailer and Path(self.jailer_path).is_dir():
                 shutil.rmtree(self.jailer_path)
 
         if self._unix_socket:
             logger.debug("Closing unix socket")
             self._unix_socket.close()
-            await self._unix_socket.wait_closed()
+            try:
+                await asyncio.wait_for(self._unix_socket.wait_closed(), 2)
+            except asyncio.TimeoutError:
+                # In  Python < 3.11 wait_closed() was broken and returned immediatly
+                # It is supposedly fixed in Python 3.12.1, but it hangs indefinitely during tests.
+                logger.info("f{self} unix socket closing timeout")
 
         logger.debug("Removing files")
         if self.config_file_path:
             self.config_file_path.unlink(missing_ok=True)
         if Path(self.namespace_path).exists():
             system(f"rm -fr {self.namespace_path}")
-
-    def __del__(self):
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.teardown())
-        except RuntimeError as error:
-            if error.args == ("no running event loop",):
-                return
-            else:
-                raise

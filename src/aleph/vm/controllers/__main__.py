@@ -4,21 +4,18 @@ import json
 import logging
 import signal
 import sys
+from asyncio.subprocess import Process
 from pathlib import Path
 
-from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
-from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-
-try:
-    import sentry_sdk
-except ImportError:
-    sentry_sdk = None
-
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
+from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
+from aleph.vm.hypervisors.qemu_confidential.qemuvm import QemuConfidentialVM
+from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 from .configuration import (
     Configuration,
     HypervisorType,
+    QemuConfidentialVMConfiguration,
     QemuVMConfiguration,
     VMConfiguration,
 )
@@ -60,11 +57,12 @@ def parse_args(args):
     return parser.parse_args(args)
 
 
-async def run_persistent_vm(config: Configuration):
+async def execute_persistent_vm(config: Configuration):
     if config.hypervisor == HypervisorType.firecracker:
         assert isinstance(config.vm_configuration, VMConfiguration)
         execution = MicroVM(
             vm_id=config.vm_id,
+            vm_hash=config.vm_hash,
             firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
             jailer_base_directory=config.settings.JAILER_BASE_DIR,
             use_jailer=config.vm_configuration.use_jailer,
@@ -74,22 +72,37 @@ async def run_persistent_vm(config: Configuration):
 
         execution.prepare_start()
         process = await execution.start(config.vm_configuration.config_file_path)
+    elif isinstance(config.vm_configuration, QemuConfidentialVMConfiguration):  # FIXME
+        assert isinstance(config.vm_configuration, QemuConfidentialVMConfiguration)
+        execution = QemuConfidentialVM(config.vm_hash, config.vm_configuration)
+        process = await execution.start()
     else:
         assert isinstance(config.vm_configuration, QemuVMConfiguration)
-        execution = QemuVM(config.vm_configuration)
+        execution = QemuVM(config.vm_hash, config.vm_configuration)
         process = await execution.start()
 
-        # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGTERM, execution.send_shutdown_message)
+    return execution, process
 
-    if config.settings.PRINT_SYSTEM_LOGS:
-        execution.start_printing_logs()
+
+async def handle_persistent_vm(config: Configuration, execution: MicroVM | QemuVM, process: Process):
+    # Catch the terminating signal and send a proper message to the vm to stop it so it close files properly
+    loop = asyncio.get_event_loop()
+
+    def callback():
+        """Callback for the signal handler to stop the VM and cleanup properly on SIGTERM."""
+        logger.debug("Received SIGTERM")
+        loop.create_task(execution.stop())
+
+    loop.add_signal_handler(signal.SIGTERM, callback)
 
     await process.wait()
-    logger.info(f"Process terminated with {process.returncode}")
+    logger.warning(f"Process terminated with {process.returncode}")
 
-    return execution
+
+async def run_persistent_vm(config: Configuration):
+    execution, process = await execute_persistent_vm(config)
+    await handle_persistent_vm(config=config, execution=execution, process=process)
+    return execution, process
 
 
 def main():

@@ -1,34 +1,48 @@
+---
 name: "Build Packages"
-on:
-  push
+on: push
+
 
 jobs:
   build_deb:
     name: "Build ${{ matrix.os }} Package"
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: ["debian-11", "debian-12", "ubuntu-22.04"]
+        os: ["debian-12", "ubuntu-22.04", "ubuntu-24.04"]
         include:
-          - os: "debian-11"
-            make_target: "all-podman-debian-11"
-            artifact_name: "aleph-vm.debian-11.deb"
           - os: "debian-12"
             make_target: "all-podman-debian-12"
             artifact_name: "aleph-vm.debian-12.deb"
           - os: "ubuntu-22.04"
             make_target: "all-podman-ubuntu-2204"
             artifact_name: "aleph-vm.ubuntu-22.04.deb"
+          - os: "ubuntu-24.04"
+            make_target: "all-podman-ubuntu-2404"
+            artifact_name: "aleph-vm.ubuntu-24.04.deb"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          submodules: true
           # Fetch the whole history for all tags and branches (required for aleph.__version__)
           fetch-depth: 0
+
+      - name: Initialize git submodules
+        run: git submodule init
 
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
           ls packaging/target
+
+      - name: Ensure that the relevant files are present in the package
+        run: |
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/kubo/ipfs
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/firecracker
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/jailer
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/vmlinux.bin
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/sevctl
 
       - uses: actions/upload-artifact@v4
         with:
@@ -40,10 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: ["debian-11", "debian-12"]
+        os: ["debian-12"]
         include:
-          - os: "debian-11"
-            artifact_name: "aleph-debian-11-python.squashfs"
           - os: "debian-12"
             artifact_name: "aleph-debian-12-python.squashfs"
     steps:

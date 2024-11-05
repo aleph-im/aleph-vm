@@ -1,26 +1,33 @@
 import asyncio
-import sys
-from asyncio import Task
 from asyncio.subprocess import Process
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TextIO
 
 import qmp
+from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
 
 
+@dataclass
+class HostVolume:
+    path_on_host: Path
+    read_only: bool
+
+
 class QemuVM:
     qemu_bin_path: str
-    cloud_init_drive_path: Optional[str]
+    cloud_init_drive_path: str | None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
-    qemu_process = None
+    qemu_process: Process | None = None
+    host_volumes: list[HostVolume]
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -28,7 +35,7 @@ class QemuVM:
         else:
             return "<QemuVM: not running>"
 
-    def __init__(self, config: QemuVMConfiguration):
+    def __init__(self, vm_hash, config: QemuVMConfiguration):
         self.qemu_bin_path = config.qemu_bin_path
         self.cloud_init_drive_path = config.cloud_init_drive_path
         self.image_path = config.image_path
@@ -37,6 +44,23 @@ class QemuVM:
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
+        self.vm_hash = vm_hash
+
+        self.host_volumes = [
+            HostVolume(
+                path_on_host=volume.path_on_host,
+                read_only=volume.read_only,
+            )
+            for volume in config.host_volumes
+        ]
+
+    @property
+    def _journal_stdout_name(self) -> str:
+        return f"vm-{self.vm_hash}-stdout"
+
+    @property
+    def _journal_stderr_name(self) -> str:
+        return f"vm-{self.vm_hash}-stderr"
 
     def prepare_start(self):
         pass
@@ -47,6 +71,9 @@ class QemuVM:
         # Based on the command
         #  qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
+
+        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
+        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
         args = [
@@ -77,6 +104,11 @@ class QemuVM:
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
         ]
+        for volume in self.host_volumes:
+            args += [
+                "-drive",
+                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
+            ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
@@ -84,57 +116,20 @@ class QemuVM:
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
         print(*args)
+
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=journal_stdout,
+            stderr=journal_stderr,
         )
 
-        logger.debug(f"started qemu vm {self}, {proc}")
+        print(
+            f"Started QemuVm {self}, {proc}. Log available with: journalctl -t  {self._journal_stdout_name} -t {self._journal_stderr_name}"
+        )
         return proc
 
-    log_queues: list[asyncio.Queue] = []
-
-    # TODO : convert when merging with log fixing branch
-    async def _process_stderr(self):
-        while not self.qemu_process:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.qemu_process.stderr, "Qemu process stderr is missing"
-            line = await self.qemu_process.stderr.readline()
-            if not line:  # FD is closed nothing more will come
-                print(self, "EOF")
-                return
-            for queue in self.log_queues:
-                await queue.put(("stderr", line))
-            print(self, line.decode().strip(), file=sys.stderr)
-
-    def start_printing_logs(self) -> tuple[Task, Task]:
-        """Start two tasks to process the stdout and stderr
-
-        It will stream their content to queues registered on self.log_queues
-        It will also print them"""
-
-        loop = asyncio.get_running_loop()
-        stdout_task = loop.create_task(self._process_stdout())
-        stderr_task = loop.create_task(self._process_stderr())
-        return stdout_task, stderr_task
-
-    async def _process_stdout(self):
-        while not self.qemu_process:
-            await asyncio.sleep(0.01)  # Todo: Use signal here
-        while True:
-            assert self.qemu_process.stdout, "Qemu process stdout is missing"
-            line = await self.qemu_process.stdout.readline()
-            if not line:  # FD is closed nothing more will come
-                print(self, "EOF")
-                return
-            for queue in self.log_queues:
-                await queue.put(("stdout", line))
-            print(self, line.decode().strip())
-
-    def _get_qmpclient(self) -> Optional[qmp.QEMUMonitorProtocol]:
+    def _get_qmpclient(self) -> qmp.QEMUMonitorProtocol | None:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):
             return None
         client = qmp.QEMUMonitorProtocol(str(self.qmp_socket_path))
@@ -150,3 +145,7 @@ class QemuVM:
                 logger.warning("unexpected answer from VM", resp)
             print("shutdown message sent")
             client.close()
+
+    async def stop(self):
+        """Stop the VM."""
+        self.send_shutdown_message()

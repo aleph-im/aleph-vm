@@ -1,11 +1,10 @@
 import logging
 from subprocess import CalledProcessError, check_output
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def get_version_from_git() -> Optional[str]:
+def get_version_from_git() -> str | None:
     try:
         return check_output(("git", "describe", "--tags")).strip().decode()
     except FileNotFoundError:
@@ -16,7 +15,7 @@ def get_version_from_git() -> Optional[str]:
         return None
 
 
-def get_version_from_apt() -> Optional[str]:
+def get_version_from_apt() -> str | None:
     try:
         import apt
 
@@ -26,7 +25,7 @@ def get_version_from_apt() -> Optional[str]:
         return None
 
 
-def get_version() -> Optional[str]:
+def get_version() -> str | None:
     return get_version_from_git() or get_version_from_apt()
 
 

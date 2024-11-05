@@ -1,0 +1,64 @@
+---
+# This workflow automatically deploys main on staging
+name: "Deploy `main` automatically on staging"
+
+
+on:
+  push:
+    branches:
+      - main
+
+
+jobs:
+  deploy_staging_servers:
+    name: "Deploying on ${{ matrix.staging_servers.hostname }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        staging_servers:
+          - hostname: "ovh.staging.aleph.sh"
+            # Use `ssh-keyscan -H host | base64 --wrap=0` to obtain the host keys
+            host_keys: "fDF8b3JHVkxyOU83Qnh0QmkvWjd4N0lVTkRDSHFRPXwxZEdZSnNjNlFyejA5QkR6cGROR1BLYjNES009IHNzaC1yc2EgQUFBQUIzTnphQzF5YzJFQUFBQURBUUFCQUFBQmdRRHZwSmNpV2dscTNCbEsxY2xOUmNETnVQeFVCeGF3bE5qVElHZFV2MmoyTVo4KzliVVpDSkI1aXFIKzNvbkc5Vklla1RQdW1ybFlXbFMvZkkvSzM3dTh5UXJuQ3JkNi9XRm9XWWJOaTJ4NWxSOUhzaTViRXQ4MFAwRkFyVVpaSkdzbnRQdVhGeFJGR3dHeFNENTN2emVMbmU4VjRlaUxrQ3BjMDU5YzZVVHBublcvSjdRRnlzZURDUXIwVzFsMzBNcjlnTm1LbmpBd2VLWXdCS0hYaG42VGdSd1RYT1E3VXJCc3c2Q1d0OHI2N2g4QkJ2UHQ5OWt5OHl4dUw2Z25TRlhqeWhyKzVhd1lTY3VhVU5JS3B0Y2JFOWpISHhEY1FLSHN0akZZRHRsM0JWN29rUEkvUWJablpSMDVTdDgvZldoK2p5K3ZtR3BTWmtFckJ2NkUwdFhHMDhmdkdheVRXNWFVcWxRQmlLMzJpNmJlUWordjI3b0pUWndvcndBOVJCY1QramlCWVRNVUFpTTJrblhXMGlqT2ViWDNackpITm5QbXJkbjBTd1JldGlLRzg2SGdRK3d3a0dwd3UxVk01eTFlbTVwZ0VUdnU5SHg1RTFKeEJLcXJ3ZkdhTVVRWFZEWG8yNDg5bW1XZzA1aUFHejZIaXNTVWRESFlRKzhnWnA4PQp8MXxvUzkyc1NEb3RxU1hSb0F6MUpFS1V2RDhVTGM9fDVtSHZBSVdqbk1CN2IwcllRQlo0SXBpaFlqQT0gZWNkc2Etc2hhMi1uaXN0cDI1NiBBQUFBRTJWalpITmhMWE5vWVRJdGJtbHpkSEF5TlRZQUFBQUlibWx6ZEhBeU5UWUFBQUJCQkZNanZFOEFsQmYxbkp1Y0ZlaEJjSUY2RE8wdGJOdU96OEx5QlFUdC82RlEwaWYyWVAxQUJ1TjBmYXVIT3R4WEx6b25vSGVhTDZaV0JoakhmRGV4NlY4PQp8MXxMc2lPc3RhVGk5bEhYSlFsWDJYQ3c3Q0lTU1k9fGk1RzlFTHJydHpaYkUrR2JjbWF1SDIxOG1ZND0gc3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUp1QVNEMWY1d2dXM3pnd3FGalBXYzhPRi9BZ1pmSFFVa3lRMDE2c1MrRmoK"
+            os: "debian-12"
+            make_target: "all-podman-debian-12"
+            artifact_name: "aleph-vm.debian-12.deb"
+
+          - hostname: "hetzner.staging.aleph.sh"
+            # Use `ssh-keyscan -H host | base64 --wrap=0` to obtain the host keys
+            host_keys: "fDF8WUlKd0FYWnYxZ24vNkRCU0tkYjg0TC9sUngwPXwrRk96RzdoSTJ5Y3JzUW1uSEwrdEFBQkR4YUU9IHNzaC1yc2EgQUFBQUIzTnphQzF5YzJFQUFBQURBUUFCQUFBQmdRRHBKcHF5ajUxWUluRkNyZjZUWjE5eUF3cHlXNTNHaFAxNXQ0Wm56cHBwOUVnNTNnZmVWdmk5WUV1bVV6cnVUN01LdFpobjNsb0U5YVFtRUYzSElpb3c5ZmlCWVA3aUMzUUFGdUJCandPUmQwV1RVWDZQQUN2c2p0b1JLWjJpTWZ2YXdITHdrWHErWnkrc2hHNU44L2pwQlJ4MC9paXJta2xPS0F5QWw0QTYzZ2MxMndsVGQzcS9IcDVxd1dSYVV3M1JVUTFTVVJSN2RGRW81VWxqeUZVYS9zdWV1STBYOXdLd0tPZ09iOEo3ZFZDMEdDT3VibkJXL3Jmb3N0YVV5eStaSzdQdzBrM251M2szTFZuUVlPTGlNOG1NMnJub2ZWZ2RSWXpiM3RTUVVrbk9wektBVzBXK3llWmpSOXp1UG4yNXF4bWxsRmRaNmt3QTFDcWY2MmQyQ0dtQ2NDU3dUSUl4ZHJ3M29oOEZOclpROTI4OGQvcmF4djZXZi9oZDI0Y1JqeDdFSEJxOUFWMW02UTZWeGxnSWl0WjIzODlsYjRmODNGclRrNUtib3J3Zm5oM3NaZFRSSkJqRjRhdHZ5NktsWFYxenROc05BeDhFN1RnTDMzVFlnRGc4RWlldGN1TVlzUlcwSnREdldBNGxsZDFQS3JrbDJ1LzZvLzNUb0xVPQp8MXxmQ3FnTjB2WHpMTnAzdklnZXdkSFRQRTA0ZUk9fDhnSituTC9hUGpEQlRMcUNJak1sZFpVbFRpST0gZWNkc2Etc2hhMi1uaXN0cDI1NiBBQUFBRTJWalpITmhMWE5vWVRJdGJtbHpkSEF5TlRZQUFBQUlibWx6ZEhBeU5UWUFBQUJCQktWbnE5aWsvcHZFaDdXbHFydUtWZmdZeTlwOVpNQnVKV2IrZkVvS0hZY0ZSYld5c0lYRjJlalBnaUMyOFEvZExqeUhXd2RVZlMySFBMbGNxRVFEZlpvPQp8MXxtVzA4T3ZqUnh0bmRjYVNyc0poWXBQcXp2akk9fFlDcktMeUg4ZnJJR0lRV05RS3hiUnArNlIvTT0gc3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUl5ZGNhTXF1dkZFTEpNUDBlRmhNUGJWZVBSVjlSUEhVRzhIZGZIQmRvaTEK"
+            os: "debian-12"
+            make_target: "all-podman-debian-12"
+            artifact_name: "aleph-vm.debian-12.deb"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch the whole history for all tags and branches (required for aleph.__version__)
+          fetch-depth: 0
+
+      - run: |
+          cd packaging && make ${{ matrix.staging_servers.make_target }} && cd ..
+          ls packaging/target
+
+      - name: Setup SSH private key
+        run: |
+          mkdir ~/.ssh
+          echo $STAGING_SSH_PRIVATE_KEY | base64 --decode > ~/.ssh/id_ed25519
+          chmod 0700 ~/.ssh
+          chmod 0600 ~/.ssh/id_ed25519
+        env:
+          # Create using:
+          # ssh-keygen -t ed25519 -f ./id_ed25519
+          # cat ./id_ed25519 | base64 --wrap=0
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+
+      - name: Install Aleph-VM on the Staging servers
+        run: |-
+          echo ${{ matrix.staging_servers.host_keys }} | base64 --decode > ~/.ssh/known_hosts
+
+          # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
+          while ssh root@${{ matrix.staging_servers.hostname }} lsof /var/lib/apt/lists/lock; do sleep 1; done
+
+          scp packaging/target/${{ matrix.staging_servers.artifact_name }} root@${{ matrix.staging_servers.hostname }}:/opt
+          ssh root@${{ matrix.staging_servers.hostname }} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y --allow-downgrades /opt/${{ matrix.staging_servers.artifact_name }}"

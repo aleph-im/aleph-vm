@@ -1,7 +1,7 @@
 import logging
 import socket
-from collections.abc import Awaitable
-from typing import Any, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
@@ -46,10 +46,10 @@ async def check_host_egress_ipv6() -> bool:
     return await check_ip_connectivity(settings.CONNECTIVITY_IPV6_URL)
 
 
-async def resolve_dns(hostname: str) -> tuple[Optional[str], Optional[str]]:
+async def resolve_dns(hostname: str) -> tuple[str | None, str | None]:
     """Resolve a hostname to an IPv4 and IPv6 address."""
-    ipv4: Optional[str] = None
-    ipv6: Optional[str] = None
+    ipv4: str | None = None
+    ipv6: str | None = None
 
     info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
     if not info:

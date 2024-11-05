@@ -3,7 +3,6 @@ import errno
 import logging
 import shutil
 from ipaddress import IPv4Interface, IPv6Interface, IPv6Network
-from typing import Optional, Union
 
 from pyroute2 import IPRoute, NetlinkError
 
@@ -11,6 +10,12 @@ from .ipaddresses import IPv4NetworkWithInterfaces
 from .ndp_proxy import NdpProxy
 
 logger = logging.getLogger(__name__)
+
+
+class MissingInterfaceError(Exception):
+    """The interface is missing."""
+
+    pass
 
 
 class InterfaceBusyError(Exception):
@@ -28,35 +33,73 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
         if error.code == 17:
             logger.warning(f"Interface {device_name} already exists")
         elif error.code == 16:
-            raise InterfaceBusyError(
-                f"Interface {device_name} is busy - is there another process using it ?"
-            ) from error
+            logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
-            raise
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
     except OSError as error:
         if error.errno == errno.EBUSY:
-            raise InterfaceBusyError(f"Interface {device_name} is busy. Is another process using it ?") from error
+            logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
+        else:
+            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
 
 
-def add_ip_address(ipr: IPRoute, device_name: str, ip: Union[IPv4Interface, IPv6Interface]):
+def add_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
     """Add an IP address to the given interface. If the address already exists, a warning is logged and the function
     returns without error."""
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        msg = f"Interface {device_name} does not exist, can't add address {ip} to it."
+        raise MissingInterfaceError(msg)
     try:
-        ipr.addr("add", index=ipr.link_lookup(ifname=device_name)[0], address=str(ip.ip), mask=ip.network.prefixlen)
+        ipr.addr("add", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
     except NetlinkError as e:
         if e.code == 17:
             logger.warning(f"Address {ip} already exists")
         else:
-            raise
+            logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
+    except OSError as e:
+        logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
+
+
+def delete_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
+    """Delete an IP address to the given interface."""
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        msg = f"Interface {device_name} does not exist, can't delete address {ip} to it."
+        raise MissingInterfaceError(msg)
+    try:
+        ipr.addr("del", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
+    except NetlinkError as e:
+        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
+    except OSError as e:
+        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
 
 
 def set_link_up(ipr: IPRoute, device_name: str):
     """Set the given interface up."""
-    ipr.link("set", index=ipr.link_lookup(ifname=device_name)[0], state="up")
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        msg = f"Interface {device_name} does not exist, can't set it up."
+        raise MissingInterfaceError(msg)
+    try:
+        ipr.link("set", index=interface_index[0], state="up")
+    except NetlinkError as e:
+        logger.error(f"Unknown exception while setting link up to interface {device_name}: {e}")
+    except OSError as e:
+        logger.error(f"Unknown exception while setting link up to interface {device_name}: {e}")
 
 
 def delete_tap_interface(ipr: IPRoute, device_name: str):
-    ipr.link("del", index=ipr.link_lookup(ifname=device_name)[0])
+    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
+    if not interface_index:
+        logger.debug(f"Interface {device_name} does not exist, won't be deleted.")
+        return
+    try:
+        ipr.link("del", index=interface_index[0])
+    except NetlinkError as error:
+        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
+    except OSError as error:
+        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
 
 
 class TapInterface:
@@ -69,7 +112,7 @@ class TapInterface:
         device_name: str,
         ip_network: IPv4NetworkWithInterfaces,
         ipv6_network: IPv6Network,
-        ndp_proxy: Optional[NdpProxy],
+        ndp_proxy: NdpProxy | None,
     ):
         self.device_name: str = device_name
         self.ip_network: IPv4NetworkWithInterfaces = ip_network
@@ -104,7 +147,8 @@ class TapInterface:
 
         ip_command = shutil.which("ip")
         if not ip_command:
-            raise FileNotFoundError("ip command not found")
+            msg = "ip command not found"
+            raise FileNotFoundError(msg)
 
         ipv6_gateway = self.host_ipv6
 
@@ -126,4 +170,6 @@ class TapInterface:
         if self.ndp_proxy:
             await self.ndp_proxy.delete_range(self.device_name)
         with IPRoute() as ipr:
+            delete_ip_address(ipr, self.device_name, self.host_ip)
+            delete_ip_address(ipr, self.device_name, self.host_ipv6)
             delete_tap_interface(ipr, self.device_name)

@@ -1,80 +1,84 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
 name = "aleph-vm"
-dynamic = ["version"]
 description = "Aleph.im VM execution engine"
 readme = "README.md"
-requires-python = ">=3.9"
-license = "MIT"
-keywords = []
+keywords = [  ]
+license = { file = "LICENSE" }
 authors = [
-  { name="Hugo Herter", email="git@hugoherter.com" },
+  { name = "Hugo Herter", email = "git@hugoherter.com" },
 ]
+requires-python = ">=3.10"
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Framework :: aiohttp",
   "Intended Audience :: Information Technology",
   "License :: OSI Approved :: MIT License",
   "Operating System :: POSIX :: Linux",
-  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Topic :: System :: Distributed Computing",
 ]
+dynamic = [ "version" ]
+
+# Upon adding or updating dependencies, update `packaging/Makefile` for the Debian package
 dependencies = [
-  "pydantic[dotenv]==1.10.13",
-  "aiohttp==3.8.6",
-  "aiodns==3.1.0",
-  "setproctitle==1.3.3",
-  "pyyaml==6.0.1",
-  "aleph-message==0.4.4",
-  "jwskate==0.8.0",
-  "eth-account==0.9.0",
-  "sentry-sdk==1.31.0",
+  "aiodns==3.1",
+  "aiohttp==3.9.5",
+  "aiohttp-cors~=0.7.0",
   "aioredis==1.3.1",
-  "psutil==5.9.5",
-  "py-cpuinfo==9.0.0",
-  "schedule==1.2.1",
-  "nftables @ git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
-  "msgpack==1.0.7",
-  "packaging==23.2",
-  "jsonschema==4.19.1",
-  "qmp==0.0.1",
-  "dbus-python==1.3.2",
-  "systemd-python==235",
-  "systemd-python==235",
-  "superfluid~=0.2.1",
-  "sqlalchemy[asyncio]",
-  "aiosqlite==0.19.0",
+  "aiosqlite==0.19",
   "alembic==1.13.1",
-  "aiohttp_cors~=0.7.0",
+  "aleph-message==0.5",
+  "aleph-superfluid~=0.2.1",
+  "dbus-python==1.3.2",
+  "eth-account~=0.10",
+  "jsonschema==4.19.1",
+  "jwcrypto==1.5.6",
+  "msgpack==1.0.7",
+  "nftables @ git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
+  "packaging==23.2",
+  "psutil==5.9.5",
+  "py-cpuinfo==9",
+  "pydantic[dotenv]~=1.10.13",
   "pyroute2==0.7.12",
+  "python-cpuid==0.1",
+  "pyyaml==6.0.1",
+  "qmp==1.1",
+  "schedule==1.2.1",
+  "sentry-sdk==1.31",
+  "setproctitle==1.3.3",
+  "solathon==1.0.2",
+  "sqlalchemy[asyncio]>=2",
+  "systemd-python==235",
 ]
 
-[project.urls]
-Documentation = "https://docs.aleph.im/nodes/compute/"
-Issues = "https://github.com/aleph-im/aleph-vm/issues"
-Source = "https://github.com/aleph-im/aleph-vm"
-Discussions = "https://community.aleph.im/"
-
-[project.scripts]
-aleph-vm = "aleph.vm.orchestrator.cli:main"
+urls.Discussions = "https://community.aleph.im/"
+urls.Documentation = "https://docs.aleph.im/nodes/compute/"
+urls.Issues = "https://github.com/aleph-im/aleph-vm/issues"
+urls.Source = "https://github.com/aleph-im/aleph-vm"
+scripts.aleph-vm = "aleph.vm.orchestrator.cli:main"
 
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aleph"]
+packages = [ "src/aleph" ]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.envs.default]
-platforms = ["linux"]
+platforms = [ "linux" ]
 dependencies = [
-#  "git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
+  #  "git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
 ]
 
 [tool.hatch.envs.default.scripts]
@@ -83,15 +87,19 @@ config = "aleph-vm orchestrator config {args:--help}"
 check = "aleph-vm controller run {args:--help}"
 
 [tool.hatch.envs.testing]
+type = "virtual"
+system-packages = true
 dependencies = [
-  "pytest==8.0.1",
-  "pytest-cov==4.1.0",
-  "pytest-mock==3.12.0",
-  "pytest-asyncio==0.23.5",
+  "eth_typing==4.3.1",      # Temp fix for bug in CI with 5.0.0
+  "pytest==8.2.1",
+  "pytest-cov==5.0.0",
+  "pytest-mock==3.14.0",
+  "pytest-asyncio==0.23.7",
+  "pytest-aiohttp==1.0.5",
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
-test-cov = "pytest --cov {args:tests}"
+test-cov = "pytest --durations=10 --cov  {args:tests}"
 cov-report = [
   "- coverage combine",
   "coverage report",
@@ -102,27 +110,33 @@ cov = [
 ]
 
 [[tool.hatch.envs.all.matrix]]
-python = ["3.9", "3.10", "3.11", "3.12"]
+python = [ "3.10", "3.11", "3.12" ]
 
-[tool.hatch.envs.lint]
+[tool.hatch.envs.linting]
 detached = true
 dependencies = [
-  "black==24.1.1",
+  "black==24.3.0",
   "mypy==1.8.0",
-  "ruff==0.1.15",
+  "ruff==0.4.6",
   "isort==5.13.2",
+  "yamlfix==1.16.1",
+  "pyproject-fmt==2.2.1",
 ]
-[tool.hatch.envs.lint.scripts]
+[tool.hatch.envs.linting.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
 style = [
-#  "ruff {args:.}",
+  #  "ruff {args:.}",
   "black --check --diff {args:.}",
   "isort --check-only --profile black {args:.}",
+  "yamlfix --check .",
+  "pyproject-fmt --check pyproject.toml",
 ]
 fmt = [
   "black {args:.}",
-#  "ruff --fix {args:.}",
+  #  "ruff --fix {args:.}",
   "isort --profile black {args:.}",
+  "yamlfix .",
+  "pyproject-fmt pyproject.toml",
   "style",
 ]
 all = [
@@ -130,28 +144,15 @@ all = [
   "typing",
 ]
 
-[tool.pytest.ini_options]
-pythonpath = [
-  "src"
-]
-
 [tool.black]
-target-version = ["py39"]
+target-version = [ "py310" ]
 line-length = 120
 #skip-string-normalization = true
 
-[tool.mypy]
-python_version = "3.9"
-install_types = true
-non_interactive = true
-ignore_missing_imports = true
-explicit_package_bases = true
-check_untyped_defs = true
-
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
-select = [
+lint.select = [
   "A",
   "ARG",
   "B",
@@ -178,35 +179,42 @@ select = [
   "W",
   "YTT",
 ]
-ignore = [
-#  # Allow non-abstract empty methods in abstract base classes
-#  "B027",
-#  # Allow boolean positional values in function calls, like `dict.get(... True)`
-#  "FBT003",
-#  # Ignore checks for possible passwords
-#  "S105", "S106", "S107",
-#  # Ignore complexity
-#  "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+lint.ignore = [
+  #  # Allow non-abstract empty methods in abstract base classes
+  #  "B027",
+  #  # Allow boolean positional values in function calls, like `dict.get(... True)`
+  #  "FBT003",
+  #  # Ignore checks for possible passwords
+  #  "S105", "S106", "S107",
+  #  # Ignore complexity
+  #  "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
   # Allow the use of assert statements
-  "S101"
+  "S101",
 ]
+# Tests can use magic values, assertions, and relative imports
+lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
+#[tool.ruff.flake8-tidy-imports]
+#ban-relative-imports = "all"
 #unfixable = [
 #  # Don't touch unused imports
 #  "F401",
 #]
+lint.isort = [ "aleph.vm" ]
 
-[tool.ruff.isort]
-known-first-party = ["aleph.vm"]
-
-#[tool.ruff.flake8-tidy-imports]
-#ban-relative-imports = "all"
-
-[tool.ruff.per-file-ignores]
-# Tests can use magic values, assertions, and relative imports
-"tests/**/*" = ["PLR2004", "S101", "TID252"]
+[tool.pytest.ini_options]
+pythonpath = [
+  "src",
+]
+testpaths = [
+  "tests",
+]
+norecursedirs = [
+  "runtimes/aleph-debian-11-python/rootfs/",
+  "runtimes/aleph-debian-12-python/rootfs/",
+]
 
 [tool.coverage.run]
-source_pkgs = ["aleph.vm", "tests"]
+source_pkgs = [ "aleph.vm", "tests" ]
 branch = true
 parallel = true
 omit = [
@@ -214,8 +222,8 @@ omit = [
 ]
 
 [tool.coverage.paths]
-aleph_vm = ["src/aleph/vm", "*/aleph-vm/src/aleph/vm"]
-tests = ["tests", "*/aleph-vm/tests"]
+aleph_vm = [ "src/aleph/vm", "*/aleph-vm/src/aleph/vm" ]
+tests = [ "tests", "*/aleph-vm/tests" ]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -223,3 +231,17 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+install_types = true
+non_interactive = true
+ignore_missing_imports = true
+explicit_package_bases = true
+check_untyped_defs = true
+
+[tool.yamlfix]
+sequence_style = "keep_style"
+preserve_quotes = true
+whitelines = 1
+section_whitelines = 2

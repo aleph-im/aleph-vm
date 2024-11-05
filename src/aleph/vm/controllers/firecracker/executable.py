@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
 from os.path import exists, isfile
 from pathlib import Path
-from typing import Generic, Optional, TypeVar
+from typing import Generic, TypeVar
 
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
@@ -75,18 +75,18 @@ class HostVolume:
 @dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
-    ip: Optional[str] = None
-    route: Optional[str] = None
+    ip: str | None = None
+    route: str | None = None
     dns_servers: list[str] = field(default_factory=list)
     volumes: list[Volume] = field(default_factory=list)
-    variables: Optional[dict[str, str]] = None
+    variables: dict[str, str] | None = None
 
 
 @dataclass
 class ConfigurationResponse:
     success: bool
-    error: Optional[str] = None
-    traceback: Optional[str] = None
+    error: str | None = None
+    traceback: str | None = None
 
 
 class AlephFirecrackerResources:
@@ -149,14 +149,14 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     enable_console: bool
     enable_networking: bool
     hardware_resources: MachineResources
-    tap_interface: Optional[TapInterface] = None
+    tap_interface: TapInterface | None = None
     fvm: MicroVM
-    vm_configuration: Optional[ConfigurationType]
-    guest_api_process: Optional[Process] = None
+    vm_configuration: ConfigurationType | None
+    guest_api_process: Process | None = None
     is_instance: bool
     persistent: bool
-    _firecracker_config: Optional[FirecrackerConfig] = None
-    controller_configuration: Optional[Configuration] = None
+    _firecracker_config: FirecrackerConfig | None = None
+    controller_configuration: Configuration | None = None
     support_snapshot: bool
 
     @property
@@ -169,9 +169,9 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         vm_hash: ItemHash,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
-        enable_console: Optional[bool] = None,
-        hardware_resources: Optional[MachineResources] = None,
-        tap_interface: Optional[TapInterface] = None,
+        enable_console: bool | None = None,
+        hardware_resources: MachineResources | None = None,
+        tap_interface: TapInterface | None = None,
         persistent: bool = False,
         prepare_jailer: bool = True,
     ):
@@ -188,11 +188,13 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
         self.fvm = MicroVM(
             vm_id=self.vm_id,
+            vm_hash=vm_hash,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             jailer_base_directory=settings.JAILER_BASE_DIR,
             use_jailer=settings.USE_JAILER,
             jailer_bin_path=settings.JAILER_PATH,
             init_timeout=settings.INIT_TIMEOUT,
+            enable_log=enable_console,
         )
         if prepare_jailer:
             self.fvm.prepare_jailer()
@@ -259,9 +261,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
                 await self.tap_interface.delete()
             raise
 
-        if self.enable_console:
-            self.fvm.start_printing_logs()
-
         await self.wait_for_init()
         logger.debug(f"started fvm {self.vm_id}")
         await self.load_configuration()
@@ -285,6 +284,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
             configuration = Configuration(
                 vm_id=self.vm_id,
+                vm_hash=self.vm_hash,
                 settings=settings,
                 vm_configuration=vm_configuration,
             )
@@ -296,8 +296,12 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         return
 
     async def start_guest_api(self):
-        logger.debug(f"starting guest API for {self.vm_id}")
-        vsock_path = f"{self.fvm.vsock_path}_53"
+        vsock_path = Path(f"{self.fvm.vsock_path}_53")
+
+        # Ensure that the directory where the VSOCK socket will be created exists
+        vsock_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"starting guest API for {self.vm_id} on {vsock_path}")
+
         vm_hash = self.vm_hash
         self.guest_api_process = Process(
             target=run_guest_api,
@@ -326,18 +330,3 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         raise NotImplementedError()
-
-    def get_log_queue(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        # Limit the number of queues per VM
-
-        if len(self.fvm.log_queues) > 20:
-            logger.warning("Too many log queues, dropping the oldest one")
-            self.fvm.log_queues.pop(0)
-        self.fvm.log_queues.append(queue)
-        return queue
-
-    def unregister_queue(self, queue: asyncio.Queue):
-        if queue in self.fvm.log_queues:
-            self.fvm.log_queues.remove(queue)
-        queue.empty()

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import msgpack
 from aiohttp import web
@@ -44,6 +44,7 @@ async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
 
 
 async def build_event_scope(event) -> dict[str, Any]:
+    """Build an ASGI scope for an event."""
     return {
         "type": "aleph.message",
         "body": event,
@@ -56,31 +57,12 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
 
     logger.debug(f"Message: {message.json(indent=4, sort_keys=True, exclude_none=True)}")
 
-    try:
-        execution = await pool.create_a_vm(
-            vm_hash=vm_hash,
-            message=message.content,
-            original=original_message.content,
-            persistent=persistent,
-        )
-    except ResourceDownloadError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
-    except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0]) from error
-    except VmSetupError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except MicroVMFailedInitError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
-    except HostNotFoundError as error:
-        logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
+    execution = await pool.create_a_vm(
+        vm_hash=vm_hash,
+        message=message.content,
+        original=original_message.content,
+        persistent=persistent,
+    )
 
     return execution
 
@@ -117,7 +99,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     Execute the code corresponding to the 'code id' in the path.
     """
 
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     # Prevent execution issues if the execution resources are empty
     # TODO: Improve expiration process to avoid that kind of issues.
@@ -221,7 +203,7 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
     Execute code in response to an event.
     """
 
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
@@ -266,12 +248,14 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool: VmPool) -> VmExecution:
-    execution: Optional[VmExecution] = pool.get_running_vm(vm_hash=vm_hash)
+async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
+    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
+    else:
+        logger.info(f"{vm_hash} is already running")
 
     await execution.becomes_ready()
 
@@ -285,7 +269,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: Optional[PubSub], pool:
     return execution
 
 
-async def stop_persistent_vm(vm_hash: ItemHash, pool: VmPool) -> Optional[VmExecution]:
+async def stop_persistent_vm(vm_hash: ItemHash, pool: VmPool) -> VmExecution | None:
     logger.info(f"Stopping persistent VM {vm_hash}")
     execution = pool.get_running_vm(vm_hash)
 

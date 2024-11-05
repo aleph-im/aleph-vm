@@ -5,7 +5,6 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Optional
 
 from aleph_message.models import (
     Chain,
@@ -29,24 +28,26 @@ logger = logging.getLogger(__name__)
 
 
 class VmPool:
-    """Pool of VMs already started and used to decrease response time.
+    """Pool of existing VMs
+
+    For function VM we keep the VM a while after they  have run, so we can reuse them  and thus decrease response time.
     After running, a VM is saved for future reuse from the same function during a
     configurable duration.
-
-    The counter is used by the VMs to set their tap interface name and the corresponding
-    IPv4 subnet.
     """
 
-    counter: int  # Used to provide distinct ids to network interfaces
     executions: dict[ItemHash, VmExecution]
-    message_cache: dict[str, ExecutableMessage] = {}
-    network: Optional[Network]
-    snapshot_manager: Optional[SnapshotManager] = None
+    message_cache: dict[str, ExecutableMessage]
+    network: Network | None
+    snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
+    creation_lock: asyncio.Lock
 
-    def __init__(self):
-        self.counter = settings.START_ID_INDEX
+    def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
+        self.message_cache = {}
+
+        asyncio.set_event_loop(loop)
+        self.creation_lock = asyncio.Lock()
 
         self.network = (
             Network(
@@ -86,54 +87,59 @@ class VmPool:
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
         """Create a new Aleph Firecracker VM from an Aleph function message."""
-
-        # Check if an execution is already present for this VM, then return it.
-        # Do not `await` in this section.
-        current_execution = self.get_running_vm(vm_hash)
-        if current_execution:
-            return current_execution
-        else:
-            execution = VmExecution(
-                vm_hash=vm_hash,
-                message=message,
-                original=original,
-                snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=persistent,
-            )
-            self.executions[vm_hash] = execution
-
-        try:
-            await execution.prepare()
-            vm_id = self.get_unique_vm_id()
-
-            if self.network:
-                vm_type = VmType.from_message_content(message)
-                tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
-                await self.network.create_tap(vm_id, tap_interface)
+        async with self.creation_lock:
+            # Check if an execution is already present for this VM, then return it.
+            # Do not `await` in this section.
+            current_execution = self.get_running_vm(vm_hash)
+            if current_execution:
+                return current_execution
             else:
-                tap_interface = None
+                execution = VmExecution(
+                    vm_hash=vm_hash,
+                    message=message,
+                    original=original,
+                    snapshot_manager=self.snapshot_manager,
+                    systemd_manager=self.systemd_manager,
+                    persistent=persistent,
+                )
+                self.executions[vm_hash] = execution
 
-            execution.create(vm_id=vm_id, tap_interface=tap_interface)
-            await execution.start()
+            try:
+                await execution.prepare()
+                vm_id = self.get_unique_vm_id()
 
-            # Start VM and snapshots automatically
-            if execution.persistent:
-                self.systemd_manager.enable_and_start(execution.controller_service)
-                await execution.wait_for_init()
-                if execution.is_program and execution.vm:
-                    await execution.vm.load_configuration()
+                if self.network:
+                    vm_type = VmType.from_message_content(message)
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                    # If the network interface already exists, remove it and then re-create it.
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
+                    await self.network.create_tap(vm_id, tap_interface)
+                else:
+                    tap_interface = None
 
-            if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
-                await self.snapshot_manager.start_for(vm=execution.vm)
-        except Exception:
-            # ensure the VM is removed from the pool on creation error
-            self.forget_vm(vm_hash)
-            raise
+                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                await execution.start()
 
-        self._schedule_forget_on_stop(execution)
+                # Start VM and snapshots automatically
+                # If the execution is confidential, don't start it because we need to wait for the session certificate
+                # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
+                if execution.persistent and not execution.is_confidential:
+                    self.systemd_manager.enable_and_start(execution.controller_service)
+                    await execution.wait_for_init()
+                    if execution.is_program and execution.vm:
+                        await execution.vm.load_configuration()
 
-        return execution
+                if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
+                    await self.snapshot_manager.start_for(vm=execution.vm)
+            except Exception:
+                # ensure the VM is removed from the pool on creation error
+                self.forget_vm(vm_hash)
+                raise
+
+            self._schedule_forget_on_stop(execution)
+
+            return execution
 
     def get_unique_vm_id(self) -> int:
         """Get a unique identifier for the VM.
@@ -141,28 +147,15 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
-        _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
-        available_bits = int(network_range) - settings.IPV4_NETWORK_PREFIX_LENGTH
-        self.counter += 1
-        if self.counter < 2**available_bits:
-            # In common cases, use the counter itself as the vm_id. This makes it
-            # easier to debug.
-            return self.counter
-        else:
-            # The value of the counter is too high and some functions such as the
-            # IPv4 range dedicated to the VM do not support such high values.
-            #
-            # We therefore recycle vm_id values from executions that are not running
-            # anymore.
-            currently_used_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.is_running}
-            for i in range(settings.START_ID_INDEX, 255**2):
-                if i not in currently_used_vm_ids:
-                    return i
-            else:
-                msg = "No available value for vm_id."
-                raise ValueError(msg)
+        # Take the first id that is not already taken
+        currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
+        for i in range(settings.START_ID_INDEX, 255**2):
+            if i not in currently_used_vm_ids:
+                return i
+        msg = "No available value for vm_id."
+        raise ValueError(msg)
 
-    def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
@@ -171,7 +164,7 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if execution:
@@ -216,8 +209,8 @@ class VmPool:
         for saved_execution in saved_executions:
             vm_hash = ItemHash(saved_execution.vm_hash)
 
-            if vm_hash in self.executions:
-                # The execution is already loaded, skip it
+            if vm_hash in self.executions or not saved_execution.persistent:
+                # The execution is already loaded or isn't persistent, skip it
                 continue
 
             vm_id = saved_execution.vm_id

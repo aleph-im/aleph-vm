@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import Optional
 
 import aiohttp
 from aleph_message.models import ItemHash, PaymentType
@@ -13,6 +12,8 @@ from superfluid import CFA_V1, Web3FlowInfo
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.utils import to_normalized_address
+
+from .chain import ChainInfo, get_chain
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ async def fetch_balance_of_address(address: str) -> Decimal:
     """
 
     async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/{address}/balance"
+        url = f"{settings.API_SERVER}/api/v0/addresses/{address}/balance"
         resp = await session.get(url)
 
         # Consider the balance as null if the address is not found
@@ -53,12 +54,14 @@ async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
 
         resp_data = await resp.json()
         required_flow: float = resp_data["required_tokens"]
-        payment_type: Optional[str] = resp_data["payment_type"]
+        payment_type: str | None = resp_data["payment_type"]
 
         if payment_type is None:
-            raise ValueError("Payment type must be specified in the message")
+            msg = "Payment type must be specified in the message"
+            raise ValueError(msg)
         elif payment_type != PaymentType.superfluid:
-            raise ValueError(f"Payment type {payment_type} is not supported")
+            msg = f"Payment type {payment_type} is not supported"
+            raise ValueError(msg)
 
         return Decimal(required_flow)
 
@@ -73,10 +76,11 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
 
         resp_data = await resp.json()
         required_hold: float = resp_data["required_tokens"]
-        payment_type: Optional[str] = resp_data["payment_type"]
+        payment_type: str | None = resp_data["payment_type"]
 
         if payment_type not in (None, PaymentType.hold):
-            raise ValueError(f"Payment type {payment_type} is not supported")
+            msg = f"Payment type {payment_type} is not supported"
+            raise ValueError(msg)
 
         return Decimal(required_hold)
 
@@ -87,28 +91,39 @@ class InvalidAddressError(ValueError):
     pass
 
 
-async def get_stream(sender: str, receiver: str, chain) -> Decimal:
+class InvalidChainError(ValueError):
+    pass
+
+
+async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    chain_id = settings.PAYMENT_CHAIN_ID
-    superfluid_instance = CFA_V1(settings.PAYMENT_RPC_API, chain_id)
+    chain_info: ChainInfo = get_chain(chain=chain)
+    if not chain_info.active:
+        msg = f"Chain : {chain} is not active for superfluid"
+        raise InvalidChainError(msg)
+
+    superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)
 
     try:
-        super_token: HexAddress = to_normalized_address(settings.PAYMENT_SUPER_TOKEN)
+        super_token: HexAddress = to_normalized_address(chain_info.super_token)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid token address '{settings.PAYMENT_SUPER_TOKEN}' - {error.args}") from error
+        msg = f"Invalid token address '{chain_info.super_token}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     try:
         sender_address: HexAddress = to_normalized_address(sender)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid sender address '{sender}' - {error.args}") from error
+        msg = f"Invalid sender address '{sender}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     try:
         receiver_address: HexAddress = to_normalized_address(receiver)
     except ValueError as error:
-        raise InvalidAddressError(f"Invalid receiver address '{receiver}' - {error.args}") from error
+        msg = f"Invalid receiver address '{receiver}' - {error.args}"
+        raise InvalidAddressError(msg) from error
 
     # Run the network request in a background thread and wait for it to complete.
     loop = asyncio.get_event_loop()

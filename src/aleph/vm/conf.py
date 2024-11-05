@@ -9,14 +9,21 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType, Optional, Union
+from typing import Any, Literal, NewType
 
+from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseSettings, Field, HttpUrl
 from pydantic.env_settings import DotenvType, env_file_sentinel
 from pydantic.typing import StrPath
 
-from aleph.vm.utils import file_hashes_differ, is_command_available
+from aleph.vm.orchestrator.chain import STREAM_CHAINS
+from aleph.vm.utils import (
+    check_amd_sev_es_supported,
+    check_amd_sev_supported,
+    file_hashes_differ,
+    is_command_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +74,7 @@ def resolvectl_dns_servers(interface: str) -> Iterable[str]:
         yield server.strip()
 
 
-def resolvectl_dns_servers_ipv4(interface: str) -> Iterable[str]:
-    """
-    Use resolvectl to list available IPv4 DNS servers.
-    VMs only support IPv4 networking for now, we must exclude IPv6 DNS from their config.
-    """
-    for server in resolvectl_dns_servers(interface):
-        ip_addr = ipaddress.ip_address(server)
-        if isinstance(ip_addr, ipaddress.IPv4Address):
-            yield server
-
-
-def get_default_interface() -> Optional[str]:
+def get_default_interface() -> str | None:
     """Returns the default network interface"""
     with open("/proc/net/route") as f:
         for line in f.readlines():
@@ -95,7 +91,7 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         # Use a try-except approach since resolvectl can be present but disabled and raise the following
         # "Failed to get global data: Unit dbus-org.freedesktop.resolve1.service not found."
         try:
-            return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+            return list(resolvectl_dns_servers(interface=network_interface))
         except (FileNotFoundError, CalledProcessError) as error:
             if Path("/etc/resolv.conf").exists():
                 return list(etc_resolv_conf_dns_servers())
@@ -107,10 +103,11 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
         return list(etc_resolv_conf_dns_servers())
 
     elif dns_resolver == DnsResolver.resolvectl:
-        return list(resolvectl_dns_servers_ipv4(interface=network_interface))
+        return list(resolvectl_dns_servers(interface=network_interface))
 
     else:
-        assert False, "No DNS resolve defined, this should never happen."
+        msg = "No DNS resolve defined, this should never happen."
+        raise AssertionError(msg)
 
 
 class Settings(BaseSettings):
@@ -118,7 +115,7 @@ class Settings(BaseSettings):
     SUPERVISOR_PORT: int = 4020
 
     # Public domain name
-    DOMAIN_NAME: Optional[str] = Field(
+    DOMAIN_NAME: str = Field(
         default="localhost",
         description="Default public domain name",
     )
@@ -143,7 +140,7 @@ class Settings(BaseSettings):
 
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING = True
-    NETWORK_INTERFACE: Optional[str] = None
+    NETWORK_INTERFACE: str | None = None
     IPV4_ADDRESS_POOL = Field(
         default="172.16.0.0/12",
         description="IPv4 address range used to provide networks to VMs.",
@@ -172,11 +169,17 @@ class Settings(BaseSettings):
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
     )
 
-    DNS_RESOLUTION: Optional[DnsResolver] = DnsResolver.detect
-    DNS_NAMESERVERS: Optional[list[str]] = None
+    DNS_RESOLUTION: DnsResolver | None = Field(
+        default=DnsResolver.detect,
+        description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
+    )
+    DNS_NAMESERVERS: list[str] | None = None
+    DNS_NAMESERVERS_IPV4: list[str] | None
+    DNS_NAMESERVERS_IPV6: list[str] | None
 
     FIRECRACKER_PATH = Path("/opt/firecracker/firecracker")
     JAILER_PATH = Path("/opt/firecracker/jailer")
+    SEV_CTL_PATH = Path("/opt/sevctl")
     LINUX_PATH = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
@@ -218,22 +221,17 @@ class Settings(BaseSettings):
         description="Address of the account receiving payments",
     )
     # This address is the ALEPH SuperToken on SuperFluid Testnet
-    PAYMENT_SUPER_TOKEN: str = Field(
-        default="0xc0Fbc4967259786C743361a5885ef49380473dCF",  # Mainnet
-        # default="0x1290248e01ed2f9f863a9752a8aad396ef3a1b00",  # Testnet
-        description="Address of the ALEPH SuperToken on SuperFluid",
-    )
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
 
-    PAYMENT_RPC_API: HttpUrl = Field(
-        default="https://api.avax.network/ext/bc/C/rpc",
-        # default="https://api.avax-test.network/ext/bc/C/rpc",
-        description="Default to Avalanche Testnet RPC",
+    # Use to check PAYG payment
+    RPC_AVAX: HttpUrl = Field(
+        default=STREAM_CHAINS[Chain.AVAX].rpc,
+        description="RPC API Endpoint for AVAX chain",
     )
-    PAYMENT_CHAIN_ID: int = Field(
-        default=43114,  # Avalanche Mainnet
-        # default=43113,  # Avalanche Fuji Testnet
-        description="Avalanche chain ID",
+
+    RPC_BASE: HttpUrl = Field(
+        default=STREAM_CHAINS[Chain.BASE].rpc,
+        description="RPC API Endpoint for BASE chain",
     )
 
     PAYMENT_BUFFER: Decimal = Field(
@@ -242,7 +240,7 @@ class Settings(BaseSettings):
     )
 
     SNAPSHOT_FREQUENCY: int = Field(
-        default=60,
+        default=0,
         description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes. "
         "If set to zero, snapshots are disabled.",
     )
@@ -255,50 +253,63 @@ class Settings(BaseSettings):
     # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
 
-    ENABLE_QEMU_SUPPORT: bool = Field(default=False)
-    INSTANCE_DEFAULT_HYPERVISOR: Optional[HypervisorType] = Field(
+    ENABLE_QEMU_SUPPORT: bool = Field(default=True)
+    INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
         default=HypervisorType.firecracker,  # User Firecracker
         description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
     )
 
+    ENABLE_CONFIDENTIAL_COMPUTING: bool = Field(
+        default=False,
+        description="Enable Confidential Computing using AMD-SEV. It will test if the host is compatible "
+        "with SEV and SEV-ES",
+    )
+
+    CONFIDENTIAL_DIRECTORY: Path = Field(
+        None,
+        description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
+    )
+
+    CONFIDENTIAL_SESSION_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/sessions")
+
     # Tests on programs
 
-    FAKE_DATA_PROGRAM: Optional[Path] = None
+    FAKE_DATA_PROGRAM: Path | None = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
     FAKE_DATA_MESSAGE = Path(abspath(join(__file__, "../../../../examples/program_message_from_aleph.json")))
-    FAKE_DATA_DATA: Optional[Path] = Path(abspath(join(__file__, "../../../../examples/data/")))
+    FAKE_DATA_DATA: Path | None = Path(abspath(join(__file__, "../../../../examples/data/")))
     FAKE_DATA_RUNTIME = Path(abspath(join(__file__, "../../../../runtimes/aleph-debian-12-python/rootfs.squashfs")))
-    FAKE_DATA_VOLUME: Optional[Path] = Path(
-        abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs"))
-    )
+    FAKE_DATA_VOLUME: Path | None = Path(abspath(join(__file__, "../../../../examples/volumes/volume-venv.squashfs")))
 
     # Tests on instances
 
-    TEST_INSTANCE_ID: Optional[str] = Field(
+    TEST_INSTANCE_ID: str | None = Field(
         default=None,  # TODO: Use a valid item_hash here
         description="Identifier of the instance message used when testing the launch of an instance from the network",
     )
 
     USE_FAKE_INSTANCE_BASE = False
-    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../runtimes/instance-debian-rootfs/rootfs.ext4")))
+    FAKE_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/debian-12.btrfs")))
+    FAKE_QEMU_INSTANCE_BASE = Path(abspath(join(__file__, "../../../../runtimes/instance-rootfs/rootfs.img")))
     FAKE_INSTANCE_ID: str = Field(
         default="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
     FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
 
-    CHECK_FASTAPI_VM_ID = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
+    CHECK_FASTAPI_VM_ID = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
 
     # Developer options
 
-    SENTRY_DSN: Optional[str] = None
+    SENTRY_DSN: str | None = None
     SENTRY_TRACES_SAMPLE_RATE: float = Field(ge=0, le=1.0, default=0.1)
-    DEVELOPER_SSH_KEYS: Optional[list[str]] = []
+    DEVELOPER_SSH_KEYS: list[str] | None = []
     # Using an object here forces the value to come from Python code and not from an environment variable.
-    USE_DEVELOPER_SSH_KEYS: Union[Literal[False], object] = False
+    USE_DEVELOPER_SSH_KEYS: Literal[False] | object = False
 
     # Fields
     SENSITIVE_FIELDS: list[str] = Field(
@@ -317,6 +328,7 @@ class Settings(BaseSettings):
                 raise ValueError(msg)
 
     def check(self):
+        """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
@@ -340,11 +352,17 @@ class Settings(BaseSettings):
             assert self.FAKE_DATA_RUNTIME, "Local runtime .squashfs build not specified"
             assert self.FAKE_DATA_VOLUME, "Local data volume .squashfs not specified"
 
-            assert isdir(self.FAKE_DATA_PROGRAM), "Local fake program directory is missing"
-            assert isfile(self.FAKE_DATA_MESSAGE), "Local fake message is missing"
-            assert isdir(self.FAKE_DATA_DATA), "Local fake data directory is missing"
-            assert isfile(self.FAKE_DATA_RUNTIME), "Local runtime .squashfs build is missing"
-            assert isfile(self.FAKE_DATA_VOLUME), "Local data volume .squashfs is missing"
+            assert isdir(
+                self.FAKE_DATA_PROGRAM
+            ), f"Local fake program directory is missing, no directory '{self.FAKE_DATA_PROGRAM}'"
+            assert isfile(self.FAKE_DATA_MESSAGE), f"Local fake message '{self.FAKE_DATA_MESSAGE}' not found"
+            assert isdir(self.FAKE_DATA_DATA), f"Local fake data directory '{self.FAKE_DATA_DATA}' is missing"
+            assert isfile(
+                self.FAKE_DATA_RUNTIME
+            ), f"Local runtime '{self.FAKE_DATA_RUNTIME}' is missing, did you build it ?"
+            assert isfile(
+                self.FAKE_DATA_VOLUME
+            ), f"Local data volume '{self.FAKE_DATA_VOLUME}' is missing, did you build it ?"
 
         assert is_command_available("setfacl"), "Command `setfacl` not found, run `apt install acl`"
         if self.USE_NDP_PROXY:
@@ -355,14 +373,31 @@ class Settings(BaseSettings):
             "cloud-localds"
         ), "Command `cloud-localds` not found, run `apt install cloud-image-utils`"
 
-        if settings.ENABLE_QEMU_SUPPORT:
+        if self.ENABLE_QEMU_SUPPORT:
             # Qemu support
             assert is_command_available("qemu-img"), "Command `qemu-img` not found, run `apt install qemu-utils`"
             assert is_command_available(
                 "qemu-system-x86_64"
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
+        if self.ENABLE_CONFIDENTIAL_COMPUTING:
+            assert self.SEV_CTL_PATH.is_file(), f"File not found {self.SEV_CTL_PATH}"
+            assert check_amd_sev_supported(), "SEV feature isn't enabled, enable it in BIOS"
+            assert check_amd_sev_es_supported(), "SEV-ES feature isn't enabled, enable it in BIOS"
+            # Not available on the test machine yet
+            # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
+            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
+            "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
+
     def setup(self):
+        """Setup the environment defined by the settings. Call this method after loading the settings."""
+
+        # Update chain RPC
+        STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
+        STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
+
+        logger.info(STREAM_CHAINS)
+
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
         os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
@@ -384,6 +419,8 @@ class Settings(BaseSettings):
 
         os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
         os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
+        os.makedirs(self.CONFIDENTIAL_DIRECTORY, exist_ok=True)
+        os.makedirs(self.CONFIDENTIAL_SESSION_DIRECTORY, exist_ok=True)
 
         self.API_SERVER = self.API_SERVER.rstrip("/")
 
@@ -395,6 +432,18 @@ class Settings(BaseSettings):
                 dns_resolver=self.DNS_RESOLUTION,
                 network_interface=self.NETWORK_INTERFACE,
             )
+
+        if not self.DNS_NAMESERVERS_IPV4:
+            self.DNS_NAMESERVERS_IPV4 = []
+        if not self.DNS_NAMESERVERS_IPV6:
+            self.DNS_NAMESERVERS_IPV6 = []
+        if self.DNS_NAMESERVERS:
+            for server in self.DNS_NAMESERVERS:
+                ip_addr = ipaddress.ip_address(server)
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    self.DNS_NAMESERVERS_IPV4.append(server)
+                if isinstance(ip_addr, ipaddress.IPv6Address):
+                    self.DNS_NAMESERVERS_IPV6.append(server)
 
         if not settings.ENABLE_QEMU_SUPPORT:
             # If QEmu is not supported, ignore the setting and use Firecracker by default
@@ -413,14 +462,14 @@ class Settings(BaseSettings):
             else:
                 attributes[attr] = getattr(self, attr)
 
-        return "\n".join(f"{attribute:<27} = {value}" for attribute, value in attributes.items())
+        return "\n".join(f"{self.Config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
 
     def __init__(
         self,
-        _env_file: Optional[DotenvType] = env_file_sentinel,
-        _env_file_encoding: Optional[str] = None,
-        _env_nested_delimiter: Optional[str] = None,
-        _secrets_dir: Optional[StrPath] = None,
+        _env_file: DotenvType | None = env_file_sentinel,
+        _env_file_encoding: str | None = None,
+        _env_nested_delimiter: str | None = None,
+        _secrets_dir: StrPath | None = None,
         **values: Any,
     ) -> None:
         super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)
@@ -432,6 +481,8 @@ class Settings(BaseSettings):
             self.RUNTIME_CACHE = self.CACHE_ROOT / "runtime"
         if not self.DATA_CACHE:
             self.DATA_CACHE = self.CACHE_ROOT / "data"
+        if not self.CONFIDENTIAL_DIRECTORY:
+            self.CONFIDENTIAL_DIRECTORY = self.CACHE_ROOT / "confidential"
         if not self.JAILER_BASE_DIRECTORY:
             self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
         if not self.PERSISTENT_VOLUMES_DIR:
@@ -442,6 +493,8 @@ class Settings(BaseSettings):
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
         if not self.JAILER_BASE_DIR:
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
+        if not self.CONFIDENTIAL_SESSION_DIRECTORY:
+            self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
 
     class Config:
         env_prefix = "ALEPH_VM_"

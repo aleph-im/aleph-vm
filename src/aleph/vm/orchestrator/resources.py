@@ -1,7 +1,6 @@
 import math
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Optional
 
 import cpuinfo
 import psutil
@@ -11,6 +10,13 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.sevclient import SevClient
+from aleph.vm.utils import (
+    check_amd_sev_es_supported,
+    check_amd_sev_snp_supported,
+    check_amd_sev_supported,
+    cors_allow_all,
+)
 
 
 class Period(BaseModel):
@@ -86,12 +92,23 @@ def get_machine_properties() -> MachineProperties:
     cpu_info = cpuinfo.get_cpu_info()  # Slow
     return MachineProperties(
         cpu=CpuProperties(
-            architecture=cpu_info["raw_arch_string"],
-            vendor=cpu_info["vendor_id"],
+            architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
+            vendor=cpu_info.get("vendor_id", cpu_info.get("vendor_id_raw")),
+            features=list(
+                filter(
+                    None,
+                    (
+                        "sev" if check_amd_sev_supported() else None,
+                        "sev_es" if check_amd_sev_es_supported() else None,
+                        "sev_snp" if check_amd_sev_snp_supported() else None,
+                    ),
+                )
+            ),
         ),
     )
 
 
+@cors_allow_all
 async def about_system_usage(_: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -116,7 +133,20 @@ async def about_system_usage(_: web.Request):
         ),
         properties=get_machine_properties(),
     )
-    return web.json_response(text=usage.json(exclude_none=True), headers={"Access-Control-Allow-Origin:": "*"})
+
+    return web.json_response(text=usage.json(exclude_none=True))
+
+
+@cors_allow_all
+async def about_certificates(request: web.Request):
+    """Public endpoint to expose platform certificates for confidential computing."""
+
+    if not settings.ENABLE_CONFIDENTIAL_COMPUTING:
+        return web.HTTPBadRequest(reason="Confidential computing setting not enabled on that server")
+
+    sev_client: SevClient = request.app["sev_client"]
+
+    return web.FileResponse(await sev_client.get_certificates())
 
 
 class Allocation(BaseModel):
@@ -124,10 +154,10 @@ class Allocation(BaseModel):
     It contains the item_hashes of all persistent VMs, instances, on-demand VMs and jobs.
     """
 
-    persistent_vms: set[str] = Field(default_factory=set)
-    instances: set[str] = Field(default_factory=set)
-    on_demand_vms: Optional[set[str]] = None
-    jobs: Optional[set[str]] = None
+    persistent_vms: set[ItemHash] = Field(default_factory=set)
+    instances: set[ItemHash] = Field(default_factory=set)
+    on_demand_vms: set[ItemHash] | None = None
+    jobs: set[ItemHash] | None = None
 
 
 class VMNotification(BaseModel):

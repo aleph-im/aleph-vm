@@ -8,7 +8,7 @@ These are installable via
 
 This branch depends on the version 0.4.1 of `aleph-message` that add the `hypervisor` field. The easiest way is to install tha version using `pip install -e .`
 
-To create a local venv use the `--system-site-packages` option so it can acess nftables 
+To create a local venv use the `--system-site-packages` option so it can access nftables 
 
 ## To test launching a VM instance
 
@@ -107,8 +107,11 @@ import aiohttp
 def on_message(content):
     try:
         msg = json.loads(content)
-        fd = sys.stderr if msg["type"] == "stderr" else sys.stdout
-        print("<", msg["message"], file=fd, end="")
+        if msg.get('status'):
+            print(msg)
+        else:
+            fd = sys.stderr if msg["type"] == "stderr" else sys.stdout
+            print("<", msg["message"], file=fd, end="")
     except:
         print("unable to parse", content)
 
@@ -125,7 +128,6 @@ async def tail_websocket(url):
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     print("Error", msg)
-                    break
 
 
 vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"

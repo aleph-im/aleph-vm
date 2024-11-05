@@ -16,4 +16,4 @@ docker-publish:
 
 publish:
 	chmod +x ./src/run.sh
-	aleph program ./src "run.sh"
+	aleph program upload ./src "run.sh"

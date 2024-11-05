@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
 from subprocess import CalledProcessError
-from typing import Union
 
 import aiohttp
 from aleph_message.models import (
@@ -90,29 +89,38 @@ async def download_file(url: str, local_path: Path) -> None:
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
     tmp_path = Path(f"{local_path}.part")
 
-    # Ensure the file is not being downloaded by another task in parallel.
-    try:
-        tmp_path.touch(exist_ok=False)
-    except FileExistsError:
-        # Another task is already downloading the file
-        # Use `asyncio.timeout` manager after dropping support for Python 3.10
-        await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=300)
-
     logger.debug(f"Downloading {url} -> {tmp_path}")
-    download_attempts = 3
+    download_attempts = 10
     for attempt in range(download_attempts):
+        logger.debug(f"Download attempt {attempt + 1}/{download_attempts}...")
         try:
+            # Ensure the file is not being downloaded by another task in parallel.
+            tmp_path.touch(exist_ok=False)
+
             await download_file_in_chunks(url, tmp_path)
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
+            return
+        except FileExistsError as file_exists_error:
+            # Another task is already downloading the file.
+            # Use `asyncio.timeout` manager after dropping support for Python 3.10
+            logger.debug(f"File already being downloaded by another task: {local_path}")
+            try:
+                await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=30)
+            except TimeoutError as error:
+                if attempt < (download_attempts - 1):
+                    logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
+                    continue
+                else:
+                    raise error from file_exists_error
         except (
             aiohttp.ClientConnectionError,
             aiohttp.ClientResponseError,
             aiohttp.ClientPayloadError,
         ) as error:
             if attempt < (download_attempts - 1):
-                logger.warning(f"Download failed, retrying attempt {attempt + 1}/3...")
-                continue
+                logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
+                # continue  #  continue inside try/finally block is unimplemented in `mypyc`
             else:
                 raise error
         finally:
@@ -133,12 +141,13 @@ async def get_latest_amend(item_hash: str) -> str:
             return result or item_hash
 
 
-async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
+async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
     if ref == settings.FAKE_INSTANCE_ID:
         logger.debug("Using the fake instance message since the ref matches")
         cache_path = settings.FAKE_INSTANCE_MESSAGE
     elif settings.FAKE_DATA_PROGRAM:
         cache_path = settings.FAKE_DATA_MESSAGE
+        logger.debug("Using the fake data message")
     else:
         cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
         url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
@@ -152,7 +161,7 @@ async def get_message(ref: str) -> Union[ProgramMessage, InstanceMessage]:
             msg = fix_message_validation(msg)
 
         result = parse_message(message_dict=msg)
-        assert isinstance(result, (InstanceMessage, ProgramMessage)), "Parsed message is not executable"
+        assert isinstance(result, InstanceMessage | ProgramMessage), "Parsed message is not executable"
         return result
 
 
@@ -246,7 +255,7 @@ async def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-async def create_volume_file(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_volume_file(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
     path = settings.PERSISTENT_VOLUMES_DIR / namespace / f"{volume_name}.btrfs"
@@ -290,7 +299,7 @@ async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> No
     await run_in_subprocess(["umount", str(mount_path)])
 
 
-async def create_devmapper(volume: Union[PersistentVolume, RootfsVolume], namespace: str) -> Path:
+async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2
     """
@@ -360,7 +369,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         return await get_existing_file(ref)
-    elif isinstance(volume, (PersistentVolume, RootfsVolume)):
+    elif isinstance(volume, PersistentVolume | RootfsVolume):
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
         if volume.persistence != VolumePersistence.host:
             msg = "Only 'host' persistence is supported"

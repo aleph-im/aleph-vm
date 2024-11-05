@@ -16,14 +16,20 @@ from aleph_message.models import (
     ProgramMessage,
     parse_message,
 )
+from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from .messages import load_updated_message
-from .payment import compute_required_flow, get_stream
+from .messages import get_message_status, load_updated_message
+from .payment import (
+    compute_required_balance,
+    compute_required_flow,
+    fetch_balance_of_address,
+    get_stream,
+)
 from .pubsub import PubSub
 from .reactor import Reactor
 
@@ -117,12 +123,12 @@ async def start_watch_for_messages_task(app: web.Application):
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
-    sample_message, _ = await load_updated_message(
-        ref=ItemHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
-    )
-    if isinstance(sample_message, ProgramMessage):
-        assert sample_message.content.on.message, sample_message
-        reactor.register(sample_message)
+    # sample_message, _ = await load_updated_message(
+    #     ref=ItemHash("cad11970efe9b7478300fd04d7cc91c646ca0a792b9cc718650f86e1ccfac73e")
+    # )
+    # if isinstance(sample_message, ProgramMessage):
+    #     assert sample_message.content.on.message, sample_message
+    #     reactor.register(sample_message)
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
@@ -143,20 +149,29 @@ async def monitor_payments(app: web.Application):
     while True:
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
 
+        # Check if the executions continues existing or are forgotten before checking the payment
+        for vm_hash in list(pool.executions.keys()):
+            message_status = await get_message_status(vm_hash)
+            if message_status != MessageStatus.PROCESSED:
+                logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
+                await pool.stop_vm(vm_hash)
+                pool.forget_vm(vm_hash)
+
         # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-        # for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
-        #     for chain, executions in chains.items():
-        #         balance = await fetch_balance_of_address(sender)
-        #
-        #         # Stop executions until the required balance is reached
-        #         required_balance = await compute_required_balance(executions)
-        #         logger.debug(f"Required balance for Sender {sender} executions: {required_balance}")
-        #         # Stop executions until the required balance is reached
-        #         while balance < (required_balance + settings.PAYMENT_BUFFER):
-        #             last_execution = executions.pop(-1)
-        #             logger.debug(f"Stopping {last_execution} due to insufficient balance")
-        #             await pool.stop_vm(last_execution.vm_hash)
-        #             required_balance = await compute_required_balance(executions)
+        for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
+            for chain, executions in chains.items():
+                executions = [execution for execution in executions if execution.is_confidential]
+                balance = await fetch_balance_of_address(sender)
+
+                # Stop executions until the required balance is reached
+                required_balance = await compute_required_balance(executions)
+                logger.debug(f"Required balance for Sender {sender} executions: {required_balance}")
+                # Stop executions until the required balance is reached
+                while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
+                    last_execution = executions.pop(-1)
+                    logger.debug(f"Stopping {last_execution} due to insufficient balance")
+                    await pool.stop_vm(last_execution.vm_hash)
+                    required_balance = await compute_required_balance(executions)
 
         # Check if the balance held in the wallet is sufficient stream tier resources
         for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
@@ -165,10 +180,11 @@ async def monitor_payments(app: web.Application):
                 logger.debug(
                     f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
                 )
+
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
                 # Stop executions until the required stream is reached
-                while stream < (required_stream + settings.PAYMENT_BUFFER):
+                while (stream + settings.PAYMENT_BUFFER) < required_stream:
                     try:
                         last_execution = executions.pop(-1)
                     except IndexError:  # Empty list

@@ -1,6 +1,5 @@
 import binascii
 import logging
-from collections.abc import Awaitable
 from decimal import Decimal
 from hashlib import sha256
 from json import JSONDecodeError
@@ -12,9 +11,9 @@ from typing import Optional
 import aiodns
 import aiohttp
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPNotFound
+from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash, MessageType
+from aleph_message.models import ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -24,11 +23,13 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.orchestrator import status
+from aleph.vm.orchestrator import payment, status
+from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
+    InvalidChainError,
     fetch_execution_flow_price,
     get_stream,
 )
@@ -57,7 +58,7 @@ from packaging.version import InvalidVersion, Version
 logger = logging.getLogger(__name__)
 
 
-def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
+async def run_code_from_path(request: web.Request) -> web.Response:
     """Allow running an Aleph VM function from a URL path
 
     The path is expected to follow the scheme defined in `app.add_routes` below,
@@ -66,9 +67,15 @@ def run_code_from_path(request: web.Request) -> Awaitable[web.Response]:
     path = request.match_info["suffix"]
     path = path if path.startswith("/") else f"/{path}"
 
-    message_ref = ItemHash(request.match_info["ref"])
+    try:
+        message_ref = ItemHash(request.match_info["ref"])
+    except UnknownHashError as e:
+        raise HTTPBadRequest(
+            reason="Invalid message reference", text=f"Invalid message reference: {request.match_info['ref']}"
+        ) from e
+
     pool: VmPool = request.app["vm_pool"]
-    return run_code_on_request(message_ref, path, pool, request)
+    return await run_code_on_request(message_ref, path, pool, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -99,8 +106,10 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             try:
                 message_ref = ItemHash(await get_ref_from_dns(domain=f"_aleph-id.{request.host}"))
                 logger.debug(f"Using DNS TXT record to obtain '{message_ref}'")
-            except aiodns.error.DNSError as error:
-                raise HTTPNotFound(reason="Invalid message reference") from error
+            except aiodns.error.DNSError:
+                return HTTPNotFound(reason="Invalid message reference")
+            except UnknownHashError:
+                return HTTPNotFound(reason="Invalid message reference")
 
     pool = request.app["vm_pool"]
     return await run_code_on_request(message_ref, path, pool, request)
@@ -183,7 +192,7 @@ async def index(request: web.Request):
 
 
 @cors_allow_all
-async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] = None):
+async def status_check_fastapi(request: web.Request, vm_id: ItemHash | None = None):
     """Check that the FastAPI diagnostic VM runs correctly"""
 
     # Retro-compatibility mode ignores some of the newer checks. It is used to check the status of legacy VMs.
@@ -200,6 +209,9 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
                 "index": await status.check_index(session, fastapi_vm_id),
                 "environ": await status.check_environ(session, fastapi_vm_id),
                 "messages": await status.check_messages(session, fastapi_vm_id),
+                # Using the remote account currently causes issues
+                # "post_a_message": await status.check_post_a_message(session, fastapi_vm_id),
+                # "sign_a_message": await status.check_sign_a_message(session, fastapi_vm_id),
                 "dns": await status.check_dns(session, fastapi_vm_id),
                 "ipv4": await status.check_ipv4(session, fastapi_vm_id),
                 "internet": await status.check_internet(session, fastapi_vm_id),
@@ -210,18 +222,15 @@ async def status_check_fastapi(request: web.Request, vm_id: Optional[ItemHash] =
             if not retro_compatibility:
                 # These fields were added in the runtime running Debian 12.
                 result = result | {
+                    "get_a_message": await status.check_get_a_message(session, fastapi_vm_id),
                     "lifespan": await status.check_lifespan(session, fastapi_vm_id),
                     # IPv6 requires extra work from node operators and is not required yet.
                     # "ipv6": await status.check_ipv6(session),
                 }
 
-            return web.json_response(
-                result, status=200 if all(result.values()) else 503, headers={"Access-Control-Allow-Origin": "*"}
-            )
+            return web.json_response(result, status=200 if all(result.values()) else 503)
     except aiohttp.ServerDisconnectedError as error:
-        return web.json_response(
-            {"error": f"Server disconnected: {error}"}, status=503, headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return web.json_response({"error": f"Server disconnected: {error}"}, status=503)
 
 
 @cors_allow_all
@@ -247,7 +256,7 @@ async def status_check_host(request: web.Request):
         },
     }
     result_status = 200 if all(result["ipv4"].values()) and all(result["ipv6"].values()) else 503
-    return web.json_response(result, status=result_status, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result, status=result_status)
 
 
 @cors_allow_all
@@ -261,13 +270,13 @@ async def status_check_ipv6(request: web.Request):
             vm_ipv6 = False
 
     result = {"host": await check_host_egress_ipv6(), "vm": vm_ipv6}
-    return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(result)
 
 
 @cors_allow_all
 async def status_check_version(request: web.Request):
     """Check if the software is running a version equal or newer than the given one"""
-    reference_str: Optional[str] = request.query.get("reference")
+    reference_str: str | None = request.query.get("reference")
     if not reference_str:
         raise web.HTTPBadRequest(text="Query field '?reference=` must be specified")
     try:
@@ -284,7 +293,6 @@ async def status_check_version(request: web.Request):
         return web.Response(
             status=200,
             text=f"Up-to-date: version {current} >= {reference}",
-            headers={"Access-Control-Allow-Origin": "*"},
         )
     else:
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
@@ -293,6 +301,11 @@ async def status_check_version(request: web.Request):
 @cors_allow_all
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
+
+    available_payments = {
+        str(chain_name): chain_info for chain_name, chain_info in STREAM_CHAINS.items() if chain_info.active
+    }
+
     return web.json_response(
         {
             "DOMAIN_NAME": settings.DOMAIN_NAME,
@@ -323,12 +336,16 @@ async def status_public_config(request: web.Request):
             },
             "payment": {
                 "PAYMENT_RECEIVER_ADDRESS": settings.PAYMENT_RECEIVER_ADDRESS,
-                "PAYMENT_SUPER_TOKEN": settings.PAYMENT_SUPER_TOKEN,
-                "PAYMENT_CHAIN_ID": settings.PAYMENT_CHAIN_ID,
+                "AVAILABLE_PAYMENTS": available_payments,
+                "PAYMENT_MONITOR_INTERVAL": settings.PAYMENT_MONITOR_INTERVAL,
+            },
+            "computing": {
+                "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
+                "INSTANCE_DEFAULT_HYPERVISOR": settings.INSTANCE_DEFAULT_HYPERVISOR,
+                "ENABLE_CONFIDENTIAL_COMPUTING": settings.ENABLE_CONFIDENTIAL_COMPUTING,
             },
         },
         dumps=dumps_for_json,
-        headers={"Access-Control-Allow-Origin": "*"},
     )
 
 
@@ -344,6 +361,12 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 
 async def update_allocations(request: web.Request):
+    """Main entry for the start of persistence VM and instance, called by the Scheduler,
+
+
+    auth via the SETTINGS.ALLOCATION_TOKEN_HASH  sent in header X-Auth-Signature.
+    Receive a list of vm and instance that should be present and then match that state by stopping and launching VMs
+    """
     if not authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
@@ -351,7 +374,7 @@ async def update_allocations(request: web.Request):
         data = await request.json()
         allocation = Allocation.parse_obj(data)
     except ValidationError as error:
-        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+        return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
@@ -434,12 +457,10 @@ async def notify_allocation(request: web.Request):
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
-    except JSONDecodeError as error:
-        raise web.HTTPBadRequest(reason="Body is not valid JSON") from error
+    except JSONDecodeError:
+        return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
-        raise web.json_response(
-            data=error.json(), status=web.HTTPBadRequest.status_code, headers={"Access-Control-Allow-Origin": "*"}
-        ) from error
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
@@ -447,37 +468,58 @@ async def notify_allocation(request: web.Request):
     item_hash: ItemHash = vm_notification.instance
     message = await try_get_message(item_hash)
     if message.type != MessageType.instance:
-        raise web.HTTPBadRequest(reason="Message is not an instance")
+        return web.HTTPBadRequest(reason="Message is not an instance")
 
-    if not message.content.payment:
-        raise web.HTTPBadRequest(reason="Message does not have payment information")
+    payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
-    if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
-        raise web.HTTPBadRequest(reason="Message is not for this instance")
+    is_confidential = message.content.environment.trusted_execution is not None
 
-    # Check that there is a payment stream for this instance
-    try:
-        active_flow: Decimal = await get_stream(
-            sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
-        )
-    except InvalidAddressError as error:
-        logger.warning(f"Invalid address {error}", exc_info=True)
-        raise web.HTTPBadRequest(reason=f"Invalid address {error}") from error
+    if payment_type == PaymentType.hold and is_confidential:
+        # At the moment we will allow hold for PAYG
+        logger.debug("Confidential instance not using PAYG")
+        user_balance = await payment.fetch_balance_of_address(message.sender)
+        hold_price = await payment.fetch_execution_hold_price(item_hash)
+        logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
+        if hold_price > user_balance:
+            return web.HTTPPaymentRequired(
+                reason="Insufficient balance",
+                text="Insufficient balance for this instance\n\n"
+                f"Required: {hold_price} token \n"
+                f"Current user balance: {user_balance}",
+            )
+    elif payment_type == PaymentType.superfluid:
+        # Payment via PAYG
+        if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
+            return web.HTTPBadRequest(reason="Message is not for this instance")
 
-    if not active_flow:
-        raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
+        # Check that there is a payment stream for this instance
+        try:
+            active_flow: Decimal = await get_stream(
+                sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
+            )
+        except InvalidAddressError as error:
+            logger.warning(f"Invalid address {error}", exc_info=True)
+            return web.HTTPBadRequest(reason=f"Invalid address {error}")
+        except InvalidChainError as error:
+            logger.warning(f"Invalid chain {error}", exc_info=True)
+            return web.HTTPBadRequest(reason=f"Invalid Chain {error}")
 
-    required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        if not active_flow:
+            raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
-    if active_flow < required_flow:
-        active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-        required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-        raise web.HTTPPaymentRequired(
-            reason="Insufficient payment stream",
-            text="Insufficient payment stream for this instance\n\n"
-            f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
-            f"Present: {active_flow_per_month} / month (flow = {active_flow})",
-        )
+        required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+
+        if active_flow < required_flow:
+            active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+            required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            return web.HTTPPaymentRequired(
+                reason="Insufficient payment stream",
+                text="Insufficient payment stream for this instance\n\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Present: {active_flow_per_month} / month (flow = {active_flow})",
+            )
+    else:
+        return web.HTTPBadRequest(reason="Invalid payment method")
 
     # Exceptions that can be raised when starting a VM:
     vm_creation_exceptions = (
@@ -491,6 +533,7 @@ async def notify_allocation(request: web.Request):
 
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
+        logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
         await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
     except vm_creation_exceptions as error:
