@@ -11,7 +11,6 @@ import pydantic
 from aiohttp import web
 from aleph_message.models import (
     AlephMessage,
-    ItemHash,
     PaymentType,
     ProgramMessage,
     parse_message,
@@ -23,7 +22,7 @@ from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
-from .messages import get_message_status, load_updated_message
+from .messages import get_message_status
 from .payment import (
     compute_required_balance,
     compute_required_flow,

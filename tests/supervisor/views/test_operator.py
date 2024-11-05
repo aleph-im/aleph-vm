@@ -9,9 +9,10 @@ from unittest.mock import MagicMock
 import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient
-from aleph_message.models import ItemHash
+from aleph_message.models import ItemHash, ProgramMessage
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.storage import get_message
@@ -529,3 +530,110 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
 
     await websocket.close()
     assert websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
+    mock_address = "0x40684b43B88356F62DCc56017547B6A7AC68780B"
+    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=mock_address,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.metrics.get_last_record_for_vm",
+        return_value=ExecutionRecord(
+            message="""{
+  "address": "0x40684b43B88356F62DCc56017547B6A7AC68780B",
+  "time": 1720816744.639107,
+  "allow_amend": false,
+  "metadata": null,
+  "authorized_keys": null,
+  "variables": null,
+  "environment": {
+    "reproducible": false,
+    "internet": true,
+    "aleph_api": true,
+    "shared_cache": false
+  },
+  "resources": {
+    "vcpus": 1,
+    "memory": 1024,
+    "seconds": 300,
+    "published_ports": null
+  },
+  "payment": null,
+  "requirements": null,
+  "volumes": [
+    {
+      "comment": null,
+      "mount": "/opt/packages",
+      "ref": "7338478721e2e966da6395dbfa37dab7b017b48da55b1be22d4eccf3487b836c",
+      "use_latest": true
+    }
+  ],
+  "replaces": null,
+  "type": "vm-function",
+  "code": {
+    "encoding": "squashfs",
+    "entrypoint": "main:app",
+    "ref": "c4253bf514d2e0a271456c9023c4b3f13f324e53c176e9ec29b98b5972b02bc7",
+    "interface": null,
+    "args": null,
+    "use_latest": true
+  },
+  "runtime": {
+    "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+    "use_latest": true,
+    "comment": ""
+  },
+  "data": null,
+  "export": null,
+  "on": {
+    "http": true,
+    "message": null,
+    "persistent": false
+  }
+}"""
+        ),
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.get_past_vm_logs",
+        return_value=[
+            EntryDict(
+                SYSLOG_IDENTIFIER=f"vm-{mock_hash}-stdout",
+                MESSAGE="logline1",
+                __REALTIME_TIMESTAMP=datetime.datetime(2020, 10, 12, 1, 2),
+            ),
+            EntryDict(
+                SYSLOG_IDENTIFIER=f"vm-{mock_hash}-stderr",
+                MESSAGE="logline2",
+                __REALTIME_TIMESTAMP=datetime.datetime(2020, 10, 12, 1, 3),
+            ),
+        ],
+    )
+
+    app = setup_webapp()
+    pool = mocker.MagicMock()
+    app["vm_pool"] = pool
+    app["pubsub"] = mocker.MagicMock()
+    client = await aiohttp_client(app)
+    response = await client.get(
+        f"/control/machine/{mock_hash}/logs.json",
+    )
+
+    assert response.status == 200
+    assert await response.json() == [
+        {
+            "MESSAGE": "logline1",
+            "SYSLOG_IDENTIFIER": "vm-fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_-stdout",
+            "__REALTIME_TIMESTAMP": "2020-10-12 01:02:00",
+            "file": "stdout",
+        },
+        {
+            "MESSAGE": "logline2",
+            "SYSLOG_IDENTIFIER": "vm-fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_-stderr",
+            "__REALTIME_TIMESTAMP": "2020-10-12 01:03:00",
+            "file": "stderr",
+        },
+    ]
