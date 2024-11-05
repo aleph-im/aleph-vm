@@ -2,7 +2,7 @@
 import os
 from unittest import mock
 
-from aleph.vm.conf import resolvectl_dns_servers, resolvectl_dns_servers_ipv4
+from aleph.vm.conf import resolvectl_dns_servers
 
 os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
 
