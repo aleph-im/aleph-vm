@@ -6,6 +6,7 @@ import os.path
 import shutil
 import string
 import traceback
+import typing
 from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
@@ -93,6 +94,8 @@ class MicroVM:
     mounted_rootfs: Path | None = None
     _unix_socket: Server | None = None
     enable_log: bool
+    journal_stdout: typing.IO | None
+    journal_stderr: typing.IO | None
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
@@ -219,19 +222,19 @@ class MicroVM:
             str(config_path),
         )
         if self.enable_log:
-            journal_stdout = journal.stream(self._journal_stdout_name)
-            journal_stderr = journal.stream(self._journal_stderr_name)
+            self.journal_stdout = journal.stream(self._journal_stdout_name)
+            self.journal_stderr = journal.stream(self._journal_stderr_name)
         else:
-            journal_stdout = asyncio.subprocess.DEVNULL
-            journal_stderr = asyncio.subprocess.DEVNULL
+            self.journal_stdout = asyncio.subprocess.DEVNULL
+            self.journal_stderr = asyncio.subprocess.DEVNULL
 
         logger.debug(" ".join(options))
 
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=journal_stdout,
-            stderr=journal_stderr,
+            stdout=self.journal_stdout,
+            stderr=self.journal_stderr,
         )
         return self.proc
 
@@ -252,11 +255,11 @@ class MicroVM:
 
         self.config_file_path = config_path
         if self.enable_log:
-            journal_stdout = journal.stream(self._journal_stdout_name)
-            journal_stderr = journal.stream(self._journal_stderr_name)
+            self.journal_stdout = journal.stream(self._journal_stdout_name)
+            self.journal_stderr = journal.stream(self._journal_stderr_name)
         else:
-            journal_stdout = asyncio.subprocess.DEVNULL
-            journal_stderr = asyncio.subprocess.DEVNULL
+            self.journal_stdout = asyncio.subprocess.DEVNULL
+            self.journal_stderr = asyncio.subprocess.DEVNULL
 
         options = (
             str(self.jailer_bin_path),
@@ -280,8 +283,8 @@ class MicroVM:
         self.proc = await asyncio.create_subprocess_exec(
             *options,
             stdin=asyncio.subprocess.PIPE,
-            stdout=journal_stdout,
-            stderr=journal_stderr,
+            stdout=self.journal_stdout,
+            stderr=self.journal_stderr,
         )
         return self.proc
 
@@ -479,6 +482,11 @@ class MicroVM:
             self.stdout_task.cancel()
         if self.stderr_task:
             self.stderr_task.cancel()
+
+        if self.journal_stdout != asyncio.subprocess.DEVNULL:
+            self.journal_stdout.close()
+        if self.journal_stderr != asyncio.subprocess.DEVNULL:
+            self.journal_stderr.close()
 
         # Clean mounted block devices
         if self.mounted_rootfs:

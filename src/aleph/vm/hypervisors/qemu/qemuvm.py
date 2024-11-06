@@ -1,4 +1,5 @@
 import asyncio
+import typing
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,8 @@ class QemuVM:
     interface_name: str
     qemu_process: Process | None = None
     host_volumes: list[HostVolume]
+    journal_stdout: typing.IO | None
+    journal_stderr: typing.IO | None
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -149,3 +152,8 @@ class QemuVM:
     async def stop(self):
         """Stop the VM."""
         self.send_shutdown_message()
+
+        if self.journal_stdout != asyncio.subprocess.DEVNULL:
+            self.journal_stdout.close()
+        if self.journal_stderr != asyncio.subprocess.DEVNULL:
+            self.journal_stderr.close()
