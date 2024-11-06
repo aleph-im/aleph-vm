@@ -150,9 +150,11 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
 
             # The Diagnostics VM checks for the proper handling of exceptions.
             # This fills the logs with noisy stack traces, so we ignore this specific error.
-            ignored_error = 'raise CustomError("Whoops")'
+            ignored_errors = ['raise CustomError("Whoops")', "main.CustomError: Whoops"]
 
-            if settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS and ignored_error in result["traceback"]:
+            if settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS and any(
+                ignored_error in result["traceback"] for ignored_error in ignored_errors
+            ):
                 logger.debug('Ignored traceback from CustomError("Whoops")')
             else:
                 logger.warning(result["traceback"])
