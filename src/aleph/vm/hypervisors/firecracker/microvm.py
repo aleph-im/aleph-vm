@@ -7,6 +7,7 @@ import shutil
 import string
 import traceback
 import typing
+from typing import BinaryIO
 from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
@@ -94,8 +95,8 @@ class MicroVM:
     mounted_rootfs: Path | None = None
     _unix_socket: Server | None = None
     enable_log: bool
-    journal_stdout: typing.IO | None
-    journal_stderr: typing.IO | None
+    journal_stdout: BinaryIO | int | None
+    journal_stderr: BinaryIO | int | None
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
@@ -483,9 +484,17 @@ class MicroVM:
         if self.stderr_task:
             self.stderr_task.cancel()
 
-        if self.journal_stdout != asyncio.subprocess.DEVNULL:
+        if (
+            self.journal_stdout
+            and self.journal_stdout != asyncio.subprocess.DEVNULL
+            and hasattr(self.journal_stdout, "close")
+        ):
             self.journal_stdout.close()
-        if self.journal_stderr != asyncio.subprocess.DEVNULL:
+        if (
+            self.journal_stderr
+            and self.journal_stderr != asyncio.subprocess.DEVNULL
+            and hasattr(self.journal_stderr, "close")
+        ):
             self.journal_stderr.close()
 
         # Clean mounted block devices
