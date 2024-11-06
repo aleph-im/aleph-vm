@@ -6,8 +6,6 @@ import os.path
 import shutil
 import string
 import traceback
-import typing
-from typing import BinaryIO
 from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
@@ -15,7 +13,7 @@ from os import getuid
 from pathlib import Path
 from pwd import getpwnam
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, BinaryIO
 
 import msgpack
 from aleph_message.models import ItemHash

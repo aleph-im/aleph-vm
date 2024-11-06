@@ -1,10 +1,8 @@
 import asyncio
-import typing
-from typing import BinaryIO
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 import qmp
 from systemd import journal
