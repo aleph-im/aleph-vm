@@ -93,8 +93,8 @@ class MicroVM:
     mounted_rootfs: Path | None = None
     _unix_socket: Server | None = None
     enable_log: bool
-    journal_stdout: BinaryIO | int | None
-    journal_stderr: BinaryIO | int | None
+    journal_stdout: BinaryIO | int | None = None
+    journal_stderr: BinaryIO | int | None = None
 
     def __repr__(self):
         return f"<MicroVM {self.vm_id}>"
