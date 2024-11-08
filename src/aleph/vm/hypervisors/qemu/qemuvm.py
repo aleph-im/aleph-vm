@@ -2,7 +2,7 @@ import asyncio
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 import qmp
 from systemd import journal
@@ -28,6 +28,8 @@ class QemuVM:
     interface_name: str
     qemu_process: Process | None = None
     host_volumes: list[HostVolume]
+    journal_stdout: TextIO | None
+    journal_stderr: TextIO | None
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -72,8 +74,8 @@ class QemuVM:
         #  qemu-system-x86_64 -enable-kvm -m 2048 -net nic,model=virtio
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
 
-        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
-        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
+        self.journal_stdout: BinaryIO = journal.stream(self._journal_stdout_name)
+        self.journal_stderr: BinaryIO = journal.stream(self._journal_stderr_name)
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
         args = [
@@ -120,8 +122,8 @@ class QemuVM:
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=journal_stdout,
-            stderr=journal_stderr,
+            stdout=self.journal_stdout,
+            stderr=self.journal_stderr,
         )
 
         print(
@@ -149,3 +151,8 @@ class QemuVM:
     async def stop(self):
         """Stop the VM."""
         self.send_shutdown_message()
+
+        if self.journal_stdout and self.journal_stdout != asyncio.subprocess.DEVNULL:
+            self.journal_stdout.close()
+        if self.journal_stderr and self.journal_stderr != asyncio.subprocess.DEVNULL:
+            self.journal_stderr.close()
