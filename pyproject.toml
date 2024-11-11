@@ -47,6 +47,7 @@ dependencies = [
   "packaging==23.2",
   "psutil==5.9.5",
   "py-cpuinfo==9",
+  "pydantic>=2",
   "pydantic-settings",
   "pyroute2==0.7.12",
   "python-cpuid==0.1",
@@ -120,8 +121,9 @@ dependencies = [
   "mypy==1.8.0",
   "ruff==0.4.6",
   "isort==5.13.2",
-  "yamlfix==1.16.1",
+  "yamlfix==1.17.0",
   "pyproject-fmt==2.2.1",
+  "pydantic>=2",
 ]
 [tool.hatch.envs.linting.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
