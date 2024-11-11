@@ -16,6 +16,7 @@ from aleph_message.models import (
     parse_message,
 )
 from aleph_message.status import MessageStatus
+from pydantic import ValidationError
 from yarl import URL
 
 from aleph.vm.conf import settings
@@ -73,10 +74,10 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
 
                     try:
                         yield parse_message(data)
-                    except pydantic.error_wrappers.ValidationError as error:
+                    except pydantic.ValidationError as error:
                         item_hash = data.get("item_hash", "ITEM_HASH_NOT_FOUND")
                         logger.warning(
-                            f"Invalid Aleph message: {item_hash} \n  {error.model_dump_json()}\n  {error.raw_errors}",
+                            f"Invalid Aleph message: {item_hash} \n  {error.errors}",
                             exc_info=False,
                         )
                         continue
