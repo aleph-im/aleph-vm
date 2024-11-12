@@ -5,6 +5,8 @@ See /doc/operator_auth.md for the explanation of how the operator authentication
 Can be enabled on an endpoint using the @require_jwk_authentication decorator
 """
 
+from __future__ import annotations
+
 # Keep datetime import as is as it allow patching in test
 import datetime
 import functools
@@ -22,7 +24,13 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
@@ -103,22 +111,19 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @model_validator(mode="after")
-    @classmethod
-    def check_expiry(cls, values) -> dict[str, bytes]:
+    def check_expiry(values) -> SignedPubKeyHeader:
         """Check that the token has not expired"""
-        payload: bytes = values.payload
+        payload = values.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
         if not is_token_still_valid(content.expires):
-            msg = "Token expired"
-            raise ValueError(msg)
+            raise ValueError("Token expired")
         return values
 
     @model_validator(mode="after")
-    @classmethod
-    def check_signature(cls, values) -> dict[str, bytes]:
+    def check_signature(values) -> SignedPubKeyHeader:
         """Check that the signature is valid"""
-        signature: list = values.signature
-        payload: bytes = values.payload
+        signature = values.signature
+        payload = values.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
         check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
         return values
