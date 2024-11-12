@@ -24,8 +24,7 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import (BaseModel, ValidationError, ValidationInfo,
-                      field_validator, model_validator)
+from pydantic import BaseModel, ValidationError, ValidationInfo, field_validator, model_validator
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings
@@ -122,7 +121,7 @@ class SignedPubKeyHeader(BaseModel):
         content = SignedPubKeyPayload.model_validate_json(payload)
         check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
         return values
-    
+
     @property
     def content(self) -> SignedPubKeyPayload:
         """Return the content of the header"""
