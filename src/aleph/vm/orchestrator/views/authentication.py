@@ -5,6 +5,8 @@ See /doc/operator_auth.md for the explanation of how the operator authentication
 Can be enabled on an endpoint using the @require_jwk_authentication decorator
 """
 
+from __future__ import annotations
+
 # Keep datetime import as is as it allow patching in test
 import datetime
 import functools
@@ -104,7 +106,7 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @model_validator(mode="after")
-    def check_expiry(values) -> 'SignedPubKeyHeader':
+    def check_expiry(values) -> SignedPubKeyHeader:
         """Check that the token has not expired"""
         payload = values.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
@@ -113,7 +115,7 @@ class SignedPubKeyHeader(BaseModel):
         return values
 
     @model_validator(mode="after")
-    def check_signature(values) -> 'SignedPubKeyHeader':
+    def check_signature(values) -> SignedPubKeyHeader:
         """Check that the signature is valid"""
         signature = values.signature
         payload = values.payload
