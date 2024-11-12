@@ -8,7 +8,6 @@ from typing import TypeVar
 
 import aiohttp
 import pydantic
-from pydantic import ValidationError
 from aiohttp import web
 from aleph_message.models import (
     AlephMessage,
@@ -17,6 +16,7 @@ from aleph_message.models import (
     parse_message,
 )
 from aleph_message.status import MessageStatus
+from pydantic import ValidationError
 from yarl import URL
 
 from aleph.vm.conf import settings
