@@ -1,24 +1,17 @@
 import asyncio
+import json
 import logging
 from typing import Any
 
 import msgpack
 from aiohttp import web
-from aiohttp.web_exceptions import (
-    HTTPBadGateway,
-    HTTPBadRequest,
-    HTTPInternalServerError,
-)
+from aiohttp.web_exceptions import HTTPBadGateway, HTTPBadRequest, HTTPInternalServerError
 from aleph_message.models import ItemHash
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.program import (
-    FileTooLargeError,
-    ResourceDownloadError,
-    VmSetupError,
-)
+from aleph.vm.controllers.firecracker.program import FileTooLargeError, ResourceDownloadError, VmSetupError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
@@ -55,7 +48,7 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
-    logger.debug(f"Message: {message.json(indent=4, sort_keys=True, exclude_none=True)}")
+    logger.debug(f"Message: {json.dumps(message.dict(exclude_none=True), indent=4, sort_keys=True)}")
 
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
