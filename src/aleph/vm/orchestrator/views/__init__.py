@@ -1,4 +1,5 @@
 import binascii
+import contextlib
 import logging
 from decimal import Decimal
 from hashlib import sha256
@@ -25,6 +26,7 @@ from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
+from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
@@ -75,7 +77,8 @@ async def run_code_from_path(request: web.Request) -> web.Response:
         ) from e
 
     pool: VmPool = request.app["vm_pool"]
-    return await run_code_on_request(message_ref, path, pool, request)
+    with set_vm_for_logging(vm_hash=message_ref):
+        return await run_code_on_request(message_ref, path, pool, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -112,7 +115,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
                 return HTTPNotFound(reason="Invalid message reference")
 
     pool = request.app["vm_pool"]
-    return await run_code_on_request(message_ref, path, pool, request)
+    with set_vm_for_logging(vm_hash=message_ref):
+        return await run_code_on_request(message_ref, path, pool, request)
 
 
 def authenticate_request(request: web.Request) -> None:

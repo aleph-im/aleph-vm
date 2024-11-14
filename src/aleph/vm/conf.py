@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     # System logs make boot ~2x slower
     PRINT_SYSTEM_LOGS = False
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
+    LOG_LEVEL = "WARNING"
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
@@ -395,8 +396,6 @@ class Settings(BaseSettings):
         # Update chain RPC
         STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
         STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
-
-        logger.info(STREAM_CHAINS)
 
         os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         os.makedirs(self.CODE_CACHE, exist_ok=True)
