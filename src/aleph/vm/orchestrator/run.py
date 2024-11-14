@@ -5,13 +5,21 @@ from typing import Any
 
 import msgpack
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPBadGateway, HTTPBadRequest, HTTPInternalServerError
+from aiohttp.web_exceptions import (
+    HTTPBadGateway,
+    HTTPBadRequest,
+    HTTPInternalServerError,
+)
 from aleph_message.models import ItemHash
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.program import FileTooLargeError, ResourceDownloadError, VmSetupError
+from aleph.vm.controllers.firecracker.program import (
+    FileTooLargeError,
+    ResourceDownloadError,
+    VmSetupError,
+)
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
