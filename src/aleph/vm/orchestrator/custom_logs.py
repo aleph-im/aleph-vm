@@ -3,9 +3,10 @@ import logging
 from contextvars import ContextVar
 
 from aleph.vm.models import VmExecution
+from aleph_message.models import ItemHash
 
-ctx_current_execution = ContextVar("current_execution")
-ctx_current_execution_hash = ContextVar("current_execution_hash")
+ctx_current_execution: ContextVar[VmExecution | None] = ContextVar("current_execution")
+ctx_current_execution_hash: ContextVar[ItemHash | None] = ContextVar("current_execution_hash")
 
 
 @contextlib.contextmanager
