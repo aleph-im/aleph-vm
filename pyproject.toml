@@ -48,7 +48,7 @@ dependencies = [
   "psutil==5.9.5",
   "py-cpuinfo==9",
   "pydantic>=2",
-  "pydantic-settings",
+  "pydantic-settings==2.6.1",
   "pyroute2==0.7.12",
   "python-cpuid==0.1",
   "python-dotenv",
