@@ -305,8 +305,8 @@ def main():
         handlers=handlers,
     )
 
-    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(settings.LOG_LEVEL)
+    logging.getLogger("sqlalchemy.engine").setLevel(settings.LOG_LEVEL)
 
     settings.update(
         USE_JAILER=args.use_jailer,
