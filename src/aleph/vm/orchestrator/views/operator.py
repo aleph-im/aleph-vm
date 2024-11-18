@@ -138,9 +138,8 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
         raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
 
     message = get_message_executable_content(json.loads(record.message))
-    print(record.message)
-    # if not is_sender_authorized(authenticated_sender, message):
-    #     return web.Response(status=403, body="Unauthorized sender")
+    if not is_sender_authorized(authenticated_sender, message):
+        return web.Response(status=403, body="Unauthorized sender")
 
     _journal_stdout_name = f"vm-{vm_hash}-stdout"
     _journal_stderr_name = f"vm-{vm_hash}-stderr"

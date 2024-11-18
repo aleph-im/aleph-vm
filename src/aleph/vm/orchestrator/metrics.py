@@ -117,7 +117,7 @@ async def get_execution_records() -> Iterable[ExecutionRecord]:
         return executions
 
 
-async def get_last_record_for_vm(vm_hash) -> ExecutionRecord:
+async def get_last_record_for_vm(vm_hash) -> ExecutionRecord | None:
     """Get the execution records from the database."""
     async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
         result = await session.execute(
