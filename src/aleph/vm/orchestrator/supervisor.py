@@ -51,7 +51,6 @@ from .views.operator import (
     operate_confidential_measurement,
     operate_erase,
     operate_expire,
-    operate_logs,
     operate_logs_json,
     operate_reboot,
     operate_stop,
@@ -105,8 +104,7 @@ def setup_webapp():
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
         web.get("/control/machine/{ref}/stream_logs", stream_logs),
-        web.get("/control/machine/{ref}/logs.json", operate_logs_json),
-        web.get("/control/machine/{ref}/logs", operate_logs),
+        web.get("/control/machine/{ref}/logs", operate_logs_json),
         web.post("/control/machine/{ref}/expire", operate_expire),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),

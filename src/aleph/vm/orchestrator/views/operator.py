@@ -105,39 +105,21 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_logs(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
-    """Logs of a VM (not streaming)"""
-    vm_hash = get_itemhash_or_400(request.match_info)
-    with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-        if not is_sender_authorized(authenticated_sender, execution.message):
-            return web.Response(status=403, body="Unauthorized sender")
-
-        response = web.StreamResponse()
-        response.headers["Content-Type"] = "text/plain"
-        await response.prepare(request)
-
-        for entry in execution.vm.past_logs():
-            msg = f'{entry["__REALTIME_TIMESTAMP"].isoformat()}> {entry["MESSAGE"]}'
-            await response.write(msg.encode())
-        await response.write_eof()
-        return response
-
-
-@cors_allow_all
-@require_jwk_authentication
 async def operate_logs_json(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
-    """Logs of a VM (not streaming)"""
+    """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
 
     # This endpoint allow logs for past executions, so we look into the database if any execution by that hash
-    # occurred, which we can then use to look for right
-    record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
-    if not record:
-        raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
-
-    message = get_message_executable_content(json.loads(record.message))
+    # occurred, which we can then use to look for rights. We still check in the pool first, it is faster
+    pool: VmPool = request.app["vm_pool"]
+    execution = pool.executions.get(vm_hash)
+    if execution:
+        message = execution.message
+    else:
+        record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
+        if not record:
+            raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
+        message = get_message_executable_content(json.loads(record.message))
     if not is_sender_authorized(authenticated_sender, message):
         return web.Response(status=403, body="Unauthorized sender")
 
