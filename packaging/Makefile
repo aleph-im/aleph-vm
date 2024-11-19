@@ -144,6 +144,6 @@ repository-noble:
 	cd ./repositories/noble && reprepro -Vb . includedeb noble ../../target/aleph-vm.ubuntu-24.04.deb && cd ..
 
 repositories: repository-bookworm repository-jammy repository-noble
- 
+
 all-podman: all-podman-debian-12 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
 
