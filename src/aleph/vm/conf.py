@@ -176,8 +176,8 @@ class Settings(BaseSettings):
         description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
     )
     DNS_NAMESERVERS: list[str] | None = None
-    DNS_NAMESERVERS_IPV4: list[str] | None
-    DNS_NAMESERVERS_IPV6: list[str] | None
+    DNS_NAMESERVERS_IPV4: list[str] | None = None
+    DNS_NAMESERVERS_IPV6: list[str] | None = None
 
     FIRECRACKER_PATH: Path = Path("/opt/firecracker/firecracker")
     JAILER_PATH: Path = Path("/opt/firecracker/jailer")
