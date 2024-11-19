@@ -468,7 +468,9 @@ class Settings(BaseSettings):
             else:
                 attributes[attr] = getattr(self, attr)
 
-        return "\n".join(f"{self.model_config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
+        return "\n".join(
+            f"{self.model_config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items()
+        )
 
     def __init__(
         self,
