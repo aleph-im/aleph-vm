@@ -467,9 +467,8 @@ class Settings(BaseSettings):
                 attributes[attr] = "<REDACTED>"
             else:
                 attributes[attr] = getattr(self, attr)
-
         return "\n".join(
-            f"{self.model_config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items()
+            f"{self.model_config.get('env_prefix', '')}{attribute} = {value}" for attribute, value in attributes.items()
         )
 
     def __init__(
