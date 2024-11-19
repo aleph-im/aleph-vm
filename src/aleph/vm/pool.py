@@ -28,15 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class VmPool:
-    """Pool of VMs already started and used to decrease response time.
+    """Pool of existing VMs
+
+    For function VM we keep the VM a while after they  have run, so we can reuse them  and thus decrease response time.
     After running, a VM is saved for future reuse from the same function during a
     configurable duration.
-
-    The counter is used by the VMs to set their tap interface name and the corresponding
-    IPv4 subnet.
     """
 
-    counter: int  # Used to provide distinct ids to network interfaces
     executions: dict[ItemHash, VmExecution]
     message_cache: dict[str, ExecutableMessage]
     network: Network | None
@@ -45,7 +43,6 @@ class VmPool:
     creation_lock: asyncio.Lock
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
-        self.counter = settings.START_ID_INDEX
         self.executions = {}
         self.message_cache = {}
 
@@ -150,25 +147,13 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
-        _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
-        available_bits = int(network_range) - settings.IPV4_NETWORK_PREFIX_LENGTH
-        self.counter += 1
-        if self.counter < 2**available_bits:
-            # In common cases, use the counter itself as the vm_id. This makes it
-            # easier to debug.
-            return self.counter
-        else:
-            # The value of the counter is too high and some functions such as the
-            # IPv4 range dedicated to the VM do not support such high values.
-            #
-            # We therefore recycle vm_id values from executions that are not running
-            # anymore.
-            currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
-            for i in range(settings.START_ID_INDEX, 255**2):
-                if i not in currently_used_vm_ids:
-                    return i
-            msg = "No available value for vm_id."
-            raise ValueError(msg)
+        # Take the first id that is not already taken
+        currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
+        for i in range(settings.START_ID_INDEX, 255**2):
+            if i not in currently_used_vm_ids:
+                return i
+        msg = "No available value for vm_id."
+        raise ValueError(msg)
 
     def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""

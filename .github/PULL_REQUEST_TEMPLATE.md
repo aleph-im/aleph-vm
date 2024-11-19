@@ -10,6 +10,7 @@ Related ClickUp, GitHub or Jira tickets : ALEPH-XXX
 - [ ] New classes and functions contain docstrings explaining what they provide.
 - [ ] All new code is covered by relevant tests.
 - [ ] Documentation has been updated regarding these changes.
+- [ ] Dependencies update in the project.toml have been mirrored in the Debian package build script `packaging/Makefile`
 
 ## Changes
 
