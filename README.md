@@ -23,7 +23,7 @@ Node
 ## 2. Install Aleph-VM from source
 
 This method is not recommended, except for development and testing.
-Read the installation document for the various components and the developer documentaation. 
+Read the installation document for the various components and the developer documentation. 
 
 1. Install the [VM-Connector](./vm_connector/README.md)
 2. Install the [VM-Supervisor](src/aleph/vm/orchestrator/README.md).
@@ -62,8 +62,8 @@ To deploy aleph-vm for development on a remote server, we start with the Debian 
 
 The vm-connector need to run for aleph-vm to works, even when running py.test.
 
-Unless your focus is on developing the VM-Connector, using the Docker image is easier.
-   See [VM-Connector README](./vm_connector/README.md) for more details.
+Unless your focus is developing the VM-Connector, using the Docker image is easier.
+   See the [VM-Connector README](./vm_connector/README.md) for more details.
 
    ```shell
    docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
@@ -111,7 +111,7 @@ Unless your focus is on developing the VM-Connector, using the Docker image is e
    directly during development.
 
 ## Testing
-see  [Testinc doc](./TESTING.md)
+See [Testinc doc](./TESTING.md)
 
 # Architecture
 
