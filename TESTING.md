@@ -1,6 +1,6 @@
 # Testing aleph-vm
 
-This procedure describes how to run tests on a dev system. See the dev setup section of the README first
+This procedure describes how to run tests on a dev system. See the dev setup section of the README first.
 
 Tests also run on GitHub Actions via [the following workflow](./.github/workflows/test-on-droplets-matrix.yml).
 
