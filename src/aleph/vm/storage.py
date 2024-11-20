@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
@@ -371,11 +372,13 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
         return await get_existing_file(ref)
     elif isinstance(volume, PersistentVolume | RootfsVolume):
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
+        if not volume.name:
+            volume_name = f"unamed_{uuid.uuid4().hex}"
         if volume.persistence != VolumePersistence.host:
             msg = "Only 'host' persistence is supported"
             raise NotImplementedError(msg)
         if not re.match(r"^[\w\-_/]+$", volume_name):
-            msg = f"Invalid value for volume name: {volume_name}"
+            msg = f"Invalid value for volume name: {repr(volume_name)}"
             raise ValueError(msg)
         (Path(settings.PERSISTENT_VOLUMES_DIR) / namespace).mkdir(exist_ok=True)
         if volume.parent:

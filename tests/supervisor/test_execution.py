@@ -250,7 +250,6 @@ async def test_create_execution_from_fake_message(fake_message):
     await execution.stop()
 
 
-@pytest.xfail("to fix")
 @pytest.mark.asyncio
 async def test_create_execution_volume_with_no_name(fake_message):
     """Regression test for ALEPH-307: VM init fail if volume name is empty string"""
