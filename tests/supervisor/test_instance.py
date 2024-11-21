@@ -63,8 +63,8 @@ async def test_create_instance():
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
-    if not settings.FAKE_DATA_RUNTIME.exists():
-        pytest.xfail("Test Runtime not setup. run `cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh`")
+    if not settings.FAKE_INSTANCE_BASE.exists():
+        pytest.xfail("Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`")
 
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()

@@ -23,6 +23,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
+from .custom_logs import setup_handlers
 from .pubsub import PubSub
 from .run import run_code_on_event, run_code_on_request, start_persistent_vm
 
@@ -65,7 +66,7 @@ def parse_args(args):
         help="set loglevel to INFO",
         action="store_const",
         const=logging.INFO,
-        default=logging.WARNING,
+        default=settings.LOG_LEVEL,
     )
     parser.add_argument(
         "-vv",
@@ -282,7 +283,7 @@ def run_db_migrations(connection):
 
 
 async def run_async_db_migrations():
-    async_engine = create_async_engine(make_db_url(), echo=True)
+    async_engine = create_async_engine(make_db_url(), echo=False)
     async with async_engine.begin() as conn:
         await conn.run_sync(run_db_migrations)
 
@@ -293,12 +294,19 @@ def main():
     log_format = (
         "%(relativeCreated)4f | %(levelname)s | %(message)s"
         if args.profile
-        else "%(asctime)s | %(levelname)s | %(message)s"
+        else "%(asctime)s | %(levelname)s %(name)s:%(lineno)s | %(message)s"
     )
+    # log_format = "[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s"
+
+    handlers = setup_handlers(args, log_format)
     logging.basicConfig(
         level=args.loglevel,
         format=log_format,
+        handlers=handlers,
     )
+
+    logging.getLogger("aiosqlite").setLevel(settings.LOG_LEVEL)
+    logging.getLogger("sqlalchemy.engine").setLevel(settings.LOG_LEVEL)
 
     settings.update(
         USE_JAILER=args.use_jailer,

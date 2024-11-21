@@ -145,6 +145,9 @@ class VmExecution:
         else:
             return True
 
+    def __repr__(self):
+        return f"<VMExecution {type(self.vm).__name__} {self.vm_hash} {self.times.started_at}>"
+
     def __init__(
         self,
         vm_hash: ItemHash,
