@@ -189,16 +189,16 @@ class Settings(BaseSettings):
     CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
-    MESSAGE_CACHE: Path = Field(
+    MESSAGE_CACHE: Optional[Path] = Field(
         None,
         description="Default to CACHE_ROOT/message",
     )
-    CODE_CACHE: Path = Field(None, description="Default to CACHE_ROOT/code")
-    RUNTIME_CACHE: Path = Field(None, description="Default to CACHE_ROOT/runtime")
-    DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
+    CODE_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/code")
+    RUNTIME_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/runtime")
+    DATA_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
-    JAILER_BASE_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/jailer")
+    JAILER_BASE_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/jailer")
     EXECUTION_DATABASE: Path = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     PERSISTENT_VOLUMES_DIR: Path = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
-    JAILER_BASE_DIR: Path = Field(None)
+    JAILER_BASE_DIR: Optional[Path] = Field(None)
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
@@ -268,12 +268,12 @@ class Settings(BaseSettings):
         "with SEV and SEV-ES",
     )
 
-    CONFIDENTIAL_DIRECTORY: Path = Field(
+    CONFIDENTIAL_DIRECTORY: Optional[Path] = Field(
         None,
         description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
     )
 
-    CONFIDENTIAL_SESSION_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/sessions")
+    CONFIDENTIAL_SESSION_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/sessions")
 
     # Tests on programs
 
