@@ -205,9 +205,6 @@ lint.ignore = [
 # Tests can use magic values, assertions, and relative imports
 lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 
-# Tests can use magic values, assertions, and relative imports
-lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
-
 [tool.pytest.ini_options]
 pythonpath = [
   "src",

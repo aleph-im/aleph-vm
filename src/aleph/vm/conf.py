@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType
+from typing import Any, Literal, NewType, Optional
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -136,10 +136,10 @@ class Settings(BaseSettings):
 
     USE_JAILER: bool = True
     # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS = False
-    IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
-    LOG_LEVEL = "WARNING"
-    DEBUG_ASYNCIO = False
+    PRINT_SYSTEM_LOGS: bool = False
+    IGNORE_TRACEBACK_FROM_DIAGNOSTICS: bool = True
+    LOG_LEVEL: str = "WARNING"
+    DEBUG_ASYNCIO: bool = False
 
     # Networking does not work inside Docker/Podman
     ALLOW_VM_NETWORKING: bool = True
@@ -189,28 +189,28 @@ class Settings(BaseSettings):
     CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
-    MESSAGE_CACHE: Path = Field(
+    MESSAGE_CACHE: Optional[Path] = Field(
         None,
         description="Default to CACHE_ROOT/message",
     )
-    CODE_CACHE: Path = Field(None, description="Default to CACHE_ROOT/code")
-    RUNTIME_CACHE: Path = Field(None, description="Default to CACHE_ROOT/runtime")
-    DATA_CACHE: Path = Field(None, description="Default to CACHE_ROOT/data")
+    CODE_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/code")
+    RUNTIME_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/runtime")
+    DATA_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
-    JAILER_BASE_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/jailer")
-    EXECUTION_DATABASE: Path = Field(
+    JAILER_BASE_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/jailer")
+    EXECUTION_DATABASE: Optional[Path] = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
     EXECUTION_LOG_ENABLED: bool = False
-    EXECUTION_LOG_DIRECTORY: Path = Field(
+    EXECUTION_LOG_DIRECTORY: Optional[Path] = Field(
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Path = Field(
+    PERSISTENT_VOLUMES_DIR: Optional[Path] = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
-    JAILER_BASE_DIR: Path = Field(None)
+    JAILER_BASE_DIR: Optional[Path] = Field(None)
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
@@ -268,12 +268,12 @@ class Settings(BaseSettings):
         "with SEV and SEV-ES",
     )
 
-    CONFIDENTIAL_DIRECTORY: Path = Field(
+    CONFIDENTIAL_DIRECTORY: Optional[Path] = Field(
         None,
         description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
     )
 
-    CONFIDENTIAL_SESSION_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/sessions")
+    CONFIDENTIAL_SESSION_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/sessions")
 
     # Tests on programs
 
