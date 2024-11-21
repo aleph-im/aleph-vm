@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType
+from typing import Any, Literal, NewType, Optional
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -199,15 +199,15 @@ class Settings(BaseSettings):
 
     EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
     JAILER_BASE_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/jailer")
-    EXECUTION_DATABASE: Path = Field(
+    EXECUTION_DATABASE: Optional[Path] = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
     EXECUTION_LOG_ENABLED: bool = False
-    EXECUTION_LOG_DIRECTORY: Path = Field(
+    EXECUTION_LOG_DIRECTORY: Optional[Path] = Field(
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Path = Field(
+    PERSISTENT_VOLUMES_DIR: Optional[Path] = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
     JAILER_BASE_DIR: Optional[Path] = Field(None)
