@@ -403,10 +403,14 @@ class Settings(BaseSettings):
         STREAM_CHAINS[Chain.AVAX].rpc = str(self.RPC_AVAX)
         STREAM_CHAINS[Chain.BASE].rpc = str(self.RPC_BASE)
 
-        os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
-        os.makedirs(self.CODE_CACHE, exist_ok=True)
-        os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
-        os.makedirs(self.DATA_CACHE, exist_ok=True)
+        if self.MESSAGE_CACHE:
+            os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
+        if self.CODE_CACHE:
+            os.makedirs(self.CODE_CACHE, exist_ok=True)
+        if self.RUNTIME_CACHE:
+            os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
+        if self.DATA_CACHE:
+            os.makedirs(self.DATA_CACHE, exist_ok=True)
 
         os.makedirs(self.EXECUTION_ROOT, exist_ok=True)
 
@@ -422,10 +426,14 @@ class Settings(BaseSettings):
 
             self.LINUX_PATH = linux_path_on_device
 
-        os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
-        os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
-        os.makedirs(self.CONFIDENTIAL_DIRECTORY, exist_ok=True)
-        os.makedirs(self.CONFIDENTIAL_SESSION_DIRECTORY, exist_ok=True)
+        if self.EXECUTION_LOG_DIRECTORY:
+            os.makedirs(self.EXECUTION_LOG_DIRECTORY, exist_ok=True)
+        if self.PERSISTENT_VOLUMES_DIR:
+            os.makedirs(self.PERSISTENT_VOLUMES_DIR, exist_ok=True)
+        if self.CONFIDENTIAL_DIRECTORY:
+            os.makedirs(self.CONFIDENTIAL_DIRECTORY, exist_ok=True)
+        if self.CONFIDENTIAL_SESSION_DIRECTORY:
+            os.makedirs(self.CONFIDENTIAL_SESSION_DIRECTORY, exist_ok=True)
 
         self.API_SERVER = self.API_SERVER.rstrip("/")
 
