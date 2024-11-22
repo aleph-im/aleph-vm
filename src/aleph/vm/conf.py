@@ -407,7 +407,7 @@ class Settings(BaseSettings):
             os.makedirs(self.MESSAGE_CACHE, exist_ok=True)
         if self.CODE_CACHE:
             os.makedirs(self.CODE_CACHE, exist_ok=True)
-        if self.TUNRIME_CACHE:
+        if self.RUNTIME_CACHE:
             os.makedirs(self.RUNTIME_CACHE, exist_ok=True)
         if self.DATA_CACHE:
             os.makedirs(self.DATA_CACHE, exist_ok=True)
