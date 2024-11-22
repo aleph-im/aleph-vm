@@ -23,14 +23,17 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 
     assert response.status == 400
 
-    assert await response.json() == [
+    response = await response.json()
+    for error in response:
+        error.pop("url", None)
+
+    assert response == [
         {
             "loc": ["persistent_vms", 0],
             "msg": "Value error, Could not determine hash type: 'not-an-ItemHash'",
             "type": "value_error",
             "ctx": {"error": "Could not determine hash type: 'not-an-ItemHash'"},
             "input": "not-an-ItemHash",
-            "url": "https://errors.pydantic.dev/2.9/v/value_error",
         },
     ]
 
