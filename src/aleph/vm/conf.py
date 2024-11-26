@@ -133,8 +133,10 @@ class Settings(BaseSettings):
     CONNECTIVITY_DNS_HOSTNAME = "example.org"
 
     USE_JAILER = True
-    # System logs make boot ~2x slower
-    PRINT_SYSTEM_LOGS = False
+    # Changelog: PRINT_SYSTEM_LOGS use to print the MicroVM logs with the supervisor output.
+    # They are now in separate journald entries, disabling the settings disable the logs output of Firecracker VM (only)
+    # via the serial console. This break the logs endpoint for program, as such disabling it in prod is not recommended.
+    PRINT_SYSTEM_LOGS = True
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
     LOG_LEVEL = "WARNING"
     DEBUG_ASYNCIO = False
