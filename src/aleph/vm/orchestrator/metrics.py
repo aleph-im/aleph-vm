@@ -115,3 +115,12 @@ async def get_execution_records() -> Iterable[ExecutionRecord]:
         executions = result.scalars().all()
         await session.commit()
         return executions
+
+
+async def get_last_record_for_vm(vm_hash) -> ExecutionRecord | None:
+    """Get the execution records from the database."""
+    async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
+        result = await session.execute(
+            select(ExecutionRecord).where(ExecutionRecord.vm_hash == vm_hash).limit(1)
+        )  # Use execute for querying
+        return result.scalar()
