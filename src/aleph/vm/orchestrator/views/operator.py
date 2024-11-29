@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
@@ -22,7 +23,12 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.pool import VmPool
-from aleph.vm.utils import cors_allow_all, dumps_for_json
+from aleph.vm.utils import (
+    cors_allow_all,
+    dumps_for_json,
+    get_message_executable_content,
+)
+from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
 
@@ -99,22 +105,48 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_logs(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
-    """Logs of a VM (not streaming)"""
+async def operate_logs_json(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
+    """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
+        # This endpoint allow logs for past executions, so we look into the database if any execution by that hash
+        # occurred, which we can then use to look for rights. We still check in the pool first, it is faster
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        execution = pool.executions.get(vm_hash)
+        if execution:
+            message = execution.message
+        else:
+            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
+            if not record:
+                raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
+            message = get_message_executable_content(json.loads(record.message))
+        if not is_sender_authorized(authenticated_sender, message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        response = web.StreamResponse()
-        response.headers["Content-Type"] = "text/plain"
-        await response.prepare(request)
+        _journal_stdout_name = f"vm-{vm_hash}-stdout"
+        _journal_stderr_name = f"vm-{vm_hash}-stderr"
 
-        for entry in execution.vm.past_logs():
-            msg = f'{entry["__REALTIME_TIMESTAMP"].isoformat()}> {entry["MESSAGE"]}'
-            await response.write(msg.encode())
+        response = web.StreamResponse()
+        response.headers["Transfer-encoding"] = "chunked"
+        response.headers["Content-Type"] = "application/json"
+        await response.prepare(request)
+        await response.write(b"[")
+
+        first = True
+        for entry in get_past_vm_logs(_journal_stdout_name, _journal_stderr_name):
+            if not first:
+                await response.write(b",\n")
+            first = False
+            log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == _journal_stdout_name else "stderr"
+            msg = {
+                "SYSLOG_IDENTIFIER": entry["SYSLOG_IDENTIFIER"],
+                "MESSAGE": entry["MESSAGE"],
+                "file": log_type,
+                "__REALTIME_TIMESTAMP": entry["__REALTIME_TIMESTAMP"],
+            }
+            await response.write(dumps_for_json(msg).encode())
+        await response.write(b"]")
+
         await response.write_eof()
         return response
 
