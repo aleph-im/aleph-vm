@@ -73,23 +73,23 @@ class UsagePeriod(BaseModel):
     duration_seconds: float
 
 
-class GpuProperties(HashableModel):
+class GpuDeviceClass(str, Enum):
+    VGA_COMPATIBLE_CONTROLLER = "0300"
+    _3D_CONTROLLER = "0302"
+
+
+class GpuProperties(BaseModel):
     """GPU properties."""
 
     vendor: str = Field(description="GPU vendor name")
     device_name: str = Field(description="GPU vendor card name")
-    device_class: Literal["0300", "0302"] = Field(
+    device_class: GpuDeviceClass = Field(
         description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"
     )
     device_id: str = Field(description="GPU vendor & device ids")
 
     class Config:
         extra = Extra.forbid
-
-
-class GpuDeviceClass(str, Enum):
-    VGA_COMPATIBLE_CONTROLLER = "0300"
-    _3D_CONTROLLER = "0302"
 
 
 def is_gpu_device_class(device_class: str) -> bool:
