@@ -1,19 +1,18 @@
 import math
-import subprocess
 from datetime import datetime, timezone
-from enum import Enum
 from functools import lru_cache
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 import cpuinfo
 import psutil
 from aiohttp import web
 from aleph_message.models import ItemHash
-from aleph_message.models.abstract import HashableModel
 from aleph_message.models.execution.environment import CpuProperties
-from pydantic import BaseModel, Extra, Field
+from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.pool import VmPool
+from aleph.vm.resources import GpuProperties
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
@@ -73,36 +72,10 @@ class UsagePeriod(BaseModel):
     duration_seconds: float
 
 
-class GpuDeviceClass(str, Enum):
-    VGA_COMPATIBLE_CONTROLLER = "0300"
-    _3D_CONTROLLER = "0302"
-
-
-class GpuProperties(BaseModel):
-    """GPU properties."""
-
-    vendor: str = Field(description="GPU vendor name")
-    device_name: str = Field(description="GPU vendor card name")
-    device_class: GpuDeviceClass = Field(
-        description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"
-    )
-    device_id: str = Field(description="GPU vendor & device ids")
-
-    class Config:
-        extra = Extra.forbid
-
-
-def is_gpu_device_class(device_class: str) -> bool:
-    try:
-        GpuDeviceClass(device_class)
-        return True
-    except ValueError:
-        return False
-
-
 class MachineProperties(BaseModel):
     cpu: CpuProperties
     gpu: Optional[List[GpuProperties]]
+    available_gpus: Optional[List[GpuProperties]]
 
 
 class MachineUsage(BaseModel):
@@ -114,48 +87,17 @@ class MachineUsage(BaseModel):
     active: bool = True
 
 
-def parse_gpu_device_info(line) -> Optional[GpuProperties]:
-    """Parse GPU device info from a line of lspci output."""
-
-    device = line.split(' "', maxsplit=1)[1]
-    device_class, device_vendor, device_info = device.split('" "', maxsplit=2)
-    device_class = device_class.split("[", maxsplit=1)[1][:-1]
-    vendor, vendor_id = device_vendor.split(" [", maxsplit=1)
-    device_name = device_info.split('"', maxsplit=1)[0]
-    device_name, model_id = device_name.split(" [", maxsplit=1)
-    device_id = f"{vendor_id[:-1]}:{model_id[:-1]}"
-
-    return (
-        GpuProperties(
-            vendor=vendor,
-            device_name=device_name,
-            device_class=device_class,
-            device_id=device_id,
-        )
-        if is_gpu_device_class(device_class)
-        else None
-    )
-
-
-def get_gpu_info() -> Optional[List[GpuProperties]]:
-    """Get GPU info using lspci command."""
-
-    result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
-    gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
-    )
-    return gpu_devices if gpu_devices else None
-
-
 @lru_cache
-def get_machine_properties() -> MachineProperties:
+def get_machine_properties(request: web.Request) -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
     These should not change while the supervisor is running.
 
     In the future, some properties may have to be fetched from within a VM.
     """
     cpu_info = cpuinfo.get_cpu_info()  # Slow
-    gpu_info = get_gpu_info()
+    pool: VmPool = request.app["vm_pool"]
+    gpus = pool.gpus
+    available_gpus = pool.get_available_gpus()
     return MachineProperties(
         cpu=CpuProperties(
             architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
@@ -171,12 +113,13 @@ def get_machine_properties() -> MachineProperties:
                 )
             ),
         ),
-        gpu=gpu_info,
+        gpu=gpus,
+        available_gpus=available_gpus,
     )
 
 
 @cors_allow_all
-async def about_system_usage(_: web.Request):
+async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
@@ -198,7 +141,7 @@ async def about_system_usage(_: web.Request):
             start_timestamp=period_start,
             duration_seconds=60,
         ),
-        properties=get_machine_properties(),
+        properties=get_machine_properties(request),
     )
 
     return web.json_response(text=usage.json(exclude_none=True))

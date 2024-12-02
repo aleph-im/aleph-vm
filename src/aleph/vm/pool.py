@@ -18,6 +18,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.resources import get_gpu_info
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -41,6 +42,7 @@ class VmPool:
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
+    gpus: List[GpuProperties] = []
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
@@ -77,6 +79,10 @@ class VmPool:
         if self.snapshot_manager:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
+
+        if settings.ENABLE_GPU_SUPPORT:
+            logger.debug("Detecting GPU devices ...")
+            self.available_gpus = get_gpu_info()
 
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
@@ -284,6 +290,10 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
         return executions or []
+
+    def get_available_gpus(self) -> Iterable[GpuProperties]:
+        available_gpus = self.available_gpus
+        return available_gpus or []
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""
