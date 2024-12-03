@@ -73,6 +73,11 @@ class HostVolume:
 
 
 @dataclass
+class HostGPU:
+    pci_host: str
+
+
+@dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
     ip: str | None = None

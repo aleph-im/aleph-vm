@@ -7,7 +7,7 @@ from typing import BinaryIO, TextIO
 import qmp
 from systemd import journal
 
-from aleph.vm.controllers.configuration import QemuVMConfiguration
+from aleph.vm.controllers.configuration import QemuVMConfiguration, QemuGPU
 from aleph.vm.controllers.qemu.instance import logger
 
 
@@ -28,6 +28,7 @@ class QemuVM:
     interface_name: str
     qemu_process: Process | None = None
     host_volumes: list[HostVolume]
+    gpus: list[QemuGPU]
     journal_stdout: TextIO | None
     journal_stderr: TextIO | None
 
@@ -55,6 +56,7 @@ class QemuVM:
             )
             for volume in config.host_volumes
         ]
+        self.gpus = config.gpus
 
     @property
     def _journal_stdout_name(self) -> str:
@@ -102,21 +104,23 @@ class QemuVM:
             # Tell to put the output to std fd, so we can include them in the log
             "-serial",
             "stdio",
+            # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
+            #
+            "-cpu",
+            "host,host-phys-bits-limit=0x28"
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
         ]
-        for volume in self.host_volumes:
-            args += [
-                "-drive",
-                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
-            ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+
+        args += self._get_host_volumes_args()
+        args += self._get_gpu_args()
         print(*args)
 
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
@@ -130,6 +134,24 @@ class QemuVM:
             f"Started QemuVm {self}, {proc}. Log available with: journalctl -t  {self._journal_stdout_name} -t {self._journal_stderr_name}"
         )
         return proc
+
+    def _get_host_volumes_args(self):
+        args = []
+        for volume in self.host_volumes:
+            args += [
+                "-drive",
+                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
+            ]
+        return args
+
+    def _get_gpu_args(self):
+        args = []
+        for gpu in self.gpus:
+            args += [
+                "-device",
+                f"vfio-pci,host={gpu.pci_host},multifunction=on,x-vga=on",
+            ]
+        return args
 
     def _get_qmpclient(self) -> qmp.QEMUMonitorProtocol | None:
         if not (self.qmp_socket_path and self.qmp_socket_path.exists()):

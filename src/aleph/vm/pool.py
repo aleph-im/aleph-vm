@@ -112,7 +112,11 @@ class VmPool:
                 self.executions[vm_hash] = execution
 
             try:
+                # First assign Host GPUs from the available
+                execution.prepare_gpus(self.get_available_gpus())
+                # Prepare VM general Resources and also the GPUs
                 await execution.prepare()
+
                 vm_id = self.get_unique_vm_id()
 
                 if self.network:
@@ -236,6 +240,10 @@ class VmPool:
 
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
+                # Load existing GPUs assigned to VMs
+                for saved_gpu in saved_execution.gpus:
+                    execution.gpus.append(HostGPU(pci_host=saved_gpu.pci_host))
+                # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
@@ -288,9 +296,14 @@ class VmPool:
         )
         return executions or []
 
-    def get_available_gpus(self) -> Iterable[GpuDevice]:
-        # TODO: Filter already used GPUs on current executions and remove it from available
-        available_gpus = self.gpus
+    def get_available_gpus(self) -> List[GpuDevice]:
+        available_gpus = (
+            gpu
+            for gpu in self.gpus
+            for _, execution in self.executions.items()
+            if (isinstance(execution.resources, AlephQemuResources) or isinstance(execution.resources, AlephQemuConfidentialResources)) and not execution.uses_device_gpu(gpu.pci_host)
+        )
+
         return available_gpus or []
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:

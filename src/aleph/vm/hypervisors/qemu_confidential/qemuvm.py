@@ -105,24 +105,24 @@ class QemuConfidentialVM(QemuVM):
             # raise an error and prevent boot. Passing the argument --cpu host instruct the VM to use the same CPU
             # model than the host thus the VM's kernel knows which method is used to get random numbers (Intel and
             # AMD have different methods) and properly boot.
+            # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
             "-cpu",
-            "host",
+            "host,host-phys-bits-limit=0x28"
             # Uncomment following for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
         ]
-        for volume in self.host_volumes:
-            args += [
-                "-drive",
-                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
-            ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+
+        args += self._get_host_volumes_args()
+        args += self._get_gpu_args()
         print(*args)
+
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
