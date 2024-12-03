@@ -2,7 +2,8 @@ import subprocess
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Extra, Field
+from aleph_message.models import HashableModel
+from pydantic import Extra, Field
 
 
 class GpuDeviceClass(str, Enum):
@@ -10,7 +11,7 @@ class GpuDeviceClass(str, Enum):
     _3D_CONTROLLER = "0302"
 
 
-class GpuProperties(BaseModel):
+class GpuDevice(HashableModel):
     """GPU properties."""
 
     vendor: str = Field(description="GPU vendor name")
@@ -56,7 +57,7 @@ def is_kernel_enabled_gpu(pci_host: str) -> bool:
     return False
 
 
-def parse_gpu_device_info(line: str) -> Optional[GpuProperties]:
+def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     """Parse GPU device info from a line of lspci output."""
 
     pci_host, device = line.split(' "', maxsplit=1)
@@ -72,15 +73,15 @@ def parse_gpu_device_info(line: str) -> Optional[GpuProperties]:
 
     device_class = GpuDeviceClass(device_class)
 
-    vendor, vendor_id = device_vendor.split(" [", maxsplit=1)
+    vendor, vendor_id = device_vendor.rsplit(" [", maxsplit=1)
     vendor_id = vendor_id[:-1]
     vendor_name = get_vendor_name(vendor_id)
     device_name = device_info.split('"', maxsplit=1)[0]
-    device_name, model_id = device_name.split(" [", maxsplit=1)
+    device_name, model_id = device_name.rsplit(" [", maxsplit=1)
     model_id = model_id[:-1]
     device_id = f"{vendor_id}:{model_id}"
 
-    return GpuProperties(
+    return GpuDevice(
         pci_host=pci_host,
         vendor=vendor_name,
         device_name=device_name,
@@ -89,7 +90,7 @@ def parse_gpu_device_info(line: str) -> Optional[GpuProperties]:
     )
 
 
-def get_gpu_info() -> Optional[List[GpuProperties]]:
+def get_gpu_devices() -> Optional[List[GpuDevice]]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
