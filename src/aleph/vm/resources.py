@@ -1,8 +1,8 @@
 import subprocess
 from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
 
-from pydantic import BaseModel, Field, Extra
+from pydantic import BaseModel, Extra, Field
 
 
 class GpuDeviceClass(str, Enum):
@@ -70,6 +70,8 @@ def parse_gpu_device_info(line: str) -> Optional[GpuProperties]:
     if not is_gpu_device_class(device_class):
         return None
 
+    device_class = GpuDeviceClass(device_class)
+
     vendor, vendor_id = device_vendor.split(" [", maxsplit=1)
     vendor_id = vendor_id[:-1]
     vendor_name = get_vendor_name(vendor_id)
@@ -79,6 +81,7 @@ def parse_gpu_device_info(line: str) -> Optional[GpuProperties]:
     device_id = f"{vendor_id}:{model_id}"
 
     return GpuProperties(
+        pci_host=pci_host,
         vendor=vendor_name,
         device_name=device_name,
         device_class=device_class,
