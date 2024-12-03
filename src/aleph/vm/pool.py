@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import List
 
 from aleph_message.models import (
     Chain,
@@ -18,7 +19,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
-from aleph.vm.resources import get_gpu_info
+from aleph.vm.resources import GpuProperties, get_gpu_info
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
