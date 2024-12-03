@@ -154,7 +154,7 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        gpu=get_machine_gpus(request)
+        gpu=get_machine_gpus(request),
     )
 
     return web.json_response(text=usage.json(exclude_none=True))
