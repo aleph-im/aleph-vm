@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import List
 
 from aleph_message.models import (
     Chain,
@@ -18,6 +19,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.resources import GpuDevice, get_gpu_devices
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -41,6 +43,7 @@ class VmPool:
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
+    gpus: List[GpuDevice] = []
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
@@ -77,6 +80,10 @@ class VmPool:
         if self.snapshot_manager:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
+
+        if settings.ENABLE_GPU_SUPPORT:
+            logger.debug("Detecting GPU devices ...")
+            self.gpus = get_gpu_devices()
 
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
@@ -280,6 +287,11 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
         return executions or []
+
+    def get_available_gpus(self) -> Iterable[GpuDevice]:
+        # TODO: Filter already used GPUs on current executions and remove it from available
+        available_gpus = self.gpus
+        return available_gpus or []
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""

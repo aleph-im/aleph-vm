@@ -275,6 +275,11 @@ class Settings(BaseSettings):
 
     CONFIDENTIAL_SESSION_DIRECTORY: Path = Field(None, description="Default to EXECUTION_ROOT/sessions")
 
+    ENABLE_GPU_SUPPORT: bool = Field(
+        default=False,
+        description="Enable GPU pass-through support to VMs, only allowed for QEmu hypervisor",
+    )
+
     # Tests on programs
 
     FAKE_DATA_PROGRAM: Path | None = None
@@ -391,6 +396,8 @@ class Settings(BaseSettings):
             # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
             "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
+        if self.ENABLE_GPU_SUPPORT:
+            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for GPU support and it's disabled, "
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
