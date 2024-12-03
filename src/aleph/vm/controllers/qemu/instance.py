@@ -5,7 +5,7 @@ import shutil
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Generic, TypeVar, List
+from typing import Generic, List, TypeVar
 
 import psutil
 from aleph_message.models import ItemHash
@@ -17,20 +17,20 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
+    QemuGPU,
     QemuVMConfiguration,
     QemuVMHostVolume,
-    QemuGPU,
     save_controller_configuration,
 )
 from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     VmSetupError,
-    HostGPU,
 )
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.resources import HostGPU
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.utils import HostNotFoundError, ping, run_in_subprocess
 
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    gpus: list[HostGPU]
+    gpus: List[HostGPU] = []
 
     async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
@@ -204,10 +204,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 )
                 for volume in self.resources.volumes
             ],
-            gpus=[
-                QemuGPU(pci_host=gpu.pci_host)
-                for gpu in self.resources.gpus
-            ]
+            gpus=[QemuGPU(pci_host=gpu.pci_host) for gpu in self.resources.gpus],
         )
 
         configuration = Configuration(

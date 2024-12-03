@@ -19,7 +19,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
-from aleph.vm.resources import GpuDevice, get_gpu_devices
+from aleph.vm.resources import GpuDevice, HostGPU, get_gpu_devices
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -297,14 +297,12 @@ class VmPool:
         return executions or []
 
     def get_available_gpus(self) -> List[GpuDevice]:
-        available_gpus = (
-            gpu
-            for gpu in self.gpus
-            for _, execution in self.executions.items()
-            if (isinstance(execution.resources, AlephQemuResources) or isinstance(execution.resources, AlephQemuConfidentialResources)) and not execution.uses_device_gpu(gpu.pci_host)
-        )
-
-        return available_gpus or []
+        available_gpus = []
+        for gpu in self.gpus:
+            for _, execution in self.executions.items():
+                if not execution.uses_gpu(gpu.pci_host):
+                    available_gpus.append(gpu)
+        return available_gpus
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""

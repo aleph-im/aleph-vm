@@ -107,7 +107,7 @@ class QemuConfidentialVM(QemuVM):
             # AMD have different methods) and properly boot.
             # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
             "-cpu",
-            "host,host-phys-bits-limit=0x28"
+            "host,host-phys-bits-limit=0x28",
             # Uncomment following for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk

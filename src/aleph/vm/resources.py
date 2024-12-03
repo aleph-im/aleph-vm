@@ -1,9 +1,15 @@
 import subprocess
+from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
 from aleph_message.models import HashableModel
 from pydantic import Extra, Field
+
+
+@dataclass
+class HostGPU:
+    pci_host: str
 
 
 class GpuDeviceClass(str, Enum):

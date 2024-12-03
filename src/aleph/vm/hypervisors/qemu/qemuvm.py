@@ -7,7 +7,7 @@ from typing import BinaryIO, TextIO
 import qmp
 from systemd import journal
 
-from aleph.vm.controllers.configuration import QemuVMConfiguration, QemuGPU
+from aleph.vm.controllers.configuration import QemuGPU, QemuVMConfiguration
 from aleph.vm.controllers.qemu.instance import logger
 
 
@@ -107,7 +107,7 @@ class QemuVM:
             # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
             #
             "-cpu",
-            "host,host-phys-bits-limit=0x28"
+            "host,host-phys-bits-limit=0x28",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk

@@ -16,7 +16,7 @@ from aleph_message.models import (
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable, HostGPU
+from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
 from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
 from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerProgram,
@@ -38,7 +38,7 @@ from aleph.vm.orchestrator.metrics import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
-from aleph.vm.resources import GpuDevice
+from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
@@ -70,7 +70,9 @@ class VmExecution:
     vm_hash: ItemHash
     original: ExecutableContent
     message: ExecutableContent
-    resources: AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None = None
+    resources: (
+        AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
+    ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: List[HostGPU]
 
@@ -224,11 +226,7 @@ class VmExecution:
         for gpu in self.message.requirements.gpu:
             for available_gpu in available_gpus:
                 if available_gpu.device_id == gpu.device_id:
-                    gpus.append(
-                        HostGPU(
-                            pci_host=available_gpu.pci_host
-                        )
-                    )
+                    gpus.append(HostGPU(pci_host=available_gpu.pci_host))
                     break
         self.gpus = gpus
 

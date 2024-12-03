@@ -127,10 +127,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
                 )
                 for volume in self.resources.volumes
             ],
-            gpus=[
-                QemuGPU(pci_host=gpu.pci_host)
-                for gpu in self.resources.gpus
-            ]
+            gpus=[QemuGPU(pci_host=gpu.pci_host) for gpu in self.resources.gpus],
         )
 
         configuration = Configuration(
