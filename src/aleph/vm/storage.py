@@ -132,7 +132,7 @@ async def get_latest_amend(item_hash: str) -> str:
     if settings.FAKE_DATA_PROGRAM:
         return item_hash
     else:
-        url = f"{settings.CONNECTOR_URL}/compute/latest_amend/{item_hash}"
+        url = f"{settings.CONNECTOR_URL}compute/latest_amend/{item_hash}"
         async with aiohttp.ClientSession() as session:
             resp = await session.get(url)
             resp.raise_for_status()
@@ -150,7 +150,7 @@ async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
         logger.debug("Using the fake data message")
     else:
         cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
-        url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
+        url = f"{settings.CONNECTOR_URL}download/message/{ref}"
         await download_file(url, cache_path)
 
     with open(cache_path) as cache_file:
@@ -186,7 +186,7 @@ async def get_code_path(ref: str) -> Path:
             raise ValueError(msg)
 
     cache_path = Path(settings.CODE_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/code/{ref}"
     await download_file(url, cache_path)
     return cache_path
 
@@ -198,7 +198,7 @@ async def get_data_path(ref: str) -> Path:
         return Path(f"{data_dir}.zip")
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/data/{ref}"
     await download_file(url, cache_path)
     return cache_path
 
@@ -219,7 +219,7 @@ async def get_runtime_path(ref: str) -> Path:
         return Path(settings.FAKE_DATA_RUNTIME)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/runtime/{ref}"
 
     if not cache_path.is_file():
         # File does not exist, download it
@@ -237,7 +237,7 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/runtime/{ref}"
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
@@ -359,7 +359,7 @@ async def get_existing_file(ref: str) -> Path:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/data/{ref}"
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path

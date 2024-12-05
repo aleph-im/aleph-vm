@@ -362,7 +362,7 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
     """
     try:
         data = await request.json()
-        params = InjectSecretParams.parse_obj(data)
+        params = InjectSecretParams.model_validate(data)
     except json.JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except pydantic.ValidationError as error:
