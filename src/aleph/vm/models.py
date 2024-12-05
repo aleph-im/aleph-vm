@@ -13,7 +13,7 @@ from aleph_message.models import (
     ItemHash,
     ProgramContent,
 )
-from aleph_message.models.execution.environment import HypervisorType
+from aleph_message.models.execution.environment import GpuProperties, HypervisorType
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
@@ -74,7 +74,7 @@ class VmExecution:
         AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
-    gpus: List[HostGPU]
+    gpus: List[HostGPU] = []
 
     times: VmExecutionTimes
 
@@ -223,11 +223,13 @@ class VmExecution:
 
     def prepare_gpus(self, available_gpus: List[GpuDevice]) -> None:
         gpus = []
-        for gpu in self.message.requirements.gpu:
-            for available_gpu in available_gpus:
-                if available_gpu.device_id == gpu.device_id:
-                    gpus.append(HostGPU(pci_host=available_gpu.pci_host))
-                    break
+        if self.message.requirements and self.message.requirements.gpu:
+            for gpu in self.message.requirements.gpu:
+                gpu = GpuProperties.parse_obj(gpu)
+                for available_gpu in available_gpus:
+                    if available_gpu.device_id == gpu.device_id:
+                        gpus.append(HostGPU(pci_host=available_gpu.pci_host))
+                        break
         self.gpus = gpus
 
     def uses_gpu(self, pci_host: str) -> bool:

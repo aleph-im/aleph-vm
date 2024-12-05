@@ -299,9 +299,13 @@ class VmPool:
     def get_available_gpus(self) -> List[GpuDevice]:
         available_gpus = []
         for gpu in self.gpus:
+            used = False
             for _, execution in self.executions.items():
-                if not execution.uses_gpu(gpu.pci_host):
-                    available_gpus.append(gpu)
+                if execution.uses_gpu(gpu.pci_host):
+                    used = True
+                    break
+            if not used:
+                available_gpus.append(gpu)
         return available_gpus
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
