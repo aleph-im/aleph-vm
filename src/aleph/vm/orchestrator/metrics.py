@@ -76,6 +76,8 @@ class ExecutionRecord(Base):
     original_message = Column(JSON, nullable=True)
     persistent = Column(Boolean, nullable=True)
 
+    gpus = Column(JSON, nullable=True)
+
     def __repr__(self):
         return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash}, vm_id={self.vm_id})>"
 

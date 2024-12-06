@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 from asyncio import Task
@@ -14,6 +15,7 @@ from aleph_message.models import (
     ProgramContent,
 )
 from aleph_message.models.execution.environment import GpuProperties, HypervisorType
+from pydantic.json import pydantic_encoder
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
@@ -460,6 +462,7 @@ class VmExecution:
                     message=self.message.json(),
                     original_message=self.original.json(),
                     persistent=self.persistent,
+                    gpus=json.dumps(self.gpus, default=pydantic_encoder),
                 )
             )
 

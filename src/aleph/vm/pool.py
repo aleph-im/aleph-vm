@@ -14,6 +14,7 @@ from aleph_message.models import (
     Payment,
     PaymentType,
 )
+from pydantic import parse_raw_as
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
@@ -241,8 +242,7 @@ class VmPool:
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 # Load existing GPUs assigned to VMs
-                for saved_gpu in saved_execution.gpus:
-                    execution.gpus.append(HostGPU(pci_host=saved_gpu.pci_host))
+                execution.gpus = parse_raw_as(List[HostGPU], saved_execution.gpus)
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
