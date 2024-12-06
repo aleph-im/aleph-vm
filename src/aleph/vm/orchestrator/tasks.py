@@ -4,6 +4,7 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterable
+from decimal import Decimal
 from typing import TypeVar
 
 import aiohttp
@@ -175,10 +176,14 @@ async def monitor_payments(app: web.Application):
         # Check if the balance held in the wallet is sufficient stream tier resources
         for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
             for chain, executions in chains.items():
-                stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
-                logger.debug(
-                    f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
-                )
+                try:
+                    stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
+                    logger.debug(
+                        f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
+                    )
+                except ValueError as error:
+                    logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
+                    stream = Decimal(0)
 
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")

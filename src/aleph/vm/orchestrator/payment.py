@@ -100,9 +100,13 @@ async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    chain_info: ChainInfo = get_chain(chain=chain)
-    if not chain_info.active:
-        msg = f"Chain : {chain} is not active for superfluid"
+    try:
+        chain_info: ChainInfo = get_chain(chain=chain)
+        if not chain_info.active:
+            msg = f"Chain : {chain} is not active for superfluid"
+            raise InvalidChainError(msg)
+    except ValueError:
+        msg = f"Chain : {chain} is invalid"
         raise InvalidChainError(msg)
 
     superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)

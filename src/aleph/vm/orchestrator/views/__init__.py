@@ -347,6 +347,7 @@ async def status_public_config(request: web.Request):
                 "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
                 "INSTANCE_DEFAULT_HYPERVISOR": settings.INSTANCE_DEFAULT_HYPERVISOR,
                 "ENABLE_CONFIDENTIAL_COMPUTING": settings.ENABLE_CONFIDENTIAL_COMPUTING,
+                "ENABLE_GPU_SUPPORT": settings.ENABLE_GPU_SUPPORT,
             },
         },
         dumps=dumps_for_json,
