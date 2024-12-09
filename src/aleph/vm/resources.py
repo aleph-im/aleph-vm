@@ -3,10 +3,21 @@ from enum import Enum
 from typing import List, Optional
 
 from aleph_message.models import HashableModel
-from pydantic import Extra, Field
+from pydantic import BaseModel, Extra, Field
+
+
+class HostGPU(BaseModel):
+    """Host GPU properties detail."""
+
+    pci_host: str = Field(description="GPU PCI host address")
+
+    class Config:
+        extra = Extra.forbid
 
 
 class GpuDeviceClass(str, Enum):
+    """GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"""
+
     VGA_COMPATIBLE_CONTROLLER = "0300"
     _3D_CONTROLLER = "0302"
 
