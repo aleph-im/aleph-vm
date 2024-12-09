@@ -183,7 +183,7 @@ async def monitor_payments(app: web.Application):
                     )
                 except ValueError as error:
                     logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
-                    stream = Decimal(0)
+                    continue
 
                 required_stream = await compute_required_flow(executions)
                 logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")

@@ -104,10 +104,6 @@ class QemuVM:
             # Tell to put the output to std fd, so we can include them in the log
             "-serial",
             "stdio",
-            # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
-            #
-            "-cpu",
-            "host,host-phys-bits-limit=0x28",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk
@@ -145,7 +141,11 @@ class QemuVM:
         return args
 
     def _get_gpu_args(self):
-        args = []
+        args = [
+            # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
+            "-cpu",
+            "host,host-phys-bits-limit=0x28",
+        ]
         for gpu in self.gpus:
             args += [
                 "-device",

@@ -13,7 +13,7 @@ from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.utils import to_normalized_address
 
-from .chain import ChainInfo, get_chain
+from .chain import ChainInfo, InvalidChainError, get_chain
 
 logger = logging.getLogger(__name__)
 
@@ -91,22 +91,14 @@ class InvalidAddressError(ValueError):
     pass
 
 
-class InvalidChainError(ValueError):
-    pass
-
-
 async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     """
     Get the stream of the user from the Superfluid API.
     See https://community.aleph.im/t/pay-as-you-go-using-superfluid/98/11
     """
-    try:
-        chain_info: ChainInfo = get_chain(chain=chain)
-        if not chain_info.active:
-            msg = f"Chain : {chain} is not active for superfluid"
-            raise InvalidChainError(msg)
-    except ValueError:
-        msg = f"Chain : {chain} is invalid"
+    chain_info: ChainInfo = get_chain(chain=chain)
+    if not chain_info.active:
+        msg = f"Chain : {chain} is not active for superfluid"
         raise InvalidChainError(msg)
 
     superfluid_instance = CFA_V1(chain_info.rpc, chain_info.chain_id)
