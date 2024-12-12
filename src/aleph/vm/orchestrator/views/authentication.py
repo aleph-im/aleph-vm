@@ -257,7 +257,7 @@ async def authenticate_websocket_message(message) -> str:
 
 
 def require_jwk_authentication(
-    handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]]
+    handler: Callable[[web.Request, str], Coroutine[Any, Any, web.StreamResponse]],
 ) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
     """A decorator to enforce JWK-based authentication for HTTP requests.
 
