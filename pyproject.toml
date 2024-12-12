@@ -126,16 +126,18 @@ dependencies = [
 ]
 [tool.hatch.envs.linting.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
+# Check
 style = [
-  #  "ruff {args:.}",
+  "ruff format --diff {args:.}",
   "black --check --diff {args:.}",
   "isort --check-only --profile black {args:.}",
   "yamlfix --check .",
   "pyproject-fmt --check pyproject.toml",
 ]
+# Do modification
 fmt = [
+  "ruff format {args:.}",
   "black {args:.}",
-  #  "ruff --fix {args:.}",
   "isort --profile black {args:.}",
   "yamlfix .",
   "pyproject-fmt pyproject.toml",
@@ -182,6 +184,8 @@ lint.select = [
   "YTT",
 ]
 lint.ignore = [
+  "ISC001",
+  # https://docs.astral.sh/ruff/rules/single-line-implicit-string-concatenation/#single-line-implicit-string-concatenation-isc001
   #  # Allow non-abstract empty methods in abstract base classes
   #  "B027",
   #  # Allow boolean positional values in function calls, like `dict.get(... True)`
@@ -193,16 +197,21 @@ lint.ignore = [
   # Allow the use of assert statements
   "S101",
 ]
+src = ["src"]
+
+
 #[tool.ruff.flake8-tidy-imports]
 #ban-relative-imports = "all"
 #unfixable = [
 #  # Don't touch unused imports
 #  "F401",
 #]
-#lint.isort = [ "aleph.vm" ]
 
 # Tests can use magic values, assertions, and relative imports
 lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
+
+[tool.isort]
+profile = "black"
 
 [tool.pytest.ini_options]
 pythonpath = [
