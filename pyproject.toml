@@ -117,7 +117,6 @@ python = [ "3.10", "3.11", "3.12" ]
 [tool.hatch.envs.linting]
 detached = true
 dependencies = [
-  "black==24.3.0",
   "mypy==1.8.0",
   "ruff==0.4.6",
   "isort==5.13.2",
@@ -129,7 +128,6 @@ typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/alep
 # Check
 style = [
   "ruff format --diff {args:.}",
-  "black --check --diff {args:.}",
   "isort --check-only --profile black {args:.}",
   "yamlfix --check .",
   "pyproject-fmt --check pyproject.toml",
@@ -137,7 +135,6 @@ style = [
 # Do modification
 fmt = [
   "ruff format {args:.}",
-  "black {args:.}",
   "isort --profile black {args:.}",
   "yamlfix .",
   "pyproject-fmt pyproject.toml",
