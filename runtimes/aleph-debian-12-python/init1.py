@@ -558,6 +558,7 @@ async def main() -> None:
 
     class ServerReference:
         "Reference used to close the server from within `handle_instruction"
+
         server: asyncio.AbstractServer
 
     server_reference = ServerReference()

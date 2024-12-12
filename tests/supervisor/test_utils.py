@@ -9,7 +9,6 @@ from aleph.vm.utils import (
 
 
 def test_check_system_module_enabled():
-
     with mock.patch(
         "pathlib.Path.exists",
         return_value=True,
@@ -19,7 +18,6 @@ def test_check_system_module_enabled():
             "aleph.vm.utils.Path.open",
             mock.mock_open(read_data=expected_value),
         ):
-
             output = check_system_module("kvm_amd/parameters/sev_enp")
             assert output == expected_value
 
