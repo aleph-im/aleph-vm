@@ -113,6 +113,35 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
 ## Testing
 See [Testinc doc](./TESTING.md)
 
+## Code Formatting and Linting
+
+To help maintain a clean and consistent codebase, we provide automated tools for formatting and style checks.
+To ensure your code is properly **formatted** according to project standards, you can use:
+
+```bash
+hatch linting:fmt
+```
+
+**Typing** helps ensure your code adheres to expected type annotations, improving reliability and clarity. To validate
+typing in your code, use:
+```bash
+hatch linting:typing
+```
+
+These checks are also validated in Continuous Integration (CI) alongside unit tests. To ensure a smooth workflow, we 
+recommend running these commands before committing changes.
+
+**Linting** checks for potential errors, coding style violations, and patterns that may lead to bugs or reduce code
+quality (e.g., unused variables, incorrect imports, or inconsistent naming). While linting is not currently enforced in
+Continuous Integration (CI), it is considered a best practice to check linting manually to maintain high-quality code.
+You can manually lint your code by running:
+
+```bash
+hatch fmt
+```
+
+Following these best practices can help streamline code reviews and improve overall project quality.
+
 # Architecture
 
 ![Aleph im VM - Details](https://user-images.githubusercontent.com/404665/127126908-3225a633-2c36-4129-8766-9810f2fcd7d6.png)
