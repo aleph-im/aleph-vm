@@ -12,7 +12,6 @@ from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 
 
 class QemuConfidentialVM(QemuVM):
-
     sev_policy: str = hex(AMDSEVPolicy.NO_DBG)
     sev_dh_cert_file: Path  # "vm_godh.b64"
     sev_session_file: Path  # "vm_session.b64"

@@ -25,7 +25,6 @@ class InjectingFilter(logging.Filter):
     """
 
     def filter(self, record):
-
         vm_hash = ctx_current_execution_hash.get(None)
         if not vm_hash:
             vm_execution: VmExecution | None = ctx_current_execution.get(None)
