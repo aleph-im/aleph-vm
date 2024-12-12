@@ -16,7 +16,13 @@ from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.storage import get_message
 from aleph.vm.utils.logs import EntryDict
-from aleph.vm.utils.test_helpers import generate_signer_and_signed_headers_for_operation
+from aleph.vm.utils.test_helpers import (
+    generate_signer_and_signed_headers_for_operation,
+    patch_datetime_now,
+)
+
+# Ensure this is not removed by ruff
+assert patch_datetime_now
 
 
 @pytest.mark.asyncio
