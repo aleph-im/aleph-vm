@@ -16,8 +16,12 @@ from aleph.vm.orchestrator.views.authentication import (
 )
 from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
+    patch_datetime_now,
     to_0x_hex,
 )
+
+# Ensure this is not removed by ruff
+assert patch_datetime_now
 
 
 @pytest.mark.asyncio
