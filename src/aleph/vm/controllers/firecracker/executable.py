@@ -114,7 +114,11 @@ class AlephFirecrackerResources:
     async def download_volumes(self):
         volumes = []
         # TODO: Download in parallel
-        for volume in self.message_content.volumes:
+        for i, volume in enumerate(self.message_content.volumes):
+            if not volume.name:
+                volume.name = f"unamed_volume_{i}"
+            if not volume.mount:
+                volume.mount = f"/mnt/{volume.name}"
             volumes.append(
                 HostVolume(
                     mount=volume.mount,

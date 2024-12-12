@@ -372,8 +372,6 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
         return await get_existing_file(ref)
     elif isinstance(volume, PersistentVolume | RootfsVolume):
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
-        if not volume.name:
-            volume_name = f"unamed_{uuid.uuid4().hex}"
         if volume.persistence != VolumePersistence.host:
             msg = "Only 'host' persistence is supported"
             raise NotImplementedError(msg)
