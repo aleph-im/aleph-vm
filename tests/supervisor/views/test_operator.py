@@ -9,18 +9,14 @@ from unittest.mock import MagicMock
 import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient
-from aleph_message.models import ItemHash, ProgramMessage
+from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.pool import VmPool
 from aleph.vm.storage import get_message
 from aleph.vm.utils.logs import EntryDict
-from aleph.vm.utils.test_helpers import (
-    generate_signer_and_signed_headers_for_operation,
-    patch_datetime_now,
-)
+from aleph.vm.utils.test_helpers import generate_signer_and_signed_headers_for_operation
 
 
 @pytest.mark.asyncio

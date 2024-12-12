@@ -1,5 +1,5 @@
 import tempfile
-from pathlib import Path, PosixPath
+from pathlib import Path
 from unittest import mock
 from unittest.mock import call
 
