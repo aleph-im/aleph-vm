@@ -16,7 +16,6 @@ from aleph.vm.orchestrator.views.authentication import (
 )
 from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
-    patch_datetime_now,
     to_0x_hex,
 )
 
