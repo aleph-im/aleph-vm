@@ -271,7 +271,15 @@ async def test_create_execution_volume_with_no_name(fake_message):
         "name": "",
         "size_mib": 1,
     }
-    fake_message["content"]["volumes"] = [volume_with_no_name]
+    volume_with_no_mount = {
+        "comment": "Persistence with no mount name",
+        "mount": "",
+        "parent": None,
+        "persistence": "host",
+        "name": "",
+        "size_mib": 1,
+    }
+    fake_message["content"]["volumes"] = [volume_with_no_name, volume_with_no_mount]
     fake_message = drop_none_recursively(fake_message)
     fix_message_validation(fake_message)
 
