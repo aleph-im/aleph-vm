@@ -4,6 +4,7 @@ import logging
 from decimal import Decimal
 from hashlib import sha256
 from json import JSONDecodeError
+from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from secrets import compare_digest
 from string import Template
@@ -55,7 +56,6 @@ from aleph.vm.utils import (
     get_ref_from_dns,
 )
 from aleph.vm.version import __version__
-from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
 

@@ -156,6 +156,7 @@ line-length = 120
 [tool.ruff]
 target-version = "py310"
 line-length = 120
+src = [ "src" ]
 lint.select = [
   "A",
   "ARG",
@@ -197,9 +198,6 @@ lint.ignore = [
   # Allow the use of assert statements
   "S101",
 ]
-src = ["src"]
-
-
 #[tool.ruff.flake8-tidy-imports]
 #ban-relative-imports = "all"
 #unfixable = [
@@ -212,6 +210,7 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 
 [tool.isort]
 profile = "black"
+extra_standard_library = [ "packaging" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
