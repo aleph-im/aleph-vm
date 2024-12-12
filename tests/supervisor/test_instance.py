@@ -2,7 +2,6 @@ import asyncio
 import logging
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Optional
 
 import pytest
 from aleph_message.models import ItemHash
@@ -21,8 +20,8 @@ from aleph.vm.vm_type import VmType
 
 @pytest.mark.asyncio
 class MockSystemDManager(SystemDManager):
-    execution: Optional[MicroVM] = None
-    process: Optional[Process] = None
+    execution: MicroVM | None = None
+    process: Process | None = None
 
     async def enable_and_start(self, vm_hash: str):
         config_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
