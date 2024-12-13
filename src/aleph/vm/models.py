@@ -410,8 +410,8 @@ class VmExecution:
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
                     network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                 )
             )
@@ -434,8 +434,8 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                 )
             )
