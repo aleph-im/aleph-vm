@@ -170,6 +170,4 @@ class TapInterface:
         if self.ndp_proxy:
             await self.ndp_proxy.delete_range(self.device_name)
         with IPRoute() as ipr:
-            delete_ip_address(ipr, self.device_name, self.host_ip)
-            delete_ip_address(ipr, self.device_name, self.host_ipv6)
             delete_tap_interface(ipr, self.device_name)
