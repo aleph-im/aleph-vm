@@ -61,20 +61,6 @@ def add_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Inter
         logger.error(f"Unknown exception while adding address {ip} to interface {device_name}: {e}")
 
 
-def delete_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
-    """Delete an IP address to the given interface."""
-    interface_index: list[int] = ipr.link_lookup(ifname=device_name)
-    if not interface_index:
-        msg = f"Interface {device_name} does not exist, can't delete address {ip} to it."
-        raise MissingInterfaceError(msg)
-    try:
-        ipr.addr("del", index=interface_index[0], address=str(ip.ip), mask=ip.network.prefixlen)
-    except NetlinkError as e:
-        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
-    except OSError as e:
-        logger.exception(f"Unknown exception while deleting address {ip} to interface {device_name}: {e}")
-
-
 def set_link_up(ipr: IPRoute, device_name: str):
     """Set the given interface up."""
     interface_index: list[int] = ipr.link_lookup(ifname=device_name)
