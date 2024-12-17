@@ -167,9 +167,6 @@ async def benchmark(runs: int):
     """Measure program performance by immediately running the supervisor
     with fake requests.
     """
-    engine = metrics.setup_engine()
-    await metrics.create_tables(engine)
-
     ref = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
     settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
 
@@ -357,6 +354,10 @@ def main():
     settings.check()
 
     logger.debug("Initialising the DB...")
+    # Check and create execution database
+    engine = metrics.setup_engine()
+    asyncio.run(metrics.create_tables(engine))
+    # After creating it run the DB migrations
     asyncio.run(run_async_db_migrations())
     logger.debug("DB up to date.")
 
