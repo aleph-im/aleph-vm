@@ -9,7 +9,6 @@ def mock_is_kernel_enabled_gpu(pci_host: str) -> bool:
 
 
 def test_get_gpu_devices():
-
     class DevicesReturn:
         stdout: str = (
             '00:1f.0 "ISA bridge [0601]" "Intel Corporation [8086]" "Device [7a06]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
@@ -28,7 +27,6 @@ def test_get_gpu_devices():
             "aleph.vm.resources.is_kernel_enabled_gpu",
             wraps=mock_is_kernel_enabled_gpu,
         ):
-
             expected_gpu_devices = get_gpu_devices()
 
             print(expected_gpu_devices)
