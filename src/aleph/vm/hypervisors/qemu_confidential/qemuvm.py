@@ -87,12 +87,18 @@ class QemuConfidentialVM(QemuVM):
             "-qmp",
             f"unix:{self.qmp_socket_path},server,nowait",
             # Tell to put the output to std fd, so we can include them in the log
-            "-nographic",
             "-serial",
             "stdio",
-            "--no-reboot",  # Rebooting from inside the VM shuts down the machine
-            "-S",
+            # nographics. Seems redundant with -serial stdio but without it the boot process is not displayed on stdout
+            "-nographic",
+            # Boot
+            # order=c only first hard drive
+            # reboot-timeout in combination with -no-reboot, makes it so qemu stop if there is no bootable device
+            "-boot",
+            "order=c,reboot-timeout=1",
             # Confidential options
+            # Do not start CPU at startup, we will start it via QMP after injecting the secret
+            "-S",
             "-object",
             f"sev-guest,id=sev0,policy={self.sev_policy},cbitpos={sev_info.c_bit_position},"
             f"reduced-phys-bits={sev_info.phys_addr_reduction},"
