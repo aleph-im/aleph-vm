@@ -102,6 +102,13 @@ class QemuVM:
             # Tell to put the output to std fd, so we can include them in the log
             "-serial",
             "stdio",
+            # nographics. Seems redundant with -serial stdio but without it the boot process is not displayed on stdout
+            "-nographic",
+            # Boot
+            # order=c only first hard drive
+            # reboot-timeout in combination with -no-reboot, makes it so qemu stop if there is no bootable device
+            "-boot",
+            "order=c,reboot-timeout=1",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
             # "-snapshot",  # Do not save anything to disk

@@ -53,6 +53,7 @@ def parse_args(args):
         help="set loglevel to DEBUG",
         action="store_const",
         const=logging.DEBUG,
+        default=logging.INFO,
     )
     return parser.parse_args(args)
 
