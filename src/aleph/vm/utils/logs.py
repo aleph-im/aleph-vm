@@ -1,8 +1,8 @@
 import asyncio
 import logging
 from collections.abc import Callable, Generator
-from datetime import datetime
-from typing import TypedDict
+from datetime import datetime, timedelta
+from typing import List, TypedDict
 
 from systemd import journal
 
@@ -35,27 +35,38 @@ def make_logs_queue(stdout_identifier, stderr_identifier, skip_past=False) -> tu
     r = journal.Reader()
     r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
     r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
-    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=5)
+    tasks: List[asyncio.Future] = []
 
-    def _ready_for_read() -> None:
-        change_type = r.process()  # reset fd status
-        if change_type != journal.APPEND:
-            return
+    async def process_messages() -> None:
+        loop.remove_reader(r.fileno())
         entry: EntryDict
         for entry in r:
             log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_identifier else "stderr"
             msg = entry["MESSAGE"]
-            asyncio.create_task(queue.put((log_type, msg)))
+            await queue.put((log_type, msg))
+            r.process()  # reset fd status
+        r.process()  # reset fd status
+        loop.add_reader(r.fileno(), _ready_for_read)
+
+    def _ready_for_read() -> None:
+        task = loop.create_task(process_messages(), name=f"process_messages-queue-{id(queue)}")
+        tasks.append(task)
+        task.add_done_callback(tasks.remove)
 
     if skip_past:
-        r.seek_tail()
+        # seek_tail doesn't work see https://github.com/systemd/systemd/issues/17662
+        r.seek_realtime(datetime.now() - timedelta(seconds=10))
 
     loop = asyncio.get_event_loop()
     loop.add_reader(r.fileno(), _ready_for_read)
+    r.process()
 
     def do_cancel():
         logger.info(f"cancelling reader {r}")
         loop.remove_reader(r.fileno())
+        for task in tasks:
+            task.cancel()
         r.close()
 
     return queue, do_cancel
