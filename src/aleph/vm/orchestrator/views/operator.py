@@ -93,6 +93,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
                     logger.debug(message)
 
                     await ws.send_json({"type": log_type, "message": message})
+                    queue.task_done()
 
             finally:
                 await ws.close()
