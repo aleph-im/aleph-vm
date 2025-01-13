@@ -415,8 +415,12 @@ async def update_allocations(request: web.Request):
             vm_hash = ItemHash(vm_hash)
             await start_persistent_vm(vm_hash, pubsub, pool)
         except vm_creation_exceptions as error:
-            logger.exception(error)
+            logger.exception("Error while starting VM '%s': %s", vm_hash, error)
             scheduling_errors[vm_hash] = error
+        except Exception as error:
+            # Handle unknown exception separately, to avoid leaking data
+            logger.exception("Unhandled Error while starting VM '%s': %s", vm_hash, error)
+            scheduling_errors[vm_hash] = Exception("Unhandled Error")
 
     # Schedule the start of instances:
     for instance_hash in allocation.instances:
@@ -425,8 +429,12 @@ async def update_allocations(request: web.Request):
         try:
             await start_persistent_vm(instance_item_hash, pubsub, pool)
         except vm_creation_exceptions as error:
-            logger.exception(error)
+            logger.exception("Error while starting VM '%s': %s", instance_hash, error)
             scheduling_errors[instance_item_hash] = error
+        except Exception as error:
+            # Handle unknown exception separately, to avoid leaking data
+            logger.exception("Unhandled Error while starting VM '%s': %s", instance_hash, error)
+            scheduling_errors[vm_hash] = Exception("Unhandled Error")
 
     # Log unsupported features
     if allocation.on_demand_vms:
