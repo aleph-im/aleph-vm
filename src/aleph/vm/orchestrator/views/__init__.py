@@ -403,6 +403,7 @@ async def update_allocations(request: web.Request):
         VmSetupError,
         MicroVMFailedInitError,
         HostNotFoundError,
+        HTTPNotFound,
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}
