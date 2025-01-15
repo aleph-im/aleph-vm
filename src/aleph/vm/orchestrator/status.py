@@ -98,8 +98,7 @@ async def check_ipv4(session: ClientSession, vm_id: ItemHash) -> bool:
     """Check that the VM has IPv4 connectivity."""
     try:
         result: dict = await get_json_from_vm(session, vm_id, "/ip/4")
-        assert result["result"] is True
-        return True
+        return result["result"]
     except ClientResponseError:
         return False
 
@@ -108,9 +107,7 @@ async def check_ipv6(session: ClientSession, vm_id: ItemHash) -> bool:
     """Check that the VM has IPv6 connectivity."""
     try:
         result: dict = await get_json_from_vm(session, vm_id, "/ip/6")
-        assert result["result"] is True
-        assert "headers" in result
-        return True
+        return result["result"]
     except ClientResponseError:
         return False
 
