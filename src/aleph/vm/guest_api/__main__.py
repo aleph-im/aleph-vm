@@ -24,8 +24,15 @@ _redis: aioredis.Redis | None = None
 
 async def get_redis(address: str = REDIS_ADDRESS) -> aioredis.Redis:
     global _redis
-    if _redis is None:
+    # Ensure the redis connection is still up before returning it
+    if _redis:
+        try:
+            await _redis.ping()
+        except aioredis.ConnectionClosedError:
+            _redis = None
+    if not _redis:
         _redis = await aioredis.create_redis(address=address)
+
     return _redis
 
 

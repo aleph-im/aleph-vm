@@ -93,6 +93,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
                     logger.debug(message)
 
                     await ws.send_json({"type": log_type, "message": message})
+                    queue.task_done()
 
             finally:
                 await ws.close()
@@ -216,7 +217,6 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-
         pool: VmPool = request.app["vm_pool"]
         logger.debug(f"Iterating through running executions... {pool.executions}")
         execution = get_execution_or_404(vm_hash, pool=pool)

@@ -20,6 +20,9 @@ from aleph.vm.utils.test_helpers import (
     to_0x_hex,
 )
 
+# Ensure this is not removed by ruff
+assert patch_datetime_now
+
 
 @pytest.mark.asyncio
 async def test_require_jwk_authentication_missing_header(aiohttp_client):

@@ -13,6 +13,7 @@ from typing import Generic, TypeVar
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
+from aleph_message.models.execution.volume import PersistentVolume
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -114,7 +115,13 @@ class AlephFirecrackerResources:
     async def download_volumes(self):
         volumes = []
         # TODO: Download in parallel
-        for volume in self.message_content.volumes:
+        for i, volume in enumerate(self.message_content.volumes):
+            # only persistant volume has name and mount
+            if isinstance(volume, PersistentVolume):
+                if not volume.name:
+                    volume.name = f"unamed_volume_{i}"
+                if not volume.mount:
+                    volume.mount = f"/mnt/{volume.name}"
             volumes.append(
                 HostVolume(
                     mount=volume.mount,

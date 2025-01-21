@@ -31,7 +31,7 @@ dynamic = [ "version" ]
 # Upon adding or updating dependencies, update `packaging/Makefile` for the Debian package
 dependencies = [
   "aiodns==3.1",
-  "aiohttp==3.9.5",
+  "aiohttp==3.10.11",
   "aiohttp-cors~=0.7.0",
   "aioredis==1.3.1",
   "aiosqlite==0.19",
@@ -119,7 +119,6 @@ python = [ "3.10", "3.11", "3.12" ]
 [tool.hatch.envs.linting]
 detached = true
 dependencies = [
-  "black==24.3.0",
   "mypy==1.8.0",
   "ruff==0.4.6",
   "isort==5.13.2",
@@ -129,16 +128,16 @@ dependencies = [
 ]
 [tool.hatch.envs.linting.scripts]
 typing = "mypy {args:src/aleph/vm/ tests/ examples/example_fastapi runtimes/aleph-debian-12-python}"
+# Check
 style = [
-  #  "ruff {args:.}",
-  "black --check --diff {args:.}",
+  "ruff format --diff {args:.}",
   "isort --check-only --profile black {args:.}",
   "yamlfix --check .",
   "pyproject-fmt --check pyproject.toml",
 ]
+# Do modification
 fmt = [
-  "black {args:.}",
-  #  "ruff --fix {args:.}",
+  "ruff format {args:.}",
   "isort --profile black {args:.}",
   "yamlfix .",
   "pyproject-fmt pyproject.toml",
@@ -157,6 +156,7 @@ line-length = 120
 [tool.ruff]
 target-version = "py310"
 line-length = 120
+src = [ "src" ]
 lint.select = [
   "A",
   "ARG",
@@ -185,6 +185,8 @@ lint.select = [
   "YTT",
 ]
 lint.ignore = [
+  "ISC001",
+  # https://docs.astral.sh/ruff/rules/single-line-implicit-string-concatenation/#single-line-implicit-string-concatenation-isc001
   #  # Allow non-abstract empty methods in abstract base classes
   #  "B027",
   #  # Allow boolean positional values in function calls, like `dict.get(... True)`
@@ -202,10 +204,13 @@ lint.ignore = [
 #  # Don't touch unused imports
 #  "F401",
 #]
-#lint.isort = [ "aleph.vm" ]
 
 # Tests can use magic values, assertions, and relative imports
 lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
+
+[tool.isort]
+profile = "black"
+extra_standard_library = [ "packaging" ]
 
 [tool.pytest.ini_options]
 pythonpath = [

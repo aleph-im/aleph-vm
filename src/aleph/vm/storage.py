@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
@@ -109,9 +110,12 @@ async def download_file(url: str, local_path: Path) -> None:
                 await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=30)
             except TimeoutError as error:
                 if attempt < (download_attempts - 1):
-                    logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
+                    logger.warning(
+                        f"Download failed (waiting for another taks), retrying attempt {attempt + 1}/{download_attempts}..."
+                    )
                     continue
                 else:
+                    logger.warning(f"Download of {url} failed  (waiting for another task), aborting...")
                     raise error from file_exists_error
         except (
             aiohttp.ClientConnectionError,
@@ -122,6 +126,7 @@ async def download_file(url: str, local_path: Path) -> None:
                 logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
                 # continue  #  continue inside try/finally block is unimplemented in `mypyc`
             else:
+                logger.warning(f"Download of {url} failed  (aborting...")
                 raise error
         finally:
             # Ensure no partial file is left behind
@@ -375,7 +380,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             msg = "Only 'host' persistence is supported"
             raise NotImplementedError(msg)
         if not re.match(r"^[\w\-_/]+$", volume_name):
-            msg = f"Invalid value for volume name: {volume_name}"
+            msg = f"Invalid value for volume name: {repr(volume_name)}"
             raise ValueError(msg)
         (Path(settings.PERSISTENT_VOLUMES_DIR) / namespace).mkdir(exist_ok=True)
         if volume.parent:

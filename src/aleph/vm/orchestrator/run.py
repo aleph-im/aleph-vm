@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 import msgpack
-from aiohttp import web
+from aiohttp import ClientResponseError, web
 from aiohttp.web_exceptions import (
     HTTPBadGateway,
     HTTPBadRequest,
@@ -89,6 +89,12 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPInternalServerError(reason="Host did not respond to ping") from error
+    except ClientResponseError as error:
+        logger.exception(error)
+        if error.status == 404:
+            raise HTTPInternalServerError(reason=f"Item hash {vm_hash} not found") from error
+        else:
+            raise HTTPInternalServerError(reason=f"Error downloading {vm_hash}") from error
     except Exception as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
