@@ -134,7 +134,7 @@ async def about_system_usage(_: web.Request):
         properties=get_machine_properties(),
     )
 
-    return web.json_response(text=usage.json(exclude_none=True))
+    return web.json_response(text=usage.model_dump_json(exclude_none=True))
 
 
 @cors_allow_all
