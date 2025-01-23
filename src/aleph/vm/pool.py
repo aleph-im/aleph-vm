@@ -81,7 +81,11 @@ class VmPool:
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
         if self.network:
-            self.network.teardown()
+            # self.network.teardown()
+            # FIXME Temporary disable tearing down the network
+            # Fix issue of persistent instances running inside systemd controller losing their ipv4 nat access
+            #  upon supervisor restart or upgrade.
+            pass
 
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
