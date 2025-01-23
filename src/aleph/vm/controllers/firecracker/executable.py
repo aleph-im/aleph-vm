@@ -114,7 +114,7 @@ class AlephFirecrackerResources:
 
     async def download_volumes(self):
         volumes = []
-        # TODO: Download in parallel
+        # TODO: Download in parallel and prevent duplicated volume names
         for i, volume in enumerate(self.message_content.volumes):
             # only persistant volume has name and mount
             if isinstance(volume, PersistentVolume):
