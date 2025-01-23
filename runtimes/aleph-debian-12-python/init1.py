@@ -619,6 +619,6 @@ if __name__ == "__main__":
     # Send reboot syscall, see man page
     # https://man7.org/linux/man-pages/man2/reboot.2.html
     libc = ctypes.CDLL(None)
-    libc.syscall(169, 0xFEE1DEAD, 672274793, 0x4321FEDC, None)
+    libc.syscall(169, 0xFEE1DEAD, 672274793, 0x1234567, None)
     # The exit should not happen due to system halt.
     sys.exit(0)
