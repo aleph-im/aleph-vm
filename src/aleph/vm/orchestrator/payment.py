@@ -13,7 +13,7 @@ from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.utils import to_normalized_address
 
-from .chain import ChainInfo, get_chain
+from .chain import ChainInfo, InvalidChainError, get_chain
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +88,6 @@ async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
 class InvalidAddressError(ValueError):
     """The blockchain address could not be parsed."""
 
-    pass
-
-
-class InvalidChainError(ValueError):
     pass
 
 

@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import List
 
 from aleph_message.models import (
     Chain,
@@ -13,11 +14,13 @@ from aleph_message.models import (
     Payment,
     PaymentType,
 )
+from pydantic import parse_raw_as
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.resources import GpuDevice, HostGPU, get_gpu_devices
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -41,6 +44,7 @@ class VmPool:
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
+    gpus: List[GpuDevice] = []
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
@@ -78,6 +82,10 @@ class VmPool:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
 
+        if settings.ENABLE_GPU_SUPPORT:
+            logger.debug("Detecting GPU devices ...")
+            self.gpus = get_gpu_devices()
+
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
         if self.network:
@@ -109,7 +117,11 @@ class VmPool:
                 self.executions[vm_hash] = execution
 
             try:
+                # First assign Host GPUs from the available
+                execution.prepare_gpus(self.get_available_gpus())
+                # Prepare VM general Resources and also the GPUs
                 await execution.prepare()
+
                 vm_id = self.get_unique_vm_id()
 
                 if self.network:
@@ -233,6 +245,9 @@ class VmPool:
 
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
+                # Load existing GPUs assigned to VMs
+                execution.gpus = parse_raw_as(List[HostGPU], saved_execution.gpus)
+                # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
@@ -284,6 +299,18 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
         return executions or []
+
+    def get_available_gpus(self) -> List[GpuDevice]:
+        available_gpus = []
+        for gpu in self.gpus:
+            used = False
+            for _, execution in self.executions.items():
+                if execution.uses_gpu(gpu.pci_host):
+                    used = True
+                    break
+            if not used:
+                available_gpus.append(gpu)
+        return available_gpus
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""

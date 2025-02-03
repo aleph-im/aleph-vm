@@ -347,6 +347,7 @@ async def status_public_config(request: web.Request):
                 "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
                 "INSTANCE_DEFAULT_HYPERVISOR": settings.INSTANCE_DEFAULT_HYPERVISOR,
                 "ENABLE_CONFIDENTIAL_COMPUTING": settings.ENABLE_CONFIDENTIAL_COMPUTING,
+                "ENABLE_GPU_SUPPORT": settings.ENABLE_GPU_SUPPORT,
             },
         },
         dumps=dumps_for_json,
@@ -486,10 +487,14 @@ async def notify_allocation(request: web.Request):
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
     is_confidential = message.content.environment.trusted_execution is not None
+    have_gpu = message.content.requirements and message.content.requirements.gpu is not None
 
-    if payment_type == PaymentType.hold and is_confidential:
-        # At the moment we will allow hold for PAYG
-        logger.debug("Confidential instance not using PAYG")
+    if payment_type == PaymentType.hold and (is_confidential or have_gpu):
+        # Log confidential and instances with GPU support
+        if is_confidential:
+            logger.debug(f"Confidential instance {item_hash} not using PAYG")
+        if have_gpu:
+            logger.debug(f"GPU Instance {item_hash} not using PAYG")
         user_balance = await payment.fetch_balance_of_address(message.sender)
         hold_price = await payment.fetch_execution_hold_price(item_hash)
         logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
