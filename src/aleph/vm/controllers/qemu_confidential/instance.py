@@ -13,6 +13,7 @@ from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
     QemuConfidentialVMConfiguration,
+    QemuGPU,
     QemuVMHostVolume,
     save_controller_configuration,
 )
@@ -126,6 +127,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
                 )
                 for volume in self.resources.volumes
             ],
+            gpus=[QemuGPU(pci_host=gpu.pci_host) for gpu in self.resources.gpus],
         )
 
         configuration = Configuration(

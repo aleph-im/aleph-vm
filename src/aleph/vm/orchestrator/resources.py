@@ -1,6 +1,7 @@
 import math
 from datetime import datetime, timezone
 from functools import lru_cache
+from typing import List, Optional
 
 import cpuinfo
 import psutil
@@ -10,6 +11,8 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.pool import VmPool
+from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
@@ -73,13 +76,30 @@ class MachineProperties(BaseModel):
     cpu: CpuProperties
 
 
+class GpuProperties(BaseModel):
+    devices: Optional[List[GpuDevice]]
+    available_devices: Optional[List[GpuDevice]]
+
+
 class MachineUsage(BaseModel):
     cpu: CpuUsage
     mem: MemoryUsage
     disk: DiskUsage
     period: UsagePeriod
     properties: MachineProperties
+    gpu: GpuProperties
     active: bool = True
+
+
+def get_machine_gpus(request: web.Request) -> GpuProperties:
+    pool: VmPool = request.app["vm_pool"]
+    gpus = pool.gpus
+    available_gpus = pool.get_available_gpus()
+
+    return GpuProperties(
+        devices=gpus,
+        available_devices=available_gpus,
+    )
 
 
 @lru_cache
@@ -90,6 +110,7 @@ def get_machine_properties() -> MachineProperties:
     In the future, some properties may have to be fetched from within a VM.
     """
     cpu_info = cpuinfo.get_cpu_info()  # Slow
+
     return MachineProperties(
         cpu=CpuProperties(
             architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
@@ -109,9 +130,10 @@ def get_machine_properties() -> MachineProperties:
 
 
 @cors_allow_all
-async def about_system_usage(_: web.Request):
+async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    machine_properties = get_machine_properties()
 
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
@@ -131,7 +153,8 @@ async def about_system_usage(_: web.Request):
             start_timestamp=period_start,
             duration_seconds=60,
         ),
-        properties=get_machine_properties(),
+        properties=machine_properties,
+        gpu=get_machine_gpus(request),
     )
 
     return web.json_response(text=usage.json(exclude_none=True))
