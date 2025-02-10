@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType
+from typing import Any, Literal, NewType, List
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -279,6 +279,11 @@ class Settings(BaseSettings):
         default=False,
         description="Enable GPU pass-through support to VMs, only allowed for QEmu hypervisor",
     )
+
+    # Settings to get from the network aggregates
+    SETTINGS_AGGREGATE_ADDRESS: str = "0xA07B1214bAe0D5ccAA25449C3149c0aC83658874"
+    COMMUNITY_WALLET_ADDRESS: str | None = None
+    COMPATIBLE_GPUS: List[dict[str, str]] = []
 
     # Tests on programs
 
