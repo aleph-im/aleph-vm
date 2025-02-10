@@ -11,6 +11,7 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
@@ -134,6 +135,8 @@ async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     machine_properties = get_machine_properties()
+    # Refresh and get latest settings aggregate
+    await update_aggregate_settings()
 
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
