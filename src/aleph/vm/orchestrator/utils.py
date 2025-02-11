@@ -1,9 +1,11 @@
+from typing import Any
+
 import aiohttp
 
 from aleph.vm.conf import settings
 
 
-async def fetch_aggregate_settings() -> dict[str, any] | None:
+async def fetch_aggregate_settings() -> dict[str, Any] | None:
     """
     Get the settings Aggregate dict from the PyAleph API Aggregate.
 
