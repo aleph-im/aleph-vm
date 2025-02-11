@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType, List
+from typing import Any, List, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
