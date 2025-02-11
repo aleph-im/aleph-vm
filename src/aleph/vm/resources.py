@@ -28,6 +28,7 @@ class GpuDevice(HashableModel):
     """GPU properties."""
 
     vendor: str = Field(description="GPU vendor name")
+    model: str | None = Field(description="GPU model name on Aleph Network")
     device_name: str = Field(description="GPU vendor card name")
     device_class: GpuDeviceClass = Field(
         description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"
@@ -46,8 +47,7 @@ class CompatibleGPU(BaseModel):
     vendor: str = Field(description="GPU vendor name")
     model: str = Field(description="GPU model name")
     name: str = Field(description="GPU full name")
-    vendor_id: str = Field(description="GPU vendor id code")
-    model_id: str = Field(description="GPU model id code")
+    device_id: str = Field(description="GPU device id code including vendor_id and model_id")
 
 
 def is_gpu_device_class(device_class: str) -> bool:
@@ -58,11 +58,19 @@ def is_gpu_device_class(device_class: str) -> bool:
         return False
 
 
-def is_gpu_compatible(vendor_id: str, model_id: str) -> bool:
-    """Checks if a GPU is compatible based on vendor and model IDs."""
-    compatible_gpu_set = {(gpu.vendor_id, gpu.model_id) for gpu in settings.COMPATIBLE_GPUS}
+def get_gpu_model(device_id: str) -> bool | None:
+    """Returns a GPU model name if it's found from the compatible ones."""
+    model_gpu_set = {gpu.device_id: gpu.model for gpu in settings.COMPATIBLE_GPUS}
+    try:
+        return model_gpu_set[device_id]
+    except KeyError:
+        return None
 
-    return (vendor_id, model_id) in compatible_gpu_set
+
+def is_gpu_compatible(device_id: str) -> bool:
+    """Checks if a GPU is compatible based on vendor and model IDs."""
+    compatible_gpu_set = {gpu.device_id for gpu in settings.COMPATIBLE_GPUS}
+    return device_id in compatible_gpu_set
 
 
 def get_vendor_name(vendor_id: str) -> str:
@@ -111,11 +119,13 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     device_name, model_id = device_name.rsplit(" [", maxsplit=1)
     model_id = model_id[:-1]
     device_id = f"{vendor_id}:{model_id}"
-    compatible = is_gpu_compatible(vendor_id=vendor_id, model_id=model_id)
+    model = get_gpu_model(device_id=device_id)
+    compatible = is_gpu_compatible(device_id=device_id)
 
     return GpuDevice(
         pci_host=pci_host,
         vendor=vendor_name,
+        model=model,
         device_name=device_name,
         device_class=device_class,
         device_id=device_id,
@@ -124,16 +134,6 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
 
 
 def get_gpu_devices() -> Optional[List[GpuDevice]]:
-    """Get GPU info using lspci command."""
-
-    result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
-    gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
-    )
-    return gpu_devices if gpu_devices else None
-
-
-def get_compatible_gpus() -> Optional[List[GpuDevice]]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
