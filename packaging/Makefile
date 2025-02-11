@@ -34,7 +34,7 @@ debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bi
 firecracker-bins: target-dir build-dir
 	mkdir -p ./build/firecracker-release
 	# Download latest release
-	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64.tgz | tar -xz --no-same-owner --directory ./build/firecracker-release
+	curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.10.1/firecracker-v1.10.1-x86_64.tgz | tar -xz --no-same-owner --directory ./build/firecracker-release
 	# Copy binaries:
 	cp ./build/firecracker-release/release-v*/firecracker-v*[!.debug] ./target/firecracker
 	cp ./build/firecracker-release/release-v*/jailer-v*[!.debug] ./target/jailer
@@ -48,7 +48,7 @@ vmlinux:
 
 download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
-	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.33.2/kubo_v0.33.2_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 target/bin/sevctl:
 	cargo install --locked --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target
