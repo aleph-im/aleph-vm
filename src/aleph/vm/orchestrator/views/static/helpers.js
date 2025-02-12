@@ -60,20 +60,21 @@ async function fetchHostSystemUsage () {
         details: []
     }
     if(q.ok){
-        res.status = "<ul>";
         const answer = await q.json();
         const gpu_devices = answer.gpu.devices;
         if (gpu_devices.length <= 0) {
-            res.status = "<li>No GPUs detected</li>";
-        }
-        for (const gpu_device of gpu_devices){
-            let compatible_str = " is compatible &#9989;";
-            if (!gpu_device.compatible) {
-                compatible_str = " isn't compatible &#10060;";
+            res.status = "<b>No GPUs detected</b>";
+        }else{
+            res.status = "<ul>";
+            for (const gpu_device of gpu_devices){
+                let compatible_str = " is compatible &#9989;";
+                if (!gpu_device.compatible) {
+                    compatible_str = " isn't compatible &#10060;";
+                }
+                res.status += "<li><b>" + gpu_device.vendor + " | " + gpu_device.device_name + "</b>" + compatible_str + "</li>";
             }
-            res.status += "<li><b>" + gpu_device.vendor + " | " + gpu_device.device_name + "</b>" + compatible_str + "</li>";
+            res.status += "</ul>";
         }
-        res.status += "</ul>";
     }
     else {
         switch(Number(q.status)){
