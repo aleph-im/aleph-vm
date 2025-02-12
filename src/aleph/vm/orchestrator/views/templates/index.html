@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <title>Aleph.im Compute Node</title>
-    <link rel="stylesheet" href="/static/main.css">
-    <script src="/static/lightweight-charts.standalone.production.js"></script>
+    <link rel="stylesheet" href="../static/main.css">
+    <script src="../static/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
     <main>
@@ -112,6 +112,25 @@
                 <ul class="ipv4"></ul>
                 <h4>IPv6</h4>
                 <ul class="ipv6"></ul>
+                <h4>VM Egress IPv6</h4>
+                <p>
+                    VM Egress IPv6 is a test to check if virtual machines are able to connect to the IPv6 internet.
+                    Enabling VM IPv6 Egress requires a specific configuration that is not applied automatically. It is not yet
+                    required to run programs inside, <b>but it's required to run instance, so will be mandatory soon</b>.
+                </p>
+                <div id="ipv6-egress-checks">
+                    <p>
+                        VM Egress IPv6
+                        <span id="ipv6-egress-check">
+                        is ...
+                        <span class="loader-container">
+                            <span id="loader-one" class="loader"></span>
+                            <span id="loader-two" class="loader"></span>
+                            <span id="loader-three" class="loader"></span>
+                        </span>
+                    </span>
+                    </p>
+                </div>
             </div>
             <div class="help" style="display: none">
                 <p>
@@ -119,6 +138,21 @@
                         Troubleshoot host
                     </a>
                 </p>
+            </div>
+        </div>
+
+        <div id="gpu-checks">
+            <h3>GPUs</h3>
+            <div id="gpu-list">
+                Loading GPU list
+                <span>
+                    ...
+                    <span class="loader-container">
+                        <span id="loader-one" class="loader"></span>
+                        <span id="loader-two" class="loader"></span>
+                        <span id="loader-three" class="loader"></span>
+                    </span>
+                </span>
             </div>
         </div>
 
@@ -138,25 +172,6 @@
                 <ul id="latest-metrics"></ul>
             </div>
 
-            <h3>VM Egress IPv6</h3>
-            <p>
-                VM Egress IPv6 is a test to check if virtual machines are able to connect to the IPv6 internet.
-                Enabling VM IPv6 Egress requires a specific configuration that is not applied automatically. It is not yet
-                required to run virtual machines.
-            </p>
-            <div id="ipv6-egress-checks">
-                <p>
-                    VM Egress IPv6
-                    <span id="ipv6-egress-check">
-                        is ...
-                        <span class="loader-container">
-                            <span id="loader-one" class="loader"></span>
-                            <span id="loader-two" class="loader"></span>
-                            <span id="loader-three" class="loader"></span>
-                        </span>
-                    </span>
-                </p>
-            </div>
             <h3>APIs</h3>
             <p>
                 Host status check API: <a href="/status/check/host">/status/check/host</a>
@@ -214,7 +229,7 @@
     </main>
 
 
-    <script src="/static/helpers.js"></script>
+    <script src="../static/helpers.js"></script>
     <script>
         const NODE_HOSTNAME = '$public_url';
         const NODE_VERSION = '$version';
@@ -241,6 +256,20 @@
                     const detailsDiv = document.querySelector("#virtualization-legacy-checks .details ul");
                     detailsDiv.innerHTML = objectToString(details);
                     document.querySelector("#virtualization-legacy-checks .help").style.display = "block";
+                }
+            } catch (err) {
+                console.error('Could not fetch api status', err);
+            }
+        })();
+
+        (async () => {
+            try {
+                const { status, details } = await fetchHostSystemUsage();
+                document.getElementById('gpu-list').innerHTML = status;
+                if(Object.keys(details).length > 0){
+                    document.querySelector("#host-checks .details ul.ipv4").innerHTML = objectToString(details["ipv4"]);
+                    document.querySelector("#host-checks .details ul.ipv6").innerHTML = objectToString(details["ipv6"]);
+                    document.querySelector("#host-checks .help").style.display = "block";
                 }
             } catch (err) {
                 console.error('Could not fetch api status', err);
