@@ -60,7 +60,7 @@ def is_gpu_device_class(device_class: str) -> bool:
 
 def get_gpu_model(device_id: str) -> bool | None:
     """Returns a GPU model name if it's found from the compatible ones."""
-    model_gpu_set = {gpu.device_id: gpu.model for gpu in settings.COMPATIBLE_GPUS}
+    model_gpu_set = {gpu["device_id"]: gpu["model"] for gpu in settings.COMPATIBLE_GPUS}
     try:
         return model_gpu_set[device_id]
     except KeyError:
@@ -69,7 +69,7 @@ def get_gpu_model(device_id: str) -> bool | None:
 
 def is_gpu_compatible(device_id: str) -> bool:
     """Checks if a GPU is compatible based on vendor and model IDs."""
-    compatible_gpu_set = {gpu.device_id for gpu in settings.COMPATIBLE_GPUS}
+    compatible_gpu_set = {gpu["device_id"] for gpu in settings.COMPATIBLE_GPUS}
     return device_id in compatible_gpu_set
 
 
