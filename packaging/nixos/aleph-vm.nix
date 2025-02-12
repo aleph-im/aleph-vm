@@ -1,5 +1,16 @@
+{ pkgs, ...}:
 let
-  unstable = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz") {};
+  unstable = import (
+    # fetchTarball "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz"
+    pkgs.fetchFromGithub {
+      owner = "NixOS";
+      repo = "nixpkgs";
+#      rev = "nixos-unstable";
+      rev = "64e75cd44acf21c7933d61d7721e812eac1b5a0a";
+      # sha256 = pkgs.lib.fakeSha256;
+      sha256 = "";
+    }
+   );
 in
 {
   python312,
@@ -8,7 +19,7 @@ in
 
   python312.pkgs.buildPythonPackage rec {
     pname = "aleph-vm";
-    version = "0.4.1";
+    version = "1.3.1";
     src = ../..;
     format = "pyproject";
     #src = fetchPypi {
@@ -80,10 +91,10 @@ in
 
     aleph-message = python312.pkgs.buildPythonPackage rec {
       pname = "aleph-message";
-      version = "0.4.8";
+      version = "0.6.0";
       src = python312.pkgs.fetchPypi {
         inherit pname version;
-        sha256 = "sha256-Q6aWhAeZtgNpXJ0YT4xEtZLqzWpQI/3dg7nVrzC1/RM=";
+        sha256 = "";
       };
       doCheck = false;
       propagatedBuildInputs = [
