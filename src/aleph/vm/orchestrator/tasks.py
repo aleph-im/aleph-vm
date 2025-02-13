@@ -35,6 +35,7 @@ from .reactor import Reactor
 logger = logging.getLogger(__name__)
 
 Value = TypeVar("Value")
+COMMUNITY_STREAM_RATIO = 0.2
 
 
 async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
@@ -154,6 +155,7 @@ async def monitor_payments(app: web.Application):
         try:
             logger.debug("Monitoring balances task running")
             await check_payment(pool)
+            logger.debug("Monitoring balances task ended")
         except Exception as e:
             # Catch all exceptions as to never stop the task.
             logger.warning(f"check_payment failed {e}", exc_info=True)
@@ -197,25 +199,45 @@ async def check_payment(pool: VmPool):
         for chain, executions in chains.items():
             try:
                 stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
+
                 logger.debug(
-                    f"Get stream flow from Sender {sender} to Receiver {settings.PAYMENT_RECEIVER_ADDRESS} of {stream}"
+                    f"Stream flow from {sender} to {settings.PAYMENT_RECEIVER_ADDRESS} = {stream} {chain.value}"
                 )
             except ValueError as error:
                 logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
                 continue
+            try:
+                community_stream = await get_stream(
+                    sender=sender, receiver=settings.COMMUNITY_WALLET_ADDRESS, chain=chain
+                )
+                logger.debug(
+                    f"Stream flow from {sender} to {settings.COMMUNITY_WALLET_ADDRESS} (community) : {stream} {chain}"
+                )
 
-            required_stream = await compute_required_flow(executions)
-            logger.debug(f"Required stream for Sender {sender} executions: {required_stream}")
-            # Stop executions until the required stream is reached
-            while (stream + settings.PAYMENT_BUFFER) < required_stream:
-                try:
-                    last_execution = executions.pop(-1)
-                except IndexError:  # Empty list
-                    logger.debug("No execution can be maintained due to insufficient stream")
-                    break
-                logger.debug(f"Stopping {last_execution} due to insufficient stream")
-                await pool.stop_vm(last_execution.vm_hash)
+            except ValueError as error:
+                logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
+                continue
+
+            while True:
                 required_stream = await compute_required_flow(executions)
+
+                required_crn_stream = float(required_stream) * (1 - COMMUNITY_STREAM_RATIO)
+                required_community_stream = float(required_stream) * COMMUNITY_STREAM_RATIO
+                logger.debug(
+                    f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
+                    f"Community: {community_stream} / {required_community_stream}"
+                )
+
+                if (
+                    len(executions) == 0
+                    or (stream + settings.PAYMENT_BUFFER) > required_crn_stream
+                    and (community_stream + settings.PAYMENT_BUFFER) > required_community_stream
+                ):
+                    break
+                # Stop executions until the required stream is reached
+                last_execution = executions.pop(-1)
+                logger.info(f"Stopping {last_execution} of {sender} due to insufficient stream")
+                await pool.stop_vm(last_execution.vm_hash)
 
 
 async def start_payment_monitoring_task(app: web.Application):
