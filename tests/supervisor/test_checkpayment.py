@@ -1,13 +1,13 @@
 import asyncio
+
 import pytest
+from aleph_message.models import Chain, InstanceContent, PaymentType
+from aleph_message.status import MessageStatus
 
 from aleph.vm.conf import Settings, settings
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.tasks import check_payment
 from aleph.vm.pool import VmPool
-from aleph_message.models import InstanceContent, Chain
-from aleph_message.models import PaymentType
-from aleph_message.status import MessageStatus
 
 
 @pytest.fixture()
