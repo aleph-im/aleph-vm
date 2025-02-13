@@ -14,6 +14,8 @@ import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
+
+from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
@@ -526,8 +528,10 @@ async def notify_allocation(request: web.Request):
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
         required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        required_crn_stream = float(required_flow) * (1 - COMMUNITY_STREAM_RATIO)
+        required_community_stream = float(required_flow) * COMMUNITY_STREAM_RATIO
 
-        if active_flow < required_flow:
+        if active_flow < required_crn_stream:
             active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
             required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
             return web.HTTPPaymentRequired(
@@ -535,6 +539,21 @@ async def notify_allocation(request: web.Request):
                 text="Insufficient payment stream for this instance\n\n"
                 f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
                 f"Present: {active_flow_per_month} / month (flow = {active_flow})",
+            )
+        community_flow: Decimal = await get_stream(
+            sender=message.sender, receiver=settings.COMMUNITY_WALLET_ADDRESS, chain=message.content.payment.chain
+        )
+        if community_flow < required_community_stream:
+            active_flow_per_month = community_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+            required_flow_per_month = (
+                required_community_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            )
+            return web.HTTPPaymentRequired(
+                reason="Insufficient payment stream to community",
+                text="Insufficient payment stream for community \n\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Present: {active_flow_per_month} / month (flow = {active_flow})\n"
+                f"Address: {settings.COMMUNITY_WALLET_ADDRESS}",
             )
     else:
         return web.HTTPBadRequest(reason="Invalid payment method")
