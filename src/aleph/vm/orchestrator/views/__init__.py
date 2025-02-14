@@ -14,8 +14,6 @@ import aiodns
 import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
-
-from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
@@ -41,6 +39,8 @@ from aleph.vm.orchestrator.payment import (
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation, VMNotification
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
+from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
+from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.orchestrator.views.host_status import (
     check_dns_ipv4,
     check_dns_ipv6,
@@ -470,6 +470,7 @@ async def update_allocations(request: web.Request):
 @cors_allow_all
 async def notify_allocation(request: web.Request):
     """Notify instance allocation, only used for Pay as you Go feature"""
+    await update_aggregate_settings()
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
@@ -528,22 +529,22 @@ async def notify_allocation(request: web.Request):
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
         required_flow: Decimal = await fetch_execution_flow_price(item_hash)
-        required_crn_stream = float(required_flow) * (1 - COMMUNITY_STREAM_RATIO)
-        required_community_stream = float(required_flow) * COMMUNITY_STREAM_RATIO
+        required_crn_stream: Decimal = required_flow * (1 - COMMUNITY_STREAM_RATIO)
+        required_community_stream: Decimal = required_flow * COMMUNITY_STREAM_RATIO
 
-        if active_flow < required_crn_stream:
+        if active_flow < (required_crn_stream - settings.PAYMENT_BUFFER):
             active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-            required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            required_flow_per_month = required_crn_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
             return web.HTTPPaymentRequired(
                 reason="Insufficient payment stream",
                 text="Insufficient payment stream for this instance\n\n"
-                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_crn_stream})\n"
                 f"Present: {active_flow_per_month} / month (flow = {active_flow})",
             )
         community_flow: Decimal = await get_stream(
             sender=message.sender, receiver=settings.COMMUNITY_WALLET_ADDRESS, chain=message.content.payment.chain
         )
-        if community_flow < required_community_stream:
+        if community_flow < (required_community_stream - settings.PAYMENT_BUFFER):
             active_flow_per_month = community_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
             required_flow_per_month = (
                 required_community_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
@@ -551,8 +552,8 @@ async def notify_allocation(request: web.Request):
             return web.HTTPPaymentRequired(
                 reason="Insufficient payment stream to community",
                 text="Insufficient payment stream for community \n\n"
-                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
-                f"Present: {active_flow_per_month} / month (flow = {active_flow})\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_community_stream})\n"
+                f"Present: {active_flow_per_month} / month (flow = {community_flow})\n"
                 f"Address: {settings.COMMUNITY_WALLET_ADDRESS}",
             )
     else:

@@ -4,6 +4,7 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterable
+from decimal import Decimal
 from typing import TypeVar
 
 import aiohttp
@@ -19,6 +20,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
@@ -35,7 +37,7 @@ from .reactor import Reactor
 logger = logging.getLogger(__name__)
 
 Value = TypeVar("Value")
-COMMUNITY_STREAM_RATIO = 0.2
+COMMUNITY_STREAM_RATIO = Decimal(0.2)
 
 
 async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
@@ -171,6 +173,7 @@ async def check_payment(pool: VmPool):
     # this is actually the main workflow for properly stopping PAYG instances, a user agent would stop the payment stream
     # and forget the instance message. Compared to just stopping or decreasing the payment stream as the CRN don't know
     # which VM it affects.
+    await update_aggregate_settings()
     for vm_hash in list(pool.executions.keys()):
         message_status = await get_message_status(vm_hash)
         if message_status != MessageStatus.PROCESSED:
@@ -221,8 +224,8 @@ async def check_payment(pool: VmPool):
             while True:
                 required_stream = await compute_required_flow(executions)
 
-                required_crn_stream = float(required_stream) * (1 - COMMUNITY_STREAM_RATIO)
-                required_community_stream = float(required_stream) * COMMUNITY_STREAM_RATIO
+                required_crn_stream = (required_stream) * (1 - COMMUNITY_STREAM_RATIO)
+                required_community_stream = (required_stream) * COMMUNITY_STREAM_RATIO
                 logger.debug(
                     f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"
