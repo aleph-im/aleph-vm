@@ -1,11 +1,24 @@
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from logging import getLogger
+from typing import Any, TypedDict
 
 import aiohttp
 
 from aleph.vm.conf import settings
 
+logger = getLogger(__name__)
 
-async def fetch_aggregate_settings() -> dict[str, Any] | None:
+
+class AggregateSettingsDict(TypedDict):
+    compatible_gpus: list[Any]
+    community_wallet_address: str
+
+
+LAST_AGGREGATE_SETTINGS: AggregateSettingsDict | None = None
+LAST_AGGREGATE_SETTINGS_FETCHED_AT: datetime | None = None
+
+
+async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
     """
     Get the settings Aggregate dict from the PyAleph API Aggregate.
 
@@ -27,7 +40,41 @@ async def fetch_aggregate_settings() -> dict[str, Any] | None:
 
 
 async def update_aggregate_settings():
-    aggregate_settings = await fetch_aggregate_settings()
-    if aggregate_settings:
-        settings.COMPATIBLE_GPUS = aggregate_settings["compatible_gpus"]
-        settings.COMMUNITY_WALLET_ADDRESS = aggregate_settings["community_wallet_address"]
+    global LAST_AGGREGATE_SETTINGS  # noqa: PLW0603
+    global LAST_AGGREGATE_SETTINGS_FETCHED_AT  # noqa: PLW0603
+
+    LAST_AGGREGATE_SETTINGS = await fetch_aggregate_settings()
+    if (
+        not LAST_AGGREGATE_SETTINGS
+        or LAST_AGGREGATE_SETTINGS_FETCHED_AT
+        and datetime.now(tz=timezone.utc) - LAST_AGGREGATE_SETTINGS_FETCHED_AT > timedelta(minutes=1)
+    ):
+        try:
+            aggregate = await fetch_aggregate_settings()
+            LAST_AGGREGATE_SETTINGS = aggregate
+            LAST_AGGREGATE_SETTINGS_FETCHED_AT = datetime.now(tz=timezone.utc)
+
+        except Exception:
+            logger.exception("Failed to fetch aggregate settings")
+
+
+async def get_aggregate_settings() -> AggregateSettingsDict | None:
+    """The settings aggregate is a special aggregate  used to share some common settings for VM setup
+
+    Ensure the cached version is up to date and return it"""
+    await update_aggregate_settings()
+
+    if not LAST_AGGREGATE_SETTINGS:
+        logger.error("No setting aggregate")
+    return LAST_AGGREGATE_SETTINGS
+
+
+async def get_community_wallet_address() -> str | None:
+    setting_aggr = await get_aggregate_settings()
+    return setting_aggr and setting_aggr.get("community_wallet_address")
+
+
+def get_compatible_gpus() -> list[Any]:
+    if not LAST_AGGREGATE_SETTINGS:
+        return []
+    return LAST_AGGREGATE_SETTINGS["compatible_gpus"]

@@ -20,7 +20,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.utils import update_aggregate_settings
+from aleph.vm.orchestrator.utils import get_community_wallet_address
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
@@ -173,7 +173,6 @@ async def check_payment(pool: VmPool):
     # this is actually the main workflow for properly stopping PAYG instances, a user agent would stop the payment stream
     # and forget the instance message. Compared to just stopping or decreasing the payment stream as the CRN don't know
     # which VM it affects.
-    await update_aggregate_settings()
     for vm_hash in list(pool.executions.keys()):
         message_status = await get_message_status(vm_hash)
         if message_status != MessageStatus.PROCESSED:
@@ -196,6 +195,9 @@ async def check_payment(pool: VmPool):
                 logger.debug(f"Stopping {last_execution} due to insufficient balance")
                 await pool.stop_vm(last_execution.vm_hash)
                 required_balance = await compute_required_balance(executions)
+    community_wallet = await get_community_wallet_address()
+    if not community_wallet:
+        logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
 
     # Check if the balance held in the wallet is sufficient stream tier resources
     for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
@@ -210,18 +212,14 @@ async def check_payment(pool: VmPool):
                 logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
                 continue
             try:
-                community_stream = await get_stream(
-                    sender=sender, receiver=settings.COMMUNITY_WALLET_ADDRESS, chain=chain
-                )
-                logger.debug(
-                    f"Stream flow from {sender} to {settings.COMMUNITY_WALLET_ADDRESS} (community) : {stream} {chain}"
-                )
+                community_stream = await get_stream(sender=sender, receiver=community_wallet, chain=chain)
+                logger.debug(f"Stream flow from {sender} to {community_wallet} (community) : {stream} {chain}")
 
             except ValueError as error:
                 logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
                 continue
 
-            while True:
+            while executions:
                 required_stream = await compute_required_flow(executions)
 
                 required_crn_stream = (required_stream) * (1 - COMMUNITY_STREAM_RATIO)
@@ -230,12 +228,10 @@ async def check_payment(pool: VmPool):
                     f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"
                 )
-
-                if (
-                    len(executions) == 0
-                    or (stream + settings.PAYMENT_BUFFER) > required_crn_stream
-                    and (community_stream + settings.PAYMENT_BUFFER) > required_community_stream
-                ):
+                # Can pay all executions
+                if (stream + settings.PAYMENT_BUFFER) > required_crn_stream and (
+                    community_stream + settings.PAYMENT_BUFFER
+                ) > required_community_stream:
                     break
                 # Stop executions until the required stream is reached
                 last_execution = executions.pop(-1)

@@ -41,13 +41,14 @@ def fake_instance_content():
 async def test_enough_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
-    mocker.patch.object(settings, "COMMUNITY_WALLET_ADDRESS", "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90")
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
+    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
 
     loop = asyncio.get_event_loop()
     pool = VmPool(loop=loop)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=5, autospec=True)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=500, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=500)
     message = InstanceContent.parse_obj(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -79,7 +80,8 @@ async def test_enough_flow(mocker, fake_instance_content):
 async def test_not_enough_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
-    mocker.patch.object(settings, "COMMUNITY_WALLET_ADDRESS", "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90")
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
+    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
 
     loop = asyncio.get_event_loop()
     pool = VmPool(loop=loop)
@@ -119,14 +121,16 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
 
     loop = asyncio.get_event_loop()
     pool = VmPool(loop=loop)
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
     async def get_stream(sender, receiver, chain):
-        if receiver == settings.COMMUNITY_WALLET_ADDRESS:
+        if receiver == mock_community_wallet_address:
             return 0
         elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
             return 10
 
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
     message = InstanceContent.parse_obj(fake_instance_content)

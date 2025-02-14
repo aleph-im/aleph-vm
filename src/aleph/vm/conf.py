@@ -282,11 +282,8 @@ class Settings(BaseSettings):
 
     # Settings to get from the network aggregates
     SETTINGS_AGGREGATE_ADDRESS: str = "0xFba561a84A537fCaa567bb7A2257e7142701ae2A"
-    COMMUNITY_WALLET_ADDRESS: str | None = None
-    COMPATIBLE_GPUS: List[dict[str, str]] = []
 
     # Tests on programs
-
     FAKE_DATA_PROGRAM: Path | None = None
     BENCHMARK_FAKE_DATA_PROGRAM = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
