@@ -111,7 +111,7 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    directly during development.
 
 ## Testing
-See [Testinc doc](./TESTING.md)
+See [Testing doc](./TESTING.md)
 
 ## Code Formatting and Linting
 
