@@ -20,7 +20,10 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.utils import get_community_wallet_address
+from aleph.vm.orchestrator.utils import (
+    get_community_wallet_address,
+    is_after_community_wallet_start,
+)
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
@@ -220,10 +223,24 @@ async def check_payment(pool: VmPool):
                 continue
 
             while executions:
-                required_stream = await compute_required_flow(executions)
+                executions_with_community = [
+                    execution
+                    for execution in executions
+                    if await is_after_community_wallet_start(execution.times.started_at)
+                ]
 
-                required_crn_stream = (required_stream) * (1 - COMMUNITY_STREAM_RATIO)
-                required_community_stream = (required_stream) * COMMUNITY_STREAM_RATIO
+                required_stream = await compute_required_flow(executions_with_community)
+                executions_without_community = [
+                    execution
+                    for execution in executions
+                    if not await is_after_community_wallet_start(execution.times.started_at)
+                ]
+                logger.info("flow community %s", executions_with_community)
+                logger.info("flow without community %s", executions_without_community)
+                required_stream_without_community = await compute_required_flow(executions_without_community)
+
+                required_crn_stream = required_stream * (1 - COMMUNITY_STREAM_RATIO) + required_stream_without_community
+                required_community_stream = required_stream * COMMUNITY_STREAM_RATIO
                 logger.debug(
                     f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"

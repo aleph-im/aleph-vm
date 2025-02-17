@@ -12,6 +12,7 @@ logger = getLogger(__name__)
 class AggregateSettingsDict(TypedDict):
     compatible_gpus: list[Any]
     community_wallet_address: str
+    community_wallet_timestamp: int
 
 
 LAST_AGGREGATE_SETTINGS: AggregateSettingsDict | None = None
@@ -30,6 +31,7 @@ async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
     """
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=settings"
+        logger.info(f"Fetching settings aggregate from {url}")
         resp = await session.get(url)
 
         # Raise an error if the request failed
@@ -72,6 +74,26 @@ async def get_aggregate_settings() -> AggregateSettingsDict | None:
 async def get_community_wallet_address() -> str | None:
     setting_aggr = await get_aggregate_settings()
     return setting_aggr and setting_aggr.get("community_wallet_address")
+
+
+async def get_community_wallet_start() -> datetime:
+    """Community wallet start time.
+
+    After this timestamp. New PAYG must include a payment to the community wallet"""
+    setting_aggr = await get_aggregate_settings()
+    if setting_aggr is None or "community_wallet_timestamp" not in setting_aggr:
+        return datetime.now(tz=timezone.utc)
+    timestamp = setting_aggr["community_wallet_timestamp"]
+    start_datetime = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    return start_datetime
+
+
+async def is_after_community_wallet_start(dt: datetime | None = None) -> bool:
+    """Community wallet start time"""
+    if not dt:
+        dt = datetime.now(tz=timezone.utc)
+    start_dt = await get_community_wallet_start()
+    return dt > start_dt
 
 
 def get_compatible_gpus() -> list[Any]:

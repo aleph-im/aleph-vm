@@ -40,6 +40,7 @@ from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     get_community_wallet_address,
+    is_after_community_wallet_start,
     update_aggregate_settings,
 )
 from aleph.vm.orchestrator.views.host_status import (
@@ -530,8 +531,15 @@ async def notify_allocation(request: web.Request):
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
         required_flow: Decimal = await fetch_execution_flow_price(item_hash)
-        required_crn_stream: Decimal = required_flow * (1 - COMMUNITY_STREAM_RATIO)
-        required_community_stream: Decimal = required_flow * COMMUNITY_STREAM_RATIO
+        community_wallet = await get_community_wallet_address()
+        required_crn_stream: Decimal
+        required_community_stream: Decimal
+        if await is_after_community_wallet_start() and community_wallet:
+            required_crn_stream = required_flow * (1 - COMMUNITY_STREAM_RATIO)
+            required_community_stream = required_flow * COMMUNITY_STREAM_RATIO
+        else:  # No community wallet payment
+            required_crn_stream = required_flow
+            required_community_stream = Decimal(0)
 
         if active_flow < (required_crn_stream - settings.PAYMENT_BUFFER):
             active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
@@ -542,9 +550,8 @@ async def notify_allocation(request: web.Request):
                 f"Required: {required_flow_per_month} / month (flow = {required_crn_stream})\n"
                 f"Present: {active_flow_per_month} / month (flow = {active_flow})",
             )
-        community_wallet = await get_community_wallet_address()
 
-        if community_wallet:
+        if community_wallet and required_community_stream:
             community_flow: Decimal = await get_stream(
                 sender=message.sender,
                 receiver=community_wallet,
