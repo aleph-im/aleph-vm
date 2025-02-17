@@ -5,6 +5,10 @@ body {
     max-width: 800px;
 }
 
+details {
+    margin-top: 30px;
+}
+
 main {
     width: 90vw;
     margin: 2vh auto;

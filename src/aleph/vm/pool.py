@@ -20,6 +20,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import GpuDevice, HostGPU, get_gpu_devices
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
@@ -83,6 +84,8 @@ class VmPool:
             self.snapshot_manager.run_in_thread()
 
         if settings.ENABLE_GPU_SUPPORT:
+            # Refresh and get latest settings aggregate
+            asyncio.run(update_aggregate_settings())
             logger.debug("Detecting GPU devices ...")
             self.gpus = get_gpu_devices()
 

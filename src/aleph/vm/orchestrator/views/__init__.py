@@ -1,5 +1,4 @@
 import binascii
-import contextlib
 import logging
 from decimal import Decimal
 from hashlib import sha256
@@ -8,7 +7,6 @@ from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from secrets import compare_digest
 from string import Template
-from typing import Optional
 
 import aiodns
 import aiohttp
@@ -26,7 +24,7 @@ from aleph.vm.controllers.firecracker.executable import (
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import payment, status
-from aleph.vm.orchestrator.chain import STREAM_CHAINS, ChainInfo
+from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import get_execution_records
@@ -39,6 +37,12 @@ from aleph.vm.orchestrator.payment import (
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation, VMNotification
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
+from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
+from aleph.vm.orchestrator.utils import (
+    get_community_wallet_address,
+    is_after_community_wallet_start,
+    update_aggregate_settings,
+)
 from aleph.vm.orchestrator.views.host_status import (
     check_dns_ipv4,
     check_dns_ipv6,
@@ -468,6 +472,7 @@ async def update_allocations(request: web.Request):
 @cors_allow_all
 async def notify_allocation(request: web.Request):
     """Notify instance allocation, only used for Pay as you Go feature"""
+    await update_aggregate_settings()
     try:
         data = await request.json()
         vm_notification = VMNotification.parse_obj(data)
@@ -526,16 +531,44 @@ async def notify_allocation(request: web.Request):
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
         required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        community_wallet = await get_community_wallet_address()
+        required_crn_stream: Decimal
+        required_community_stream: Decimal
+        if await is_after_community_wallet_start() and community_wallet:
+            required_crn_stream = required_flow * (1 - COMMUNITY_STREAM_RATIO)
+            required_community_stream = required_flow * COMMUNITY_STREAM_RATIO
+        else:  # No community wallet payment
+            required_crn_stream = required_flow
+            required_community_stream = Decimal(0)
 
-        if active_flow < required_flow:
+        if active_flow < (required_crn_stream - settings.PAYMENT_BUFFER):
             active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-            required_flow_per_month = required_flow * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+            required_flow_per_month = required_crn_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
             return web.HTTPPaymentRequired(
                 reason="Insufficient payment stream",
                 text="Insufficient payment stream for this instance\n\n"
-                f"Required: {required_flow_per_month} / month (flow = {required_flow})\n"
+                f"Required: {required_flow_per_month} / month (flow = {required_crn_stream})\n"
                 f"Present: {active_flow_per_month} / month (flow = {active_flow})",
             )
+
+        if community_wallet and required_community_stream:
+            community_flow: Decimal = await get_stream(
+                sender=message.sender,
+                receiver=community_wallet,
+                chain=message.content.payment.chain,
+            )
+            if community_flow < (required_community_stream - settings.PAYMENT_BUFFER):
+                active_flow_per_month = community_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
+                required_flow_per_month = (
+                    required_community_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
+                )
+                return web.HTTPPaymentRequired(
+                    reason="Insufficient payment stream to community",
+                    text="Insufficient payment stream for community \n\n"
+                    f"Required: {required_flow_per_month} / month (flow = {required_community_stream})\n"
+                    f"Present: {active_flow_per_month} / month (flow = {community_flow})\n"
+                    f"Address: {community_wallet}",
+                )
     else:
         return web.HTTPBadRequest(reason="Invalid payment method")
 
