@@ -117,7 +117,6 @@ async def test_not_enough_flow(mocker, fake_instance_content):
 async def test_not_enough_community_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
-    mocker.patch.object(settings, "COMMUNITY_WALLET_ADDRESS", "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90")
 
     loop = asyncio.get_event_loop()
     pool = VmPool(loop=loop)
