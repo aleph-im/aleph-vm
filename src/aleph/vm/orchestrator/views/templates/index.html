@@ -393,7 +393,7 @@
     (async () => {
         try{
             const response = await fetch('/vm/$check_fastapi_vm_id/ip/6');
-            const res = await response.json() // parse error will be cached above
+            const res = await response.json() // parse error will be catched above
 
 
             if (response.ok && res['result']) {
