@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     # via the serial console. This break the logs endpoint for program, as such disabling it in prod is not recommended.
     PRINT_SYSTEM_LOGS = True
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS = True
-    LOG_LEVEL = "WARNING"
+    LOG_LEVEL = "INFO"
     DEBUG_ASYNCIO = False
 
     # Networking does not work inside Docker/Podman
