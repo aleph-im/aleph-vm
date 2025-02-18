@@ -393,7 +393,10 @@
     (async () => {
         try{
             const response = await fetch('/vm/$check_fastapi_vm_id/ip/6');
-            if (response.ok) {
+            const res = await response.json() // parse error will be cached above
+
+
+            if (response.ok && res['result']) {
                 document.getElementById("ipv6-egress-check").innerHTML = "is working &#10004;&#65039;";
             }
             else if (response.status === 503) {
@@ -403,7 +406,7 @@
                 document.getElementById("ipv6-egress-check").innerHTML = "is not yet available &#9932;";
             }
             else {
-                document.getElementById("ipv6-egress-check").innerText = response.status;
+                document.getElementById("ipv6-egress-check").innerHTML = "not working: " + res.reason +  " &#10060";
             }
         }
         catch(err){
