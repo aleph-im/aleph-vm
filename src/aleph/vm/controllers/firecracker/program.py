@@ -369,13 +369,18 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             authorized_keys = settings.DEVELOPER_SSH_KEYS
         else:
             authorized_keys = self.resources.message_content.authorized_keys
+        nameservers_ip = []
+        if ip:
+            nameservers_ip = settings.DNS_NAMESERVERS_IPV4
+        if ipv6:
+            nameservers_ip += settings.DNS_NAMESERVERS_IPV6
 
         program_config = ProgramConfiguration(
             ip=ip,
             ipv6=ipv6,
             route=route,
             ipv6_gateway=ipv6_gateway,
-            dns_servers=settings.DNS_NAMESERVERS,
+            dns_servers=nameservers_ip,
             code=code,
             encoding=self.resources.code_encoding,
             entrypoint=self.resources.code_entrypoint,
