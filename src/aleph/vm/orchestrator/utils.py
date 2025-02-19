@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
 from typing import Any, TypedDict
 
@@ -17,6 +18,7 @@ class AggregateSettingsDict(TypedDict):
 
 LAST_AGGREGATE_SETTINGS: AggregateSettingsDict | None = None
 LAST_AGGREGATE_SETTINGS_FETCHED_AT: datetime | None = None
+PRICE_PRECISION = 18  # Price precision
 
 
 async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
@@ -94,6 +96,10 @@ async def is_after_community_wallet_start(dt: datetime | None = None) -> bool:
         dt = datetime.now(tz=timezone.utc)
     start_dt = await get_community_wallet_start()
     return dt > start_dt
+
+
+def format_cost(v: Decimal | str, p: int = PRICE_PRECISION) -> Decimal:
+    return Decimal(v).quantize(Decimal(1) / Decimal(10**p), ROUND_FLOOR)
 
 
 def get_compatible_gpus() -> list[Any]:
