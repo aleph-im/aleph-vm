@@ -39,6 +39,7 @@ from aleph.vm.orchestrator.resources import Allocation, VMNotification
 from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
+    format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
     update_aggregate_settings,
@@ -535,8 +536,8 @@ async def notify_allocation(request: web.Request):
         required_crn_stream: Decimal
         required_community_stream: Decimal
         if await is_after_community_wallet_start() and community_wallet:
-            required_crn_stream = required_flow * (1 - COMMUNITY_STREAM_RATIO)
-            required_community_stream = required_flow * COMMUNITY_STREAM_RATIO
+            required_crn_stream = format_cost(required_flow * (1 - COMMUNITY_STREAM_RATIO))
+            required_community_stream = format_cost(required_flow * COMMUNITY_STREAM_RATIO)
         else:  # No community wallet payment
             required_crn_stream = required_flow
             required_community_stream = Decimal(0)
