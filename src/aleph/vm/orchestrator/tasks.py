@@ -21,6 +21,7 @@ from yarl import URL
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.utils import (
+    format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
 )
@@ -238,9 +239,11 @@ async def check_payment(pool: VmPool):
                 logger.info("flow community %s", executions_with_community)
                 logger.info("flow without community %s", executions_without_community)
                 required_stream_without_community = await compute_required_flow(executions_without_community)
-
-                required_crn_stream = required_stream * (1 - COMMUNITY_STREAM_RATIO) + required_stream_without_community
-                required_community_stream = required_stream * COMMUNITY_STREAM_RATIO
+                # TODO, rounding should be done per executions to not have the extra  accumulate before rounding
+                required_crn_stream = format_cost(
+                    required_stream * (1 - COMMUNITY_STREAM_RATIO) + required_stream_without_community
+                )
+                required_community_stream = format_cost(required_stream * COMMUNITY_STREAM_RATIO)
                 logger.debug(
                     f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"

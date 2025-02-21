@@ -539,7 +539,7 @@ async def notify_allocation(request: web.Request):
             required_crn_stream = format_cost(required_flow * (1 - COMMUNITY_STREAM_RATIO))
             required_community_stream = format_cost(required_flow * COMMUNITY_STREAM_RATIO)
         else:  # No community wallet payment
-            required_crn_stream = required_flow
+            required_crn_stream = format_cost(required_flow)
             required_community_stream = Decimal(0)
 
         if active_flow < (required_crn_stream - settings.PAYMENT_BUFFER):
