@@ -249,7 +249,9 @@ class VmPool:
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 # Load existing GPUs assigned to VMs
-                execution.gpus = TypeAdapter(List[HostGPU]).validate_python(saved_execution.gpus) if saved_execution.gpus else []
+                execution.gpus = (
+                    TypeAdapter(List[HostGPU]).validate_python(saved_execution.gpus) if saved_execution.gpus else []
+                )
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
