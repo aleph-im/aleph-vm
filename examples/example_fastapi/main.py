@@ -198,10 +198,11 @@ async def connect_ipv6():
             return {"result": False, "reason": str(error.args[0])}
 
 
-async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5):
+async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5, socket_family=socket.AF_INET):
     """Check the connectivity of a single URL."""
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
+    tcp_connector = aiohttp.TCPConnector(family=socket_family)
+    async with aiohttp.ClientSession(timeout=timeout, connector=tcp_connector) as session:
         try:
             async with session.get(internet_host) as resp:
                 resp.raise_for_status()

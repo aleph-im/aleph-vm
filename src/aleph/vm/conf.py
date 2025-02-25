@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, Literal, NewType, Optional
+from typing import Any, Literal, NewType, Optional, List
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     # via the serial console. This break the logs endpoint for program, as such disabling it in prod is not recommended.
     PRINT_SYSTEM_LOGS: bool = True
     IGNORE_TRACEBACK_FROM_DIAGNOSTICS: bool = True
-    LOG_LEVEL: str = "WARNING"
+    LOG_LEVEL: str = "INFO"
     DEBUG_ASYNCIO: bool = False
 
     # Networking does not work inside Docker/Podman
@@ -277,8 +277,15 @@ class Settings(BaseSettings):
 
     CONFIDENTIAL_SESSION_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/sessions")
 
-    # Tests on programs
+    ENABLE_GPU_SUPPORT: bool = Field(
+        default=False,
+        description="Enable GPU pass-through support to VMs, only allowed for QEmu hypervisor",
+    )
 
+    # Settings to get from the network aggregates
+    SETTINGS_AGGREGATE_ADDRESS: str = "0xFba561a84A537fCaa567bb7A2257e7142701ae2A"
+
+    # Tests on programs
     FAKE_DATA_PROGRAM: Path | None = None
     BENCHMARK_FAKE_DATA_PROGRAM: Path = Path(abspath(join(__file__, "../../../../examples/example_fastapi")))
 
@@ -397,6 +404,8 @@ class Settings(BaseSettings):
             # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
             "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
+        if self.ENABLE_GPU_SUPPORT:
+            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for GPU support and it's disabled, "
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""

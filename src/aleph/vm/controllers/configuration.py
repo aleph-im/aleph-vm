@@ -23,6 +23,10 @@ class QemuVMHostVolume(BaseModel):
     read_only: bool
 
 
+class QemuGPU(BaseModel):
+    pci_host: str
+
+
 class QemuVMConfiguration(BaseModel):
     qemu_bin_path: str
     cloud_init_drive_path: str | None = None
@@ -33,6 +37,7 @@ class QemuVMConfiguration(BaseModel):
     mem_size_mb: int
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
+    gpus: list[QemuGPU]
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
@@ -45,6 +50,7 @@ class QemuConfidentialVMConfiguration(BaseModel):
     mem_size_mb: int
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
+    gpus: list[QemuGPU]
     ovmf_path: Path
     sev_session_file: Path
     sev_dh_cert_file: Path

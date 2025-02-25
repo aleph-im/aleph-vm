@@ -20,7 +20,6 @@ from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
 
-from .metrics import create_tables, setup_engine
 from .resources import about_certificates, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
@@ -150,9 +149,6 @@ async def stop_all_vms(app: web.Application):
 def run():
     """Run the VM Supervisor."""
     settings.check()
-
-    engine = setup_engine()
-    asyncio.run(create_tables(engine))
 
     loop = asyncio.new_event_loop()
     pool = VmPool(loop)

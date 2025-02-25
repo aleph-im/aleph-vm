@@ -16,7 +16,7 @@ debian-package-code:
 	cp -r ../examples/data ./aleph-vm/opt/aleph-vm/examples/data
 	mkdir -p ./aleph-vm/opt/aleph-vm/examples/volumes
   # Fixing this protobuf dependency version to avoid getting CI errors as version 5.29.0 have this compilation issue
-	pip3 install --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'git+https://github.com/aleph-im/aleph-message@108-upgrade-pydantic-version#egg=aleph-message' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pydantic-settings==2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2' 'protobuf==5.28.3'
+	pip3 install --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'git+https://github.com/aleph-im/aleph-message@108-upgrade-pydantic-version#egg=aleph-message' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.12' 'pydantic-settings==2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2' 'protobuf==5.28.3'
 	python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bin/sevctl
@@ -48,7 +48,7 @@ download-ipfs-kubo: target-dir build-dir
 	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 target/bin/sevctl:
-	cargo install --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target
+	cargo install --locked --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target
 	./target/bin/sevctl -V
 
 version:

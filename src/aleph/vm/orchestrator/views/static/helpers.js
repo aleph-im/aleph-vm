@@ -53,6 +53,42 @@ async function fetchHostCheckStatus () {
     return res;
 }
 
+async function fetchHostSystemUsage () {
+    const q = await fetch('/about/usage/system');
+    let res = {
+        status: q.status,
+        details: []
+    }
+    if(q.ok){
+        const answer = await q.json();
+        const gpu_devices = answer.gpu.devices;
+        if (gpu_devices.length <= 0) {
+            res.status = "<b>No GPUs detected</b>";
+        }else{
+            res.status = "<ul>";
+            for (const gpu_device of gpu_devices){
+                let compatible_str = " is compatible &#9989;";
+                if (!gpu_device.compatible) {
+                    compatible_str = " isn't compatible &#10060;";
+                }
+                res.status += "<li><b>" + gpu_device.vendor + " | " + gpu_device.device_name + "</b>" + compatible_str + "</li>";
+            }
+            res.status += "</ul>";
+        }
+    }
+    else {
+        switch(Number(q.status)){
+            case 500:
+                res.status = "Getting Node usage failed &#10060;";
+                break;
+            default:
+                res.status = q.status;
+        }
+    }
+
+    return res;
+}
+
 function objectToString (obj) {
     return Object.entries(obj).reduce((acc, [k, v]) => acc + `<li>${k}: <span style="color: ${v ? 'green' : 'red'}">${v}</span></li>\n`, '');
 }

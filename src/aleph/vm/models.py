@@ -1,10 +1,12 @@
 import asyncio
+import json
 import logging
 import uuid
 from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import List
 
 from aleph_message.models import (
     ExecutableContent,
@@ -12,14 +14,14 @@ from aleph_message.models import (
     ItemHash,
     ProgramContent,
 )
-from aleph_message.models.execution.environment import HypervisorType
+from aleph_message.models.execution.environment import GpuProperties, HypervisorType
+from pydantic.json import pydantic_encoder
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
 from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
 from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerProgram,
-    AlephFirecrackerResources,
     AlephProgramResources,
 )
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
@@ -38,6 +40,7 @@ from aleph.vm.orchestrator.metrics import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
+from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 
@@ -69,8 +72,11 @@ class VmExecution:
     vm_hash: ItemHash
     original: ExecutableContent
     message: ExecutableContent
-    resources: AlephFirecrackerResources | None = None
-    vm: AlephFirecrackerExecutable | AlephQemuInstance | None = None
+    resources: (
+        AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
+    ) = None
+    vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
+    gpus: List[HostGPU] = []
 
     times: VmExecutionTimes
 
@@ -202,6 +208,7 @@ class VmExecution:
                         resources = AlephQemuConfidentialResources(self.message, namespace=self.vm_hash)
                     else:
                         resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+                    resources.gpus = self.gpus
                 else:
                     msg = f"Unknown hypervisor type {self.hypervisor}"
                     raise ValueError(msg)
@@ -215,6 +222,24 @@ class VmExecution:
             await resources.download_all()
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
+
+    def prepare_gpus(self, available_gpus: List[GpuDevice]) -> None:
+        gpus = []
+        if self.message.requirements and self.message.requirements.gpu:
+            for gpu in self.message.requirements.gpu:
+                gpu = GpuProperties.parse_obj(gpu)
+                for available_gpu in available_gpus:
+                    if available_gpu.device_id == gpu.device_id:
+                        gpus.append(HostGPU(pci_host=available_gpu.pci_host))
+                        break
+        self.gpus = gpus
+
+    def uses_gpu(self, pci_host: str) -> bool:
+        for gpu in self.gpus:
+            if gpu.pci_host == pci_host:
+                return True
+
+        return False
 
     def create(
         self, vm_id: int, tap_interface: TapInterface | None = None, prepare: bool = True
@@ -437,6 +462,7 @@ class VmExecution:
                     message=self.message.model_dump_json(),
                     original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
+                    gpus=json.dumps(self.gpus, default=pydantic_encoder),
                 )
             )
 

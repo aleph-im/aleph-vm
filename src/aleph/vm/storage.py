@@ -376,12 +376,14 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
         return await get_existing_file(ref)
     elif isinstance(volume, PersistentVolume | RootfsVolume):
         volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
+
         if volume.persistence != VolumePersistence.host:
             msg = "Only 'host' persistence is supported"
             raise NotImplementedError(msg)
         if not re.match(r"^[\w\-_/]+$", volume_name):
-            msg = f"Invalid value for volume name: {repr(volume_name)}"
-            raise ValueError(msg)
+            # Sanitize volume names
+            logger.debug(f"Invalid values for volume name: {repr(volume_name)} detected, sanitizing")
+            volume_name = re.sub(r"[^\w\-_]", "_", volume_name)
         (Path(settings.PERSISTENT_VOLUMES_DIR) / namespace).mkdir(exist_ok=True)
         if volume.parent:
             return await create_devmapper(volume, namespace)
