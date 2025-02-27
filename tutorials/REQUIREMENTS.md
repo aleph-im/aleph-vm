@@ -89,7 +89,7 @@ aleph pin QmWWX6BaaRkRSr2iNdwH5e29ACPg2nCHHXTRTfuBmVm3Ga
 ## 3. Create your program
 
 ```shell
-aleph program ./my-program main:app
+aleph program upload ./my-program main:app
 ```
 
 Press Enter at the following prompt to use the default runtime:

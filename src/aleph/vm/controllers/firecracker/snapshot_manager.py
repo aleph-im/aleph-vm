@@ -2,7 +2,6 @@ import asyncio
 import logging
 import threading
 from time import sleep
-from typing import Optional
 
 from aleph_message.models import ItemHash
 from schedule import Job, Scheduler
@@ -95,7 +94,7 @@ class SnapshotManager:
         )
         job_thread.start()
 
-    async def start_for(self, vm: AlephFirecrackerExecutable, frequency: Optional[int] = None) -> None:
+    async def start_for(self, vm: AlephFirecrackerExecutable, frequency: int | None = None) -> None:
         if not vm.support_snapshot:
             msg = "Snapshots are not implemented for programs."
             raise NotImplementedError(msg)

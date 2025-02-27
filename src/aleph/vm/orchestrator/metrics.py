@@ -15,9 +15,12 @@ from sqlalchemy import (
     delete,
     select,
 )
-from sqlalchemy.engine import Engine
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 try:
     from sqlalchemy.orm import declarative_base
@@ -26,7 +29,7 @@ except ImportError:
 
 from aleph.vm.conf import make_db_url, settings
 
-AsyncSessionMaker: sessionmaker
+AsyncSessionMaker: async_sessionmaker[AsyncSession]
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +38,12 @@ Base: Any = declarative_base()
 
 def setup_engine():
     global AsyncSessionMaker
-    engine = create_async_engine(make_db_url(), echo=True)
-    AsyncSessionMaker = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    engine = create_async_engine(make_db_url(), echo=False)
+    AsyncSessionMaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine
 
 
-async def create_tables(engine: Engine):
+async def create_tables(engine: AsyncEngine):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -72,6 +75,8 @@ class ExecutionRecord(Base):
     message = Column(JSON, nullable=True)
     original_message = Column(JSON, nullable=True)
     persistent = Column(Boolean, nullable=True)
+
+    gpus = Column(JSON, nullable=True)
 
     def __repr__(self):
         return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash}, vm_id={self.vm_id})>"
@@ -112,3 +117,12 @@ async def get_execution_records() -> Iterable[ExecutionRecord]:
         executions = result.scalars().all()
         await session.commit()
         return executions
+
+
+async def get_last_record_for_vm(vm_hash) -> ExecutionRecord | None:
+    """Get the execution records from the database."""
+    async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
+        result = await session.execute(
+            select(ExecutionRecord).where(ExecutionRecord.vm_hash == vm_hash).limit(1)
+        )  # Use execute for querying
+        return result.scalar()

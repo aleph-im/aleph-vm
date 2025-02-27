@@ -1,6 +1,6 @@
 # This is mainly a copy of the installation instructions from [orchestrator/README.md]
 
-FROM debian:bullseye
+FROM debian:bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     sudo acl curl squashfs-tools git \
@@ -19,7 +19,7 @@ RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://s3.amazonaws.com/spec.ccf
 RUN ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
 RUN ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 
-RUN pip3 install typing-extensions 'aleph-message==0.4.4'
+RUN pip3 install typing-extensions 'aleph-message==0.4.9'
 
 RUN mkdir -p /var/lib/aleph/vm/jailer
 

@@ -1,8 +1,8 @@
-
+---
 
 name: "Build Examples"
-on:
-  push
+on: push
+
 
 jobs:
   build_pip:

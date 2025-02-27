@@ -1,4 +1,4 @@
-FROM rust:bullseye
+FROM rust:bookworm
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
      libsecp256k1-dev \

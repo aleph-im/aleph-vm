@@ -5,9 +5,7 @@ Used to trigger VM shutdown on updates.
 
 import asyncio
 import logging
-import sys
 from collections.abc import Hashable
-from typing import Union
 
 from aleph_message.models import AlephMessage, ChainRef, ItemHash
 
@@ -15,11 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class PubSub:
-    if sys.version_info >= (3, 9):
-        subscribers: dict[Hashable, set[asyncio.Queue[set]]]
-    else:
-        # Support for Python 3.8 (Ubuntu 20.04)
-        subscribers: dict[Hashable, set[asyncio.Queue]]
+    subscribers: dict[Hashable, set[asyncio.Queue[set]]]
 
     def __init__(self):
         self.subscribers = {}
@@ -59,6 +53,6 @@ class PubSub:
                 if self.subscribers.get(key) == set():
                     self.subscribers.pop(key)
 
-    async def publish(self, key: Union[ItemHash, str, ChainRef], value: AlephMessage):
+    async def publish(self, key: ItemHash | str | ChainRef, value: AlephMessage):
         for queue in self.subscribers.get(key, ()):
             await queue.put(value)

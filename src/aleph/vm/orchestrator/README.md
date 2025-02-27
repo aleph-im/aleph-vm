@@ -28,8 +28,7 @@ Intel Skylake, Intel Cascade Lake, AMD Zen2 and ARM64 Neoverse N1.
 
 ### Operating System
 
-These instructions have been tested on Debian 11 Bullseye, and should work on recent versions
-of Ubuntu as well (22.04+).
+These instructions have been tested on Debian 11 Bullseye, Debian 12 Bookworm and Ubuntu 22.04.
 
 ### Hosting providers
 
@@ -87,7 +86,7 @@ is used to parse and validate Aleph messages.
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
 pip3 install pydantic[dotenv]
-pip3 install 'aleph-message==0.4.4'
+pip3 install 'aleph-message==0.4.9'
 ```
 
 ### 2.f. Create the jailer working directory:

@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List
 
 from aleph_message.models import (
     Chain,
@@ -14,11 +14,14 @@ from aleph_message.models import (
     Payment,
     PaymentType,
 )
+from pydantic import parse_raw_as
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.utils import update_aggregate_settings
+from aleph.vm.resources import GpuDevice, HostGPU, get_gpu_devices
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -29,25 +32,24 @@ logger = logging.getLogger(__name__)
 
 
 class VmPool:
-    """Pool of VMs already started and used to decrease response time.
+    """Pool of existing VMs
+
+    For function VM we keep the VM a while after they  have run, so we can reuse them  and thus decrease response time.
     After running, a VM is saved for future reuse from the same function during a
     configurable duration.
-
-    The counter is used by the VMs to set their tap interface name and the corresponding
-    IPv4 subnet.
     """
 
-    counter: int  # Used to provide distinct ids to network interfaces
     executions: dict[ItemHash, VmExecution]
-    message_cache: dict[str, ExecutableMessage] = {}
-    network: Optional[Network]
-    snapshot_manager: Optional[SnapshotManager] = None
+    message_cache: dict[str, ExecutableMessage]
+    network: Network | None
+    snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
+    gpus: List[GpuDevice] = []
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
-        self.counter = settings.START_ID_INDEX
         self.executions = {}
+        self.message_cache = {}
 
         asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
@@ -81,15 +83,25 @@ class VmPool:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
 
+        if settings.ENABLE_GPU_SUPPORT:
+            # Refresh and get latest settings aggregate
+            asyncio.run(update_aggregate_settings())
+            logger.debug("Detecting GPU devices ...")
+            self.gpus = get_gpu_devices()
+
     def teardown(self) -> None:
         """Stop the VM pool and the network properly."""
         if self.network:
-            self.network.teardown()
+            # self.network.teardown()
+            # FIXME Temporary disable tearing down the network
+            # Fix issue of persistent instances running inside systemd controller losing their ipv4 nat access
+            #  upon supervisor restart or upgrade.
+            pass
 
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
     ) -> VmExecution:
-        """Create a new Aleph Firecracker VM from an Aleph function message."""
+        """Create a new VM from an Aleph function or instance message."""
         async with self.creation_lock:
             # Check if an execution is already present for this VM, then return it.
             # Do not `await` in this section.
@@ -108,12 +120,19 @@ class VmPool:
                 self.executions[vm_hash] = execution
 
             try:
+                # First assign Host GPUs from the available
+                execution.prepare_gpus(self.get_available_gpus())
+                # Prepare VM general Resources and also the GPUs
                 await execution.prepare()
+
                 vm_id = self.get_unique_vm_id()
 
                 if self.network:
                     vm_type = VmType.from_message_content(message)
                     tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                    # If the network interface already exists, remove it and then re-create it.
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
                 else:
                     tap_interface = None
@@ -122,7 +141,9 @@ class VmPool:
                 await execution.start()
 
                 # Start VM and snapshots automatically
-                if execution.persistent:
+                # If the execution is confidential, don't start it because we need to wait for the session certificate
+                # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
+                if execution.persistent and not execution.is_confidential:
                     self.systemd_manager.enable_and_start(execution.controller_service)
                     await execution.wait_for_init()
                     if execution.is_program and execution.vm:
@@ -145,28 +166,15 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
-        _, network_range = settings.IPV4_ADDRESS_POOL.split("/")
-        available_bits = int(network_range) - settings.IPV4_NETWORK_PREFIX_LENGTH
-        self.counter += 1
-        if self.counter < 2**available_bits:
-            # In common cases, use the counter itself as the vm_id. This makes it
-            # easier to debug.
-            return self.counter
-        else:
-            # The value of the counter is too high and some functions such as the
-            # IPv4 range dedicated to the VM do not support such high values.
-            #
-            # We therefore recycle vm_id values from executions that are not running
-            # anymore.
-            currently_used_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.is_running}
-            for i in range(settings.START_ID_INDEX, 255**2):
-                if i not in currently_used_vm_ids:
-                    return i
-            else:
-                msg = "No available value for vm_id."
-                raise ValueError(msg)
+        # Take the first id that is not already taken
+        currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
+        for i in range(settings.START_ID_INDEX, 255**2):
+            if i not in currently_used_vm_ids:
+                return i
+        msg = "No available value for vm_id."
+        raise ValueError(msg)
 
-    def get_running_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
@@ -175,7 +183,7 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> Optional[VmExecution]:
+    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if execution:
@@ -220,8 +228,8 @@ class VmPool:
         for saved_execution in saved_executions:
             vm_hash = ItemHash(saved_execution.vm_hash)
 
-            if vm_hash in self.executions:
-                # The execution is already loaded, skip it
+            if vm_hash in self.executions or not saved_execution.persistent:
+                # The execution is already loaded or isn't persistent, skip it
                 continue
 
             vm_id = saved_execution.vm_id
@@ -240,6 +248,9 @@ class VmPool:
 
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
+                # Load existing GPUs assigned to VMs
+                execution.gpus = parse_raw_as(List[HostGPU], saved_execution.gpus) if saved_execution.gpus else []
+                # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
@@ -291,6 +302,18 @@ class VmPool:
             if execution.is_running and execution.is_instance
         )
         return executions or []
+
+    def get_available_gpus(self) -> List[GpuDevice]:
+        available_gpus = []
+        for gpu in self.gpus:
+            used = False
+            for _, execution in self.executions.items():
+                if execution.uses_gpu(gpu.pci_host):
+                    used = True
+                    break
+            if not used:
+                available_gpus.append(gpu)
+        return available_gpus
 
     def get_executions_by_sender(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
         """Return all executions of the given type, grouped by sender and by chain."""

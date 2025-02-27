@@ -38,13 +38,6 @@
                 "mount": "/opt/venv",
                 "ref": "5f31b0706f59404fad3d0bff97ef89ddf24da4761608ea0646329362c662ba51",
                 "use_latest": false
-            },
-            {
-                "comment": "Working data persisted on the VM supervisor, not available on other nodes",
-                "mount": "/var/lib/example",
-                "name": "data",
-                "persistence": "host",
-                "size_mib": 5
             }
         ],
         "replaces": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",

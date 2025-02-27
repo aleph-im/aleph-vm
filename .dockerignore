@@ -14,3 +14,4 @@
 **/data.tgz
 /pydantic/
 **/target
+/packaging/sevctl/target

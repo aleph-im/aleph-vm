@@ -1,8 +1,9 @@
 import logging
 from ipaddress import IPv6Network
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
+import pyroute2
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import IPv6AllocationPolicy
@@ -104,8 +105,8 @@ def make_ipv6_allocator(
 
 
 class Network:
-    ipv4_forward_state_before_setup: Optional[int] = None
-    ipv6_forward_state_before_setup: Optional[int] = None
+    ipv4_forward_state_before_setup: int | None = None
+    ipv6_forward_state_before_setup: int | None = None
     external_interface: str
     ipv4_forwarding_enabled: bool
     ipv6_forwarding_enabled: bool
@@ -113,7 +114,7 @@ class Network:
     ipv4_address_pool: IPv4NetworkWithInterfaces = IPv4NetworkWithInterfaces("172.16.0.0/12")
     ipv6_address_pool: IPv6Network
     network_size: int
-    ndp_proxy: Optional[NdpProxy] = None
+    ndp_proxy: NdpProxy | None = None
 
     IPV6_SUBNET_PREFIX: int = 124
 
@@ -136,6 +137,7 @@ class Network:
         self.ipv4_forwarding_enabled = ipv4_forwarding_enabled
         self.ipv6_forwarding_enabled = ipv6_forwarding_enabled
         self.use_ndp_proxy = use_ndp_proxy
+        self.ndb = pyroute2.NDB()
 
         if not self.ipv4_address_pool.is_private:
             logger.warning(f"Using a network range that is not private: {self.ipv4_address_pool}")
@@ -220,3 +222,7 @@ class Network:
         """Create TAP interface to be used by VM"""
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
+
+    def interface_exists(self, vm_id: int):
+        interface_name = f"vmtap{vm_id}"
+        return self.ndb.interfaces.exists(interface_name)

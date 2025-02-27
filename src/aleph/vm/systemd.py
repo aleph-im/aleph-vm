@@ -60,7 +60,10 @@ class SystemDManager:
 
     def is_service_active(self, service: str) -> bool:
         try:
-            systemd_service = self.bus.get_object("org.freedesktop.systemd1", object_path=self.manager.GetUnit(service))
+            if not self.is_service_enabled(service):
+                return False
+            unit_path = self.manager.GetUnit(service)
+            systemd_service = self.bus.get_object("org.freedesktop.systemd1", object_path=unit_path)
             unit = dbus.Interface(systemd_service, "org.freedesktop.systemd1.Unit")
             unit_properties = dbus.Interface(unit, "org.freedesktop.DBus.Properties")
             active_state = unit_properties.Get("org.freedesktop.systemd1.Unit", "ActiveState")

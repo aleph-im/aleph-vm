@@ -18,6 +18,7 @@ node_modules
 /runtimes/aleph-debian-11-python/rootfs/
 /packaging/aleph-vm/opt/
 /packaging/target/
+/packaging/sevctl/target/
 /packaging/repositories/*/db/
 /packaging/repositories/*/dists/
 /packaging/repositories/*/pool/

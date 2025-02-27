@@ -17,7 +17,6 @@ import base64
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Union
 
 import yaml
 from aleph_message.models import ItemHash
@@ -35,7 +34,7 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
 
 def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
     """Creates user data configuration file for cloud-init tool"""
-    config: dict[str, Union[str, bool, list[str]]] = {
+    config: dict[str, str | bool | list[str]] = {
         "hostname": hostname,
         "disable_root": False,
         "ssh_pwauth": False,

@@ -1,11 +1,12 @@
 import asyncio
+import json
 import logging
 import uuid
 from asyncio import Task
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional, Union
+from typing import List
 
 from aleph_message.models import (
     ExecutableContent,
@@ -13,18 +14,23 @@ from aleph_message.models import (
     ItemHash,
     ProgramContent,
 )
-from aleph_message.models.execution.environment import HypervisorType
+from aleph_message.models.execution.environment import GpuProperties, HypervisorType
+from pydantic.json import pydantic_encoder
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
 from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
 from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerProgram,
-    AlephFirecrackerResources,
     AlephProgramResources,
 )
+from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
+from aleph.vm.controllers.qemu_confidential.instance import (
+    AlephQemuConfidentialInstance,
+    AlephQemuConfidentialResources,
+)
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
@@ -34,11 +40,9 @@ from aleph.vm.orchestrator.metrics import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
+from aleph.vm.resources import GpuDevice, HostGPU
+from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
-
-if TYPE_CHECKING:
-    from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
-    from aleph.vm.systemd import SystemDManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +50,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VmExecutionTimes:
     defined_at: datetime
-    preparing_at: Optional[datetime] = None
-    prepared_at: Optional[datetime] = None
-    starting_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    stopping_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
+    preparing_at: datetime | None = None
+    prepared_at: datetime | None = None
+    starting_at: datetime | None = None
+    started_at: datetime | None = None
+    stopping_at: datetime | None = None
+    stopped_at: datetime | None = None
 
     def to_dict(self):
         return self.__dict__
@@ -68,8 +72,11 @@ class VmExecution:
     vm_hash: ItemHash
     original: ExecutableContent
     message: ExecutableContent
-    resources: Optional[AlephFirecrackerResources] = None
-    vm: Optional[Union[AlephFirecrackerExecutable, AlephQemuInstance]] = None
+    resources: (
+        AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
+    ) = None
+    vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
+    gpus: List[HostGPU] = []
 
     times: VmExecutionTimes
 
@@ -78,17 +85,20 @@ class VmExecution:
     runs_done_event: asyncio.Event
     stop_pending_lock: asyncio.Lock
     stop_event: asyncio.Event
-    expire_task: Optional[asyncio.Task] = None
-    update_task: Optional[asyncio.Task] = None
+    expire_task: asyncio.Task | None = None
+    update_task: asyncio.Task | None = None
+
+    snapshot_manager: SnapshotManager | None
+    systemd_manager: SystemDManager | None
 
     persistent: bool = False
 
     @property
     def is_running(self) -> bool:
         return (
-            self.times.starting_at and not self.times.stopping_at
-            if not self.persistent
-            else self.systemd_manager.is_service_active(self.controller_service)
+            self.systemd_manager.is_service_active(self.controller_service)
+            if self.persistent and self.systemd_manager
+            else bool(self.times.starting_at and not self.times.stopping_at)
         )
 
     @property
@@ -104,6 +114,11 @@ class VmExecution:
         return isinstance(self.message, InstanceContent)
 
     @property
+    def is_confidential(self) -> bool:
+        # FunctionEnvironment has no trusted_execution
+        return True if getattr(self.message.environment, "trusted_execution", None) else False
+
+    @property
     def hypervisor(self) -> HypervisorType:
         if self.is_program:
             return HypervisorType.firecracker
@@ -116,7 +131,7 @@ class VmExecution:
         return self.ready_event.wait
 
     @property
-    def vm_id(self) -> Optional[int]:
+    def vm_id(self) -> int | None:
         return self.vm.vm_id if self.vm else None
 
     @property
@@ -130,15 +145,22 @@ class VmExecution:
     @property
     def has_resources(self) -> bool:
         assert self.vm, "The VM attribute has to be set before calling has_resources()"
-        return self.vm.resources_path.exists() if self.hypervisor == HypervisorType.firecracker else True
+        if isinstance(self.vm, AlephFirecrackerExecutable):
+            assert self.hypervisor == HypervisorType.firecracker
+            return self.vm.resources_path.exists()
+        else:
+            return True
+
+    def __repr__(self):
+        return f"<VMExecution {type(self.vm).__name__} {self.vm_hash} {self.times.started_at}>"
 
     def __init__(
         self,
         vm_hash: ItemHash,
         message: ExecutableContent,
         original: ExecutableContent,
-        snapshot_manager: "SnapshotManager",
-        systemd_manager: "SystemDManager",
+        snapshot_manager: SnapshotManager | None,
+        systemd_manager: SystemDManager | None,
         persistent: bool,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
@@ -162,7 +184,7 @@ class VmExecution:
             **self.__dict__,
         }
 
-    def to_json(self, indent: Optional[int] = None) -> str:
+    def to_json(self, indent: int | None = None) -> str:
         return dumps_for_json(self.to_dict(), indent=indent)
 
     async def prepare(self) -> None:
@@ -173,14 +195,26 @@ class VmExecution:
                 return
 
             self.times.preparing_at = datetime.now(tz=timezone.utc)
-            resources = None
+            resources: (
+                AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance
+            )
             if self.is_program:
                 resources = AlephProgramResources(self.message, namespace=self.vm_hash)
             elif self.is_instance:
                 if self.hypervisor == HypervisorType.firecracker:
                     resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
                 elif self.hypervisor == HypervisorType.qemu:
-                    resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+                    if self.is_confidential:
+                        resources = AlephQemuConfidentialResources(self.message, namespace=self.vm_hash)
+                    else:
+                        resources = AlephQemuResources(self.message, namespace=self.vm_hash)
+                    resources.gpus = self.gpus
+                else:
+                    msg = f"Unknown hypervisor type {self.hypervisor}"
+                    raise ValueError(msg)
+            else:
+                msg = "Unknown executable message type"
+                raise ValueError(msg)
 
             if not resources:
                 msg = "Unknown executable message type"
@@ -189,8 +223,26 @@ class VmExecution:
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
 
+    def prepare_gpus(self, available_gpus: List[GpuDevice]) -> None:
+        gpus = []
+        if self.message.requirements and self.message.requirements.gpu:
+            for gpu in self.message.requirements.gpu:
+                gpu = GpuProperties.parse_obj(gpu)
+                for available_gpu in available_gpus:
+                    if available_gpu.device_id == gpu.device_id:
+                        gpus.append(HostGPU(pci_host=available_gpu.pci_host))
+                        break
+        self.gpus = gpus
+
+    def uses_gpu(self, pci_host: str) -> bool:
+        for gpu in self.gpus:
+            if gpu.pci_host == pci_host:
+                return True
+
+        return False
+
     def create(
-        self, vm_id: int, tap_interface: Optional[TapInterface] = None, prepare: bool = True
+        self, vm_id: int, tap_interface: TapInterface | None = None, prepare: bool = True
     ) -> AlephVmControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
@@ -222,19 +274,32 @@ class VmExecution:
                     prepare_jailer=prepare,
                 )
             elif self.hypervisor == HypervisorType.qemu:
-                assert isinstance(self.resources, AlephQemuResources)
-                self.vm = vm = AlephQemuInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=self.message.environment.internet,
-                    hardware_resources=self.message.resources,
-                    tap_interface=tap_interface,
-                )
+                if self.is_confidential:
+                    assert isinstance(self.resources, AlephQemuConfidentialResources)
+                    self.vm = vm = AlephQemuConfidentialInstance(
+                        vm_id=vm_id,
+                        vm_hash=self.vm_hash,
+                        resources=self.resources,
+                        enable_networking=self.message.environment.internet,
+                        hardware_resources=self.message.resources,
+                        tap_interface=tap_interface,
+                    )
+                else:
+                    assert isinstance(self.resources, AlephQemuResources)
+                    self.vm = vm = AlephQemuInstance(
+                        vm_id=vm_id,
+                        vm_hash=self.vm_hash,
+                        resources=self.resources,
+                        enable_networking=self.message.environment.internet,
+                        hardware_resources=self.message.resources,
+                        tap_interface=tap_interface,
+                    )
             else:
-                raise Exception("Unknown VM")
+                msg = "Unknown VM"
+                raise Exception(msg)
         else:
-            raise Exception("Unknown VM")
+            msg = "Unknown VM"
+            raise Exception(msg)
 
         return vm
 
@@ -262,7 +327,7 @@ class VmExecution:
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
         await self.vm.wait_for_init()
 
-    def stop_after_timeout(self, timeout: float = 5.0) -> Optional[Task]:
+    def stop_after_timeout(self, timeout: float = 5.0) -> Task | None:
         if self.persistent:
             logger.debug("VM marked as long running. Ignoring timeout.")
             return None
@@ -314,7 +379,7 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if self.vm.support_snapshot:
+            if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
 
@@ -397,6 +462,7 @@ class VmExecution:
                     message=self.message.json(),
                     original_message=self.original.json(),
                     persistent=self.persistent,
+                    gpus=json.dumps(self.gpus, default=pydantic_encoder),
                 )
             )
 
@@ -405,7 +471,7 @@ class VmExecution:
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
 
-    async def run_code(self, scope: Optional[dict] = None) -> bytes:
+    async def run_code(self, scope: dict | None = None) -> bytes:
         if not self.vm:
             msg = "The VM has not been created yet"
             raise ValueError(msg)

@@ -30,7 +30,7 @@ for arg in args:
         sys.exit(1)
 
 if not os.path.isfile(target_file_path):
-    print("No such file: '{}'".format(target_file_path))
+    print(f"No such file: '{target_file_path}'")
     sys.exit(2)
 
 
@@ -41,17 +41,17 @@ def get_git_version():
 
 version = get_git_version()
 
-with open(target_file_path, "r") as target_file:
+with open(target_file_path) as target_file:
     target_content = target_file.read()
 
 if format_ == "deb":
-    updated_content = re.sub(r"(Version:)\w*(.*)", "\\1 {}".format(version), target_content)
+    updated_content = re.sub(r"(Version:)\w*(.*)", f"\\1 {version}", target_content)
 elif format_ == "setup.py":
-    updated_content = re.sub(r"(version)\w*=(.*)'", "\\1='{}'".format(version), target_content)
+    updated_content = re.sub(r"(version)\w*=(.*)'", f"\\1='{version}'", target_content)
 elif format_ == "__version__":
-    updated_content = re.sub(r"(__version__)\w*(.*)", "\\1 = '{}'".format(version), target_content)
+    updated_content = re.sub(r"(__version__)\w*(.*)", f"\\1 = '{version}'", target_content)
 else:
-    print("Format must be 'deb', 'setup.py' or '__version__', not '{}'".format(format_))
+    print(f"Format must be 'deb', 'setup.py' or '__version__', not '{format_}'")
 
 if "--inplace" in args:
     with open(target_file_path, "w") as target_file:
