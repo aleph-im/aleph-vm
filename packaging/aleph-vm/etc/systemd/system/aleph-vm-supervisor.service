@@ -1,7 +1,7 @@
 [Unit]
 Description=Aleph.im VM execution engine
 After=network.target ipfs.service
-Requires=ipfs.service
+Wants=ipfs.service
 
 [Service]
 User=0
