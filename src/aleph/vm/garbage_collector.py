@@ -24,7 +24,6 @@ TEST_HASHES = [
 ]
 
 api_server = [
-    "https://api1.aleph.im",
     "https://api2.aleph.im",
     "https://api3.aleph.im",
     # 'https://official.aleph.cloud',
