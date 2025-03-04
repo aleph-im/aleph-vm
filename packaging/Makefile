@@ -48,7 +48,7 @@ vmlinux:
 
 download-ipfs-kubo: target-dir build-dir
 	mkdir -p ./target/kubo
-	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.23.0/kubo_v0.23.0_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.33.2/kubo_v0.33.2_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
 
 target/bin/sevctl:
 	cargo install --locked --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target
