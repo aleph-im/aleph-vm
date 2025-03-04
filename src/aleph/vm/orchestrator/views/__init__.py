@@ -440,13 +440,13 @@ async def update_allocations(request: web.Request):
         except Exception as error:
             # Handle unknown exception separately, to avoid leaking data
             logger.exception("Unhandled Error while starting VM '%s': %s", instance_hash, error)
-            scheduling_errors[vm_hash] = Exception("Unhandled Error")
+            scheduling_errors[instance_hash] = Exception("Unhandled Error")
 
     # Log unsupported features
     if allocation.on_demand_vms:
         logger.warning("Not supported yet: 'allocation.on_demand_vms'")
     if allocation.jobs:
-        logger.warning("Not supported yet: 'allocation.on_demand_vms'")
+        logger.warning("Not supported yet: 'allocation.jobs'")
 
     failing = set(scheduling_errors.keys())
     successful = allocations - failing

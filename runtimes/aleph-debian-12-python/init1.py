@@ -306,41 +306,42 @@ async def setup_code(
 
 async def run_python_code_http(application: ASGIApplication, scope: dict) -> tuple[dict, dict, str, Optional[bytes]]:
     logger.debug("Running code")
-    with StringIO() as buf, redirect_stdout(buf):
-        # Execute in the same process, saves ~20ms than a subprocess
+    # Execute in the same process, saves ~20ms than a subprocess
 
-        # The body should not be part of the ASGI scope itself
-        scope_body: bytes = scope.pop("body")
+    # The body should not be part of the ASGI scope itself
+    scope_body: bytes = scope.pop("body")
 
-        async def receive():
-            type_ = "http.request" if scope["type"] in ("http", "websocket") else "aleph.message"
-            return {"type": type_, "body": scope_body, "more_body": False}
+    async def receive():
+        type_ = "http.request" if scope["type"] in ("http", "websocket") else "aleph.message"
+        return {"type": type_, "body": scope_body, "more_body": False}
 
-        send_queue: asyncio.Queue = asyncio.Queue()
+    send_queue: asyncio.Queue = asyncio.Queue()
 
-        async def send(dico):
-            await send_queue.put(dico)
+    async def send(dico):
+        await send_queue.put(dico)
 
-        # TODO: Better error handling
-        logger.debug("Awaiting application...")
-        await application(scope, receive, send)
+    # TODO: Better error handling
+    logger.debug("Awaiting application...")
+    await application(scope, receive, send)
 
-        logger.debug("Waiting for headers")
-        headers: dict
-        if scope["type"] == "http":
-            headers = await send_queue.get()
-        else:
-            headers = {}
+    logger.debug("Waiting for headers")
+    headers: dict
+    if scope["type"] == "http":
+        headers = await send_queue.get()
+    else:
+        headers = {}
 
-        logger.debug("Waiting for body")
-        response_body: dict = await send_queue.get()
+    logger.debug("Waiting for body")
+    response_body: dict = await send_queue.get()
 
-        logger.debug("Waiting for buffer")
-        output = buf.getvalue()
+    logger.debug("Waiting for buffer")
 
-        logger.debug(f"Headers {headers}")
-        logger.debug(f"Body {response_body}")
-        logger.debug(f"Output {output}")
+    logger.debug(f"Headers {headers}")
+    logger.debug(f"Body {response_body}")
+
+    # Since Python code runs asynchronously in the same process, sharing the global sys.stdout, prints from an
+    # individual call cannot be isolated from other calls.
+    output = ""
 
     logger.debug("Getting output data")
     output_data: bytes
