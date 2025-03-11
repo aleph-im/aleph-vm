@@ -1,6 +1,4 @@
-import asyncio
 import binascii
-import datetime
 import http
 import logging
 from decimal import Decimal
@@ -16,15 +14,8 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import (
-    InstanceContent,
-    InstanceMessage,
-    ItemHash,
-    MessageType,
-    PaymentType,
-)
-from aleph_message.models.execution.environment import GpuProperties
-from pydantic import BaseModel, ValidationError
+from aleph_message.models import InstanceContent, ItemHash, MessageType, PaymentType
+from pydantic import ValidationError
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import (
