@@ -7,13 +7,13 @@ from unittest.mock import call
 
 import pytest
 from aiohttp import web
+from aleph_message.models import InstanceContent
+from pytest_mock import MockerFixture
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
-from aleph_message.models import InstanceContent
-from tests.supervisor.test_resources import mock_is_kernel_enabled_gpu
 
 
 @pytest.mark.asyncio
@@ -198,7 +198,7 @@ async def test_about_certificates(aiohttp_client):
 
 
 @pytest.fixture
-def mock_aggregate_settings(mocker):
+def mock_aggregate_settings(mocker: MockerFixture):
     mocker.patch(
         "aleph.vm.orchestrator.utils.fetch_aggregate_settings",
         return_value={
@@ -256,6 +256,7 @@ def mock_aggregate_settings(mocker):
 
 @pytest.fixture
 async def mock_app_with_pool(mocker, mock_aggregate_settings):
+    """Set up VmPool with GPU and supervisor webserver"""
     device_return = mocker.Mock(
         stdout=(
             '00:1f.0 "ISA bridge [0601]" "Intel Corporation [8086]" "Device [7a06]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
@@ -270,6 +271,11 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
         "aleph.vm.resources.subprocess.run",
         return_value=device_return,
     )
+
+    def mock_is_kernel_enabled_gpu(pci_host: str) -> bool:
+        value = True if pci_host == "01:00.0" else False
+        return value
+
     mocker.patch(
         "aleph.vm.resources.is_kernel_enabled_gpu",
         wraps=mock_is_kernel_enabled_gpu,
@@ -403,9 +409,10 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert response3.status == 400, await response3.text()
     resp3 = await response3.json()
     assert resp3 == {
-        "error": "Failed to reserves all resources",
-        "reason": "Failed to reserve vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
         "status": "error",
+        "error": "Failed to reserves all resources",
+        "reason": "Failed to find available GPU matching spec vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada "
+        "Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
     }
     assert len(app["vm_pool"].reservations) == 1
 
