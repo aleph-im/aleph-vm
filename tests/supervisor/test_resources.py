@@ -29,8 +29,6 @@ def test_get_gpu_devices():
         ):
             expected_gpu_devices = get_gpu_devices()
 
-            print(expected_gpu_devices)
-
             assert expected_gpu_devices[0].vendor == "NVIDIA"
             assert expected_gpu_devices[0].device_name == "AD104GL [RTX 4000 SFF Ada Generation]"
             assert expected_gpu_devices[0].device_class == "0300"
