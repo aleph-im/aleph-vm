@@ -383,7 +383,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     }
     InstanceContent.parse_obj(instance_content)
 
-    response: web.Response = await client.post("/control/reserve/resource", json=instance_content)
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response.status == 200, await response.text()
     resp = await response.json()
     assert "expires" in resp
@@ -391,7 +391,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert len(app["vm_pool"].reservations) == 1
 
     # make a second reservation
-    response2: web.Response = await client.post("/control/reserve/resource", json=instance_content)
+    response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response2.status == 200
     resp2 = await response2.json()
     assert "expires" in resp2
@@ -405,7 +405,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=other_user,
     ):
-        response3: web.Response = await client.post("/control/reserve/resource", json=instance_content)
+        response3: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response3.status == 400, await response3.text()
     resp3 = await response3.json()
     assert resp3 == {
@@ -429,7 +429,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
             }
         ],
     )
-    response4: web.Response = await client.post("/control/reserve/resource", json=instance_content2)
+    response4: web.Response = await client.post("/control/reserve_resources", json=instance_content2)
     assert response4.status == 400, await response3.text()
 
 
@@ -497,7 +497,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     }
     InstanceContent.parse_obj(instance_content)
 
-    response: web.Response = await client.post("/control/reserve/resource", json=instance_content)
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response.status == 400, await response.text()
     resp = await response.json()
     assert resp["status"] == "error", await response.text()
