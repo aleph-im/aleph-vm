@@ -26,7 +26,9 @@ from aleph.vm.controllers.firecracker.executable import (
     AlephFirecrackerResources,
     VmSetupError,
 )
+from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
+from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
@@ -109,9 +111,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     vm_configuration: ConfigurationType | None
     is_instance: bool
     qemu_process: Process | None
-    support_snapshot = False
+    support_snapshot = True
     persistent = True
     controller_configuration: Configuration
+    active_snapshot_name: str | None = None
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -272,3 +275,50 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()
+        
+    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
+        """
+        Create a VM snapshot using QMP's native savevm functionality.
+        
+        :return: CompressedDiskVolumeSnapshot object (placeholder since QEMU handles snapshots internally)
+        """
+        logger.debug(f"Creating snapshot for VM {self.vm_id} ({self.vm_hash})")
+        
+        # Generate a snapshot name
+        snapshot_name = f"auto-snapshot-{self.vm_hash}"
+        
+        try:
+            with QemuVmClient(self) as client:
+                # Create new snapshot first for safety
+                success = client.create_snapshot(snapshot_name)
+                if not success:
+                    msg = f"Failed to create snapshot {snapshot_name}"
+                    raise ValueError(msg)
+                
+                logger.debug(f"Successfully created snapshot {snapshot_name}")
+                
+                # Get current snapshots
+                existing_snapshots = client.list_snapshots()
+                
+                # Delete previous snapshots if they exist and are different from the new one
+                for existing_snapshot in existing_snapshots:
+                    if existing_snapshot != snapshot_name and existing_snapshot.startswith("auto-snapshot-"):
+                        logger.debug(f"Deleting previous snapshot {existing_snapshot}")
+                        client.delete_snapshot(existing_snapshot)
+                
+                self.active_snapshot_name = snapshot_name
+                
+                # Return a placeholder snapshot object since QEMU handles snapshots internally
+                placeholder_path = Path(settings.EXECUTION_ROOT) / f"{self.vm_hash}-snapshot-info"
+                with open(placeholder_path, "w") as f:
+                    f.write(f"QEMU snapshot {snapshot_name} created successfully")
+                    
+                return CompressedDiskVolumeSnapshot(
+                    path=placeholder_path,
+                    algorithm=settings.SNAPSHOT_COMPRESSION_ALGORITHM
+                )
+                
+        except Exception as e:
+            msg = f"Failed to create snapshot for VM {self.vm_id}: {e}"
+            logger.error(msg)
+            raise ValueError(msg) from e
