@@ -189,7 +189,7 @@ async def benchmark(runs: int):
 
     loop = asyncio.get_event_loop()
     pool = VmPool(loop)
-    pool.setup()
+    await pool.setup()
 
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False

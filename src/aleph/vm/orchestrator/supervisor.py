@@ -152,7 +152,7 @@ def run():
 
     loop = asyncio.new_event_loop()
     pool = VmPool(loop)
-    pool.setup()
+    asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
