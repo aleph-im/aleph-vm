@@ -31,6 +31,7 @@ async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
     For more details, see the PyAleph API documentation:
     https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
     """
+
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=settings"
         logger.info(f"Fetching settings aggregate from {url}")
