@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -8,7 +9,9 @@ from aiohttp import web
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from tests.supervisor.test_resources import mock_is_kernel_enabled_gpu
 
 
 @pytest.mark.asyncio
@@ -190,3 +193,125 @@ async def test_about_certificates(aiohttp_client):
                 export_mock.assert_called_once_with(
                     ["/opt/sevctl", "export", str(certificates_expected_dir)], check=True
                 )
+
+
+@pytest.fixture()
+async def mock_aggregate_settings(mocker):
+    mocker.patch(
+        "aleph.vm.orchestrator.utils.fetch_aggregate_settings",
+        return_value={
+            "compatible_gpus": [
+                {"name": "AD102GL [L40S]", "model": "L40S", "vendor": "NVIDIA", "device_id": "10de:26b9"},
+                {"name": "GB202 [GeForce RTX 5090]", "model": "RTX 5090", "vendor": "NVIDIA", "device_id": "10de:2685"},
+                {
+                    "name": "GB202 [GeForce RTX 5090 D]",
+                    "model": "RTX 5090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2687",
+                },
+                {"name": "AD102 [GeForce RTX 4090]", "model": "RTX 4090", "vendor": "NVIDIA", "device_id": "10de:2684"},
+                {
+                    "name": "AD102 [GeForce RTX 4090 D]",
+                    "model": "RTX 4090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2685",
+                },
+                {"name": "GA102 [GeForce RTX 3090]", "model": "RTX 3090", "vendor": "NVIDIA", "device_id": "10de:2204"},
+                {
+                    "name": "GA102 [GeForce RTX 3090 Ti]",
+                    "model": "RTX 3090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2203",
+                },
+                {
+                    "name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "model": "RTX 4000 ADA",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:27b0",
+                },
+                {
+                    "name": "AD104GL [RTX 4000 Ada Generation]",
+                    "model": "RTX 4000 ADA",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:27b2",
+                },
+                {"name": "GH100 [H100]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2336"},
+                {"name": "GH100 [H100 NVSwitch]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:22a3"},
+                {"name": "GH100 [H100 CNX]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2313"},
+                {"name": "GH100 [H100 SXM5 80GB]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2330"},
+                {"name": "GH100 [H100 PCIe]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2331"},
+                {"name": "GA100", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:2080"},
+                {"name": "GA100", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:2081"},
+                {"name": "GA100 [A100 SXM4 80GB]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b2"},
+                {"name": "GA100 [A100 PCIe 80GB]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b5"},
+                {"name": "GA100 [A100X]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b8"},
+            ],
+            "community_wallet_address": "0x5aBd3258C5492fD378EBC2e0017416E199e5Da56",
+            "community_wallet_timestamp": 1739996239,
+        },
+    )
+
+
+@pytest.fixture(scope="function")
+async def mock_app_with_pool(mocker, mock_aggregate_settings):
+    device_return = mocker.Mock(
+        stdout=(
+            '00:1f.0 "ISA bridge [0601]" "Intel Corporation [8086]" "Device [7a06]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n00:1f.4 "SMBus [0c05]" "Intel Corporation [8086]" "Raptor Lake-S PCH SMBus Controller [7a23]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n00:1f.5 "Serial bus controller [0c80]" "Intel Corporation [8086]" "Raptor Lake SPI (flash) Controller [7a24]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n01:00.0 "VGA compatible controller [0300]" "NVIDIA Corporation [10de]" "AD104GL [RTX 4000 SFF Ada Generation] [27b0]" -ra1 -p00 "NVIDIA Corporation [10de]" "AD104GL [RTX 4000 SFF Ada Generation] [27b0]"'
+            '\n01:00.1 "Audio device [0403]" "NVIDIA Corporation [10de]" "Device [22bc]" -ra1 -p00 "NVIDIA Corporation [10de]" "Device [16fa]"'
+            '\n02:00.0 "Non-Volatile memory controller [0108]" "Samsung Electronics Co Ltd [144d]" "NVMe SSD Controller PM9A1/PM9A3/980PRO [a80a]" -p02 "Samsung Electronics Co Ltd [144d]" "NVMe SSD Controller PM9A1/PM9A3/980PRO [aa0a]"'
+        )
+    )
+    mocker.patch(
+        "aleph.vm.resources.subprocess.run",
+        return_value=device_return,
+    )
+    mocker.patch(
+        "aleph.vm.resources.is_kernel_enabled_gpu",
+        wraps=mock_is_kernel_enabled_gpu,
+    )
+
+    mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
+    loop = asyncio.new_event_loop()
+    pool = VmPool(loop=loop)
+    await pool.setup()
+    app = setup_webapp()
+    app["vm_pool"] = pool
+    return app
+
+
+@pytest.mark.asyncio
+async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with_pool):
+    """Test gpu are properly listed"""
+    client = await aiohttp_client(await mock_app_with_pool)
+
+    response: web.Response = await client.get("/about/usage/system")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert "gpu" in resp
+    assert resp["cpu"]["count"] > 0
+    assert resp["gpu"]["devices"] == [
+        {
+            "vendor": "NVIDIA",
+            "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+            "device_class": "0300",
+            "model": "RTX 4000 ADA",
+            "pci_host": "01:00.0",
+            "device_id": "10de:27b0",
+            "compatible": True,
+        }
+    ]
+    assert resp["gpu"]["available_devices"] == [
+        {
+            "vendor": "NVIDIA",
+            "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+            "device_class": "0300",
+            "model": "RTX 4000 ADA",
+            "pci_host": "01:00.0",
+            "device_id": "10de:27b0",
+            "compatible": True,
+        }
+    ]
