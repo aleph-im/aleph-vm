@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 from aleph_message.models import (
     Chain,
@@ -121,11 +121,14 @@ class VmPool:
                     persistent=persistent,
                 )
                 self.executions[vm_hash] = execution
-
+            resources = set()
             try:
-                # First assign Host GPUs from the available
-                execution.prepare_gpus(self.get_available_gpus())
-                # Prepare VM general Resources and also the GPUs
+                if message.requirements and message.requirements.gpu:
+                    # Ensure we have the necessary GPU for the user by reserving them
+                    resources = self.find_resources_available_for_user(cast(message, InstanceContent), message.address)
+                    # First assign Host GPUs from the available
+                    execution.prepare_gpus(list(resources))
+                    # Prepare VM general Resources and also the GPUs
                 await execution.prepare()
 
                 vm_id = self.get_unique_vm_id()
@@ -154,6 +157,10 @@ class VmPool:
 
                 if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
+                # clear the user reservations
+                for resource in resources:
+                    if resource in self.reservations:
+                        del self.reservations[resource]
             except Exception:
                 # ensure the VM is removed from the pool on creation error
                 self.forget_vm(vm_hash)
@@ -361,33 +368,48 @@ class VmPool:
 
     async def reserve_resources(self, message: InstanceContent, user):
         gpu_to_reserve = message.requirements.gpu if message.requirements and message.requirements.gpu else []
-
         expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
         if not gpu_to_reserve:
             return expiration_date
+
+        # Use the creation lock, to avoid racing issues, with VM creation
+        async with self.creation_lock:
+            # Will raise Exception if not all resources are found.
+            resources = self.find_resources_available_for_user(message, user)
+
+            for resource in resources:
+                # Existing reservation for that user will be overwritten by fresher one
+                self.reservations[resource] = VmPool.Reservation(
+                    user=user, expiration=expiration_date, resource=resource
+                )
+
+        return expiration_date
+
+    def find_resources_available_for_user(self, message: InstanceContent, user) -> set[GpuDevice]:
+        """Find required resource to run InstanceContent from reserved resources by user or free resources.
+
+        Only implement GPU for now"""
+        # Calling function should use the creation_lock to avoid resource being stollem
+        gpu_to_reserve = message.requirements.gpu if message.requirements and message.requirements.gpu else []
+
         # Available GPU are those unused regardless of reservation status
         available_gpus = self.get_available_gpus()
+        resources = set()
         # Use the creation lock, to avoid racing issue the gpu for nothing
-        async with self.creation_lock:
-            reservations = {}
-            for gpu in gpu_to_reserve:
-                for available_gpu in available_gpus:
-                    if available_gpu.device_id != gpu.device_id:
-                        continue
-                    existing_reservation = self.get_valid_reservation(available_gpu)
-                    if existing_reservation is not None and existing_reservation.user != user:
-                        # If there is already a reservation for that user, overwite the old one with a new one.
-                        continue
-                    # Found a gpu, reserve it.
-                    available_gpus.remove(available_gpu)
-                    reservations[available_gpu] = VmPool.Reservation(
-                        resource=gpu, user=user, expiration=expiration_date
-                    )
-                    break
-                else:  # for-else No reservation was found
-                    logger.debug("Failed to reserve %s, no available, unreserved GPU", gpu)
-                    raise Exception("Failed to reserve %s" % gpu)
-
-        # Act the reservations.
-        self.reservations.update(reservations)
-        return expiration_date
+        for gpu in gpu_to_reserve:
+            for available_gpu in available_gpus:
+                if available_gpu.device_id != gpu.device_id:
+                    continue
+                existing_reservation = self.get_valid_reservation(available_gpu)
+                if existing_reservation is not None and existing_reservation.user != user:
+                    # Already has that resource for the user reserved
+                    continue
+                # Found a gpu, reserve it.
+                available_gpus.remove(available_gpu)
+                resources.add(available_gpu)
+                break
+            else:  # for-else No reservation was found
+                logger.debug("Failed to found resource %s, no available, unreserved GPU", gpu)
+                err = f"Failed to find available GPU matching spec {gpu}"
+                raise Exception(err)
+        return resources
