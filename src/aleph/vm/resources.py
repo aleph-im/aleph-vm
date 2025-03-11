@@ -132,11 +132,12 @@ def parse_gpu_device_info(line: str) -> GpuDevice | None:
     )
 
 
-def get_gpu_devices() -> list[GpuDevice] | None:
+def get_gpu_devices() -> list[GpuDevice]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
+    output = result.stdout
     gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
+        {device for line in output.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
     )
-    return gpu_devices if gpu_devices else None
+    return gpu_devices if gpu_devices else []
