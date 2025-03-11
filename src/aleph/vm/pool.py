@@ -73,7 +73,7 @@ class VmPool:
         if settings.SNAPSHOT_FREQUENCY > 0:
             self.snapshot_manager = SnapshotManager()
 
-    def setup(self) -> None:
+    async def setup(self) -> None:
         """Set up the VM pool and the network."""
         if self.network:
             self.network.setup()
@@ -81,10 +81,9 @@ class VmPool:
         if self.snapshot_manager:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
-
         if settings.ENABLE_GPU_SUPPORT:
             # Refresh and get latest settings aggregate
-            asyncio.run(update_aggregate_settings())
+            await update_aggregate_settings()
             logger.debug("Detecting GPU devices ...")
             self.gpus = get_gpu_devices()
 
