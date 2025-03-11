@@ -625,14 +625,6 @@ async def notify_allocation(request: web.Request):
     )
 
 
-class ResourcesBody(BaseModel):
-    """A notification to the orchestrator that a VM has been created or destroyed.
-    This is typically sent by a user that just created a VM in order to quickly ensure the creation of the VM.
-    """
-
-    resource_id: str  # pci_host for GPUS
-
-
 @cors_allow_all
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
@@ -655,6 +647,9 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
             status=http.HTTPStatus.BAD_REQUEST,
         )
     return web.json_response(
-        {"status": "reserved", "expires": expiration_date},
+        {
+            "status": "reserved",
+            "expires": expiration_date,
+        },
         dumps=dumps_for_json,
     )
