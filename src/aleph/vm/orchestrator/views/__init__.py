@@ -1,4 +1,7 @@
+import asyncio
 import binascii
+import datetime
+import http
 import logging
 from decimal import Decimal
 from hashlib import sha256
@@ -13,8 +16,15 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash, MessageType, PaymentType
-from pydantic import ValidationError
+from aleph_message.models import (
+    InstanceContent,
+    InstanceMessage,
+    ItemHash,
+    MessageType,
+    PaymentType,
+)
+from aleph_message.models.execution.environment import GpuProperties
+from pydantic import BaseModel, ValidationError
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import (
@@ -44,6 +54,7 @@ from aleph.vm.orchestrator.utils import (
     is_after_community_wallet_start,
     update_aggregate_settings,
 )
+from aleph.vm.orchestrator.views.authentication import require_jwk_authentication
 from aleph.vm.orchestrator.views.host_status import (
     check_dns_ipv4,
     check_dns_ipv6,
@@ -611,4 +622,39 @@ async def notify_allocation(request: web.Request):
             "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
         },
         status=status_code,
+    )
+
+
+class ResourcesBody(BaseModel):
+    """A notification to the orchestrator that a VM has been created or destroyed.
+    This is typically sent by a user that just created a VM in order to quickly ensure the creation of the VM.
+    """
+
+    resource_id: str  # pci_host for GPUS
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Reserve a GPU"""
+    pool: VmPool = request.app["vm_pool"]
+    try:
+        data = await request.json()
+        message = InstanceContent.parse_obj(data)
+    except JSONDecodeError:
+        return web.HTTPBadRequest(reason="Body is not valid JSON")
+    except ValidationError as error:
+        return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+
+    # TODO When creating a new VM check if all reservation are for user
+    try:
+        expiration_date = await pool.reserve_resources(message, authenticated_sender)
+    except Exception as error:
+        return web.json_response(
+            {"status": "error", "error": "Failed to reserves all resources", "reason": str(error)},
+            status=http.HTTPStatus.BAD_REQUEST,
+        )
+    return web.json_response(
+        {"status": "reserved", "expires": expiration_date},
+        dumps=dumps_for_json,
     )

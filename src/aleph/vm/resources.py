@@ -1,3 +1,4 @@
+import logging
 import subprocess
 from enum import Enum
 from typing import List, Optional
@@ -71,6 +72,8 @@ def get_gpu_model(device_id: str) -> bool | None:
 def is_gpu_compatible(device_id: str) -> bool:
     """Checks if a GPU is compatible based on vendor and model IDs."""
     compatible_gpu_set = {gpu["device_id"] for gpu in get_compatible_gpus()}
+    logger = logging.getLogger(__name__)
+    logger.info(get_compatible_gpus())
     return device_id in compatible_gpu_set
 
 
@@ -134,11 +137,12 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     )
 
 
-def get_gpu_devices() -> Optional[List[GpuDevice]]:
+def get_gpu_devices() -> List[GpuDevice]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
+    output = result.stdout
     gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
+        {device for line in output.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
     )
-    return gpu_devices if gpu_devices else None
+    return gpu_devices if gpu_devices else []
