@@ -223,7 +223,7 @@ class VmExecution:
             self.resources = resources
 
     def prepare_gpus(self, available_gpus: list[GpuDevice]) -> None:
-        gpus = []
+        gpus: list[HostGPU] = []
         if self.message.requirements and self.message.requirements.gpu:
             for gpu in self.message.requirements.gpu:
                 gpu = GpuProperties.parse_obj(gpu)
