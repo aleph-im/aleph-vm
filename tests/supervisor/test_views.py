@@ -1,17 +1,18 @@
 import asyncio
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 from unittest.mock import call
 
 import pytest
 from aiohttp import web
+from aleph_message.models import InstanceContent
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
-from tests.supervisor.test_resources import mock_is_kernel_enabled_gpu
 
 
 @pytest.mark.asyncio
@@ -195,8 +196,8 @@ async def test_about_certificates(aiohttp_client):
                 )
 
 
-@pytest.fixture()
-async def mock_aggregate_settings(mocker):
+@pytest.fixture
+def mock_aggregate_settings(mocker):
     mocker.patch(
         "aleph.vm.orchestrator.utils.fetch_aggregate_settings",
         return_value={
@@ -252,7 +253,7 @@ async def mock_aggregate_settings(mocker):
     )
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 async def mock_app_with_pool(mocker, mock_aggregate_settings):
     device_return = mocker.Mock(
         stdout=(
@@ -315,3 +316,181 @@ async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with
             "compatible": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
+    """Test gpu are properly listed"""
+    app = await mock_app_with_pool
+    client = await aiohttp_client(app)
+    sender = "mock_address"
+
+    # Disable auth
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=sender,
+    )
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {
+            "reproducible": False,
+            "internet": True,
+            "aleph_api": True,
+            "shared_cache": False,
+            "hypervisor": "qemu",
+        },
+        "resources": {
+            "vcpus": 1,
+            "memory": 256,
+            "seconds": 30,
+            "published_ports": None,
+        },
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": {
+            "node": {
+                "node_hash": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            },
+            "gpu": [
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                }
+            ],
+        },
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    InstanceContent.parse_obj(instance_content)
+
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response.status == 200, await response.text()
+    resp = await response.json()
+    assert "expires" in resp
+    assert resp["status"] == "reserved"
+    assert len(app["vm_pool"].reservations) == 1
+
+    # make a second reservation
+    response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response2.status == 200
+    resp2 = await response2.json()
+    assert "expires" in resp2
+    assert resp2["status"] == "reserved"
+    assert resp2["expires"] > resp["expires"]
+    assert len(app["vm_pool"].reservations) == 1
+
+    # another user try to reserve, should return an error
+    other_user = "other_user"
+    with mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=other_user,
+    ):
+        response3: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response3.status == 400, await response3.text()
+    resp3 = await response3.json()
+    assert resp3 == {
+        "error": "Failed to reserves all resources",
+        "reason": "Failed to reserve vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
+        "status": "error",
+    }
+    assert len(app["vm_pool"].reservations) == 1
+
+    # Try to reserve a GPU that the CRN doesn't have
+
+    instance_content2: dict = deepcopy(instance_content)
+    instance_content2["requirements"]["gpu"] = (
+        [
+            {
+                "device_id": "10de:FAKE",
+                "vendor": "NVIDIA",
+                "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                "device_class": "0300",
+            }
+        ],
+    )
+    response4: web.Response = await client.post("/control/reserve_resources", json=instance_content2)
+    assert response4.status == 400, await response3.text()
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_with_pool):
+    """Attempt to reserve two GPU but the CRN only has one"""
+    app = await mock_app_with_pool
+    client = await aiohttp_client(app)
+    sender = "mock_address"
+
+    # Disable auth
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=sender,
+    )
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {
+            "reproducible": False,
+            "internet": True,
+            "aleph_api": True,
+            "shared_cache": False,
+            "hypervisor": "qemu",
+        },
+        "resources": {
+            "vcpus": 1,
+            "memory": 256,
+            "seconds": 30,
+            "published_ports": None,
+        },
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": {
+            "node": {
+                "node_hash": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            },
+            "gpu": [
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                },
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                },
+            ],
+        },
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    InstanceContent.parse_obj(instance_content)
+
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response.status == 400, await response.text()
+    resp = await response.json()
+    assert resp["status"] == "error", await response.text()
+    assert len(app["vm_pool"].reservations) == 0

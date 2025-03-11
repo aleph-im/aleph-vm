@@ -4,11 +4,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from aleph_message.models import (
     Chain,
     ExecutableMessage,
+    InstanceContent,
     ItemHash,
     Payment,
     PaymentType,
@@ -44,13 +46,16 @@ class VmPool:
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
-    gpus: list[GpuDevice] = []
+    gpus: list[GpuDevice]
+    reservations: dict[Any, Reservation]
+    """Resources reserved by an user, before launching (only GPU atm)"""
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
         self.message_cache = {}
+        self.reservations = {}
+        self.gpus = []
 
-        asyncio.set_event_loop(loop)
         self.creation_lock = asyncio.Lock()
 
         self.network = (
@@ -338,3 +343,51 @@ class VmPool:
                 executions_by_sender.setdefault(sender, {})
                 executions_by_sender[sender].setdefault(chain, []).append(execution)
         return executions_by_sender
+
+    class Reservation:
+        def __init__(self, user, resource, expiration):
+            self.user = user
+            self.resource = resource
+            self.expiration = expiration
+
+        def is_expired(self):
+            logger.info(f"{datetime.now(tz=timezone.utc)}, {datetime.now(tz=timezone.utc) > self.expiration}")
+            return datetime.now(tz=timezone.utc) > self.expiration
+
+    def get_valid_reservation(self, resource) -> Reservation | None:
+        if resource in self.reservations and self.reservations[resource].is_expired():
+            del self.reservations[resource]
+        return self.reservations.get(resource)
+
+    async def reserve_resources(self, message: InstanceContent, user):
+        gpu_to_reserve = message.requirements.gpu if message.requirements and message.requirements.gpu else []
+
+        expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
+        if not gpu_to_reserve:
+            return expiration_date
+        # Available GPU are those unused regardless of reservation status
+        available_gpus = self.get_available_gpus()
+        # Use the creation lock, to avoid racing issue the gpu for nothing
+        async with self.creation_lock:
+            reservations = {}
+            for gpu in gpu_to_reserve:
+                for available_gpu in available_gpus:
+                    if available_gpu.device_id != gpu.device_id:
+                        continue
+                    existing_reservation = self.get_valid_reservation(available_gpu)
+                    if existing_reservation is not None and existing_reservation.user != user:
+                        # If there is already a reservation for that user, overwite the old one with a new one.
+                        continue
+                    # Found a gpu, reserve it.
+                    available_gpus.remove(available_gpu)
+                    reservations[available_gpu] = VmPool.Reservation(
+                        resource=gpu, user=user, expiration=expiration_date
+                    )
+                    break
+                else:  # for-else No reservation was found
+                    logger.debug("Failed to reserve %s, no available, unreserved GPU", gpu)
+                    raise Exception("Failed to reserve %s" % gpu)
+
+        # Act the reservations.
+        self.reservations.update(reservations)
+        return expiration_date
