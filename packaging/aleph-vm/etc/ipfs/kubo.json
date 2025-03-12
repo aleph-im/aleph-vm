@@ -13,5 +13,13 @@
     "RelayService": {
       "Enabled": false
     }
+  },
+  "Gateway": {
+    "PublicGateways": {
+      "localhost": {
+        "UseSubdomains": false,
+        "Paths": ["/ipfs", "/ipns"]
+      }
+    }
   }
 }
