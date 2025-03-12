@@ -10,7 +10,6 @@ import json
 import logging
 import re
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
@@ -18,9 +17,12 @@ from subprocess import CalledProcessError
 
 import aiohttp
 from aleph_message.models import (
+    AlephMessage,
     InstanceMessage,
     ItemHash,
+    ItemType,
     ProgramMessage,
+    StoreMessage,
     parse_message,
 )
 from aleph_message.models.execution.instance import RootfsVolume
@@ -133,6 +135,32 @@ async def download_file(url: str, local_path: Path) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+async def download_file_from_ipfs_or_connector(ref: str, cache_path: Path, filetype: str) -> None:
+    """Download a file from the IPFS Gateway if possible, else from the vm-connector."""
+
+    if cache_path.is_file():
+        logger.debug(f"File already exists: {cache_path}")
+        return
+
+    message: StoreMessage = await get_store_message(ref)
+
+    if message.content.item_type == ItemType.ipfs:
+        # Download IPFS files from the IPFS gateway directly
+        cid = message.content.item_hash
+        url = f"{settings.IPFS_SERVER}/{cid}"
+        await download_file(url, cache_path)
+    else:
+        # Download via the vm-connector
+        path_mapping = {
+            "runtime": "/download/runtime",
+            "code": "/download/code",
+            "data": "/download/data",
+        }
+        path = path_mapping[filetype]
+        url = f"{settings.CONNECTOR_URL}{path}/{ref}"
+        await download_file(url, cache_path)
+
+
 async def get_latest_amend(item_hash: str) -> str:
     if settings.FAKE_DATA_PROGRAM:
         return item_hash
@@ -146,7 +174,26 @@ async def get_latest_amend(item_hash: str) -> str:
             return result or item_hash
 
 
-async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
+async def load_message(path: Path) -> AlephMessage:
+    """Load a message from the cache on disk."""
+    with open(path) as cache_file:
+        msg = json.load(cache_file)
+
+        if path in (settings.FAKE_DATA_MESSAGE, settings.FAKE_INSTANCE_MESSAGE):
+            # Ensure validation passes while tweaking message content
+            msg = fix_message_validation(msg)
+
+        return parse_message(message_dict=msg)
+
+
+async def get_message(ref: str) -> AlephMessage:
+    cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
+    url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
+    await download_file(url, cache_path)
+    return await load_message(cache_path)
+
+
+async def get_executable_message(ref: str) -> ProgramMessage | InstanceMessage:
     if ref == settings.FAKE_INSTANCE_ID:
         logger.debug("Using the fake instance message since the ref matches")
         cache_path = settings.FAKE_INSTANCE_MESSAGE
@@ -158,23 +205,22 @@ async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
         url = f"{settings.CONNECTOR_URL}/download/message/{ref}"
         await download_file(url, cache_path)
 
-    with open(cache_path) as cache_file:
-        msg = json.load(cache_file)
+    return await load_message(cache_path)
 
-        if cache_path in (settings.FAKE_DATA_MESSAGE, settings.FAKE_INSTANCE_MESSAGE):
-            # Ensure validation passes while tweaking message content
-            msg = fix_message_validation(msg)
 
-        result = parse_message(message_dict=msg)
-        assert isinstance(result, InstanceMessage | ProgramMessage), "Parsed message is not executable"
-        return result
+async def get_store_message(ref: str) -> StoreMessage:
+    message = await get_message(ref)
+    if not isinstance(message, StoreMessage):
+        msg = f"Expected a store message, got {message.type}"
+        raise ValueError(msg)
+    return message
 
 
 async def get_code_path(ref: str) -> Path:
     if settings.FAKE_DATA_PROGRAM:
         archive_path = Path(settings.FAKE_DATA_PROGRAM)
 
-        encoding: Encoding = (await get_message(ref="fake-message")).content.code.encoding
+        encoding: Encoding = (await get_executable_message(ref="fake-message")).content.code.encoding
         if encoding == Encoding.squashfs:
             squashfs_path = Path(archive_path.name + ".squashfs")
             squashfs_path.unlink(missing_ok=True)
@@ -191,8 +237,7 @@ async def get_code_path(ref: str) -> Path:
             raise ValueError(msg)
 
     cache_path = Path(settings.CODE_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/code/{ref}"
-    await download_file(url, cache_path)
+    await download_file_from_ipfs_or_connector(ref, cache_path, "code")
     return cache_path
 
 
@@ -203,8 +248,7 @@ async def get_data_path(ref: str) -> Path:
         return Path(f"{data_dir}.zip")
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
-    await download_file(url, cache_path)
+    await download_file_from_ipfs_or_connector(ref, cache_path, "data")
     return cache_path
 
 
@@ -224,11 +268,7 @@ async def get_runtime_path(ref: str) -> Path:
         return Path(settings.FAKE_DATA_RUNTIME)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
-
-    if not cache_path.is_file():
-        # File does not exist, download it
-        await download_file(url, cache_path)
+    await download_file_from_ipfs_or_connector(ref, cache_path, "runtime")
 
     await check_squashfs_integrity(cache_path)
     await chown_to_jailman(cache_path)
@@ -242,8 +282,10 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/runtime/{ref}"
-    await download_file(url, cache_path)
+
+    # if not cache_path.is_file():
+    await download_file_from_ipfs_or_connector(ref, cache_path, "runtime")
+
     await chown_to_jailman(cache_path)
     return cache_path
 
@@ -364,8 +406,8 @@ async def get_existing_file(ref: str) -> Path:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
-    await download_file(url, cache_path)
+    await download_file_from_ipfs_or_connector(ref, cache_path, "data")
+
     await chown_to_jailman(cache_path)
     return cache_path
 

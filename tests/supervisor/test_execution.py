@@ -12,7 +12,7 @@ from aleph.vm.controllers.firecracker import AlephFirecrackerProgram
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.messages import load_updated_message
-from aleph.vm.storage import get_message
+from aleph.vm.storage import get_executable_message
 from aleph.vm.utils import fix_message_validation
 
 
@@ -33,6 +33,7 @@ async def test_create_execution(mocker):
     mock_settings.FAKE_DATA_PROGRAM = mock_settings.BENCHMARK_FAKE_DATA_PROGRAM
     mock_settings.ALLOW_VM_NETWORKING = False
     mock_settings.USE_JAILER = False
+    mock_settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     logging.basicConfig(level=logging.DEBUG)
     mock_settings.PRINT_SYSTEM_LOGS = True
@@ -46,7 +47,7 @@ async def test_create_execution(mocker):
     await metrics.create_tables(engine)
 
     vm_hash = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
-    message = await get_message(ref=vm_hash)
+    message = await get_executable_message(ref=vm_hash)
 
     execution = VmExecution(
         vm_hash=vm_hash,
@@ -78,6 +79,7 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
     """
 
     vm_hash = vm_hash or settings.CHECK_FASTAPI_VM_ID
+    settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     # Ensure that the settings are correct and required files present.
     settings.setup()

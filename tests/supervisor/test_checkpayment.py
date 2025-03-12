@@ -149,6 +149,7 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
 async def test_not_enough_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mocker.patch.object(settings, "IPFS_SERVER", "https://ipfs.io/ipfs")
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
 

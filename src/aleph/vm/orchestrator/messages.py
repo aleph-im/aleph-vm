@@ -7,13 +7,13 @@ from aleph_message.models import ExecutableMessage, ItemHash, MessageType
 from aleph_message.status import MessageStatus
 
 from aleph.vm.conf import settings
-from aleph.vm.storage import get_latest_amend, get_message
+from aleph.vm.storage import get_executable_message, get_latest_amend
 
 
 async def try_get_message(ref: str) -> ExecutableMessage:
     """Get the message or raise an aiohttp HTTP error"""
     try:
-        return await get_message(ref)
+        return await get_executable_message(ref)
     except ClientConnectorError as error:
         raise HTTPServiceUnavailable(reason="Aleph Connector unavailable") from error
     except ClientResponseError as error:
