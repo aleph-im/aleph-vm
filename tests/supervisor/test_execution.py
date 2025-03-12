@@ -12,7 +12,7 @@ from aleph.vm.controllers.firecracker import AlephFirecrackerProgram
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.messages import load_updated_message
-from aleph.vm.storage import get_message
+from aleph.vm.storage import get_executable_message
 from aleph.vm.utils import fix_message_validation
 
 
@@ -46,7 +46,7 @@ async def test_create_execution(mocker):
     await metrics.create_tables(engine)
 
     vm_hash = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
-    message = await get_message(ref=vm_hash)
+    message = await get_executable_message(ref=vm_hash)
 
     execution = VmExecution(
         vm_hash=vm_hash,
