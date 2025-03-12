@@ -14,7 +14,7 @@ from typing import Any, List, Literal, NewType, Optional
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from dotenv import load_dotenv
-from pydantic import BaseSettings, Field, HttpUrl
+from pydantic import Field, HttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
