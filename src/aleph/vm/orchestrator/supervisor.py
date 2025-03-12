@@ -34,6 +34,7 @@ from .views import (
     about_login,
     list_executions,
     notify_allocation,
+    operate_reserve_resources,
     run_code_from_hostname,
     run_code_from_path,
     status_check_fastapi,
@@ -102,6 +103,7 @@ def setup_webapp():
         web.get("/about/config", about_config),
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
+        web.post("/control/reserve_resources", operate_reserve_resources),
         web.get("/control/machine/{ref}/stream_logs", stream_logs),
         web.get("/control/machine/{ref}/logs", operate_logs_json),
         web.post("/control/machine/{ref}/expire", operate_expire),
@@ -152,7 +154,7 @@ def run():
 
     loop = asyncio.new_event_loop()
     pool = VmPool(loop)
-    pool.setup()
+    asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
