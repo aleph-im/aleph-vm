@@ -112,6 +112,7 @@ async def test_create_qemu_instance_online():
     settings.ENABLE_CONFIDENTIAL_COMPUTING = False
     settings.ALLOW_VM_NETWORKING = True
     settings.USE_JAILER = False
+    settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     logging.basicConfig(level=logging.DEBUG)
 

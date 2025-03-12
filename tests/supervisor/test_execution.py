@@ -33,6 +33,7 @@ async def test_create_execution(mocker):
     mock_settings.FAKE_DATA_PROGRAM = mock_settings.BENCHMARK_FAKE_DATA_PROGRAM
     mock_settings.ALLOW_VM_NETWORKING = False
     mock_settings.USE_JAILER = False
+    mock_settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     logging.basicConfig(level=logging.DEBUG)
     mock_settings.PRINT_SYSTEM_LOGS = True
@@ -78,6 +79,7 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
     """
 
     vm_hash = vm_hash or settings.CHECK_FASTAPI_VM_ID
+    settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     # Ensure that the settings are correct and required files present.
     settings.setup()

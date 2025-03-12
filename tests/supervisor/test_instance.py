@@ -55,6 +55,7 @@ async def test_create_instance():
     # settings.FAKE_INSTANCE_MESSAGE
     settings.ALLOW_VM_NETWORKING = True
     settings.USE_JAILER = True
+    settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     logging.basicConfig(level=logging.DEBUG)
     settings.PRINT_SYSTEM_LOGS = True
