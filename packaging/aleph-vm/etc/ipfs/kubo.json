@@ -9,9 +9,12 @@
     "Strategy": "roots"
   },
   "Swarm": {
-    "EnableHolePunching":false,
+    "EnableHolePunching": false,
     "RelayService": {
       "Enabled": false
+    },
+    "ResourceMgr": {
+      "MaxMemory": "1GB"
     }
   }
 }
