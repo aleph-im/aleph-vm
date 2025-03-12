@@ -76,7 +76,9 @@ Type=notify
 User=ipfs
 Group=ipfs
 Environment=IPFS_PATH="/var/lib/ipfs"
-ExecStart=/opt/kubo/ipfs daemon --init --migrate --init-profile=server --init-config /etc/ipfs/kubo.json
+ExecStartPre=/opt/kubo/ipfs init
+ExecStartPre=/opt/kubo/ipfs config --json Gateway.PublicGateways '{"localhost": {"UseSubdomains": false, "Paths": ["/ipfs", "/ipns"]}}'
+ExecStart=/opt/kubo/ipfs daemon --init --migrate=true --init-profile=server
 Restart=on-failure
 KillSignal=SIGINT
 
