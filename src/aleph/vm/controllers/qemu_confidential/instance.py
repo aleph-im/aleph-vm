@@ -55,11 +55,12 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     vm_configuration: ConfigurationType | None
     is_instance: bool
     qemu_process: Process | None
-    support_snapshot = False
+    support_snapshot = True
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     controller_configuration: Configuration
     confidential_policy: int
+    active_snapshot_name: str | None = None
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
