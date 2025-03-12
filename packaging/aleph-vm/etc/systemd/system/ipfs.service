@@ -76,7 +76,7 @@ Type=notify
 User=ipfs
 Group=ipfs
 Environment=IPFS_PATH="/var/lib/ipfs"
-ExecStart=/opt/kubo/ipfs daemon --init --migrate --init-profile=server --config-file /etc/ipfs/kubo.json
+ExecStart=/opt/kubo/ipfs daemon --init --migrate --init-profile=server
 Restart=on-failure
 KillSignal=SIGINT
 
