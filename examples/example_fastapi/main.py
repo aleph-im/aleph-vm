@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from os import listdir
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 from aleph_message.models import (
@@ -128,8 +128,8 @@ async def read_aleph_messages() -> dict[str, MessagesResponse]:
 async def resolve_dns_hostname():
     """Check if DNS resolution is working."""
     hostname = "example.org"
-    ipv4: Optional[str] = None
-    ipv6: Optional[str] = None
+    ipv4: str | None = None
+    ipv6: str | None = None
 
     info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
     if not info:
@@ -170,7 +170,7 @@ async def connect_ipv4():
         sock.settimeout(5)
         sock.connect((ipv4_host, 53))
         return {"result": True}
-    except socket.timeout:
+    except TimeoutError:
         logger.warning(f"Socket connection for host {ipv4_host} failed")
         return {"result": False}
 
