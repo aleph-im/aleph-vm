@@ -98,6 +98,7 @@ for i, f in enumerate(reversed(volume_dirs)):
         f"systemctl status aleph-vm-controller@{item_hash}.service --no-pager",
         shell=True,
         capture_output=True,
+        check=False,
     )
     exit_code = proc_ret.returncode
     if exit_code == 0:
