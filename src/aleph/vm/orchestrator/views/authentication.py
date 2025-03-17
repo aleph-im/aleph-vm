@@ -223,7 +223,7 @@ def verify_signed_operation(signed_operation: SignedOperation, signed_pubkey: Si
         logger.debug("Signature verified")
         return signed_pubkey.content.address
     except cryptography.exceptions.InvalidSignature as e:
-        logger.debug("Failing to validate signature for operation", e)
+        logger.debug("Failing to validate signature for operation: %s", e)
         raise web.HTTPUnauthorized(reason="Signature could not verified")
 
 
