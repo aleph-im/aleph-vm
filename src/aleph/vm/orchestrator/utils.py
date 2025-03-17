@@ -47,7 +47,6 @@ async def update_aggregate_settings():
     global LAST_AGGREGATE_SETTINGS  # noqa: PLW0603
     global LAST_AGGREGATE_SETTINGS_FETCHED_AT  # noqa: PLW0603
 
-    LAST_AGGREGATE_SETTINGS = await fetch_aggregate_settings()
     if (
         not LAST_AGGREGATE_SETTINGS
         or LAST_AGGREGATE_SETTINGS_FETCHED_AT
