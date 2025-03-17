@@ -19,13 +19,11 @@ import subprocess
 import sys
 import traceback
 from collections.abc import AsyncIterable
-from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from enum import Enum
-from io import StringIO
 from os import system
 from shutil import make_archive
-from typing import Any, Literal, NewType, Optional, Union, cast
+from typing import Any, Literal, NewType, cast
 
 import aiohttp
 import msgpack
@@ -66,14 +64,14 @@ class ConfigurationPayload:
     code: bytes
     encoding: Encoding
     entrypoint: str
-    ip: Optional[str] = None
-    ipv6: Optional[str] = None
-    route: Optional[str] = None
-    ipv6_gateway: Optional[str] = None
+    ip: str | None = None
+    ipv6: str | None = None
+    route: str | None = None
+    ipv6_gateway: str | None = None
     dns_servers: list[str] = field(default_factory=list)
     volumes: list[Volume] = field(default_factory=list)
-    variables: Optional[dict[str, str]] = None
-    authorized_keys: Optional[list[str]] = None
+    variables: dict[str, str] | None = None
+    authorized_keys: list[str] | None = None
 
 
 @dataclass
@@ -107,7 +105,7 @@ def setup_hostname(hostname: str):
     system(f"hostname {hostname}")
 
 
-def setup_variables(variables: Optional[dict[str, str]]):
+def setup_variables(variables: dict[str, str] | None):
     if variables is None:
         return
     for key, value in variables.items():
@@ -115,11 +113,11 @@ def setup_variables(variables: Optional[dict[str, str]]):
 
 
 def setup_network(
-    ipv4: Optional[str],
-    ipv6: Optional[str],
-    ipv4_gateway: Optional[str],
-    ipv6_gateway: Optional[str],
-    dns_servers: Optional[list[str]] = None,
+    ipv4: str | None,
+    ipv6: str | None,
+    ipv4_gateway: str | None,
+    ipv6_gateway: str | None,
+    dns_servers: list[str] | None = None,
 ):
     """Setup the system with info from the host."""
     dns_servers = dns_servers or []
@@ -188,9 +186,7 @@ def setup_volumes(volumes: list[Volume]):
     system("mount")
 
 
-async def wait_for_lifespan_event_completion(
-    application: ASGIApplication, event: Union[Literal["startup", "shutdown"]]
-):
+async def wait_for_lifespan_event_completion(application: ASGIApplication, event: Literal["startup", "shutdown"]):
     """
     Send the startup lifespan signal to the ASGI app.
     Specification: https://asgi.readthedocs.io/en/latest/specs/lifespan.html
@@ -295,7 +291,7 @@ async def setup_code(
     encoding: Encoding,
     entrypoint: str,
     interface: Interface,
-) -> Union[ASGIApplication, subprocess.Popen]:
+) -> ASGIApplication | subprocess.Popen:
     if interface == Interface.asgi:
         return await setup_code_asgi(code=code, encoding=encoding, entrypoint=entrypoint)
     elif interface == Interface.executable:
@@ -304,7 +300,7 @@ async def setup_code(
         raise ValueError("Invalid interface. This should never happen.")
 
 
-async def run_python_code_http(application: ASGIApplication, scope: dict) -> tuple[dict, dict, str, Optional[bytes]]:
+async def run_python_code_http(application: ASGIApplication, scope: dict) -> tuple[dict, dict, str, bytes | None]:
     logger.debug("Running code")
     # Execute in the same process, saves ~20ms than a subprocess
 
@@ -386,7 +382,7 @@ def show_loading():
     return headers, body
 
 
-async def run_executable_http(scope: dict) -> tuple[dict, dict, str, Optional[bytes]]:
+async def run_executable_http(scope: dict) -> tuple[dict, dict, str, bytes | None]:
     logger.debug("Calling localhost")
 
     tries = 0
@@ -413,7 +409,7 @@ async def run_executable_http(scope: dict) -> tuple[dict, dict, str, Optional[by
 async def process_instruction(
     instruction: bytes,
     interface: Interface,
-    application: Union[ASGIApplication, subprocess.Popen],
+    application: ASGIApplication | subprocess.Popen,
 ) -> AsyncIterable[bytes]:
     if instruction == b"halt":
         logger.info("Received halt command")
@@ -443,11 +439,11 @@ async def process_instruction(
         logger.debug("msgpack.loads )")
         payload = RunCodePayload(**msg_)
 
-        output: Optional[str] = None
+        output: str | None = None
         try:
             headers: dict
             body: dict
-            output_data: Optional[bytes]
+            output_data: bytes | None
 
             if interface == Interface.asgi:
                 application = cast(ASGIApplication, application)
@@ -540,7 +536,7 @@ async def main() -> None:
     setup_system(config)
 
     try:
-        app: Union[ASGIApplication, subprocess.Popen] = await setup_code(
+        app: ASGIApplication | subprocess.Popen = await setup_code(
             config.code, config.encoding, config.entrypoint, config.interface
         )
         client.send(msgpack.dumps({"success": True}))
