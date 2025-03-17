@@ -6,7 +6,6 @@ from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List
 
 from aleph_message.models import (
     ExecutableContent,
@@ -76,7 +75,7 @@ class VmExecution:
         AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
-    gpus: List[HostGPU] = []
+    gpus: list[HostGPU] = []
 
     times: VmExecutionTimes
 
@@ -223,7 +222,7 @@ class VmExecution:
             self.times.prepared_at = datetime.now(tz=timezone.utc)
             self.resources = resources
 
-    def prepare_gpus(self, available_gpus: List[GpuDevice]) -> None:
+    def prepare_gpus(self, available_gpus: list[GpuDevice]) -> None:
         gpus = []
         if self.message.requirements and self.message.requirements.gpu:
             for gpu in self.message.requirements.gpu:

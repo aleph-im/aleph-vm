@@ -1,11 +1,9 @@
 import subprocess
 from enum import Enum
-from typing import List, Optional
 
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, Extra, Field
 
-from aleph.vm.conf import settings
 from aleph.vm.orchestrator.utils import get_compatible_gpus
 
 
@@ -97,7 +95,7 @@ def is_kernel_enabled_gpu(pci_host: str) -> bool:
     return False
 
 
-def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
+def parse_gpu_device_info(line: str) -> GpuDevice | None:
     """Parse GPU device info from a line of lspci output."""
 
     pci_host, device = line.split(' "', maxsplit=1)
@@ -134,7 +132,7 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     )
 
 
-def get_gpu_devices() -> Optional[List[GpuDevice]]:
+def get_gpu_devices() -> list[GpuDevice] | None:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)

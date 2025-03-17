@@ -5,7 +5,7 @@ import shutil
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Generic, List, TypeVar
+from typing import Generic, TypeVar
 
 import psutil
 from aleph_message.models import ItemHash
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    gpus: List[HostGPU] = []
+    gpus: list[HostGPU] = []
 
     async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
