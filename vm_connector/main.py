@@ -1,6 +1,5 @@
 import json
 import logging
-from typing import Optional
 
 import aiohttp
 from aleph_client.asynchronous import create_post
@@ -24,7 +23,7 @@ def read_root():
     return {"Server": "Aleph.im VM Connector"}
 
 
-async def get_latest_message_amend(ref: str, sender: str) -> Optional[dict]:
+async def get_latest_message_amend(ref: str, sender: str) -> dict | None:
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={ref}&addresses={sender}"
         resp = await session.get(url)
@@ -36,7 +35,7 @@ async def get_latest_message_amend(ref: str, sender: str) -> Optional[dict]:
             return None
 
 
-async def get_message(hash_: str) -> Optional[dict]:
+async def get_message(hash_: str) -> dict | None:
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/messages.json?hashes={hash_}"
         resp = await session.get(url)
