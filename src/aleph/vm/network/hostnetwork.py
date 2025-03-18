@@ -53,8 +53,8 @@ class StaticIPv6Allocator(IPv6Allocator):
     }
 
     def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
-        if ipv6_range.prefixlen != 64:
-            msg = "The static IP address allocation scheme requires a /64 subnet"
+        if ipv6_range.prefixlen not in (56, 64):
+            msg = "The static IP address allocation scheme requires a /64 or /56 subnet"
             raise ValueError(msg)
         if subnet_prefix < 124:
             msg = "The IPv6 subnet prefix cannot be larger than /124."
