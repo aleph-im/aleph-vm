@@ -20,6 +20,7 @@ from aleph.vm.utils import (
     check_amd_sev_supported,
     cors_allow_all,
 )
+from aleph.vm.utils.sparse_disk_space import get_available_disk_space_cached
 
 
 class Period(BaseModel):
@@ -147,7 +148,7 @@ async def about_system_usage(request: web.Request):
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000,
+            available_kB=await get_available_disk_space_cached(str(settings.PERSISTENT_VOLUMES_DIR)) // 1000,
         ),
         period=UsagePeriod(
             start_timestamp=period_start,
