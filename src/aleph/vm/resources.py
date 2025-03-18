@@ -1,4 +1,3 @@
-import logging
 import subprocess
 from enum import Enum
 from typing import List, Optional
@@ -6,7 +5,6 @@ from typing import List, Optional
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, Extra, Field
 
-from aleph.vm.conf import settings
 from aleph.vm.orchestrator.utils import get_compatible_gpus
 
 
@@ -72,8 +70,6 @@ def get_gpu_model(device_id: str) -> bool | None:
 def is_gpu_compatible(device_id: str) -> bool:
     """Checks if a GPU is compatible based on vendor and model IDs."""
     compatible_gpu_set = {gpu["device_id"] for gpu in get_compatible_gpus()}
-    logger = logging.getLogger(__name__)
-    logger.info(get_compatible_gpus())
     return device_id in compatible_gpu_set
 
 
