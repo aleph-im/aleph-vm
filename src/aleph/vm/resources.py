@@ -5,7 +5,6 @@ from typing import List, Optional
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, Extra, Field
 
-from aleph.vm.conf import settings
 from aleph.vm.orchestrator.utils import get_compatible_gpus
 
 
@@ -134,11 +133,12 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     )
 
 
-def get_gpu_devices() -> Optional[List[GpuDevice]]:
+def get_gpu_devices() -> List[GpuDevice]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
+    output = result.stdout
     gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
+        {device for line in output.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
     )
-    return gpu_devices if gpu_devices else None
+    return gpu_devices if gpu_devices else []
