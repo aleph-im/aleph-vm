@@ -351,16 +351,6 @@ class VmPool:
                 executions_by_sender[sender].setdefault(chain, []).append(execution)
         return executions_by_sender
 
-    class Reservation:
-        def __init__(self, user, resource, expiration):
-            self.user = user
-            self.resource = resource
-            self.expiration = expiration
-
-        def is_expired(self):
-            logger.info(f"{datetime.now(tz=timezone.utc)}, {datetime.now(tz=timezone.utc) > self.expiration}")
-            return datetime.now(tz=timezone.utc) > self.expiration
-
     def get_valid_reservation(self, resource) -> Reservation | None:
         if resource in self.reservations and self.reservations[resource].is_expired():
             del self.reservations[resource]
@@ -379,9 +369,7 @@ class VmPool:
 
             for resource in resources:
                 # Existing reservation for that user will be overwritten by fresher one
-                self.reservations[resource] = VmPool.Reservation(
-                    user=user, expiration=expiration_date, resource=resource
-                )
+                self.reservations[resource] = Reservation(user=user, expiration=expiration_date, resource=resource)
 
         return expiration_date
 
@@ -413,3 +401,14 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
+
+
+class Reservation:
+    def __init__(self, user, resource, expiration):
+        self.user = user
+        self.resource = resource
+        self.expiration = expiration
+
+    def is_expired(self):
+        logger.info(f"{datetime.now(tz=timezone.utc)}, {datetime.now(tz=timezone.utc) > self.expiration}")
+        return datetime.now(tz=timezone.utc) > self.expiration
