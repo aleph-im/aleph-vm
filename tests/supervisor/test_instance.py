@@ -13,7 +13,7 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.models import VmExecution
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator import metrics
-from aleph.vm.storage import get_message
+from aleph.vm.storage import get_executable_message
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -55,6 +55,7 @@ async def test_create_instance():
     # settings.FAKE_INSTANCE_MESSAGE
     settings.ALLOW_VM_NETWORKING = True
     settings.USE_JAILER = True
+    settings.IPFS_SERVER = "https://ipfs.io/ipfs"
 
     logging.basicConfig(level=logging.DEBUG)
     settings.PRINT_SYSTEM_LOGS = True
@@ -70,7 +71,7 @@ async def test_create_instance():
     await metrics.create_tables(engine)
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    message = await get_message(ref=vm_hash)
+    message = await get_executable_message(ref=vm_hash)
 
     mock_systemd_manager = MockSystemDManager()
 
