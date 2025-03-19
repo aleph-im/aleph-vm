@@ -1,5 +1,9 @@
+import logging
 import qmp
 from pydantic import BaseModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class VmSevInfo(BaseModel):
@@ -74,3 +78,46 @@ class QemuVmClient:
         """
         # {'status': 'prelaunch', 'singlestep': False, 'running': False}
         return self.qmp_client.command("query-status")
+        
+    def create_snapshot(self, snapshot_name: str) -> bool:
+        """
+        Create a VM snapshot using QMP. This will snapshot the VM's RAM state and disks.
+        
+        :param snapshot_name: Name of the snapshot
+        :return: True if successful, False otherwise
+        """
+        try:
+            logger.debug(f"Creating snapshot {snapshot_name} for VM {self.vm.vm_id}")
+            self.qmp_client.command("savevm", **{"name": snapshot_name})
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create snapshot {snapshot_name} for VM {self.vm.vm_id}: {e}")
+            return False
+            
+    def delete_snapshot(self, snapshot_name: str) -> bool:
+        """
+        Delete a VM snapshot using QMP.
+        
+        :param snapshot_name: Name of the snapshot to delete
+        :return: True if successful, False otherwise
+        """
+        try:
+            logger.debug(f"Deleting snapshot {snapshot_name} for VM {self.vm.vm_id}")
+            self.qmp_client.command("delvm", **{"name": snapshot_name})
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete snapshot {snapshot_name} for VM {self.vm.vm_id}: {e}")
+            return False
+            
+    def list_snapshots(self) -> list[str]:
+        """
+        List all VM snapshots using QMP.
+        
+        :return: List of snapshot names
+        """
+        try:
+            snapshots = self.qmp_client.command("query-snapshots")
+            return [snapshot["name"] for snapshot in snapshots]
+        except Exception as e:
+            logger.error(f"Failed to list snapshots for VM {self.vm.vm_id}: {e}")
+            return []

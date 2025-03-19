@@ -27,6 +27,7 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
+from aleph.vm.controllers.qemu.snapshot_manager import QemuSnapshotManager
 from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
@@ -89,6 +90,7 @@ class VmExecution:
     update_task: asyncio.Task | None = None
 
     snapshot_manager: SnapshotManager | None
+    qemu_snapshot_manager: QemuSnapshotManager | None
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
@@ -162,6 +164,7 @@ class VmExecution:
         snapshot_manager: SnapshotManager | None,
         systemd_manager: SystemDManager | None,
         persistent: bool,
+        qemu_snapshot_manager: QemuSnapshotManager | None = None,
     ):
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
@@ -175,6 +178,7 @@ class VmExecution:
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
         self.snapshot_manager = snapshot_manager
+        self.qemu_snapshot_manager = qemu_snapshot_manager
         self.systemd_manager = systemd_manager
         self.persistent = persistent
 
@@ -379,8 +383,11 @@ class VmExecution:
             self.cancel_expiration()
             self.cancel_update()
 
-            if self.vm.support_snapshot and self.snapshot_manager:
-                await self.snapshot_manager.stop_for(self.vm_hash)
+            if self.vm.support_snapshot:
+                if isinstance(self.vm, AlephQemuInstance) and self.qemu_snapshot_manager:
+                    await self.qemu_snapshot_manager.stop_for(self.vm_hash)
+                elif self.snapshot_manager:
+                    await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
 
     def start_watching_for_updates(self, pubsub: PubSub):

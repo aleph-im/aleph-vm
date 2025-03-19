@@ -18,6 +18,8 @@ from pydantic import parse_raw_as
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.controllers.qemu.snapshot_manager import QemuSnapshotManager
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.utils import update_aggregate_settings
@@ -43,6 +45,7 @@ class VmPool:
     message_cache: dict[str, ExecutableMessage]
     network: Network | None
     snapshot_manager: SnapshotManager | None = None
+    qemu_snapshot_manager: QemuSnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
     gpus: List[GpuDevice] = []
@@ -73,6 +76,7 @@ class VmPool:
         self.systemd_manager = SystemDManager()
         if settings.SNAPSHOT_FREQUENCY > 0:
             self.snapshot_manager = SnapshotManager()
+            self.qemu_snapshot_manager = QemuSnapshotManager()
 
     def setup(self) -> None:
         """Set up the VM pool and the network."""
@@ -80,8 +84,12 @@ class VmPool:
             self.network.setup()
 
         if self.snapshot_manager:
-            logger.debug("Initializing SnapshotManager ...")
+            logger.debug("Initializing SnapshotManager for Firecracker VMs...")
             self.snapshot_manager.run_in_thread()
+            
+        if self.qemu_snapshot_manager:
+            logger.debug("Initializing QemuSnapshotManager for QEMU VMs...")
+            self.qemu_snapshot_manager.run_in_thread()
 
         if settings.ENABLE_GPU_SUPPORT:
             # Refresh and get latest settings aggregate
@@ -116,6 +124,7 @@ class VmPool:
                     snapshot_manager=self.snapshot_manager,
                     systemd_manager=self.systemd_manager,
                     persistent=persistent,
+                    qemu_snapshot_manager=self.qemu_snapshot_manager,
                 )
                 self.executions[vm_hash] = execution
 
@@ -149,8 +158,12 @@ class VmPool:
                     if execution.is_program and execution.vm:
                         await execution.vm.load_configuration()
 
-                if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
-                    await self.snapshot_manager.start_for(vm=execution.vm)
+                if execution.vm and execution.vm.support_snapshot:
+                    # Use appropriate snapshot manager based on VM type
+                    if isinstance(execution.vm, AlephQemuInstance) and self.qemu_snapshot_manager:
+                        await self.qemu_snapshot_manager.start_for(vm=execution.vm)
+                    elif self.snapshot_manager:
+                        await self.snapshot_manager.start_for(vm=execution.vm)
             except Exception:
                 # ensure the VM is removed from the pool on creation error
                 self.forget_vm(vm_hash)
@@ -244,6 +257,7 @@ class VmPool:
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
                 persistent=saved_execution.persistent,
+                qemu_snapshot_manager=self.qemu_snapshot_manager,
             )
 
             if execution.is_running:
@@ -266,8 +280,12 @@ class VmPool:
                 self._schedule_forget_on_stop(execution)
 
                 # Start the snapshot manager for the VM
-                if vm.support_snapshot and self.snapshot_manager:
-                    await self.snapshot_manager.start_for(vm=execution.vm)
+                if vm.support_snapshot:
+                    # Use appropriate snapshot manager based on VM type
+                    if isinstance(execution.vm, AlephQemuInstance) and self.qemu_snapshot_manager:
+                        await self.qemu_snapshot_manager.start_for(vm=execution.vm)
+                    elif self.snapshot_manager:
+                        await self.snapshot_manager.start_for(vm=execution.vm)
 
                 self.executions[vm_hash] = execution
             else:
