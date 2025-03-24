@@ -133,6 +133,7 @@ async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     machine_properties = get_machine_properties()
+    pool = request.app["vm_pool"]
 
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
@@ -146,7 +147,8 @@ async def about_system_usage(request: web.Request):
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000,
+            available_kB=pool.calculate_available_disk() // 1000,
+            # available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000,
         ),
         period=UsagePeriod(
             start_timestamp=period_start,

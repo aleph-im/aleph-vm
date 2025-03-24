@@ -39,18 +39,10 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_system_usage(aiohttp_client):
+async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints responds. No auth needed"""
 
-    class FakeVmPool:
-        gpus = []
-
-        def get_available_gpus(self):
-            return []
-
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    client = await aiohttp_client(app)
+    client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
     # check if it is valid json
@@ -60,14 +52,8 @@ async def test_system_usage(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_system_usage_mock(aiohttp_client, mocker):
+async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints response value. No auth needed"""
-
-    class FakeVmPool:
-        gpus = []
-
-        def get_available_gpus(self):
-            return []
 
     mocker.patch(
         "cpuinfo.cpuinfo.get_cpu_info",
@@ -85,9 +71,7 @@ async def test_system_usage_mock(aiohttp_client, mocker):
         lambda: 200,
     )
 
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    client = await aiohttp_client(app)
+    client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
     # check if it is valid json
