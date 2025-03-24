@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -100,6 +101,29 @@ class VmPool:
             # Fix issue of persistent instances running inside systemd controller losing their ipv4 nat access
             #  upon supervisor restart or upgrade.
             pass
+
+    def calculate_available_disk(self):
+        """Disk available for the creation of new VM.
+
+        This take into account the disk request (but not used) for Volume of executions in the pool"""
+        free_space = shutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000
+        # Free disk space reported by system
+
+        # Calculate the reservation
+        total_delta = 0
+        for execution in self.executions.values():
+            if not execution.resources:
+                continue
+            delta = execution.resources.get_disk_usage_delta()
+            logger.warning("Disk usage delta: %d for %s", delta, execution.vm_hash)
+            total_delta += delta
+        available_space = free_space - total_delta
+        logger.info(
+            "Disk: freespace : %.f Mb,   available space (non reserved) %.f Mb",
+            free_space / 1024**2,
+            available_space / 1024**2,
+        )
+        return available_space
 
     async def create_a_vm(
         self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
