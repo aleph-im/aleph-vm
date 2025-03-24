@@ -48,16 +48,18 @@ class NdpProxy:
         Path("/etc/ndppd.conf").write_text(config)
         await self._restart_ndppd()
 
-    async def add_range(self, interface: str, address_range: IPv6Network):
+    async def add_range(self, interface: str, address_range: IPv6Network, update_service: bool = True):
         logger.debug("Proxying range %s -> %s", address_range, interface)
         self.interface_address_range_mapping[interface] = address_range
-        await self._update_ndppd_conf()
+        if update_service:
+            await self._update_ndppd_conf()
 
-    async def delete_range(self, interface: str):
+    async def delete_range(self, interface: str, update_service: bool = True):
         try:
             address_range = self.interface_address_range_mapping.pop(interface)
             logger.debug("Deactivated proxying for %s (%s)", interface, address_range)
         except KeyError:
             return
 
-        await self._update_ndppd_conf()
+        if update_service:
+            await self._update_ndppd_conf()

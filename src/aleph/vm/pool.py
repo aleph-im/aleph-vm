@@ -269,7 +269,11 @@ class VmPool:
                     # Activate ndp_proxy for existing interface if needed
                     if self.network.ndp_proxy and self.network.interface_exists(vm_id):
                         ipv6_gateway = tap_interface.host_ipv6
-                        await self.network.ndp_proxy.add_range(tap_interface.device_name, ipv6_gateway.network)
+                        await self.network.ndp_proxy.add_range(
+                            interface=tap_interface.device_name,
+                            address_range=ipv6_gateway.network,
+                            update_service=False,
+                        )
                         logger.debug(f"Re-added ndp_proxy rule for existing interface {tap_interface.device_name}")
                 else:
                     tap_interface = None
