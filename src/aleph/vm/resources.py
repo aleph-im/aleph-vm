@@ -35,6 +35,7 @@ class GpuDevice(HashableModel):
     pci_host: str = Field(description="Host PCI bus for this device")
     device_id: str = Field(description="GPU vendor & device ids")
     compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
+    supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
 
     class Config:
         extra = Extra.forbid
