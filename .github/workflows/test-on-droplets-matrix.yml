@@ -110,6 +110,7 @@ jobs:
           echo "DROPLET_IPV4=$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)" >>  "$GITHUB_ENV"
 
       - name: Wait for the system to setup and boot
+        id: system-booted
         run: |
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
         timeout-minutes: 3
@@ -146,7 +147,6 @@ jobs:
 
       - name: Test Aleph-VM on the Droplet
         id: test-aleph-vm
-        if: always()
         continue-on-error: true
         run: |
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
@@ -180,7 +180,7 @@ jobs:
           ssh root@${DROPLET_IPV4} "/opt/sevctl --version"
 
       - name: Export aleph logs
-        if: always()
+        if: ${{ !cancelled() && steps.system-booted.outcome == 'sucess'}}
         run: |
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
 
