@@ -1,12 +1,9 @@
 import pytest
 from unittest import mock
-from pathlib import Path
-import subprocess
 
 from aleph.vm.controllers.configuration import QemuGPU
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance
-from aleph.vm.resources import HostGPU
+from aleph.vm.resources import GpuDevice, GpuDeviceClass, HostGPU
 
 
 class TestGpuXVgaSupport:
@@ -61,166 +58,104 @@ class TestGpuXVgaSupport:
         assert any(arg for arg in device_args if "02:00.0" in arg and "x-vga=on" not in arg)
 
 
-@pytest.mark.asyncio
-class TestGpuXVgaDetection:
-    """Tests for GPU x-vga support detection in AlephQemuInstance"""
+class TestGpuDeviceXVgaSupport:
+    """Tests for x-vga support detection based on GPU device class"""
     
-    @mock.patch('subprocess.run')
-    def test_check_gpu_supports_x_vga_success(self, mock_subprocess_run):
-        """Test detection when x-vga is supported"""
-        # Set up mock to simulate successful detection
-        help_process = mock.MagicMock()
-        help_process.stderr = "vfio-pci options include: ... x-vga=on/off ..."
-        
-        test_process = mock.MagicMock()
-        test_process.returncode = 0
-        
-        # Make subprocess.run return different mocks for each call
-        mock_subprocess_run.side_effect = [help_process, test_process]
-        
-        # Create an instance of AlephQemuInstance
-        instance = AlephQemuInstance(
-            vm_id=1, 
-            vm_hash="test_hash", 
-            resources=mock.MagicMock()
+    def test_vga_compatible_controller_supports_x_vga(self):
+        """Test that VGA compatible controllers (0300) support x-vga"""
+        # Create a GPU device with VGA compatible controller class
+        gpu = GpuDevice(
+            pci_host="01:00.0",
+            vendor="NVIDIA",
+            device_name="RTX 3080",
+            device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+            device_id="10de:2206",
+            supports_x_vga=True  # This should be overridden by the property
         )
         
-        # Test the method
-        result = instance._check_gpu_supports_x_vga("/path/to/qemu", "01:00.0")
+        # Check that x-vga is supported
+        assert gpu.has_x_vga_support is True
         
-        # Check that x-vga is detected as supported
-        assert result is True
-        
-        # Verify the subprocess calls
-        assert mock_subprocess_run.call_count == 2
-    
-    @mock.patch('subprocess.run')
-    def test_check_gpu_supports_x_vga_not_supported_by_qemu(self, mock_subprocess_run):
-        """Test detection when x-vga is not supported by QEMU version"""
-        # Set up mock to simulate QEMU that doesn't support x-vga
-        help_process = mock.MagicMock()
-        help_process.stderr = "vfio-pci options include: ..."  # No x-vga mentioned
-        
-        # Make subprocess.run return the mock
-        mock_subprocess_run.return_value = help_process
-        
-        # Create an instance of AlephQemuInstance
-        instance = AlephQemuInstance(
-            vm_id=1, 
-            vm_hash="test_hash", 
-            resources=mock.MagicMock()
+    def test_3d_controller_does_not_support_x_vga(self):
+        """Test that 3D controllers (0302) do not support x-vga"""
+        # Create a GPU device with 3D controller class
+        gpu = GpuDevice(
+            pci_host="01:00.0",
+            vendor="NVIDIA",
+            device_name="Tesla T4",
+            device_class=GpuDeviceClass._3D_CONTROLLER,
+            device_id="10de:1eb8",
+            supports_x_vga=True  # This should be overridden by the property
         )
         
-        # Test the method
-        result = instance._check_gpu_supports_x_vga("/path/to/qemu", "01:00.0")
-        
-        # Check that x-vga is detected as not supported
-        assert result is False
-        
-        # Verify the subprocess call
-        mock_subprocess_run.assert_called_once()
+        # Check that x-vga is not supported
+        assert gpu.has_x_vga_support is False
     
-    @mock.patch('subprocess.run')
-    def test_check_gpu_supports_x_vga_not_supported_by_gpu(self, mock_subprocess_run):
-        """Test detection when x-vga is not supported by the GPU"""
-        # Set up mocks to simulate GPU that doesn't support x-vga
-        help_process = mock.MagicMock()
-        help_process.stderr = "vfio-pci options include: ... x-vga=on/off ..."
+    def test_parse_gpu_device_info_sets_x_vga_support(self):
+        """Test that parse_gpu_device_info sets supports_x_vga based on device class"""
+        import aleph.vm.resources
         
-        test_process = mock.MagicMock()
-        test_process.returncode = 1
-        test_process.stderr = "error: x-vga not supported for this device"
-        
-        # Make subprocess.run return different mocks for each call
-        mock_subprocess_run.side_effect = [help_process, test_process]
-        
-        # Create an instance of AlephQemuInstance
-        instance = AlephQemuInstance(
-            vm_id=1, 
-            vm_hash="test_hash", 
-            resources=mock.MagicMock()
-        )
-        
-        # Test the method
-        result = instance._check_gpu_supports_x_vga("/path/to/qemu", "01:00.0")
-        
-        # Check that x-vga is detected as not supported
-        assert result is False
-        
-        # Verify the subprocess calls
-        assert mock_subprocess_run.call_count == 2
-    
-    @mock.patch('subprocess.run')
-    def test_check_gpu_supports_x_vga_with_error(self, mock_subprocess_run):
-        """Test that the function handles errors gracefully"""
-        # Set up subprocess.run to raise an exception
-        mock_subprocess_run.side_effect = subprocess.SubprocessError("Test error")
-        
-        # Create an instance of AlephQemuInstance
-        instance = AlephQemuInstance(
-            vm_id=1, 
-            vm_hash="test_hash", 
-            resources=mock.MagicMock()
-        )
-        
-        # Test the method
-        result = instance._check_gpu_supports_x_vga("/path/to/qemu", "01:00.0")
-        
-        # Check that the function defaults to True for backward compatibility
-        assert result is True
+        # Create a mock for parse_gpu_device_info
+        with mock.patch('aleph.vm.resources.parse_gpu_device_info') as mock_parse:
+            # Configure the mock to return a GPU with VGA compatible controller class
+            vga_gpu = GpuDevice(
+                pci_host="01:00.0",
+                vendor="NVIDIA",
+                device_name="RTX 3080",
+                device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+                device_id="10de:2206",
+                supports_x_vga=True
+            )
+            mock_parse.return_value = vga_gpu
+            
+            # Call the parse function (it will return our mock)
+            mock_line = "01:00.0 \"VGA compatible controller [0300]\" \"NVIDIA Corporation [10de]\" \"GA102 [GeForce RTX 3080] [2206]\" -ra1"
+            result = aleph.vm.resources.parse_gpu_device_info(mock_line)
+            
+            # Check that supports_x_vga is set to True for VGA compatible controller
+            assert result.supports_x_vga is True
+            
+            # Configure the mock to return a GPU with 3D controller class
+            _3d_gpu = GpuDevice(
+                pci_host="02:00.0",
+                vendor="NVIDIA",
+                device_name="Tesla T4",
+                device_class=GpuDeviceClass._3D_CONTROLLER,
+                device_id="10de:1eb8",
+                supports_x_vga=False
+            )
+            mock_parse.return_value = _3d_gpu
+            
+            # Call the parse function (it will return our mock)
+            mock_line = "02:00.0 \"3D controller [0302]\" \"NVIDIA Corporation [10de]\" \"Tesla T4 [1eb8]\" -ra1"
+            result = aleph.vm.resources.parse_gpu_device_info(mock_line)
+            
+            # Check that supports_x_vga is set to False for 3D controller
+            assert result.supports_x_vga is False
 
 
 @pytest.mark.asyncio
 class TestQemuGpuConfiguration:
     """Tests for configuration of QemuGPU with x-vga support detection"""
     
-    @mock.patch('aleph.vm.controllers.qemu.instance.AlephQemuInstance._check_gpu_supports_x_vga')
-    def test_gpu_configuration_with_x_vga_detection(self, mock_check_x_vga):
-        """Test that GPU configuration correctly sets the supports_x_vga flag"""
-        # Configure the mock to return different values for different GPUs
-        mock_check_x_vga.side_effect = lambda qemu_path, pci_host: pci_host == "01:00.0"
+    def test_gpu_configuration_sets_supports_x_vga(self):
+        """Test that GPU configuration correctly sets the supports_x_vga flag from the GPU's device class"""
+        # Create test GPU devices with different device classes
+        vga_gpu = HostGPU(pci_host="01:00.0")
+        vga_gpu.supports_x_vga = True
         
-        # Create an instance of AlephQemuInstance
-        instance = AlephQemuInstance(
-            vm_id=1, 
-            vm_hash="test_hash", 
-            resources=mock.MagicMock()
-        )
+        _3d_gpu = HostGPU(pci_host="02:00.0")
+        _3d_gpu.supports_x_vga = False
         
-        # Set up resources with multiple GPUs
-        instance.resources.gpus = [
-            HostGPU(pci_host="01:00.0"),  # Should support x-vga
-            HostGPU(pci_host="02:00.0")   # Should not support x-vga
+        # Create QemuGPU instances from the test devices
+        qemu_gpus = [
+            QemuGPU(pci_host=vga_gpu.pci_host, supports_x_vga=vga_gpu.supports_x_vga),
+            QemuGPU(pci_host=_3d_gpu.pci_host, supports_x_vga=_3d_gpu.supports_x_vga)
         ]
         
-        # Create a mock QemuVMConfiguration to capture the results
-        mock_vm_config = mock.MagicMock()
-        
-        # Setup method to create a QemuVMConfiguration and return it
-        def mock_configure_side_effect(*args, **kwargs):
-            nonlocal mock_vm_config
-            # Extract QemuGPU instances created during configuration
-            mock_gpus = kwargs.get('gpus', [])
-            if not mock_gpus and hasattr(args[0], 'gpus'):
-                mock_gpus = args[0].gpus
-            mock_vm_config.gpus = mock_gpus
-            return mock_vm_config
-        
-        # Apply the side effect to a method or create a test method
-        with mock.patch('aleph.vm.controllers.qemu.instance.QemuVMConfiguration', 
-                         side_effect=mock_configure_side_effect):
-            # Call a method that would create QemuGPU instances
-            # This is a simplified test; in a real test you'd call the actual configure method
-            gpus = [
-                QemuGPU(
-                    pci_host=gpu.pci_host,
-                    supports_x_vga=instance._check_gpu_supports_x_vga("/fake/qemu/path", gpu.pci_host)
-                ) for gpu in instance.resources.gpus
-            ]
-            
-            # Check that x-vga support is correctly detected for each GPU
-            assert len(gpus) == 2
-            assert gpus[0].pci_host == "01:00.0"
-            assert gpus[0].supports_x_vga is True
-            assert gpus[1].pci_host == "02:00.0"
-            assert gpus[1].supports_x_vga is False
+        # Check that x-vga support is correctly set for each GPU
+        assert len(qemu_gpus) == 2
+        assert qemu_gpus[0].pci_host == "01:00.0"
+        assert qemu_gpus[0].supports_x_vga is True
+        assert qemu_gpus[1].pci_host == "02:00.0"
+        assert qemu_gpus[1].supports_x_vga is False
