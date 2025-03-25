@@ -204,12 +204,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 )
                 for volume in self.resources.volumes
             ],
-            gpus=[
-                QemuGPU(
-                    pci_host=gpu.pci_host,
-                    supports_x_vga=gpu.supports_x_vga
-                ) for gpu in self.resources.gpus
-            ],
+            gpus=[QemuGPU(pci_host=gpu.pci_host, supports_x_vga=gpu.supports_x_vga) for gpu in self.resources.gpus],
         )
 
         configuration = Configuration(
@@ -267,7 +262,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         pass
 
     print_task: Task | None = None
-
 
     async def teardown(self):
         if self.print_task:
