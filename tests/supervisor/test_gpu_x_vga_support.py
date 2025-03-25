@@ -142,11 +142,24 @@ class TestQemuGpuConfiguration:
     def test_gpu_configuration_sets_supports_x_vga(self):
         """Test that GPU configuration correctly sets the supports_x_vga flag from the GPU's device class"""
         # Create test GPU devices with different device classes
-        vga_gpu = HostGPU(pci_host="01:00.0")
-        vga_gpu.supports_x_vga = True
+        # Using GpuDevice instead of HostGPU since HostGPU doesn't have supports_x_vga
+        vga_gpu = GpuDevice(
+            pci_host="01:00.0",
+            vendor="NVIDIA",
+            device_name="RTX 3080",
+            device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+            device_id="10de:2206",
+            supports_x_vga=True,
+        )
 
-        _3d_gpu = HostGPU(pci_host="02:00.0")
-        _3d_gpu.supports_x_vga = False
+        _3d_gpu = GpuDevice(
+            pci_host="02:00.0",
+            vendor="NVIDIA",
+            device_name="Tesla T4",
+            device_class=GpuDeviceClass._3D_CONTROLLER,
+            device_id="10de:1eb8",
+            supports_x_vga=False,
+        )
 
         # Create QemuGPU instances from the test devices
         qemu_gpus = [
