@@ -207,7 +207,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             gpus=[
                 QemuGPU(
                     pci_host=gpu.pci_host,
-                    supports_x_vga=self._check_gpu_supports_x_vga(qemu_bin_path, gpu.pci_host)
+                    supports_x_vga=gpu.supports_x_vga
                 ) for gpu in self.resources.gpus
             ],
         )
@@ -268,71 +268,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
     print_task: Task | None = None
 
-    def _check_gpu_supports_x_vga(self, qemu_bin_path: str, pci_host: str) -> bool:
-        """
-        Check if a GPU supports the x-vga feature by querying QEMU.
-        
-        This method runs a QEMU command to check if a device with the specified PCI host
-        supports the x-vga parameter when used with vfio-pci.
-        
-        Args:
-            qemu_bin_path: Path to the QEMU binary
-            pci_host: PCI host address of the GPU
-            
-        Returns:
-            bool: True if the GPU supports x-vga, False otherwise
-        """
-        import subprocess
-        
-        try:
-            # First, check if vfio-pci supports x-vga at all
-            cmd = [qemu_bin_path, "-device", "vfio-pci,help"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            
-            if "x-vga" not in result.stderr:
-                # If x-vga isn't mentioned at all in the help, assume it's not supported
-                logger.warning(f"The x-vga option is not supported by this QEMU version for {pci_host}")
-                return False
-                
-            # Try to use the device with x-vga parameter in dry-run mode
-            # We're only checking the parameter, not actually running the VM
-            test_cmd = [
-                qemu_bin_path,
-                "-machine", "accel=kvm,type=q35",
-                "-nodefaults",
-                "-display", "none",
-                "-device", f"vfio-pci,host={pci_host},x-vga=on",
-                "-snapshot",  # Don't write anything to disk
-                "-S",  # Start QEMU in stopped state
-                "-daemonize",  # Run in background
-                "-pidfile", "/tmp/qemu-test.pid"  # We'll use this to kill the process
-            ]
-            
-            # Try running QEMU with this GPU and x-vga
-            proc = subprocess.run(test_cmd, capture_output=True, text=True, check=False)
-            
-            # Check for specific x-vga errors in the output
-            if proc.returncode != 0:
-                stderr = proc.stderr.lower()
-                if "x-vga" in stderr and ("unsupported" in stderr or "error" in stderr or "invalid" in stderr):
-                    logger.warning(f"GPU {pci_host} does not support x-vga: {proc.stderr}")
-                    return False
-            
-            # Clean up the test process if it started
-            try:
-                with open("/tmp/qemu-test.pid", "r") as f:
-                    pid = int(f.read().strip())
-                    subprocess.run(["kill", str(pid)], check=False)
-            except (FileNotFoundError, ValueError, subprocess.SubprocessError):
-                pass
-                
-            # If we didn't detect specific errors related to x-vga, assume it works
-            return True
-            
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.warning(f"Error checking GPU {pci_host} x-vga support: {e}")
-            # On error, default to True for backward compatibility
-            return True
 
     async def teardown(self):
         if self.print_task:
