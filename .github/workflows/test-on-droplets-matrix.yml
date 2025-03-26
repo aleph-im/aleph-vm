@@ -113,7 +113,7 @@ jobs:
         id: system-booted
         run: |
           until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
-        timeout-minutes: 3
+        timeout-minutes: 5
       - name: Install Aleph-VM on the Droplet
         run: |
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
