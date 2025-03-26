@@ -229,7 +229,12 @@ class VmExecution:
                 gpu = GpuProperties.parse_obj(gpu)
                 for available_gpu in available_gpus:
                     if available_gpu.device_id == gpu.device_id:
-                        gpus.append(HostGPU(pci_host=available_gpu.pci_host))
+                        gpus.append(
+                            HostGPU(
+                                pci_host=available_gpu.pci_host,
+                                supports_x_vga=available_gpu.has_x_vga_support,
+                            )
+                        )
                         break
         self.gpus = gpus
 
