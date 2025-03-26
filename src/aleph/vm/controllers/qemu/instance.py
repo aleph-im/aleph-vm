@@ -72,7 +72,7 @@ class AlephQemuResources(AlephFirecrackerResources):
             raise VmSetupError(msg)
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
-        # Do not override if user asked for host persistance.
+        # Do not override if user asked for host persistence.
         if dest_path.exists() and volume.persistence == VolumePersistence.host:
             return dest_path
 

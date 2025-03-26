@@ -13,7 +13,7 @@ from typing import Generic, TypeVar
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
-from aleph_message.models.execution.volume import PersistentVolume
+from aleph_message.models.execution.volume import MachineVolume, PersistentVolume
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -71,6 +71,7 @@ class HostVolume:
     mount: str
     path_on_host: Path
     read_only: bool
+    size_mib: int | None
 
 
 @dataclass
@@ -100,6 +101,35 @@ class AlephFirecrackerResources:
     volumes: list[HostVolume]
     namespace: str
 
+    def get_disk_usage_delta(self) -> int:
+        """Difference between the size requested and what is currently used on disk.
+
+        Count rootfs and volumes.
+        Used to calculate an estimate of space resource available for use.
+        Value in bytes and is negative"""
+
+        total_delta = 0
+        # Root fs
+        if hasattr(self.message_content, "rootfs"):
+            volume = self.message_content.rootfs
+            used_size = self.rootfs_path.stat().st_size if self.rootfs_path.exists() else 0
+            requested_size = int(volume.size_mib * 1024 * 1024)
+            size_delta = used_size - requested_size
+            total_delta += size_delta
+
+        # Count each extra volume
+        for volume in self.volumes:
+            if not volume.size_mib:
+                # planned size not set on immutable volume
+                size_delta = 0
+            else:
+                used_size = volume.path_on_host.stat().st_size if volume.path_on_host.exists() else 0
+                requested_size = int(volume.size_mib * 1024 * 1024)
+
+                size_delta = used_size - requested_size
+            total_delta += size_delta
+        return total_delta
+
     def __init__(self, message_content: ExecutableContent, namespace: str):
         self.message_content = message_content
         self.namespace = namespace
@@ -115,8 +145,9 @@ class AlephFirecrackerResources:
     async def download_volumes(self):
         volumes = []
         # TODO: Download in parallel and prevent duplicated volume names
+        volume: MachineVolume
         for i, volume in enumerate(self.message_content.volumes):
-            # only persistant volume has name and mount
+            # only persistent volume has name and mount
             if isinstance(volume, PersistentVolume):
                 if not volume.name:
                     volume.name = f"unamed_volume_{i}"
@@ -127,6 +158,7 @@ class AlephFirecrackerResources:
                     mount=volume.mount,
                     path_on_host=(await get_volume_path(volume=volume, namespace=self.namespace)),
                     read_only=volume.is_read_only(),
+                    size_mib=getattr(volume, "size_mib", None),
                 )
             )
         self.volumes = volumes
