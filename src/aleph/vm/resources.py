@@ -13,6 +13,7 @@ class HostGPU(BaseModel):
     """Host GPU properties detail."""
 
     pci_host: str = Field(description="GPU PCI host address")
+    supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
 
     class Config:
         extra = Extra.forbid
@@ -37,6 +38,16 @@ class GpuDevice(HashableModel):
     pci_host: str = Field(description="Host PCI bus for this device")
     device_id: str = Field(description="GPU vendor & device ids")
     compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
+
+    @property
+    def has_x_vga_support(self) -> bool:
+        """
+        Determine if the GPU supports x-vga based on its device class.
+
+        VGA compatible controllers (0300) support x-vga
+        3D controllers (0302) do not support x-vga
+        """
+        return self.device_class == GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER
 
     class Config:
         extra = Extra.forbid

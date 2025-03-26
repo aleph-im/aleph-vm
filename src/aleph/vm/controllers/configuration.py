@@ -25,6 +25,7 @@ class QemuVMHostVolume(BaseModel):
 
 class QemuGPU(BaseModel):
     pci_host: str
+    supports_x_vga: bool = True  # Default to True for backward compatibility
 
 
 class QemuVMConfiguration(BaseModel):

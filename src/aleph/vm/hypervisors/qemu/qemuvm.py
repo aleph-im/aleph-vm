@@ -154,9 +154,15 @@ class QemuVM:
             "host,host-phys-bits-limit=0x28",
         ]
         for gpu in self.gpus:
+            device_args = f"vfio-pci,host={gpu.pci_host},multifunction=on"
+
+            # Only add x-vga=on parameter if the GPU supports it
+            if gpu.supports_x_vga:
+                device_args += ",x-vga=on"
+
             args += [
                 "-device",
-                f"vfio-pci,host={gpu.pci_host},multifunction=on,x-vga=on",
+                device_args,
             ]
         return args
 
