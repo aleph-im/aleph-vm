@@ -2,6 +2,8 @@
 name: "Test new runtime and examples"
 on: push
 
+# Test by building a version of the runtimes and diagnostic program from the source.
+# (other tests use the version deployed in the aleph cloud)
 
 jobs:
   run_debian_12:
