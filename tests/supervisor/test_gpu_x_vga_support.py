@@ -71,7 +71,6 @@ class TestGpuDeviceXVgaSupport:
             device_name="RTX 3080",
             device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
             device_id="10de:2206",
-            supports_x_vga=True,  # This should be overridden by the property
         )
 
         # Check that x-vga is supported
@@ -86,14 +85,13 @@ class TestGpuDeviceXVgaSupport:
             device_name="Tesla T4",
             device_class=GpuDeviceClass._3D_CONTROLLER,
             device_id="10de:1eb8",
-            supports_x_vga=True,  # This should be overridden by the property
         )
 
         # Check that x-vga is not supported
         assert gpu.has_x_vga_support is False
 
     def test_parse_gpu_device_info_sets_x_vga_support(self):
-        """Test that parse_gpu_device_info sets supports_x_vga based on device class"""
+        """Test that parse_gpu_device_info sets x-vga support based on device class"""
         import aleph.vm.resources
 
         # Create a mock for parse_gpu_device_info
@@ -105,7 +103,6 @@ class TestGpuDeviceXVgaSupport:
                 device_name="RTX 3080",
                 device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
                 device_id="10de:2206",
-                supports_x_vga=True,
             )
             mock_parse.return_value = vga_gpu
 
@@ -113,8 +110,8 @@ class TestGpuDeviceXVgaSupport:
             mock_line = '01:00.0 "VGA compatible controller [0300]" "NVIDIA Corporation [10de]" "GA102 [GeForce RTX 3080] [2206]" -ra1'
             result = aleph.vm.resources.parse_gpu_device_info(mock_line)
 
-            # Check that supports_x_vga is set to True for VGA compatible controller
-            assert result.supports_x_vga is True
+            # Check that x-vga is supported for VGA compatible controller
+            assert result.has_x_vga_support is True
 
             # Configure the mock to return a GPU with 3D controller class
             _3d_gpu = GpuDevice(
@@ -123,7 +120,6 @@ class TestGpuDeviceXVgaSupport:
                 device_name="Tesla T4",
                 device_class=GpuDeviceClass._3D_CONTROLLER,
                 device_id="10de:1eb8",
-                supports_x_vga=False,
             )
             mock_parse.return_value = _3d_gpu
 
@@ -131,8 +127,8 @@ class TestGpuDeviceXVgaSupport:
             mock_line = '02:00.0 "3D controller [0302]" "NVIDIA Corporation [10de]" "Tesla T4 [1eb8]" -ra1'
             result = aleph.vm.resources.parse_gpu_device_info(mock_line)
 
-            # Check that supports_x_vga is set to False for 3D controller
-            assert result.supports_x_vga is False
+            # Check that x-vga is not supported for 3D controller
+            assert result.has_x_vga_support is False
 
 
 @pytest.mark.asyncio
@@ -142,14 +138,13 @@ class TestQemuGpuConfiguration:
     def test_gpu_configuration_sets_supports_x_vga(self):
         """Test that GPU configuration correctly sets the supports_x_vga flag from the GPU's device class"""
         # Create test GPU devices with different device classes
-        # Using GpuDevice instead of HostGPU since HostGPU doesn't have supports_x_vga
+        # Using GpuDevice instead of HostGPU
         vga_gpu = GpuDevice(
             pci_host="01:00.0",
             vendor="NVIDIA",
             device_name="RTX 3080",
             device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
             device_id="10de:2206",
-            supports_x_vga=True,
         )
 
         _3d_gpu = GpuDevice(
@@ -158,13 +153,12 @@ class TestQemuGpuConfiguration:
             device_name="Tesla T4",
             device_class=GpuDeviceClass._3D_CONTROLLER,
             device_id="10de:1eb8",
-            supports_x_vga=False,
         )
 
         # Create QemuGPU instances from the test devices
         qemu_gpus = [
-            QemuGPU(pci_host=vga_gpu.pci_host, supports_x_vga=vga_gpu.supports_x_vga),
-            QemuGPU(pci_host=_3d_gpu.pci_host, supports_x_vga=_3d_gpu.supports_x_vga),
+            QemuGPU(pci_host=vga_gpu.pci_host, supports_x_vga=vga_gpu.has_x_vga_support),
+            QemuGPU(pci_host=_3d_gpu.pci_host, supports_x_vga=_3d_gpu.has_x_vga_support),
         ]
 
         # Check that x-vga support is correctly set for each GPU
