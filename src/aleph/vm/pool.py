@@ -109,6 +109,8 @@ class VmPool:
         # Calculate the reservation
         total_delta = 0
         for execution in self.executions.values():
+            if not execution.resources:
+                continue
             delta = execution.resources.get_disk_usage_delta()
             logger.warning("Disk usage delta: %d for %s", delta, execution.vm_hash)
             total_delta += delta

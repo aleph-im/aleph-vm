@@ -71,7 +71,7 @@ class HostVolume:
     mount: str
     path_on_host: Path
     read_only: bool
-    size_mib: int
+    size_mib: int | None
 
 
 @dataclass
