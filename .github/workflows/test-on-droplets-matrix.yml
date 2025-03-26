@@ -7,18 +7,7 @@
 name: "Testing on DigitalOcean Droplets"
 
 # Run automatically on main branches, Pull Request updates and allow manual execution using `workflow_dispatch`.
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    types:
-      - "opened"
-      - "reopened"
-      - "synchronize"
-      - "ready_for_review"
-  workflow_dispatch:
-
+on: []
 
 jobs:
   run_on_droplet:
