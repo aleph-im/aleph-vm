@@ -244,13 +244,11 @@ jobs:
 
       - name: Fetch system usage endpoint
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           curl -X GET -H "Content-Type: application/json" \
             "http://${DROPLET_IPV4}:4020/about/usage/system"
 
       - name: Run the sevctl command to ensure it's properly packaged and working
         run: |
-          export DROPLET_IPV4="$(doctl compute droplet get aleph-vm-ci-${{ matrix.os_config.alias }}-${{ matrix.check_vm.alias }} --output json | ./.github/scripts/extract_droplet_ipv4.py)"
           ssh root@${DROPLET_IPV4} "/opt/sevctl --version"
 
       - name: Export aleph logs
