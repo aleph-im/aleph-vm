@@ -19,7 +19,13 @@ try:
     elif ("v4" not in droplet_info[0]["networks"]) or not droplet_info[0]["networks"]["v4"]:
         sys.exit("networks {}".format(droplet_info[0]["networks"]))
     else:
-        print(droplet_info[0]["networks"]["v4"][0]["ip_address"])  # noqa: T201
+        print(droplet_info[0]["networks"]["v4"], file=sys.stderr)
+        for network in droplet_info[0]["networks"]["v4"]:
+            if network["type"] == "public":
+                print(network["ip_address"])  # noqa: T201
+                break
+        else:
+            sys.exit("No public ipv4 found")
 
 except Exception as e:
     if not isinstance(e, SystemExit):
