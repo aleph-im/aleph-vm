@@ -1,5 +1,5 @@
 ---
-name: "Build Packages"
+name: "Build Packages and tests on Droplets"
 on: push
 
 
@@ -265,3 +265,119 @@ jobs:
             echo "Deleting droplet with ID: $DROPLET_ID"
             doctl compute droplet delete --force $DROPLET_ID
           done
+
+  run_new_runtime_debian_12:
+    name: "Test new runtime on Droplet with Debian 12"
+    # Test by building a version of the runtimes and diagnostic program from the source.
+    # (other tests use the version deployed in the aleph cloud)
+
+    runs-on: ubuntu-latest
+    concurrency: droplet-aleph-vm-runtime
+    timeout-minutes: 10
+    needs: build_deb
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch the whole history for all tags and branches (required for aleph.__version__)
+          fetch-depth: 0
+
+      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
+        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Setup SSH private key
+        run: |
+          mkdir ~/.ssh
+          echo $DIGITALOCEAN_SSH_PRIVATE_KEY | base64 --decode > ~/.ssh/id_ed25519
+          chmod 0700 ~/.ssh
+          chmod 0600 ~/.ssh/id_ed25519
+        env:
+          DIGITALOCEAN_SSH_PRIVATE_KEY: ${{ secrets.DIGITALOCEAN_SSH_PRIVATE_KEY }}
+
+      - name: Create the Droplet
+        run: |
+          doctl compute droplet create \
+          --image debian-12-x64 \
+          --size c-4 \
+          --region ams3 \
+          --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
+          --enable-ipv6 \
+          --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
+          aleph-vm-ci-runtime
+
+      # We can probably reuse the previous artefact.
+      - name: "Build custom runtime"
+        run: |
+          sudo apt update
+          sudo apt install -y debootstrap
+          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+
+      - uses: actions/download-artifact@v4
+        name: "Download the debian package from artifacts."
+        with:
+          name: "aleph-vm.debian-12.deb"
+          path: packaging/target/
+
+#      - name: Build Debian Package
+#        run: |
+#          cd packaging && make all-podman-debian-12 && cd ..
+#          ls packaging/target
+
+      - name: Get droplet ip and export it in env
+        # the until loop wait till the network is available.
+        run: |
+          until (doctl compute droplet get  aleph-vm-ci-runtime --output json | ./.github/scripts/extract_droplet_ipv4.py); do sleep 1; done
+          echo "DROPLET_IPV4=$(doctl compute droplet get  aleph-vm-ci-runtime --output json | ./.github/scripts/extract_droplet_ipv4.py)" >>  "$GITHUB_ENV"
+
+      - name: Wait for the system to setup and boot
+        id: system-booted
+        timeout-minutes: 3
+        run: |
+          until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
+
+      - name: Copy the runtime to the system
+        run: |
+          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
+          scp runtimes/aleph-debian-12-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt
+
+      - name: Install Aleph-VM on the Droplet
+        run: |
+          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
+          ## Build configuration file and copy it on Droplet
+          echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
+          echo ALEPH_VM_FAKE_DATA_PROGRAM=/opt/examples/example_fastapi >> supervisor.env
+          echo ALEPH_VM_FAKE_DATA_RUNTIME=/opt/rootfs.squashfs >> supervisor.env
+          ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
+          scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
+          scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
+
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
+
+          # OCopy our example VM on the server
+          scp -pr ./examples root@${DROPLET_IPV4}:/opt/
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60  -o Dpkg::Options::="--force-confold" install -y /opt/aleph-vm.debian-12.deb"
+
+      - name: Call the runtime and example program on the Droplet
+        run: |
+          sleep 3
+          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
+          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
+
+      - name: Export aleph logs
+        if: ${{ !cancelled() && steps.system-booted.outcome == 'sucess'}}
+        run: |
+          ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
+
+      - name: Cleanup
+        if: always()
+        run: |-
+          doctl compute droplet delete -f aleph-vm-ci-runtime
