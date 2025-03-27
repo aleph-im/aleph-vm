@@ -198,6 +198,7 @@ jobs:
         timeout-minutes: 5
       - name: Install Aleph-VM on the Droplet
         run: |
+          set -x
           ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
 
           ## Build configuration file and copy it on Droplet
