@@ -150,9 +150,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
 
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
