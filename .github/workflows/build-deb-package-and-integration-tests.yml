@@ -213,14 +213,14 @@ jobs:
           # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
           while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock; do sleep 1; done
 
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker pull ghcr.io/aleph-im/vm-connector:alpha"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector ghcr.io/aleph-im/vm-connector:alpha"
 
           # "--force-confold" keeps existing config files during package install/upgrade, avoiding prompts.
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get  -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
 
           # Allow some time for IPFS Kubo to start
           sleep 5
@@ -364,12 +364,12 @@ jobs:
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
 
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 update"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 upgrade -y"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 update"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 upgrade -y"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=60 install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
 
-          # OCopy our example VM on the server
+          # Copy our example VM on the server
           scp -pr ./examples root@${DROPLET_IPV4}:/opt/
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=60  -o Dpkg::Options::="--force-confold" install -y /opt/aleph-vm.debian-12.deb"
 
