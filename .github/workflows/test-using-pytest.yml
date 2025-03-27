@@ -21,11 +21,11 @@ jobs:
       - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
         run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
-      - name: Install required system packages only for Ubuntu Linux
+      - name: Install required system packages for installing and running tests
         run: |
           sudo apt-get update
           sudo apt-get -y upgrade
-          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-aioredis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-aioredis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables  libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
           pip install --upgrade typing-extensions types-PyYAML
 
       - name: Install required Python packages
@@ -39,10 +39,6 @@ jobs:
       - name: Test typing with Mypy
         run: |
           hatch run linting:typing
-
-      - name: Install required system packages for installing and running tests
-        run: |
-          sudo apt-get install libsystemd-dev cmake libdbus-1-dev libglib2.0-dev
 
       - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
@@ -81,7 +77,7 @@ jobs:
           sudo hatch run testing:cov
 
       - name: Output modules used and their version
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           # re-install hatch in case previous job failed and hatch didn't get installed
           sudo python3 -m pip install hatch hatch-vcs coverage

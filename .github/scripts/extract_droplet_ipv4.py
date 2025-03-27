@@ -7,5 +7,28 @@ from the JSON returned by `doctl compute droplet get $name --output json
 import json
 import sys
 
-droplet_info = json.load(sys.stdin)
-print(droplet_info[0]["networks"]["v4"][0]["ip_address"])
+droplet_raw = sys.stdin.read()
+try:
+    droplet_info = json.loads(droplet_raw)
+    if not droplet_info:
+        sys.exit("No droplet info")
+    if "errors" in droplet_info:
+        sys.exit(droplet_raw)
+    if "networks" not in droplet_info[0]:
+        sys.exit(f"droplet_info[] {droplet_info[0]}")
+    elif ("v4" not in droplet_info[0]["networks"]) or not droplet_info[0]["networks"]["v4"]:
+        sys.exit("networks {}".format(droplet_info[0]["networks"]))
+    else:
+        print(droplet_info[0]["networks"]["v4"], file=sys.stderr)
+        for network in droplet_info[0]["networks"]["v4"]:
+            if network["type"] == "public":
+                print(network["ip_address"])  # noqa: T201
+                break
+        else:
+            sys.exit("No public ipv4 found")
+
+except Exception as e:
+    if not isinstance(e, SystemExit):
+        print(f"Failed to find ipv4: {e}", file=sys.stderr)  # noqa: T201
+        print(droplet_raw, file=sys.stderr)  # noqa: T201
+    raise
