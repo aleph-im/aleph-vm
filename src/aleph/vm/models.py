@@ -338,6 +338,7 @@ class VmExecution:
             await self.save()
         except Exception:
             await self.vm.teardown()
+            await self.vm.stop_guest_api()
             raise
 
     async def wait_for_init(self):
