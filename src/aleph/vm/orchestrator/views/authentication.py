@@ -234,13 +234,19 @@ async def authenticate_jwk(request: web.Request) -> str:
     signed_operation = get_signed_operation(request)
     if signed_operation.content.domain != settings.DOMAIN_NAME:
         logger.debug(f"Invalid domain '{signed_operation.content.domain}' != '{settings.DOMAIN_NAME}'")
-        raise web.HTTPUnauthorized(reason="Invalid domain")
+        raise web.HTTPUnauthorized(
+            reason=f"Invalid domain: Signed: '{signed_operation.content.domain}' != Request: '{settings.DOMAIN_NAME}'"
+        )
     if signed_operation.content.path != request.path:
         logger.debug(f"Invalid path '{signed_operation.content.path}' != '{request.path}'")
-        raise web.HTTPUnauthorized(reason="Invalid path")
+        raise web.HTTPUnauthorized(
+            reason=f"Invalid path. Signed: '{signed_operation.content.path}' !=  requested path: '{request.path}'"
+        )
     if signed_operation.content.method != request.method:
         logger.debug(f"Invalid method '{signed_operation.content.method}' != '{request.method}'")
-        raise web.HTTPUnauthorized(reason="Invalid method")
+        raise web.HTTPUnauthorized(
+            reason=f"Invalid method. Signed: '{signed_operation.content.method}' !=  request:'{request.method}"
+        )
     return verify_signed_operation(signed_operation, signed_pubkey)
 
 
