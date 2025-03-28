@@ -320,6 +320,19 @@ class VmExecution:
                 await self.vm.start()
             await self.vm.configure()
             await self.vm.start_guest_api()
+
+            # Start VM and snapshots automatically
+            # If the execution is confidential, don't start it because we need to wait for the session certificate
+            # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
+            if self.persistent and not self.is_confidential and self.systemd_manager:
+                self.systemd_manager.enable_and_start(self.controller_service)
+                await self.wait_for_init()
+                if self.is_program and self.vm:
+                    await self.vm.load_configuration()
+
+                if self.vm and self.vm.support_snapshot and self.snapshot_manager:
+                    await self.snapshot_manager.start_for(vm=self.vm)
+
             self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             await self.save()
