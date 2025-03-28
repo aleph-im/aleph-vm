@@ -1,7 +1,6 @@
 import math
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import List, Optional
 
 import cpuinfo
 import psutil
@@ -77,8 +76,8 @@ class MachineProperties(BaseModel):
 
 
 class GpuProperties(BaseModel):
-    devices: Optional[List[GpuDevice]]
-    available_devices: Optional[List[GpuDevice]]
+    devices: list[GpuDevice] | None
+    available_devices: list[GpuDevice] | None
 
 
 class MachineUsage(BaseModel):

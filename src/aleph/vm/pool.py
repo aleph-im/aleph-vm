@@ -5,7 +5,6 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import List
 
 from aleph_message.models import (
     Chain,
@@ -45,7 +44,7 @@ class VmPool:
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
-    gpus: List[GpuDevice] = []
+    gpus: list[GpuDevice] = []
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.executions = {}
@@ -249,7 +248,7 @@ class VmPool:
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
                 # Load existing GPUs assigned to VMs
-                execution.gpus = parse_raw_as(List[HostGPU], saved_execution.gpus) if saved_execution.gpus else []
+                execution.gpus = parse_raw_as(list[HostGPU], saved_execution.gpus) if saved_execution.gpus else []
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
@@ -303,7 +302,7 @@ class VmPool:
         )
         return executions or []
 
-    def get_available_gpus(self) -> List[GpuDevice]:
+    def get_available_gpus(self) -> list[GpuDevice]:
         available_gpus = []
         for gpu in self.gpus:
             used = False
