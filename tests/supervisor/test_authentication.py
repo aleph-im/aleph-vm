@@ -194,7 +194,7 @@ async def test_require_jwk_eth_signature_dont_match(aiohttp_client, patch_dateti
     assert resp.status == 401, await resp.text()
 
     r = await resp.json()
-    assert {"error": "Invalid domain"} == r
+    assert {"error": "Invalid domain: Signed: 'baddomain' != Request: 'localhost'"} == r
 
 
 @pytest.mark.asyncio
