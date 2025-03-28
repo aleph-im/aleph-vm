@@ -474,7 +474,6 @@ class MicroVM:
         await asyncio.sleep(1)
         await self.stop()
 
-
         if (
             self.journal_stdout
             and self.journal_stdout != asyncio.subprocess.DEVNULL
