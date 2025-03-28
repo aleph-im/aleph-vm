@@ -2,7 +2,7 @@
 
 This procedure describes how to run tests on a dev system. See the dev setup section of the README first.
 
-Tests also run on GitHub Actions via [the following workflow](./.github/workflows/test-on-droplets-matrix.yml).
+Tests also run on GitHub Actions via [the following workflow](./.github/workflows/test-using-pytest.yml).
 
 Since these tests create block devices and manipulate network interfaces, they need to run as root.
 If you are not comfortable with this, run them in a virtual machine.

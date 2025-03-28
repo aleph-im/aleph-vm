@@ -6,7 +6,6 @@ import os.path
 import shutil
 import string
 import traceback
-from asyncio import Task
 from asyncio.base_events import Server
 from dataclasses import dataclass
 from os import getuid
@@ -84,8 +83,6 @@ class MicroVM:
     firecracker_bin_path: Path
     jailer_bin_path: Path | None
     proc: asyncio.subprocess.Process | None = None
-    stdout_task: Task | None = None
-    stderr_task: Task | None = None
     config_file_path: Path | None = None
     drives: list[Drive]
     init_timeout: float
@@ -477,10 +474,6 @@ class MicroVM:
         await asyncio.sleep(1)
         await self.stop()
 
-        if self.stdout_task:
-            self.stdout_task.cancel()
-        if self.stderr_task:
-            self.stderr_task.cancel()
 
         if (
             self.journal_stdout
