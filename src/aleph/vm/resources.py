@@ -1,11 +1,9 @@
 import subprocess
 from enum import Enum
-from typing import List, Optional
 
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, Extra, Field
 
-from aleph.vm.conf import settings
 from aleph.vm.orchestrator.utils import get_compatible_gpus
 
 
@@ -13,6 +11,7 @@ class HostGPU(BaseModel):
     """Host GPU properties detail."""
 
     pci_host: str = Field(description="GPU PCI host address")
+    supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
 
     class Config:
         extra = Extra.forbid
@@ -37,6 +36,16 @@ class GpuDevice(HashableModel):
     pci_host: str = Field(description="Host PCI bus for this device")
     device_id: str = Field(description="GPU vendor & device ids")
     compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
+
+    @property
+    def has_x_vga_support(self) -> bool:
+        """
+        Determine if the GPU supports x-vga based on its device class.
+
+        VGA compatible controllers (0300) support x-vga
+        3D controllers (0302) do not support x-vga
+        """
+        return self.device_class == GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER
 
     class Config:
         extra = Extra.forbid
@@ -97,7 +106,7 @@ def is_kernel_enabled_gpu(pci_host: str) -> bool:
     return False
 
 
-def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
+def parse_gpu_device_info(line: str) -> GpuDevice | None:
     """Parse GPU device info from a line of lspci output."""
 
     pci_host, device = line.split(' "', maxsplit=1)
@@ -134,11 +143,12 @@ def parse_gpu_device_info(line: str) -> Optional[GpuDevice]:
     )
 
 
-def get_gpu_devices() -> Optional[List[GpuDevice]]:
+def get_gpu_devices() -> list[GpuDevice]:
     """Get GPU info using lspci command."""
 
     result = subprocess.run(["lspci", "-mmnnn"], capture_output=True, text=True, check=True)
+    output = result.stdout
     gpu_devices = list(
-        {device for line in result.stdout.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
+        {device for line in output.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
     )
-    return gpu_devices if gpu_devices else None
+    return gpu_devices if gpu_devices else []

@@ -1,13 +1,18 @@
+import asyncio
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 from unittest.mock import call
 
 import pytest
 from aiohttp import web
+from aleph_message.models import InstanceContent
+from pytest_mock import MockerFixture
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 
 
@@ -39,18 +44,10 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_system_usage(aiohttp_client):
+async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints responds. No auth needed"""
 
-    class FakeVmPool:
-        gpus = []
-
-        def get_available_gpus(self):
-            return []
-
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    client = await aiohttp_client(app)
+    client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
     # check if it is valid json
@@ -60,14 +57,8 @@ async def test_system_usage(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_system_usage_mock(aiohttp_client, mocker):
+async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints response value. No auth needed"""
-
-    class FakeVmPool:
-        gpus = []
-
-        def get_available_gpus(self):
-            return []
 
     mocker.patch(
         "cpuinfo.cpuinfo.get_cpu_info",
@@ -85,9 +76,7 @@ async def test_system_usage_mock(aiohttp_client, mocker):
         lambda: 200,
     )
 
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    client = await aiohttp_client(app)
+    client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
     # check if it is valid json
@@ -195,3 +184,310 @@ async def test_about_certificates(aiohttp_client):
                 export_mock.assert_called_once_with(
                     ["/opt/sevctl", "export", str(certificates_expected_dir)], check=True
                 )
+
+
+@pytest.fixture
+def mock_aggregate_settings(mocker: MockerFixture):
+    mocker.patch(
+        "aleph.vm.orchestrator.utils.fetch_aggregate_settings",
+        return_value={
+            "compatible_gpus": [
+                {"name": "AD102GL [L40S]", "model": "L40S", "vendor": "NVIDIA", "device_id": "10de:26b9"},
+                {"name": "GB202 [GeForce RTX 5090]", "model": "RTX 5090", "vendor": "NVIDIA", "device_id": "10de:2685"},
+                {
+                    "name": "GB202 [GeForce RTX 5090 D]",
+                    "model": "RTX 5090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2687",
+                },
+                {"name": "AD102 [GeForce RTX 4090]", "model": "RTX 4090", "vendor": "NVIDIA", "device_id": "10de:2684"},
+                {
+                    "name": "AD102 [GeForce RTX 4090 D]",
+                    "model": "RTX 4090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2685",
+                },
+                {"name": "GA102 [GeForce RTX 3090]", "model": "RTX 3090", "vendor": "NVIDIA", "device_id": "10de:2204"},
+                {
+                    "name": "GA102 [GeForce RTX 3090 Ti]",
+                    "model": "RTX 3090",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:2203",
+                },
+                {
+                    "name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "model": "RTX 4000 ADA",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:27b0",
+                },
+                {
+                    "name": "AD104GL [RTX 4000 Ada Generation]",
+                    "model": "RTX 4000 ADA",
+                    "vendor": "NVIDIA",
+                    "device_id": "10de:27b2",
+                },
+                {"name": "GH100 [H100]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2336"},
+                {"name": "GH100 [H100 NVSwitch]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:22a3"},
+                {"name": "GH100 [H100 CNX]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2313"},
+                {"name": "GH100 [H100 SXM5 80GB]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2330"},
+                {"name": "GH100 [H100 PCIe]", "model": "H100", "vendor": "NVIDIA", "device_id": "10de:2331"},
+                {"name": "GA100", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:2080"},
+                {"name": "GA100", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:2081"},
+                {"name": "GA100 [A100 SXM4 80GB]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b2"},
+                {"name": "GA100 [A100 PCIe 80GB]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b5"},
+                {"name": "GA100 [A100X]", "model": "A100", "vendor": "NVIDIA", "device_id": "10de:20b8"},
+            ],
+            "community_wallet_address": "0x5aBd3258C5492fD378EBC2e0017416E199e5Da56",
+            "community_wallet_timestamp": 1739996239,
+        },
+    )
+
+
+@pytest.fixture
+async def mock_app_with_pool(mocker, mock_aggregate_settings):
+    """Set up VmPool with GPU and supervisor webserver"""
+    device_return = mocker.Mock(
+        stdout=(
+            '00:1f.0 "ISA bridge [0601]" "Intel Corporation [8086]" "Device [7a06]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n00:1f.4 "SMBus [0c05]" "Intel Corporation [8086]" "Raptor Lake-S PCH SMBus Controller [7a23]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n00:1f.5 "Serial bus controller [0c80]" "Intel Corporation [8086]" "Raptor Lake SPI (flash) Controller [7a24]" -r11 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8882]"'
+            '\n01:00.0 "VGA compatible controller [0300]" "NVIDIA Corporation [10de]" "AD104GL [RTX 4000 SFF Ada Generation] [27b0]" -ra1 -p00 "NVIDIA Corporation [10de]" "AD104GL [RTX 4000 SFF Ada Generation] [27b0]"'
+            '\n01:00.1 "Audio device [0403]" "NVIDIA Corporation [10de]" "Device [22bc]" -ra1 -p00 "NVIDIA Corporation [10de]" "Device [16fa]"'
+            '\n02:00.0 "Non-Volatile memory controller [0108]" "Samsung Electronics Co Ltd [144d]" "NVMe SSD Controller PM9A1/PM9A3/980PRO [a80a]" -p02 "Samsung Electronics Co Ltd [144d]" "NVMe SSD Controller PM9A1/PM9A3/980PRO [aa0a]"'
+        )
+    )
+    mocker.patch(
+        "aleph.vm.resources.subprocess.run",
+        return_value=device_return,
+    )
+
+    def mock_is_kernel_enabled_gpu(pci_host: str) -> bool:
+        value = True if pci_host == "01:00.0" else False
+        return value
+
+    mocker.patch(
+        "aleph.vm.resources.is_kernel_enabled_gpu",
+        wraps=mock_is_kernel_enabled_gpu,
+    )
+
+    mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
+    loop = asyncio.new_event_loop()
+    pool = VmPool(loop=loop)
+    await pool.setup()
+    app = setup_webapp()
+    app["vm_pool"] = pool
+    return app
+
+
+@pytest.mark.asyncio
+async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with_pool):
+    """Test gpu are properly listed"""
+    client = await aiohttp_client(await mock_app_with_pool)
+
+    response: web.Response = await client.get("/about/usage/system")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert "gpu" in resp
+    assert resp["cpu"]["count"] > 0
+    assert resp["gpu"]["devices"] == [
+        {
+            "vendor": "NVIDIA",
+            "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+            "device_class": "0300",
+            "model": "RTX 4000 ADA",
+            "pci_host": "01:00.0",
+            "device_id": "10de:27b0",
+            "compatible": True,
+        }
+    ]
+    assert resp["gpu"]["available_devices"] == [
+        {
+            "vendor": "NVIDIA",
+            "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+            "device_class": "0300",
+            "model": "RTX 4000 ADA",
+            "pci_host": "01:00.0",
+            "device_id": "10de:27b0",
+            "compatible": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
+    """Test gpu are properly listed"""
+    app = await mock_app_with_pool
+    client = await aiohttp_client(app)
+    sender = "mock_address"
+
+    # Disable auth
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=sender,
+    )
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {
+            "reproducible": False,
+            "internet": True,
+            "aleph_api": True,
+            "shared_cache": False,
+            "hypervisor": "qemu",
+        },
+        "resources": {
+            "vcpus": 1,
+            "memory": 256,
+            "seconds": 30,
+            "published_ports": None,
+        },
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": {
+            "node": {
+                "node_hash": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            },
+            "gpu": [
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                }
+            ],
+        },
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    InstanceContent.parse_obj(instance_content)
+
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response.status == 200, await response.text()
+    resp = await response.json()
+    assert "expires" in resp
+    assert resp["status"] == "reserved"
+    assert len(app["vm_pool"].reservations) == 1
+
+    # make a second reservation
+    response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response2.status == 200
+    resp2 = await response2.json()
+    assert "expires" in resp2
+    assert resp2["status"] == "reserved"
+    assert resp2["expires"] > resp["expires"]
+    assert len(app["vm_pool"].reservations) == 1
+
+    # another user try to reserve, should return an error
+    other_user = "other_user"
+    with mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=other_user,
+    ):
+        response3: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response3.status == 400, await response3.text()
+    resp3 = await response3.json()
+    assert resp3 == {
+        "status": "error",
+        "error": "Failed to reserves all resources",
+        "reason": "Failed to find available GPU matching spec vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada "
+        "Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
+    }
+    assert len(app["vm_pool"].reservations) == 1
+
+    # Try to reserve a GPU that the CRN doesn't have
+
+    instance_content2: dict = deepcopy(instance_content)
+    instance_content2["requirements"]["gpu"] = (
+        [
+            {
+                "device_id": "10de:FAKE",
+                "vendor": "NVIDIA",
+                "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                "device_class": "0300",
+            }
+        ],
+    )
+    response4: web.Response = await client.post("/control/reserve_resources", json=instance_content2)
+    assert response4.status == 400, await response3.text()
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_with_pool):
+    """Attempt to reserve two GPU but the CRN only has one"""
+    app = await mock_app_with_pool
+    client = await aiohttp_client(app)
+    sender = "mock_address"
+
+    # Disable auth
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=sender,
+    )
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {
+            "reproducible": False,
+            "internet": True,
+            "aleph_api": True,
+            "shared_cache": False,
+            "hypervisor": "qemu",
+        },
+        "resources": {
+            "vcpus": 1,
+            "memory": 256,
+            "seconds": 30,
+            "published_ports": None,
+        },
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": {
+            "node": {
+                "node_hash": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            },
+            "gpu": [
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                },
+                {
+                    "device_id": "10de:27b0",
+                    "vendor": "NVIDIA",
+                    "device_name": "AD104GL [RTX 4000 SFF Ada Generation]",
+                    "device_class": "0300",
+                },
+            ],
+        },
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    InstanceContent.parse_obj(instance_content)
+
+    response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
+    assert response.status == 400, await response.text()
+    resp = await response.json()
+    assert resp["status"] == "error", await response.text()
+    assert len(app["vm_pool"].reservations) == 0

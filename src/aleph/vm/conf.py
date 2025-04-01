@@ -9,7 +9,7 @@ from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
 from subprocess import CalledProcessError, check_output
-from typing import Any, List, Literal, NewType, Optional
+from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
@@ -191,21 +191,21 @@ class Settings(BaseSettings):
     CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
-    MESSAGE_CACHE: Optional[Path] = Field(
+    MESSAGE_CACHE: Path | None = Field(
         None,
         description="Default to CACHE_ROOT/message",
     )
-    CODE_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/code")
-    RUNTIME_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/runtime")
-    DATA_CACHE: Optional[Path] = Field(None, description="Default to CACHE_ROOT/data")
+    CODE_CACHE: Path | None = Field(None, description="Default to CACHE_ROOT/code")
+    RUNTIME_CACHE: Path | None = Field(None, description="Default to CACHE_ROOT/runtime")
+    DATA_CACHE: Path | None = Field(None, description="Default to CACHE_ROOT/data")
 
     EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
-    JAILER_BASE_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/jailer")
-    EXECUTION_DATABASE: Optional[Path] = Field(
+    JAILER_BASE_DIRECTORY: Path | None = Field(None, description="Default to EXECUTION_ROOT/jailer")
+    EXECUTION_DATABASE: Path | None = Field(
         None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
     )
     EXECUTION_LOG_ENABLED: bool = False
-    EXECUTION_LOG_DIRECTORY: Optional[Path] = Field(
+    EXECUTION_LOG_DIRECTORY: Path | None = Field(
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
@@ -270,12 +270,12 @@ class Settings(BaseSettings):
         "with SEV and SEV-ES",
     )
 
-    CONFIDENTIAL_DIRECTORY: Optional[Path] = Field(
+    CONFIDENTIAL_DIRECTORY: Path | None = Field(
         None,
         description="Confidential Computing default directory. Default to EXECUTION_ROOT/confidential",
     )
 
-    CONFIDENTIAL_SESSION_DIRECTORY: Optional[Path] = Field(None, description="Default to EXECUTION_ROOT/sessions")
+    CONFIDENTIAL_SESSION_DIRECTORY: Path | None = Field(None, description="Default to EXECUTION_ROOT/sessions")
 
     ENABLE_GPU_SUPPORT: bool = Field(
         default=False,

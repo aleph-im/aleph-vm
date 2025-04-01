@@ -10,7 +10,6 @@ import json
 import logging
 import re
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copy2, make_archive
@@ -382,7 +381,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             raise NotImplementedError(msg)
         if not re.match(r"^[\w\-_/]+$", volume_name):
             # Sanitize volume names
-            logger.debug(f"Invalid values for volume name: {repr(volume_name)} detected, sanitizing")
+            logger.debug(f"Invalid values for volume name: {volume_name!r} detected, sanitizing")
             volume_name = re.sub(r"[^\w\-_]", "_", volume_name)
         (Path(settings.PERSISTENT_VOLUMES_DIR) / namespace).mkdir(exist_ok=True)
         if volume.parent:

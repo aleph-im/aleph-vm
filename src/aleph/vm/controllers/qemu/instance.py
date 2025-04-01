@@ -5,7 +5,7 @@ import shutil
 from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Generic, List, TypeVar
+from typing import Generic, TypeVar
 
 import psutil
 from aleph_message.models import ItemHash
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(AlephFirecrackerResources):
-    gpus: List[HostGPU] = []
+    gpus: list[HostGPU] = []
 
     async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
@@ -72,7 +72,7 @@ class AlephQemuResources(AlephFirecrackerResources):
             raise VmSetupError(msg)
 
         dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
-        # Do not override if user asked for host persistance.
+        # Do not override if user asked for host persistence.
         if dest_path.exists() and volume.persistence == VolumePersistence.host:
             return dest_path
 
@@ -204,7 +204,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 )
                 for volume in self.resources.volumes
             ],
-            gpus=[QemuGPU(pci_host=gpu.pci_host) for gpu in self.resources.gpus],
+            gpus=[QemuGPU(pci_host=gpu.pci_host, supports_x_vga=gpu.supports_x_vga) for gpu in self.resources.gpus],
         )
 
         configuration = Configuration(
