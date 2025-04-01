@@ -66,7 +66,7 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    See the [VM-Connector README](./vm_connector/README.md) for more details.
 
    ```shell
-   docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
+   docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:2025-03
    ```
 
 2. **Install the Debian Package**

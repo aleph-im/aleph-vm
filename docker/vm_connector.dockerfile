@@ -1,11 +1,11 @@
-FROM python:3.9
+FROM python:3.13
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y \
      libsecp256k1-dev \
      zip \
      && rm -rf /var/lib/apt/lists/*
 
-RUN pip install fastapi aiofiles uvicorn aleph-client eth-account
+RUN pip install 'fastapi==0.115.11' 'aiofiles==24.1.0' 'uvicorn==0.34.0' 'aleph-sdk-python==1.4.0' 'setuptools==76.0.0'
 
 WORKDIR /opt
 ENV PYTHONPATH=/opt
