@@ -2,7 +2,7 @@ import subprocess
 from enum import Enum
 
 from aleph_message.models import HashableModel
-from pydantic import BaseModel, Extra, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from aleph.vm.orchestrator.utils import get_compatible_gpus
 
@@ -12,9 +12,7 @@ class HostGPU(BaseModel):
 
     pci_host: str = Field(description="GPU PCI host address")
     supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
-
-    class Config:
-        extra = Extra.forbid
+    model_config = ConfigDict(extra="forbid")
 
 
 class GpuDeviceClass(str, Enum):
@@ -47,8 +45,7 @@ class GpuDevice(HashableModel):
         """
         return self.device_class == GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER
 
-    class Config:
-        extra = Extra.forbid
+    model_config = ConfigDict(extra="forbid")
 
 
 class CompatibleGPU(BaseModel):

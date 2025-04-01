@@ -76,8 +76,8 @@ class MachineProperties(BaseModel):
 
 
 class GpuProperties(BaseModel):
-    devices: list[GpuDevice] | None
-    available_devices: list[GpuDevice] | None
+    devices: list[GpuDevice] | None = None
+    available_devices: list[GpuDevice] | None = None
 
 
 class MachineUsage(BaseModel):

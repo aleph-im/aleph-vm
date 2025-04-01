@@ -24,13 +24,7 @@ from eth_account.messages import encode_defunct
 from jwcrypto import jwk
 from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
-from pydantic import (
-    BaseModel,
-    ValidationError,
-    ValidationInfo,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 from solathon.utils import verify_signature
 
 from aleph.vm.conf import settings

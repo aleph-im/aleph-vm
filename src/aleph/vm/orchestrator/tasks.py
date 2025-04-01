@@ -17,7 +17,6 @@ from aleph_message.models import (
     parse_message,
 )
 from aleph_message.status import MessageStatus
-from pydantic import ValidationError
 from yarl import URL
 
 from aleph.vm.conf import settings

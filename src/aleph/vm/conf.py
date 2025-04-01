@@ -209,10 +209,10 @@ class Settings(BaseSettings):
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Optional[Path] = Field(
+    PERSISTENT_VOLUMES_DIR: Path | None = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
-    JAILER_BASE_DIR: Optional[Path] = Field(None)
+    JAILER_BASE_DIR: Path | None = Field(None)
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB

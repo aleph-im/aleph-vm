@@ -4,7 +4,6 @@ import logging
 from decimal import Decimal
 from hashlib import sha256
 from json import JSONDecodeError
-from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from secrets import compare_digest
 from string import Template
@@ -15,6 +14,7 @@ from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import InstanceContent, ItemHash, MessageType, PaymentType
+from packaging.version import InvalidVersion, Version
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
