@@ -14,7 +14,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.storage import get_message
+from aleph.vm.storage import get_executable_message
 from aleph.vm.utils.logs import EntryDict
 from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
@@ -72,7 +72,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
     settings.setup()
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
+    instance_message = await get_executable_message(ref=vm_hash)
 
     fake_vm_pool = mocker.Mock(
         executions={
@@ -115,7 +115,7 @@ async def test_operator_expire(aiohttp_client, mocker):
     settings.setup()
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
+    instance_message = await get_executable_message(ref=vm_hash)
 
     fake_vm_pool = mocker.Mock(
         executions={
@@ -154,7 +154,7 @@ async def test_operator_stop(aiohttp_client, mocker):
     settings.setup()
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
+    instance_message = await get_executable_message(ref=vm_hash)
 
     fake_vm_pool = mocker.AsyncMock(
         executions={
@@ -190,7 +190,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
     settings.setup()
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
+    instance_message = await get_executable_message(ref=vm_hash)
 
     fake_vm_pool = mocker.Mock(
         executions={
@@ -232,7 +232,7 @@ async def test_operator_confidential_initialize(aiohttp_client):
     settings.setup()
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
+    instance_message = await get_executable_message(ref=vm_hash)
 
     class FakeExecution:
         message = instance_message.content
