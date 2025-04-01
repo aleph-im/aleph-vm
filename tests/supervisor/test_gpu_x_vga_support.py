@@ -4,7 +4,7 @@ import pytest
 
 from aleph.vm.controllers.configuration import QemuGPU
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
-from aleph.vm.resources import GpuDevice, GpuDeviceClass, HostGPU
+from aleph.vm.resources import GpuDevice, GpuDeviceClass
 
 
 class TestGpuXVgaSupport:

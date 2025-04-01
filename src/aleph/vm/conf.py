@@ -13,8 +13,9 @@ from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
-from pydantic import BaseSettings, Field, HttpUrl
-from pydantic.env_settings import DotenvType, env_file_sentinel
+from dotenv import load_dotenv
+from pydantic import Field, HttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.utils import (
@@ -23,6 +24,8 @@ from aleph.vm.utils import (
     file_hashes_differ,
     is_command_available,
 )
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +168,7 @@ class Settings(BaseSettings):
         default=True,
         description="Enable IPv6 forwarding on the host. Required for IPv6 connectivity in VMs.",
     )
-    NFTABLES_CHAIN_PREFIX = "aleph"
+    NFTABLES_CHAIN_PREFIX: str = "aleph"
     USE_NDP_PROXY: bool = Field(
         default=True,
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
@@ -176,8 +179,8 @@ class Settings(BaseSettings):
         description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
     )
     DNS_NAMESERVERS: list[str] | None = None
-    DNS_NAMESERVERS_IPV4: list[str] | None
-    DNS_NAMESERVERS_IPV6: list[str] | None
+    DNS_NAMESERVERS_IPV4: list[str] | None = None
+    DNS_NAMESERVERS_IPV6: list[str] | None = None
 
     FIRECRACKER_PATH: Path = Path("/opt/firecracker/firecracker")
     JAILER_PATH: Path = Path("/opt/firecracker/jailer")
@@ -185,7 +188,7 @@ class Settings(BaseSettings):
     LINUX_PATH: Path = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
-    CONNECTOR_URL = Url("http://localhost:4021")
+    CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
     MESSAGE_CACHE: Path | None = Field(
@@ -206,10 +209,10 @@ class Settings(BaseSettings):
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Path = Field(
+    PERSISTENT_VOLUMES_DIR: Path | None = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
-    JAILER_BASE_DIR: Path = Field(None)
+    JAILER_BASE_DIR: Path | None = Field(None)
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
@@ -308,8 +311,10 @@ class Settings(BaseSettings):
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
-    FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
-    FAKE_INSTANCE_QEMU_MESSAGE = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
+    FAKE_INSTANCE_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE: Path = Path(
+        abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json"))
+    )
 
     CHECK_FASTAPI_VM_ID: str = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID: str = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
@@ -345,7 +350,7 @@ class Settings(BaseSettings):
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
         assert self.NETWORK_INTERFACE, "Network interface is not specified"
-        assert self.CONNECTOR_URL.startswith("http://") or self.CONNECTOR_URL.startswith("https://")
+        assert str(self.CONNECTOR_URL).startswith("http://") or str(self.CONNECTOR_URL).startswith("https://")
         if self.ALLOW_VM_NETWORKING:
             assert exists(
                 f"/sys/class/net/{self.NETWORK_INTERFACE}"
@@ -480,18 +485,25 @@ class Settings(BaseSettings):
                 attributes[attr] = "<REDACTED>"
             else:
                 attributes[attr] = getattr(self, attr)
-
-        return "\n".join(f"{self.Config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
+        return "\n".join(
+            f"{self.model_config.get('env_prefix', '')}{attribute} = {value}" for attribute, value in attributes.items()
+        )
 
     def __init__(
         self,
-        _env_file: DotenvType | None = env_file_sentinel,
+        _env_file: str | Path | None = None,
         _env_file_encoding: str | None = None,
         _env_nested_delimiter: str | None = None,
         _secrets_dir: Path | None = None,
         **values: Any,
     ) -> None:
-        super().__init__(_env_file, _env_file_encoding, _env_nested_delimiter, _secrets_dir, **values)
+        super().__init__(
+            _env_file,
+            _env_file_encoding,
+            _env_nested_delimiter,
+            _secrets_dir,
+            **values,
+        )
         if not self.MESSAGE_CACHE:
             self.MESSAGE_CACHE = self.CACHE_ROOT / "message"
         if not self.CODE_CACHE:
@@ -515,10 +527,9 @@ class Settings(BaseSettings):
         if not self.CONFIDENTIAL_SESSION_DIRECTORY:
             self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
 
-    class Config:
-        env_prefix = "ALEPH_VM_"
-        case_sensitive = False
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env", validate_default=False
+    )
 
 
 def make_db_url():

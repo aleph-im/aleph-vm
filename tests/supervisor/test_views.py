@@ -25,15 +25,20 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
     response: web.Response = await client.post(
         "/control/allocations", json={"persistent_vms": ["not-an-ItemHash"]}, headers={"X-Auth-Signature": "test"}
     )
+
     assert response.status == 400
-    assert await response.json() == [
+
+    response = await response.json()
+    for error in response:
+        error.pop("url", None)
+
+    assert response == [
         {
-            "loc": [
-                "persistent_vms",
-                0,
-            ],
-            "msg": "Could not determine hash type: 'not-an-ItemHash'",
-            "type": "value_error.unknownhash",
+            "loc": ["persistent_vms", 0],
+            "msg": "Value error, Could not determine hash type: 'not-an-ItemHash'",
+            "type": "value_error",
+            "ctx": {"error": "Could not determine hash type: 'not-an-ItemHash'"},
+            "input": "not-an-ItemHash",
         },
     ]
 
