@@ -1,3 +1,4 @@
+import asyncio
 import binascii
 import http
 import logging
@@ -372,6 +373,9 @@ def authenticate_api_request(request: web.Request) -> bool:
     return sha256(signature).hexdigest() == settings.ALLOCATION_TOKEN_HASH
 
 
+allocation_lock = None
+
+
 async def update_allocations(request: web.Request):
     """Main entry for the start of persistence VM and instance, called by the Scheduler,
 
@@ -382,6 +386,9 @@ async def update_allocations(request: web.Request):
     if not authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
+    global allocation_lock
+    if allocation_lock is None:
+        allocation_lock = asyncio.Lock()
     try:
         data = await request.json()
         allocation = Allocation.parse_obj(data)
@@ -391,85 +398,86 @@ async def update_allocations(request: web.Request):
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
 
-    # First free resources from persistent programs and instances that are not scheduled anymore.
-    allocations = allocation.persistent_vms | allocation.instances
-    # Make a copy since the pool is modified
-    for execution in list(pool.get_persistent_executions()):
-        if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
-            vm_type = "instance" if execution.is_instance else "persistent program"
-            logger.info("Stopping %s %s", vm_type, execution.vm_hash)
-            await pool.stop_vm(execution.vm_hash)
-            pool.forget_vm(execution.vm_hash)
+    async with allocation_lock:
+        # First free resources from persistent programs and instances that are not scheduled anymore.
+        allocations = allocation.persistent_vms | allocation.instances
+        # Make a copy since the pool is modified
+        for execution in list(pool.get_persistent_executions()):
+            if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
+                vm_type = "instance" if execution.is_instance else "persistent program"
+                logger.info("Stopping %s %s", vm_type, execution.vm_hash)
+                await pool.stop_vm(execution.vm_hash)
+                pool.forget_vm(execution.vm_hash)
 
-    # Second start persistent VMs and instances sequentially to limit resource usage.
+        # Second start persistent VMs and instances sequentially to limit resource usage.
 
-    # Exceptions that can be raised when starting a VM:
-    vm_creation_exceptions = (
-        UnknownHashError,
-        ResourceDownloadError,
-        FileTooLargeError,
-        VmSetupError,
-        MicroVMFailedInitError,
-        HostNotFoundError,
-        HTTPNotFound,
-    )
+        # Exceptions that can be raised when starting a VM:
+        vm_creation_exceptions = (
+            UnknownHashError,
+            ResourceDownloadError,
+            FileTooLargeError,
+            VmSetupError,
+            MicroVMFailedInitError,
+            HostNotFoundError,
+            HTTPNotFound,
+        )
 
-    scheduling_errors: dict[ItemHash, Exception] = {}
+        scheduling_errors: dict[ItemHash, Exception] = {}
 
-    # Schedule the start of persistent VMs:
-    for vm_hash in allocation.persistent_vms:
-        try:
-            logger.info(f"Starting long running VM '{vm_hash}'")
-            vm_hash = ItemHash(vm_hash)
-            await start_persistent_vm(vm_hash, pubsub, pool)
-        except vm_creation_exceptions as error:
-            logger.exception("Error while starting VM '%s': %s", vm_hash, error)
-            scheduling_errors[vm_hash] = error
-        except Exception as error:
-            # Handle unknown exception separately, to avoid leaking data
-            logger.exception("Unhandled Error while starting VM '%s': %s", vm_hash, error)
-            scheduling_errors[vm_hash] = Exception("Unhandled Error")
+        # Schedule the start of persistent VMs:
+        for vm_hash in allocation.persistent_vms:
+            try:
+                logger.info(f"Starting long running VM '{vm_hash}'")
+                vm_hash = ItemHash(vm_hash)
+                await start_persistent_vm(vm_hash, pubsub, pool)
+            except vm_creation_exceptions as error:
+                logger.exception("Error while starting VM '%s': %s", vm_hash, error)
+                scheduling_errors[vm_hash] = error
+            except Exception as error:
+                # Handle unknown exception separately, to avoid leaking data
+                logger.exception("Unhandled Error while starting VM '%s': %s", vm_hash, error)
+                scheduling_errors[vm_hash] = Exception("Unhandled Error")
 
-    # Schedule the start of instances:
-    for instance_hash in allocation.instances:
-        logger.info(f"Starting instance '{instance_hash}'")
-        instance_item_hash = ItemHash(instance_hash)
-        try:
-            await start_persistent_vm(instance_item_hash, pubsub, pool)
-        except vm_creation_exceptions as error:
-            logger.exception("Error while starting VM '%s': %s", instance_hash, error)
-            scheduling_errors[instance_item_hash] = error
-        except Exception as error:
-            # Handle unknown exception separately, to avoid leaking data
-            logger.exception("Unhandled Error while starting VM '%s': %s", instance_hash, error)
-            scheduling_errors[instance_hash] = Exception("Unhandled Error")
+        # Schedule the start of instances:
+        for instance_hash in allocation.instances:
+            logger.info(f"Starting instance '{instance_hash}'")
+            instance_item_hash = ItemHash(instance_hash)
+            try:
+                await start_persistent_vm(instance_item_hash, pubsub, pool)
+            except vm_creation_exceptions as error:
+                logger.exception("Error while starting VM '%s': %s", instance_hash, error)
+                scheduling_errors[instance_item_hash] = error
+            except Exception as error:
+                # Handle unknown exception separately, to avoid leaking data
+                logger.exception("Unhandled Error while starting VM '%s': %s", instance_hash, error)
+                scheduling_errors[instance_hash] = Exception("Unhandled Error")
 
-    # Log unsupported features
-    if allocation.on_demand_vms:
-        logger.warning("Not supported yet: 'allocation.on_demand_vms'")
-    if allocation.jobs:
-        logger.warning("Not supported yet: 'allocation.jobs'")
+        # Log unsupported features
+        if allocation.on_demand_vms:
+            logger.warning("Not supported yet: 'allocation.on_demand_vms'")
+        if allocation.jobs:
+            logger.warning("Not supported yet: 'allocation.jobs'")
 
-    failing = set(scheduling_errors.keys())
-    successful = allocations - failing
+        failing = set(scheduling_errors.keys())
+        successful = allocations - failing
 
-    status_code: int
-    if not failing:
-        status_code = 200  # OK
-    elif not successful:
-        status_code = 503  # Service Unavailable
-    else:
-        status_code = 207  # Multi-Status
+        status_code: int
+        if not failing:
+            status_code = 200  # OK
+        elif not successful:
+            status_code = 503  # Service Unavailable
+        else:
+            status_code = 207  # Multi-Status
 
-    return web.json_response(
-        data={
-            "success": not failing,
-            "successful": list(successful),
-            "failing": list(failing),
-            "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
-        },
-        status=status_code,
-    )
+        return web.json_response(
+            data={
+                "success": not failing,
+                "successful": list(successful),
+                "failing": list(failing),
+                "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
+            },
+            status=status_code,
+        )
 
 
 @cors_allow_all

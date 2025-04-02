@@ -170,17 +170,6 @@ class VmPool:
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start()
 
-                # Start VM and snapshots automatically
-                # If the execution is confidential, don't start it because we need to wait for the session certificate
-                # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
-                if execution.persistent and not execution.is_confidential:
-                    self.systemd_manager.enable_and_start(execution.controller_service)
-                    await execution.wait_for_init()
-                    if execution.is_program and execution.vm:
-                        await execution.vm.load_configuration()
-
-                if execution.vm and execution.vm.support_snapshot and self.snapshot_manager:
-                    await self.snapshot_manager.start_for(vm=execution.vm)
                 # clear the user reservations
                 for resource in resources:
                     if resource in self.reservations:
