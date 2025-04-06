@@ -20,17 +20,22 @@ apt update
 apt install -y docker.io
 ```
 
-### 2.b. Pull the Docker image 
+### 2.b. Build the docker image
+```shell
+docker build -f ./docker/vm_connector.dockerfile -t vm-connector .
+```
+
+### 2.c. Pull the Docker image 
 
 ```shell
-docker pull alephim/vm-connector:alpha
+docker pull alephim/vm-connector:2025-03
 ```
 
 ## 3. Running
 
 Run the Docker image
 ```shell
-docker run -d -p 4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha
+docker run -d -p 4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:2025-03
 ```
 
 ## 4. Configuration

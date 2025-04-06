@@ -11,7 +11,7 @@ jobs:
     services:
       # Run vm connector for the execution tests
       vm-connector:
-        image: alephim/vm-connector:alpha
+        image: alephim/vm-connector:2025-03
         ports:
           - 4021:4021
 
