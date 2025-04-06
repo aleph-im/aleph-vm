@@ -99,9 +99,14 @@ async def http_not_found(request: web.Request):
     return web.HTTPNotFound()
 
 
-def setup_webapp():
+def setup_webapp(pool: VmPool | None):
+    """Create the webapp and set the VmPool
+
+    Only case where VmPool is None is in some tests that won't use it.
+    """
     app = web.Application(middlewares=[error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
+    app["vm_pool"] = pool
     cors = setup(
         app,
         defaults={
@@ -175,7 +180,7 @@ def run():
     settings.check()
 
     loop = asyncio.new_event_loop()
-    pool = VmPool(loop)
+    pool = VmPool()
     asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
@@ -183,10 +188,9 @@ def run():
 
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
-    app = setup_webapp()
+    app = setup_webapp(pool=pool)
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
-    app["vm_pool"] = pool
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
