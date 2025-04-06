@@ -19,7 +19,7 @@ from aleph.vm.sevclient import SevClient
 @pytest.mark.asyncio
 async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid item_hash is provided."""
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     response: web.Response = await client.post(
@@ -86,7 +86,7 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 async def test_allocation_invalid_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid auth token is provided."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/allocations",
@@ -100,7 +100,7 @@ async def test_allocation_invalid_auth_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_allocation_missing_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when auth token is not provided."""
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     response: web.Response = await client.post(
         "/control/allocations",
@@ -121,9 +121,8 @@ async def test_allocation_valid_token(aiohttp_client):
             return []
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    app["pubsub"] = FakeVmPool()
+    app = setup_webapp(pool=FakeVmPool())
+    app["pubsub"] = None
     client = await aiohttp_client(app)
 
     response: web.Response = await client.post(
@@ -140,7 +139,7 @@ async def test_about_certificates_missing_setting(aiohttp_client):
     """Test that the certificates system endpoint returns an error if the setting isn't enabled"""
     settings.ENABLE_CONFIDENTIAL_COMPUTING = False
 
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     app["sev_client"] = SevClient(Path().resolve(), Path("/opt/sevctl").resolve())
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/certificates")
@@ -165,7 +164,7 @@ async def test_about_certificates(aiohttp_client):
             return_value=True,
         ) as export_mock:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                app = setup_webapp()
+                app = setup_webapp(pool=None)
                 sev_client = SevClient(Path(tmp_dir), Path("/opt/sevctl"))
                 app["sev_client"] = sev_client
                 # Create mock file to return it
@@ -269,8 +268,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
     loop = asyncio.new_event_loop()
     pool = VmPool(loop=loop)
     await pool.setup()
-    app = setup_webapp()
-    app["vm_pool"] = pool
+    app = setup_webapp(pool=pool)
     return app
 
 

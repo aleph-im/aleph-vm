@@ -51,7 +51,7 @@ class VmPool:
     reservations: dict[Any, Reservation]
     """Resources reserved by an user, before launching (only GPU atm)"""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self):
         self.executions = {}
         self.message_cache = {}
         self.reservations = {}
