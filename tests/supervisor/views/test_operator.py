@@ -52,8 +52,7 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
             "aleph.vm.orchestrator.views.operator.is_sender_authorized",
             return_value=False,
         ) as is_sender_authorized_mock:
-            app = setup_webapp()
-            app["vm_pool"] = FakeVmPool()
+            app = setup_webapp(pool=FakeVmPool())
             client = await aiohttp_client(app)
             response = await client.post(
                 f"/control/machine/{settings.FAKE_INSTANCE_ID}/confidential/initialize",
@@ -90,8 +89,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp()
-    app["vm_pool"] = fake_vm_pool
+    app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -133,8 +131,7 @@ async def test_operator_expire(aiohttp_client, mocker):
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp()
-    app["vm_pool"] = fake_vm_pool
+    app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/expire",
@@ -171,8 +168,7 @@ async def test_operator_stop(aiohttp_client, mocker):
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp()
-    app["vm_pool"] = fake_vm_pool
+    app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
@@ -208,8 +204,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp()
-    app["vm_pool"] = fake_vm_pool
+    app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -259,8 +254,7 @@ async def test_operator_confidential_initialize(aiohttp_client):
             "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
-            app = setup_webapp()
-            app["vm_pool"] = FakeVmPool()
+            app = setup_webapp(pool=FakeVmPool())
             client = await aiohttp_client(app)
             response = await client.post(
                 f"/control/machine/{vm_hash}/confidential/initialize",
@@ -291,10 +285,9 @@ async def test_reboot_ok(aiohttp_client, mocker):
         }
         systemd_manager = mocker.Mock(restart=mocker.Mock())
 
-    app = setup_webapp()
     pool = FakeVmPool()
-    app["vm_pool"] = pool
-    app["pubsub"] = FakeVmPool()
+    app = setup_webapp(pool=pool)
+    app["pubsub"] = mocker.Mock()
     client = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{mock_hash}/reboot",
@@ -314,7 +307,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
     fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
-    fakeVmPool = mocker.Mock(
+    fake_vm_pool = mocker.Mock(
         executions={
             mock_hash: mocker.Mock(
                 vm_hash=mock_hash,
@@ -327,8 +320,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
             ),
         },
     )
-    app = setup_webapp()
-    app["vm_pool"] = fakeVmPool
+    app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = None
     client = await aiohttp_client(app)
     websocket = await client.ws_connect(
@@ -354,7 +346,7 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
 
-    fakeVmPool = mocker.Mock(
+    fake_vm_pool = mocker.Mock(
         executions={
             mock_hash: mocker.Mock(
                 vm_hash=mock_hash,
@@ -367,8 +359,7 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
             ),
         },
     )
-    app = setup_webapp()
-    app["vm_pool"] = fakeVmPool
+    app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = None
     client: TestClient = await aiohttp_client(app)
     websocket = await client.ws_connect(
@@ -412,8 +403,7 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
             ),
         },
     )
-    app = setup_webapp()
-    app["vm_pool"] = fakeVmPool
+    app = setup_webapp(pool=fakeVmPool)
     app["pubsub"] = None
     client = await aiohttp_client(app)
     websocket = await client.ws_connect(
@@ -518,10 +508,8 @@ async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
         ],
     )
 
-    app = setup_webapp()
     pool = mocker.MagicMock(executions={})
-    app["vm_pool"] = pool
-    app["pubsub"] = mocker.MagicMock()
+    app = setup_webapp(pool=pool)
     client = await aiohttp_client(app)
     response = await client.get(
         f"/control/machine/{mock_hash}/logs",
