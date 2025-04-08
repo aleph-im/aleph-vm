@@ -226,7 +226,7 @@ class VmExecution:
         gpus: list[HostGPU] = []
         if self.message.requirements and self.message.requirements.gpu:
             for gpu in self.message.requirements.gpu:
-                gpu = GpuProperties.parse_obj(gpu)
+                gpu = GpuProperties.model_validate(gpu)
                 for available_gpu in available_gpus:
                     if available_gpu.device_id == gpu.device_id:
                         gpus.append(
@@ -453,8 +453,8 @@ class VmExecution:
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
                     network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                 )
             )
@@ -477,8 +477,8 @@ class VmExecution:
                     io_write_bytes=None,
                     vcpus=self.vm.hardware_resources.vcpus,
                     memory=self.vm.hardware_resources.memory,
-                    message=self.message.json(),
-                    original_message=self.original.json(),
+                    message=self.message.model_dump_json(),
+                    original_message=self.original.model_dump_json(),
                     persistent=self.persistent,
                     gpus=json.dumps(self.gpus, default=pydantic_encoder),
                 )

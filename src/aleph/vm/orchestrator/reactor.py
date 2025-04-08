@@ -61,7 +61,7 @@ class Reactor:
             for subscription in listener.content.on.message:
                 if subscription_matches(subscription, message):
                     vm_hash = listener.item_hash
-                    event = message.json()
+                    event = message.model_dump_json()
                     # Register the listener in the list of coroutines to run asynchronously:
                     coroutines.append(run_code_on_event(vm_hash, event, self.pubsub, pool=self.pool))
                     break

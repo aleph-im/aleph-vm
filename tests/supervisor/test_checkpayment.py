@@ -63,7 +63,7 @@ async def test_enough_flow(mocker, fake_instance_content):
         return 500 * len(executions)
 
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", compute_required_flow)
-    message = InstanceContent.parse_obj(fake_instance_content)
+    message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -117,7 +117,7 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
         return 500 * len(executions)
 
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", compute_required_flow)
-    message = InstanceContent.parse_obj(fake_instance_content)
+    message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -157,7 +157,7 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=2, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
-    message = InstanceContent.parse_obj(fake_instance_content)
+    message = InstanceContent.model_validate(fake_instance_content)
 
     mocker.patch.object(VmExecution, "is_running", new=True)
     mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
@@ -201,7 +201,7 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
-    message = InstanceContent.parse_obj(fake_instance_content)
+    message = InstanceContent.model_validate(fake_instance_content)
 
     mocker.patch.object(VmExecution, "is_running", new=True)
     mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
