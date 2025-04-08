@@ -1,5 +1,6 @@
 import subprocess
 from enum import Enum
+from typing import Optional
 
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,7 +28,7 @@ class GpuDevice(HashableModel):
     """GPU properties."""
 
     vendor: str = Field(description="GPU vendor name")
-    model: str | None = Field(description="GPU model name on Aleph Network")
+    model: Optional[str] = Field(description="GPU model name on Aleph Network", default=None)
     device_name: str = Field(description="GPU vendor card name")
     device_class: GpuDeviceClass = Field(
         description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"

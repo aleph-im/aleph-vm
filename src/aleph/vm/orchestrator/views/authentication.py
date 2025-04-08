@@ -24,6 +24,7 @@ from jwcrypto.jwa import JWA
 from nacl.exceptions import BadSignatureError
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 from solathon.utils import verify_signature
+from typing_extensions import Self
 
 from aleph.vm.conf import settings
 
@@ -103,7 +104,7 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @model_validator(mode="after")
-    def check_expiry(values) -> SignedPubKeyHeader:
+    def check_expiry(values) -> Self:
         """Check that the token has not expired"""
         payload = values.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
@@ -112,7 +113,7 @@ class SignedPubKeyHeader(BaseModel):
         return values
 
     @model_validator(mode="after")
-    def check_signature(values) -> SignedPubKeyHeader:
+    def check_signature(values) -> Self:
         """Check that the signature is valid"""
         signature = values.signature
         payload = values.payload

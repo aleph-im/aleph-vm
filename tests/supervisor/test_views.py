@@ -26,14 +26,17 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
         "/control/allocations", json={"persistent_vms": ["not-an-ItemHash"]}, headers={"X-Auth-Signature": "test"}
     )
     assert response.status == 400
-    assert await response.json() == [
+    response = await response.json()
+    for error in response:
+        error.pop("url", None)
+
+    assert response == [
         {
-            "loc": [
-                "persistent_vms",
-                0,
-            ],
-            "msg": "Could not determine hash type: 'not-an-ItemHash'",
-            "type": "value_error.unknownhash",
+            "loc": ["persistent_vms", 0],
+            "msg": "Value error, Could not determine hash type: 'not-an-ItemHash'",
+            "type": "value_error",
+            "ctx": {"error": "Could not determine hash type: 'not-an-ItemHash'"},
+            "input": "not-an-ItemHash",
         },
     ]
 
@@ -365,7 +368,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
             "size_mib": 1000,
         },
     }
-    InstanceContent.parse_obj(instance_content)
+    InstanceContent.model_validate(instance_content)
 
     response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response.status == 200, await response.text()
@@ -479,7 +482,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
             "size_mib": 1000,
         },
     }
-    InstanceContent.parse_obj(instance_content)
+    InstanceContent.model_validate(instance_content)
 
     response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
     assert response.status == 400, await response.text()
