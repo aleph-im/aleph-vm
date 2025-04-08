@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
 VSOCK_PATH = "/tmp/v.sock"
 
@@ -51,12 +51,7 @@ class FirecrackerConfig(BaseModel):
     boot_source: BootSource
     drives: list[Drive]
     machine_config: MachineConfig
-    vsock: Vsock | None
-    network_interfaces: list[NetworkInterface] | None
+    vsock: Vsock | None = None
+    network_interfaces: list[NetworkInterface] | None = None
 
-    class Config:
-        allow_population_by_field_name = True
-
-        @staticmethod
-        def alias_generator(x: str):
-            return x.replace("_", "-")
+    model_config = ConfigDict(populate_by_name=True, alias_generator=lambda field_name: field_name.replace("_", "-"))

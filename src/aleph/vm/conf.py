@@ -13,8 +13,9 @@ from typing import Any, Literal, NewType
 
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
-from pydantic import BaseSettings, Field, HttpUrl
-from pydantic.env_settings import DotenvType, env_file_sentinel
+from dotenv import load_dotenv
+from pydantic import Field, HttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.utils import (
@@ -23,6 +24,8 @@ from aleph.vm.utils import (
     file_hashes_differ,
     is_command_available,
 )
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -206,10 +209,10 @@ class Settings(BaseSettings):
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
-    PERSISTENT_VOLUMES_DIR: Path = Field(
+    PERSISTENT_VOLUMES_DIR: Path | None = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
-    JAILER_BASE_DIR: Path = Field(None)
+    JAILER_BASE_DIR: Path | None = Field(None)
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
@@ -481,11 +484,13 @@ class Settings(BaseSettings):
             else:
                 attributes[attr] = getattr(self, attr)
 
-        return "\n".join(f"{self.Config.env_prefix}{attribute} = {value}" for attribute, value in attributes.items())
+        return "\n".join(
+            f"{self.model_config['env_prefix']}{attribute} = {value}" for attribute, value in attributes.items()
+        )
 
     def __init__(
         self,
-        _env_file: DotenvType | None = env_file_sentinel,
+        _env_file: str | None = None,
         _env_file_encoding: str | None = None,
         _env_nested_delimiter: str | None = None,
         _secrets_dir: Path | None = None,
@@ -515,10 +520,7 @@ class Settings(BaseSettings):
         if not self.CONFIDENTIAL_SESSION_DIRECTORY:
             self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
 
-    class Config:
-        env_prefix = "ALEPH_VM_"
-        case_sensitive = False
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env")
 
 
 def make_db_url():
