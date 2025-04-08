@@ -56,7 +56,7 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
-    logger.debug(f"Message: {message.json(indent=4, sort_keys=True, exclude_none=True)}")
+    logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
 
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
