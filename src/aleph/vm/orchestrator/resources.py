@@ -76,8 +76,8 @@ class MachineProperties(BaseModel):
 
 
 class GpuProperties(BaseModel):
-    devices: list[GpuDevice] | None
-    available_devices: list[GpuDevice] | None
+    devices: list[GpuDevice] | None = None
+    available_devices: list[GpuDevice] | None = None
 
 
 class MachineUsage(BaseModel):
@@ -158,7 +158,7 @@ async def about_system_usage(request: web.Request):
         gpu=get_machine_gpus(request),
     )
 
-    return web.json_response(text=usage.json(exclude_none=True))
+    return web.json_response(text=usage.model_dump_json(exclude_none=True))
 
 
 @cors_allow_all

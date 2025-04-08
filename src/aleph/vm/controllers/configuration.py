@@ -30,26 +30,26 @@ class QemuGPU(BaseModel):
 
 class QemuVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: str | None
+    cloud_init_drive_path: str | None = None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: str | None
+    interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
     qemu_bin_path: str
-    cloud_init_drive_path: str | None
+    cloud_init_drive_path: str | None = None
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
-    interface_name: str | None
+    interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
     ovmf_path: Path
@@ -76,7 +76,7 @@ def save_controller_configuration(vm_hash: str, configuration: Configuration) ->
     config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
     with config_file_path.open("w") as controller_config_file:
         controller_config_file.write(
-            configuration.json(
+            configuration.model_dump_json(
                 by_alias=True, exclude_none=True, indent=4, exclude={"settings": {"USE_DEVELOPER_SSH_KEYS"}}
             )
         )
