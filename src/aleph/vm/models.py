@@ -41,7 +41,7 @@ from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
+from aleph.vm.utils import HostNotFoundError, create_task_log_exceptions, dumps_for_json
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,7 @@ class VmExecution:
     stop_event: asyncio.Event
     expire_task: asyncio.Task | None = None
     update_task: asyncio.Task | None = None
+    init_task: asyncio.Task | None
 
     snapshot_manager: SnapshotManager | None
     systemd_manager: SystemDManager | None
@@ -162,6 +163,7 @@ class VmExecution:
         systemd_manager: SystemDManager | None,
         persistent: bool,
     ):
+        self.init_task = None
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
         self.message = message
@@ -326,14 +328,28 @@ class VmExecution:
             # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
             if self.persistent and not self.is_confidential and self.systemd_manager:
                 self.systemd_manager.enable_and_start(self.controller_service)
-                await self.wait_for_init()
-                if self.is_program and self.vm:
+
+                if self.is_program:
+                    await self.wait_for_init()
                     await self.vm.load_configuration()
+                    self.times.started_at = datetime.now(tz=timezone.utc)
+                else:
+
+                    async def non_blocking_wait_for_init():
+                        assert self.vm
+                        try:
+                            await self.wait_for_init()
+                            logger.info("%s responded to ping. Marking it as started.", self)
+                            self.times.started_at = datetime.now(tz=timezone.utc)
+                        except HostNotFoundError:
+                            logger.info("%s mpt responded to ping. Stopping it.", self)
+                            self.vm.stop()
+
+                    self.init_task = asyncio.create_task(non_blocking_wait_for_init)
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
 
-            self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             await self.save()
         except Exception:
