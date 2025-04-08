@@ -4,9 +4,9 @@
 Web service to run untrusted Aleph VM functions in a secure environment
 for the [Aleph.im](https://aleph.im/) project.
 
-The project currently supports running applications written in Python 
-within [Firecracker](https://github.com/firecracker-microvm/firecracker) 
-"micro virtual machines". 
+The project currently supports running applications written in Python
+within [Firecracker](https://github.com/firecracker-microvm/firecracker)
+"micro virtual machines".
 
 More languages and virtualization technologies may be added in the future.
 
@@ -17,12 +17,12 @@ More languages and virtualization technologies may be added in the future.
 Quoting [Firecracker](https://github.com/firecracker-microvm/firecracker#supported-platforms)
 supported platforms:
 
-> We continuously test Firecracker on machines with the following CPUs micro-architectures: 
+> We continuously test Firecracker on machines with the following CPUs micro-architectures:
 Intel Skylake, Intel Cascade Lake, AMD Zen2 and ARM64 Neoverse N1.
 >
-> Firecracker is generally available on Intel x86_64, AMD x86_64 and ARM64 CPUs 
-> (starting from release v0.24) that offer hardware virtualization support, 
-> and that are released starting with 2015. 
+> Firecracker is generally available on Intel x86_64, AMD x86_64 and ARM64 CPUs
+> (starting from release v0.24) that offer hardware virtualization support,
+> and that are released starting with 2015.
 
  A device named `/dev/kvm` should be present on compatible systems.
 
@@ -35,7 +35,7 @@ These instructions have been tested on Debian 11 Bullseye, Debian 12 Bookworm an
 Bare metal servers from most hosting providers should be compatible with the VM Supervisor.
 
 A few hosting providers offer compatible virtual machines.
-- Compatible ✓ : DigitalOcean Droplet. AWS ECS Bare Metal. 
+- Compatible ✓ : DigitalOcean Droplet. AWS ECS Bare Metal.
 - Incompatible ✖ : AWS EC2 other than Bare Metal.
 
 Probably [Google Cloud instances with Nested Virtualization](https://cloud.google.com/compute/docs/instances/enable-nested-virtualization-vm-instances).
@@ -43,7 +43,7 @@ Probably [Google Cloud instances with Nested Virtualization](https://cloud.googl
 ### Note on containers
 
 While not supported at the moment, it is possible to run the VM Supervisor inside a Docker
-container. 
+container.
 
 This will be less secure since the `Jailer` tool used to secure Firecracker MicroVMs
 will not run inside containers. Pass the command-line argument `--no-jailer` to disable the Jailer
@@ -80,12 +80,12 @@ cd aleph-vm/
 
 ### 2.e. Install Pydantic
 
-[PyDantic](https://pydantic-docs.helpmanual.io/) 
+[PyDantic](https://pydantic-docs.helpmanual.io/)
 is used to parse and validate Aleph messages.
 
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
-pip3 install pydantic[dotenv]
+pip3 install pydantic-dotenv
 pip3 install 'aleph-message==0.4.9'
 ```
 
