@@ -508,7 +508,7 @@ class MicroVM:
             except asyncio.TimeoutError:
                 # In  Python < 3.11 wait_closed() was broken and returned immediatly
                 # It is supposedly fixed in Python 3.12.1, but it hangs indefinitely during tests.
-                logger.info("f{self} unix socket closing timeout")
+                logger.info("%s unix socket closing timeout", self)
 
         logger.debug("Removing files")
         if self.config_file_path:

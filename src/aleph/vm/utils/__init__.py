@@ -188,6 +188,18 @@ async def ping(host: str, packets: int, timeout: int):
         raise HostNotFoundError() from err
 
 
+async def is_pinging(host: str, packets: int, timeout: int) -> bool:
+    """
+    Try to ping an ip, return true if host respond, fale otherwise
+    """
+
+    try:
+        await run_in_subprocess(["ping", "-c", str(packets), "-W", str(timeout), host], check=True)
+        return True
+    except subprocess.CalledProcessError as err:
+        return False
+
+
 def check_disk_space(bytes_to_use: int) -> bool:
     host_disk_usage = disk_usage("/")
     return host_disk_usage.free >= bytes_to_use
