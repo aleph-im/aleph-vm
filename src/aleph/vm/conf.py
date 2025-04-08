@@ -168,7 +168,7 @@ class Settings(BaseSettings):
         default=True,
         description="Enable IPv6 forwarding on the host. Required for IPv6 connectivity in VMs.",
     )
-    NFTABLES_CHAIN_PREFIX = "aleph"
+    NFTABLES_CHAIN_PREFIX: str = "aleph"
     USE_NDP_PROXY: bool = Field(
         default=True,
         description="Use the Neighbor Discovery Protocol Proxy to respond to Router Solicitation for instances on IPv6",
@@ -179,8 +179,8 @@ class Settings(BaseSettings):
         description="Method used to resolve the dns server if DNS_NAMESERVERS is not present.",
     )
     DNS_NAMESERVERS: list[str] | None = None
-    DNS_NAMESERVERS_IPV4: list[str] | None
-    DNS_NAMESERVERS_IPV6: list[str] | None
+    DNS_NAMESERVERS_IPV4: list[str] | None = None
+    DNS_NAMESERVERS_IPV6: list[str] | None = None
 
     FIRECRACKER_PATH: Path = Path("/opt/firecracker/firecracker")
     JAILER_PATH: Path = Path("/opt/firecracker/jailer")
@@ -188,7 +188,7 @@ class Settings(BaseSettings):
     LINUX_PATH: Path = Path("/opt/firecracker/vmlinux.bin")
     INIT_TIMEOUT: float = 20.0
 
-    CONNECTOR_URL = Url("http://localhost:4021")
+    CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
     MESSAGE_CACHE: Path | None = Field(
@@ -311,8 +311,10 @@ class Settings(BaseSettings):
         description="Identifier used for the 'fake instance' message defined in "
         "examples/instance_message_from_aleph.json",
     )
-    FAKE_INSTANCE_MESSAGE = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
-    FAKE_INSTANCE_QEMU_MESSAGE = Path(abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json")))
+    FAKE_INSTANCE_MESSAGE: Path = Path(abspath(join(__file__, "../../../../examples/instance_message_from_aleph.json")))
+    FAKE_INSTANCE_QEMU_MESSAGE: Path = Path(
+        abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json"))
+    )
 
     CHECK_FASTAPI_VM_ID: str = "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
     LEGACY_CHECK_FASTAPI_VM_ID: str = "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
@@ -348,7 +350,7 @@ class Settings(BaseSettings):
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
         assert self.NETWORK_INTERFACE, "Network interface is not specified"
-        assert self.CONNECTOR_URL.startswith("http://") or self.CONNECTOR_URL.startswith("https://")
+        assert str(self.CONNECTOR_URL).startswith("http://") or str(self.CONNECTOR_URL).startswith("https://")
         if self.ALLOW_VM_NETWORKING:
             assert exists(
                 f"/sys/class/net/{self.NETWORK_INTERFACE}"

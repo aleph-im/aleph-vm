@@ -391,7 +391,7 @@ async def update_allocations(request: web.Request):
         allocation_lock = asyncio.Lock()
     try:
         data = await request.json()
-        allocation = Allocation.parse_obj(data)
+        allocation = Allocation.model_validate(data)
     except ValidationError as error:
         return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
@@ -486,7 +486,7 @@ async def notify_allocation(request: web.Request):
     await update_aggregate_settings()
     try:
         data = await request.json()
-        vm_notification = VMNotification.parse_obj(data)
+        vm_notification = VMNotification.model_validate(data)
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:
@@ -631,7 +631,7 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     pool: VmPool = request.app["vm_pool"]
     try:
         data = await request.json()
-        message = InstanceContent.parse_obj(data)
+        message = InstanceContent.model_validate(data)
     except JSONDecodeError:
         return web.HTTPBadRequest(reason="Body is not valid JSON")
     except ValidationError as error:

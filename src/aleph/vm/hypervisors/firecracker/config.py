@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, PositiveInt
 
 VSOCK_PATH = "/tmp/v.sock"
 
