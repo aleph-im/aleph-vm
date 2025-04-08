@@ -93,7 +93,8 @@ class QemuVM:
             # To debug you can pass gtk or curses instead
             "-display",
             "none",
-            "--no-reboot",  # Rebooting from inside the VM shuts down the machine
+            # "--no-reboot",  # Rebooting from inside the VM shuts down the machine
+            # Disable --no-reboot so user can reboot from inside the VM. see ALEPH-472
             # Listen for commands on this socket
             "-monitor",
             f"unix:{self.monitor_socket_path},server,nowait",
