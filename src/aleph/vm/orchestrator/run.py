@@ -287,13 +287,3 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
         execution.start_watching_for_updates(pubsub=pubsub)
 
     return execution
-
-
-async def stop_persistent_vm(vm_hash: ItemHash, pool: VmPool) -> VmExecution | None:
-    logger.info(f"Stopping persistent VM {vm_hash}")
-    execution = pool.get_running_vm(vm_hash)
-
-    if execution:
-        await execution.stop()
-
-    return execution
