@@ -176,6 +176,7 @@ async def list_executions(request: web.Request) -> web.Response:
 
 @cors_allow_all
 async def list_executions_v2(request: web.Request) -> web.Response:
+    """List all executions. Returning their status and ip"""
     pool: VmPool = request.app["vm_pool"]
 
     return web.json_response(
