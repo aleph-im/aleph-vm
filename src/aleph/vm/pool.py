@@ -201,6 +201,15 @@ class VmPool:
         msg = "No available value for vm_id."
         raise ValueError(msg)
 
+    def get_running_or_starting_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+        """Return a running VM or None. Disables the VM expiration task."""
+        execution = self.executions.get(vm_hash)
+        if execution and execution.is_running and not execution.is_stopping:
+            execution.cancel_expiration()
+            return execution
+        else:
+            return None
+
     def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
