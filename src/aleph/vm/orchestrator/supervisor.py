@@ -95,7 +95,7 @@ async def on_prepare_server_version(request: web.Request, response: web.Response
     response.headers["Server"] = f"aleph-vm/{__version__}"
 
 
-async def http_not_found(request: web.Request):
+async def http_not_found(request: web.Request):  # noqa: ARG001
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
