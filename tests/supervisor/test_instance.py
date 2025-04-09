@@ -117,7 +117,7 @@ async def test_create_instance():
     firecracker_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
     assert isinstance(firecracker_execution, MicroVM)
     assert firecracker_execution.proc is not None
-    await execution.wait_for_init()
+    await execution.wait_for_persistent_boot()
 
     # This sleep is to leave the instance to boot up and prevent disk corruption
     await asyncio.sleep(60)

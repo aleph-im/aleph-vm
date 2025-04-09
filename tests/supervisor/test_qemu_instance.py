@@ -173,7 +173,7 @@ async def test_create_qemu_instance_online():
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
-    await execution.wait_for_init()
+    await execution.wait_for_persistent_boot()
     qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await execution.stop()
     assert qemu_execution is None
