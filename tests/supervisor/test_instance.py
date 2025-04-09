@@ -23,7 +23,9 @@ class MockSystemDManager(SystemDManager):
     execution: MicroVM | None = None
     process: Process | None = None
 
-    async def enable_and_start(self, vm_hash: str):
+    async def enable_and_start(self, service: str) -> tuple[MicroVM | None, Process | None]:
+        vm_hash = service.split("@", maxsplit=1)[1].split(".", maxsplit=1)[0]
+
         config_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
         config = configuration_from_file(config_path)
         self.execution, self.process = await execute_persistent_vm(config)
@@ -35,7 +37,7 @@ class MockSystemDManager(SystemDManager):
     def is_service_active(self, service: str):
         return self.process is not None
 
-    async def stop_and_disable(self, vm_hash: str):
+    async def stop_and_disable(self, service: str):
         if self.execution:
             await self.execution.shutdown()
             await self.execution.stop()
@@ -45,25 +47,31 @@ class MockSystemDManager(SystemDManager):
 
 
 @pytest.mark.asyncio
-async def test_create_instance():
-    """
-    Create a fake instance locally and check that it start / init / stop properly.
-    """
+async def test_create_firecracker_instance(mocker):
+    """Create a fake instance locally and check that it start / init / stop properly.
 
-    settings.USE_FAKE_INSTANCE_BASE = True
-    settings.FAKE_DATA_PROGRAM = settings.BENCHMARK_FAKE_DATA_PROGRAM
-    # settings.FAKE_INSTANCE_MESSAGE
-    settings.ALLOW_VM_NETWORKING = True
-    settings.USE_JAILER = True
+    NOTE: If Firecracker VM fail to boot because the disk is broken try:
+     ```bash
+     sudo dmsetup remove decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca_rootfs
+     sudo dmsetup remove decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca_base
+     sudo losetup -l | grep 'persistent' | grep deleted | awk  '{print $1}' | sudo xargs -I{} losetup -d {}
+     sudo rm -rf /var/lib/aleph/vm/volumes/persistent/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/rootfs.btrfs
+     ```
+    """
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", True)
+    mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", True)
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", settings.BENCHMARK_FAKE_DATA_PROGRAM)
+    mocker.patch.object(settings, "USE_JAILER", True)
 
-    logging.basicConfig(level=logging.DEBUG)
-    settings.PRINT_SYSTEM_LOGS = True
+    # logging.basicConfig(level=logging.DEBUG)
 
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
     if not settings.FAKE_INSTANCE_BASE.exists():
-        pytest.xfail("Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`")
+        pytest.xfail(
+            f"Test Runtime not setup. {settings.FAKE_INSTANCE_BASE}. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`"
+        )
 
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
@@ -93,7 +101,7 @@ async def test_create_instance():
         message=message.content,
         original=message.content,
         snapshot_manager=None,
-        systemd_manager=None,
+        systemd_manager=mock_systemd_manager,
         persistent=True,
     )
 
@@ -114,13 +122,17 @@ async def test_create_instance():
     assert vm.enable_networking
 
     await execution.start()
-    firecracker_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
+    # firecracker_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
+    firecracker_execution = mock_systemd_manager.execution
     assert isinstance(firecracker_execution, MicroVM)
     assert firecracker_execution.proc is not None
-    await execution.wait_for_init()
 
-    # This sleep is to leave the instance to boot up and prevent disk corruption
+    await execution.init_task
+    assert execution.init_task.result() is True, "VM failed to start"
+
+    # This sleep is to leave the instance to boo
+    # up and prevent disk corruption
     await asyncio.sleep(60)
-    firecracker_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
+    firecracker_execution, process = await mock_systemd_manager.stop_and_disable(execution.controller_service)
     await execution.stop()
     assert firecracker_execution is None
