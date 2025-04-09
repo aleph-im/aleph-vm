@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import shutil
-from asyncio import Task
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -261,12 +260,8 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def stop_guest_api(self):
         pass
 
-    print_task: Task | None = None
 
     async def teardown(self):
-        if self.print_task:
-            self.print_task.cancel()
-
         if self.enable_networking:
             teardown_nftables_for_vm(self.vm_id)
             if self.tap_interface:
