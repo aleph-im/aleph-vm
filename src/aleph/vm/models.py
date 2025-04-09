@@ -336,10 +336,10 @@ class VmExecution:
             await self.vm.start_guest_api()
 
             # Start VM and snapshots automatically
-            # If the execution is confidential, don't start it because we need to wait for the session certificate
-            # files, use the endpoint /control/machine/{ref}/confidential/initialize to get session files and start the VM
+            # If the execution is a confidential instance, it is start later in the process when the session certificate
+            # files are received from the client via the endpoint /control/machine/{ref}/confidential/initialize endpoint
             if self.persistent and not self.is_confidential and self.systemd_manager:
-                self.systemd_manager.enable_and_start(self.controller_service)
+                await self.systemd_manager.enable_and_start(self.controller_service)
 
                 if self.is_program:
                     await self.wait_for_init()
@@ -354,6 +354,7 @@ class VmExecution:
             self.ready_event.set()
             await self.save()
         except Exception:
+            logger.exception("%s error during start, tearing down", self)
             await self.vm.teardown()
             await self.vm.stop_guest_api()
             raise
@@ -392,11 +393,13 @@ class VmExecution:
             await self.wait_for_persistent_boot()
             logger.info("%s responded to ping. Marking it as started.", self)
             self.times.started_at = datetime.now(tz=timezone.utc)
+            return True
             # await self.save()
         except Exception as e:
             logger.warning("%s failed to responded to ping or is not running, stopping it.: %s ", self, e)
             assert self.vm
             await self.stop()
+            return False
 
     async def wait_for_init(self):
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
