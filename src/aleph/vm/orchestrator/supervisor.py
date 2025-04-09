@@ -188,6 +188,8 @@ def run():
 
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
+    (settings.EXECUTION_ROOT / "login_token").write_text(secret_token)
+    (settings.EXECUTION_ROOT / "login_token").chmod(0o400)
     app = setup_webapp(pool=pool)
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
