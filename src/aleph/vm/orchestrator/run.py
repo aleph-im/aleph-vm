@@ -257,13 +257,13 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
 
 
 async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
-    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
+    execution: VmExecution | None = pool.get_running_or_starting_vm(vm_hash=vm_hash)
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
     else:
-        logger.info(f"{vm_hash} is already running")
+        logger.info(f"{vm_hash} is already running or starting")
 
     await execution.becomes_ready()
 
