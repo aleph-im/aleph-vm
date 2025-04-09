@@ -74,7 +74,7 @@ async def server_version_middleware(
     return resp
 
 
-async def http_not_found(request: web.Request):
+async def http_not_found(request: web.Request):  # noqa: ARG001
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
