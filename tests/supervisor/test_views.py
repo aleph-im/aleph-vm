@@ -266,7 +266,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
 
     mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
     loop = asyncio.new_event_loop()
-    pool = VmPool(loop=loop)
+    pool = VmPool()
     await pool.setup()
     app = setup_webapp(pool=pool)
     return app
