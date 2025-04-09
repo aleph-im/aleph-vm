@@ -258,13 +258,24 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
 
 
 async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
-    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
+    execution: VmExecution | None = pool.executions.get(vm_hash)
+    if execution:
+        if execution.is_running:
+            logger.info(f"{vm_hash} is already running")
+        elif execution.is_starting:
+            logger.info(f"{vm_hash} is already starting")
+        elif execution.is_stopping:
+            logger.info(f"{vm_hash} is stopping, waiting for complete stop before restarting")
+            await execution.stop_event.wait()
+            execution = None
+        else:
+            logger.info(f"{vm_hash} unknown execution state, stopping the vm")
+            await execution.stop()
+            execution = None
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
-    else:
-        logger.info(f"{vm_hash} is already running")
 
     await execution.becomes_ready()
 
