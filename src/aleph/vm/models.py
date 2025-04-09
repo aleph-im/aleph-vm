@@ -41,7 +41,7 @@ from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils import HostNotFoundError, create_task_log_exceptions, dumps_for_json
+from aleph.vm.utils import create_task_log_exceptions, dumps_for_json, is_pinging
 
 logger = logging.getLogger(__name__)
 
@@ -346,18 +346,7 @@ class VmExecution:
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
                 else:
-
-                    async def non_blocking_wait_for_init():
-                        assert self.vm
-                        try:
-                            await self.wait_for_init()
-                            logger.info("%s responded to ping. Marking it as started.", self)
-                            self.times.started_at = datetime.now(tz=timezone.utc)
-                        except HostNotFoundError:
-                            logger.info("%s mpt responded to ping. Stopping it.", self)
-                            self.vm.stop()
-
-                    self.init_task = asyncio.create_task(non_blocking_wait_for_init)
+                    self.init_task = asyncio.create_task(self.non_blocking_wait_for_boot())
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
@@ -368,6 +357,45 @@ class VmExecution:
             await self.vm.teardown()
             await self.vm.stop_guest_api()
             raise
+
+    async def wait_for_persistent_boot(self):
+        """Determine if VM has booted by responding to ping and check if the process is still running"""
+        assert self.vm.enable_networking and self.vm.tap_interface, f"Network not enabled for VM {self.vm.vm_id}"
+        ip = self.vm.get_ip()
+        if not ip:
+            msg = "Host IP not available"
+            raise ValueError(msg)
+
+        ip = ip.split("/", 1)[0]
+        max_attempt = 30
+        timeout_seconds = 2
+        attempt = 0
+        while True:
+            attempt += 1
+            if attempt > max_attempt:
+                logging.error("%s has not responded to ping after %s attempt", self, attempt)
+                raise Exception("Max attempt")
+
+            if not self.is_controller_running:
+                logging.error("%s process stopped running while waiting for boot")
+                raise Exception("Process is not running")
+            if await is_pinging(ip, packets=1, timeout=timeout_seconds):
+                break
+
+    async def non_blocking_wait_for_boot(self):
+        """Wait till the VM respond to ping and mark it as booted or not and clean up ressource if it fail
+
+        Used for instances"""
+        assert self.vm
+        try:
+            await self.wait_for_persistent_boot()
+            logger.info("%s responded to ping. Marking it as started.", self)
+            self.times.started_at = datetime.now(tz=timezone.utc)
+            # await self.save()
+        except Exception as e:
+            logger.warning("%s failed to responded to ping or is not running, stopping it.: %s ", self, e)
+            assert self.vm
+            await self.stop()
 
     async def wait_for_init(self):
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
@@ -411,6 +439,7 @@ class VmExecution:
     async def stop(self) -> None:
         """Stop the VM and release resources"""
         assert self.vm, "The VM attribute has to be set before calling stop()"
+        logger.info("%s stopping", self)
 
         # Prevent concurrent calls to stop() using a Lock
         async with self.stop_pending_lock:
@@ -430,6 +459,7 @@ class VmExecution:
             if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
+            logger.info("%s stopped", self)
 
     def start_watching_for_updates(self, pubsub: PubSub):
         if not self.update_task:
@@ -460,6 +490,7 @@ class VmExecution:
             await self.runs_done_event.wait()
 
     async def save(self):
+        """Save to DB"""
         assert self.vm, "The VM attribute has to be set before calling save()"
 
         pid_info = self.vm.to_dict() if self.vm else None
