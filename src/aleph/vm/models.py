@@ -447,6 +447,8 @@ class VmExecution:
             if self.times.stopped_at is not None:
                 logger.debug(f"VM={self.vm.vm_id} already stopped")
                 return
+            if self.persistent and self.systemd_manager:
+                self.systemd_manager.stop_and_disable(self.controller_service)
             self.times.stopping_at = datetime.now(tz=timezone.utc)
             await self.all_runs_complete()
             await self.record_usage()
