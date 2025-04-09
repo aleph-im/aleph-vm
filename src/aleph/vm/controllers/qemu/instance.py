@@ -31,7 +31,7 @@ from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
 from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.utils import HostNotFoundError, ping, run_in_subprocess
+from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -231,35 +231,11 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         # Start via systemd not here
         raise NotImplementedError()
 
-    async def wait_for_init(self) -> None:
-        """Wait for the init process of the instance to be ready."""
-        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
-
-        ip = self.get_ip()
-        if not ip:
-            msg = "Host IP not available"
-            raise ValueError(msg)
-        ip = ip.split("/", 1)[0]
-
-        attempts = 30
-        timeout_seconds = 2
-
-        for attempt in range(attempts):
-            try:
-                await ping(ip, packets=1, timeout=timeout_seconds)
-                return
-            except HostNotFoundError:
-                if attempt < (attempts - 1):
-                    continue
-                else:
-                    raise
-
     async def start_guest_api(self):
         pass
 
     async def stop_guest_api(self):
         pass
-
 
     async def teardown(self):
         if self.enable_networking:

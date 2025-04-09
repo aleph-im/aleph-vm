@@ -21,13 +21,7 @@ from aleph.vm.hypervisors.firecracker.config import (
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import create_devmapper, create_volume_file
-from aleph.vm.utils import (
-    HostNotFoundError,
-    NotEnoughDiskSpaceError,
-    check_disk_space,
-    ping,
-    run_in_subprocess,
-)
+from aleph.vm.utils import NotEnoughDiskSpaceError, check_disk_space, run_in_subprocess
 
 from .executable import (
     AlephFirecrackerExecutable,
@@ -119,30 +113,6 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
                 else []
             ),
         )
-
-    async def wait_for_init(self) -> None:
-        """Wait for the init process of the instance to be ready."""
-        assert self.enable_networking and self.tap_interface, f"Network not enabled for VM {self.vm_id}"
-
-        ip = self.get_ip()
-        if not ip:
-            msg = "Host IP not available"
-            raise ValueError(msg)
-
-        ip = ip.split("/", 1)[0]
-
-        attempts = 30
-        timeout_seconds = 2
-
-        for attempt in range(attempts):
-            try:
-                await ping(ip, packets=1, timeout=timeout_seconds)
-                return
-            except HostNotFoundError:
-                if attempt < (attempts - 1):
-                    continue
-                else:
-                    raise
 
     async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
         """Create a VM snapshot"""

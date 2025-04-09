@@ -177,17 +177,6 @@ class HostNotFoundError(Exception):
     pass
 
 
-async def ping(host: str, packets: int, timeout: int):
-    """
-    Waits for a host to respond to a ping request.
-    """
-
-    try:
-        await run_in_subprocess(["ping", "-c", str(packets), "-W", str(timeout), host], check=True)
-    except subprocess.CalledProcessError as err:
-        raise HostNotFoundError() from err
-
-
 async def is_pinging(host: str, packets: int, timeout: int) -> bool:
     """
     Try to ping an ip, return true if host respond, fale otherwise
