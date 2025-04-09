@@ -33,6 +33,7 @@ from .views import (
     about_executions,
     about_login,
     list_executions,
+    list_executions_v2,
     notify_allocation,
     operate_reserve_resources,
     run_code_from_hostname,
@@ -101,6 +102,7 @@ def setup_webapp(pool: VmPool | None):
         # /about APIs return information about the VM Orchestrator
         web.get("/about/login", about_login),
         web.get("/about/executions/list", list_executions),
+        web.get("/v2/about/executions/list", list_executions_v2),
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
