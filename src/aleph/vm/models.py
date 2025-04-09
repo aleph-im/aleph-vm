@@ -377,7 +377,7 @@ class VmExecution:
                 raise Exception("Max attempt")
 
             if not self.is_controller_running:
-                logging.error("%s process stopped running while waiting for boot")
+                logging.error("%s process stopped running while waiting for boot", self)
                 raise Exception("Process is not running")
             if await is_pinging(ip, packets=1, timeout=timeout_seconds):
                 break
