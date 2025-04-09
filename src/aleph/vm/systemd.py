@@ -72,7 +72,7 @@ class SystemDManager:
             logger.error(error)
             return False
 
-    def enable_and_start(self, service: str) -> None:
+    async def enable_and_start(self, service: str) -> None:
         if not self.is_service_enabled(service):
             self.enable(service)
         if not self.is_service_active(service):
