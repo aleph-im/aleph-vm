@@ -140,21 +140,17 @@ async def test_create_qemu_instance_online(mocker):
 
     mock_systemd_manager = MockSystemDManager()
 
-    network = (
-        Network(
-            vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
-            vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
-            external_interface=settings.NETWORK_INTERFACE,
-            ipv6_allocator=make_ipv6_allocator(
-                allocation_policy=settings.IPV6_ALLOCATION_POLICY,
-                address_pool=settings.IPV6_ADDRESS_POOL,
-                subnet_prefix=settings.IPV6_SUBNET_PREFIX,
-            ),
-            use_ndp_proxy=False,
-            ipv6_forwarding_enabled=False,
-        )
-        if settings.ALLOW_VM_NETWORKING
-        else None
+    network = Network(
+        vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
+        vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+        external_interface=settings.NETWORK_INTERFACE,
+        ipv6_allocator=make_ipv6_allocator(
+            allocation_policy=settings.IPV6_ALLOCATION_POLICY,
+            address_pool=settings.IPV6_ADDRESS_POOL,
+            subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+        ),
+        use_ndp_proxy=False,
+        ipv6_forwarding_enabled=False,
     )
 
     execution = VmExecution(
