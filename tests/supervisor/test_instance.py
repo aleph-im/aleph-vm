@@ -23,7 +23,7 @@ class MockSystemDManager(SystemDManager):
     execution: MicroVM | None = None
     process: Process | None = None
 
-    async def enable_and_start(self, service: str) -> tuple[MicroVM, Process]:
+    async def enable_and_start(self, service: str) -> tuple[MicroVM | None, Process | None]:
         vm_hash = service.split("@", maxsplit=1)[1].split(".", maxsplit=1)[0]
 
         config_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")

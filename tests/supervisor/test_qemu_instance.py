@@ -23,7 +23,7 @@ class MockSystemDManager(SystemDManager):
     execution: QemuVM | None = None
     process: Process | None = None
 
-    async def enable_and_start(self, service: str) -> tuple[QemuVM, Process]:
+    async def enable_and_start(self, service: str) -> tuple[QemuVM | None, Process | None]:
         # aleph-vm-controller@decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca.service-controller.json
         vm_hash = service.split("@", maxsplit=1)[1].split(".", maxsplit=1)[0]
 

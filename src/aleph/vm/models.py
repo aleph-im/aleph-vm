@@ -361,6 +361,7 @@ class VmExecution:
 
     async def wait_for_persistent_boot(self):
         """Determine if VM has booted by responding to ping and check if the process is still running"""
+        assert self.vm
         assert self.vm.enable_networking and self.vm.tap_interface, f"Network not enabled for VM {self.vm.vm_id}"
         ip = self.vm.get_ip()
         if not ip:
