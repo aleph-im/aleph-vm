@@ -25,10 +25,7 @@ class MockSystemDManager(SystemDManager):
 
     async def enable_and_start(self, service: str) -> tuple[QemuVM | None, Process | None]:
         # aleph-vm-controller@decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca.service-controller.json
-        if '@' in service:
-            vm_hash = service.split('@', maxsplit=1)[1].split('.', maxsplit=1)[0]
-        else:
-            vm_hash = service
+        vm_hash = service.split("@", maxsplit=1)[1].split(".", maxsplit=1)[0]
 
         config_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
         config = configuration_from_file(config_path)
@@ -50,17 +47,19 @@ class MockSystemDManager(SystemDManager):
 
 
 @pytest.mark.asyncio
-async def test_create_qemu_instance():
+async def test_create_qemu_instance(mocker):
     """
     Create an instance and check that it start / init / stop properly.
+    No network.
+    We don't actually check that the system ping since there is no network
     """
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", True)
+    mocker.patch.object(settings, "FAKE_INSTANCE_MESSAGE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
+    mocker.patch.object(settings, "USE_JAILER", False)
 
-    settings.USE_FAKE_INSTANCE_BASE = True
-    settings.FAKE_INSTANCE_MESSAGE = settings.FAKE_INSTANCE_QEMU_MESSAGE
-    settings.FAKE_INSTANCE_BASE = settings.FAKE_QEMU_INSTANCE_BASE
-    settings.ENABLE_CONFIDENTIAL_COMPUTING = False
-    settings.ALLOW_VM_NETWORKING = False
-    settings.USE_JAILER = False
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail("Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`")
 
@@ -120,17 +119,15 @@ async def test_create_qemu_instance_online(mocker):
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
 
-    logging.basicConfig(level=logging.DEBUG)
-
-    # Ensure that the settings are correct and required files present.
-    settings.setup()
-    settings.check()
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
             "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh` ".format(
                 settings.FAKE_QEMU_INSTANCE_BASE
             )
         )
+    # Ensure that the settings are correct and required files present.
+    settings.setup()
+    settings.check()
 
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
