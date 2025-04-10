@@ -219,7 +219,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
 
 
 @pytest.mark.asyncio
-async def test_operator_confidential_initialize(aiohttp_client):
+async def test_operator_confidential_initialize(aiohttp_client, mocker):
     """Test that the certificates system endpoint responds. No auth needed"""
 
     settings.ENABLE_QEMU_SUPPORT = True
@@ -236,7 +236,7 @@ async def test_operator_confidential_initialize(aiohttp_client):
         controller_service: str = ""
 
     class MockSystemDManager:
-        enable_and_start = MagicMock(return_value=True)
+        enable_and_start = mocker.AsyncMock(return_value=True)
 
     class FakeVmPool:
         executions: dict[ItemHash, FakeExecution] = {}
