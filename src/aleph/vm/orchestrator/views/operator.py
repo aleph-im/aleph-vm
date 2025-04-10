@@ -260,7 +260,7 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         godh_file_path = vm_session_path / "vm_godh.b64"
         godh_file_path.write_bytes(godh_file_content.file.read())
 
-        pool.systemd_manager.enable_and_start(execution.controller_service)
+        await pool.systemd_manager.enable_and_start(execution.controller_service)
 
         return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
 

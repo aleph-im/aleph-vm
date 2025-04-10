@@ -23,7 +23,13 @@ class MockSystemDManager(SystemDManager):
     execution: QemuVM | None = None
     process: Process | None = None
 
-    async def enable_and_start(self, vm_hash: str):
+    async def enable_and_start(self, service: str):
+        # aleph-vm-controller@decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca.service-controller.json
+        if '@' in service:
+            vm_hash = service.split('@', maxsplit=1)[1].split('.', maxsplit=1)[0]
+        else:
+            vm_hash = service
+
         config_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
         config = configuration_from_file(config_path)
         self.execution, self.process = await execute_persistent_vm(config)
@@ -33,7 +39,7 @@ class MockSystemDManager(SystemDManager):
         return self.process is not None
 
     def is_service_active(self, service: str):
-        return self.process is not None
+        return self.process is not None and not self.process.returncode
 
     async def stop_and_disable(self, vm_hash: str):
         if self.process:
@@ -95,23 +101,23 @@ async def test_create_qemu_instance():
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
-    qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
+    await mock_systemd_manager.stop_and_disable(execution.vm_hash)
+    assert qemu_execution.qemu_process is not None
     await execution.stop()
     assert qemu_execution is None
 
 
 @pytest.mark.asyncio
-async def test_create_qemu_instance_online():
+async def test_create_qemu_instance_online(mocker):
     """
     Create an instance and check that it start / init / stop properly.
     """
-
-    settings.USE_FAKE_INSTANCE_BASE = True
-    settings.FAKE_INSTANCE_MESSAGE = settings.FAKE_INSTANCE_QEMU_MESSAGE
-    settings.FAKE_INSTANCE_BASE = settings.FAKE_QEMU_INSTANCE_BASE
-    settings.ENABLE_CONFIDENTIAL_COMPUTING = False
-    settings.ALLOW_VM_NETWORKING = True
-    settings.USE_JAILER = False
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", True)
+    mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", True)
+    mocker.patch.object(settings, "FAKE_INSTANCE_MESSAGE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
+    mocker.patch.object(settings, "USE_JAILER", False)
 
     logging.basicConfig(level=logging.DEBUG)
 
@@ -119,7 +125,11 @@ async def test_create_qemu_instance_online():
     settings.setup()
     settings.check()
     if not settings.FAKE_INSTANCE_BASE.exists():
-        pytest.xfail("Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`")
+        pytest.xfail(
+            "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh` ".format(
+                settings.FAKE_QEMU_INSTANCE_BASE
+            )
+        )
 
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
@@ -152,7 +162,7 @@ async def test_create_qemu_instance_online():
         message=message.content,
         original=message.content,
         snapshot_manager=None,
-        systemd_manager=None,
+        systemd_manager=mock_systemd_manager,
         persistent=True,
     )
 
@@ -170,10 +180,11 @@ async def test_create_qemu_instance_online():
     assert vm.vm_id == vm_id
 
     await execution.start()
-    qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
+    qemu_execution = mock_systemd_manager.execution
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
-    await execution.wait_for_persistent_boot()
+    await execution.init_task
+    assert execution.init_task.result() is True, "VM failed to start"
     qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await execution.stop()
     assert qemu_execution is None
