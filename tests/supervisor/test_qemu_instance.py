@@ -61,7 +61,9 @@ async def test_create_qemu_instance(mocker):
     mocker.patch.object(settings, "USE_JAILER", False)
 
     if not settings.FAKE_INSTANCE_BASE.exists():
-        pytest.xfail("Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh`")
+        pytest.xfail(
+            "Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh`"
+        )
 
     logging.basicConfig(level=logging.DEBUG)
 
@@ -121,7 +123,7 @@ async def test_create_qemu_instance_online(mocker):
 
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
-            "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh` ".format(
+            "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh` ".format(
                 settings.FAKE_QEMU_INSTANCE_BASE
             )
         )
