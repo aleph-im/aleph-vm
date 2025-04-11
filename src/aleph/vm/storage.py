@@ -363,7 +363,7 @@ async def get_existing_file(ref: str) -> Path:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}/download/data/{ref}"
+    url = f"{settings.CONNECTOR_URL}download/data/{ref}"
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
