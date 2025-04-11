@@ -152,6 +152,7 @@ async def test_create_qemu_instance_online(mocker):
         use_ndp_proxy=False,
         ipv6_forwarding_enabled=False,
     )
+    network.setup()
 
     execution = VmExecution(
         vm_hash=vm_hash,
