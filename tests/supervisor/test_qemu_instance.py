@@ -60,6 +60,9 @@ async def test_create_qemu_instance(mocker):
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
 
+    # Patch journal.stream so the output of qemu proecss is shown in the test output
+    mocker.patch("aleph.vm.hypervisors.qemu.qemuvm.journal.stream", return_value=None)
+
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
             "Test Runtime not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh`"
@@ -102,6 +105,7 @@ async def test_create_qemu_instance(mocker):
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.controller_service)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
+    await asyncio.sleep(30)
     await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await qemu_execution.qemu_process.wait()
     assert qemu_execution.qemu_process.returncode is not None
@@ -120,6 +124,9 @@ async def test_create_qemu_instance_online(mocker):
     mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
+
+    # Patch journal.stream so the output of qemu process is shown in the test output
+    mocker.patch("aleph.vm.hypervisors.qemu.qemuvm.journal.stream", return_value=None)
 
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
