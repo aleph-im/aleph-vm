@@ -48,6 +48,14 @@ fi
 
 # Temporary tmp is needed for apt
 mount -t tmpfs  -o size=100M tmpfs /tmp
+
+# mount pts
+mount -t devpts devpts /dev/pts
+
+# Update locale settings to en_US UTF-8
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen "en_US.UTF-8"
+
 #  Install crypsetup and openssh
 DEBIAN_FRONTEND=noninteractive apt update
 DEBIAN_FRONTEND=noninteractive apt install -y -f openssh-server openssh-client cryptsetup cryptsetup-initramfs
@@ -130,3 +138,4 @@ ssh-keygen -A
 
 ### END example
 umount /tmp
+umount /dev/pts
