@@ -121,6 +121,9 @@ async def test_create_qemu_instance_online(mocker):
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
 
+    # Patch journal.stream so the output of qemu proecss is shown in the test output
+    mocker.patch("aleph.vm.hypervisors.qemu.qemuvm.journal.stream", return_value=None)
+
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
             "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh` ".format(
