@@ -63,6 +63,8 @@ async def test_create_firecracker_instance(mocker):
     mocker.patch.object(settings, "FAKE_DATA_PROGRAM", settings.BENCHMARK_FAKE_DATA_PROGRAM)
     mocker.patch.object(settings, "USE_JAILER", True)
 
+    # Patch journal.stream so the output of qemu proecss is shown in the test output
+    mocker.patch("aleph.vm.hypervisors.firecracker.microvm.journal.stream", return_value=None)
     # logging.basicConfig(level=logging.DEBUG)
 
     # Ensure that the settings are correct and required files present.
