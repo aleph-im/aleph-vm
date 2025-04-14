@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import tempfile
 from asyncio.subprocess import Process
 from pathlib import Path
 
@@ -53,14 +54,24 @@ async def test_create_qemu_instance(mocker):
     No network.
     We don't actually check that the system ping since there is no network
     """
+    original_linux_path = settings.LINUX_PATH
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", True)
     mocker.patch.object(settings, "FAKE_INSTANCE_MESSAGE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
-    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_QEMU_INSTANCE_BASE)
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
+    tmp_dir = tempfile.TemporaryDirectory(prefix="alephtest_")
+    tmp_path = Path(tmp_dir.name)
+    cache_root = tmp_path / "cache"
+    exec_root = tmp_path / "exec"
+    mocker.patch.object(settings, "CACHE_ROOT", cache_root)
+    mocker.patch.object(settings, "EXECUTION_ROOT", exec_root)
+    mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", exec_root / "volumes" / "persistent")
+    mocker.patch.object(settings, "JAILER_BASE_DIRECTORY", exec_root / "jailer")
+    mocker.patch.object(settings, "EXECUTION_LOG_DIRECTORY", exec_root / "executions")
 
-    # Patch journal.stream so the output of qemu proecss is shown in the test output
+    # Patch journal.stream so the output of qemu process is shown in the test output
     mocker.patch("aleph.vm.hypervisors.qemu.qemuvm.journal.stream", return_value=None)
 
     if not settings.FAKE_INSTANCE_BASE.exists():
@@ -69,10 +80,12 @@ async def test_create_qemu_instance(mocker):
         )
 
     logging.basicConfig(level=logging.DEBUG)
-
+    logger = logging.getLogger(__name__)
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
+    logger.info(settings.EXECUTION_ROOT)
+    logger.info(settings.PERSISTENT_VOLUMES_DIR)
 
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
@@ -110,6 +123,7 @@ async def test_create_qemu_instance(mocker):
     await qemu_execution.qemu_process.wait()
     assert qemu_execution.qemu_process.returncode is not None
     await execution.stop()
+    settings.LINUX_PATH = original_linux_path
 
 
 @pytest.mark.asyncio
@@ -118,26 +132,37 @@ async def test_create_qemu_instance_online(mocker):
     Create an instance and check that it start / init / stop properly.
     With network, wait for ping
     """
+    original_linux_path = settings.LINUX_PATH
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", True)
     mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", True)
     mocker.patch.object(settings, "FAKE_INSTANCE_MESSAGE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
-    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_INSTANCE_QEMU_MESSAGE)
+    mocker.patch.object(settings, "FAKE_INSTANCE_BASE", settings.FAKE_QEMU_INSTANCE_BASE)
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     mocker.patch.object(settings, "USE_JAILER", False)
+
+    tmp_dir = tempfile.TemporaryDirectory(prefix="alephtest_")
+    tmp_path = Path(tmp_dir.name)
+    cache_root = tmp_path / "cache"
+    exec_root = tmp_path / "exec"
+    mocker.patch.object(settings, "CACHE_ROOT", cache_root)
+    mocker.patch.object(settings, "EXECUTION_ROOT", exec_root)
+    mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", exec_root / "volumes" / "persistent")
+    mocker.patch.object(settings, "JAILER_BASE_DIRECTORY", exec_root / "jailer")
+    mocker.patch.object(settings, "EXECUTION_LOG_DIRECTORY", exec_root / "executions")
 
     # Patch journal.stream so the output of qemu process is shown in the test output
     mocker.patch("aleph.vm.hypervisors.qemu.qemuvm.journal.stream", return_value=None)
 
     if not settings.FAKE_INSTANCE_BASE.exists():
         pytest.xfail(
-            "Test instance disk {} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh` ".format(
-                settings.FAKE_QEMU_INSTANCE_BASE
-            )
+            f"Test instance disk {settings.FAKE_QEMU_INSTANCE_BASE} not setup. run `cd runtimes/instance-rootfs && sudo ./create-debian-12-qemu-disk.sh` "
         )
+    logger = logging.getLogger(__name__)
     # Ensure that the settings are correct and required files present.
     settings.setup()
     settings.check()
-
+    logger.info(settings.EXECUTION_ROOT)
+    logger.info(settings.PERSISTENT_VOLUMES_DIR)
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
     await metrics.create_tables(engine)
@@ -192,3 +217,5 @@ async def test_create_qemu_instance_online(mocker):
     qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await execution.stop()
     assert qemu_execution is None
+
+    settings.LINUX_PATH = original_linux_path
