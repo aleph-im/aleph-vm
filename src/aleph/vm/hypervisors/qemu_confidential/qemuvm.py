@@ -49,8 +49,8 @@ class QemuConfidentialVM(QemuVM):
         # -net tap,ifname=tap0,script=no,downscript=no -drive file=alpine.qcow2,media=disk,if=virtio -nographic
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
-        journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
-        journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
+        self.journal_stdout: TextIO = journal.stream(self._journal_stdout_name)
+        self.journal_stderr: TextIO = journal.stream(self._journal_stderr_name)
 
         # TODO : ensure this is ok at launch
         sev_info = secure_encryption_info()
@@ -131,8 +131,8 @@ class QemuConfidentialVM(QemuVM):
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=journal_stdout,
-            stderr=journal_stderr,
+            stdout=self.journal_stdout,
+            stderr=self.journal_stderr,
         )
 
         print(
