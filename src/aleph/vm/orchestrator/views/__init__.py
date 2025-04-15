@@ -403,7 +403,13 @@ async def update_allocations(request: web.Request):
         allocations = allocation.persistent_vms | allocation.instances
         # Make a copy since the pool is modified
         for execution in list(pool.get_persistent_executions()):
-            if execution.vm_hash not in allocations and execution.is_running and not execution.uses_payment_stream:
+            if (
+                execution.vm_hash not in allocations
+                and execution.is_running
+                and not execution.uses_payment_stream
+                and not execution.gpus
+                and not execution.is_confidential
+            ):
                 vm_type = "instance" if execution.is_instance else "persistent program"
                 logger.info("Stopping %s %s", vm_type, execution.vm_hash)
                 await pool.stop_vm(execution.vm_hash)
