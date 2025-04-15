@@ -216,9 +216,9 @@ async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5, socket_fam
 async def read_internet():
     """Check Internet connectivity of the system, requiring IP connectivity, domain resolution and HTTPS/TLS."""
     internet_hosts: list[HttpUrl] = [
-        HttpUrl(url="https://aleph.im/"),
-        HttpUrl(url="https://ethereum.org/en/"),
-        HttpUrl(url="https://ipfs.io/"),
+        HttpUrl(url="https://aleph.im/", scheme="https"),
+        HttpUrl(url="https://ethereum.org/en/", scheme="https"),
+        HttpUrl(url="https://ipfs.io/", scheme="https"),
     ]
     timeout_seconds = 5
 
