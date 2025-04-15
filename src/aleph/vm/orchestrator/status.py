@@ -112,14 +112,15 @@ async def check_ipv6(session: ClientSession, vm_id: ItemHash) -> bool:
         return False
 
 
-async def check_internet(session: ClientSession, vm_id: ItemHash) -> bool:
+async def check_internet(session: ClientSession, vm_id: ItemHash) -> bool | None:
     """Check that the VM has internet connectivity. This requires DNS, IP, HTTP and TLS to work."""
     try:
         response: dict = await get_json_from_vm(session, vm_id, "/internet")
 
         # The diagnostic VM returns HTTP 200 with {"result": False} when cannot connect to the internet.
         # else it forwards the return code if its own test endpoint.
-        return response.get("result") == HTTPOk.status_code
+        status_code: bool | None | int = response.get("result")
+        return status_code is not False and isinstance(status_code, int) and status_code < 400
     except ClientResponseError:
         return False
 
