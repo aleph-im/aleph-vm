@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pip._internal.operations.freeze import freeze
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from aleph.sdk.chains.remote import RemoteAccount
@@ -198,7 +198,7 @@ async def connect_ipv6():
             return {"result": False, "reason": str(error.args[0])}
 
 
-async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5, socket_family=socket.AF_INET):
+async def check_url(internet_host: str, timeout_seconds: int = 5, socket_family=socket.AF_INET):
     """Check the connectivity of a single URL."""
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     tcp_connector = aiohttp.TCPConnector(family=socket_family)
@@ -215,10 +215,10 @@ async def check_url(internet_host: HttpUrl, timeout_seconds: int = 5, socket_fam
 @app.get("/internet")
 async def read_internet():
     """Check Internet connectivity of the system, requiring IP connectivity, domain resolution and HTTPS/TLS."""
-    internet_hosts: list[HttpUrl] = [
-        HttpUrl(url="https://aleph.im/", scheme="https"),
-        HttpUrl(url="https://ethereum.org/en/", scheme="https"),
-        HttpUrl(url="https://ipfs.io/", scheme="https"),
+    internet_hosts: list[str] = [
+        "https://aleph.im/",
+        "https://ethereum.org/en/",
+        "https://ipfs.io/",
     ]
     timeout_seconds = 5
 
