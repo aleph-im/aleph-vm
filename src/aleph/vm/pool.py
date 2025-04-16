@@ -149,7 +149,7 @@ class VmPool:
             try:
                 if message.requirements and message.requirements.gpu:
                     # Ensure we have the necessary GPU for the user by reserving them
-                    resources = self.find_resources_available_for_user(cast(message, InstanceContent), message.address)
+                    resources = self.find_resources_available_for_user(message, message.address)
                     # First assign Host GPUs from the available
                     execution.prepare_gpus(list(resources))
                     # Prepare VM general Resources and also the GPUs
@@ -383,7 +383,7 @@ class VmPool:
             del self.reservations[resource]
         return self.reservations.get(resource)
 
-    async def reserve_resources(self, message: InstanceContent, user):
+    async def reserve_resources(self, message: ExecutableContent, user):
         gpu_to_reserve = message.requirements.gpu if message.requirements and message.requirements.gpu else []
         expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
         if not gpu_to_reserve:
@@ -400,8 +400,8 @@ class VmPool:
 
         return expiration_date
 
-    def find_resources_available_for_user(self, message: InstanceContent, user) -> set[GpuDevice]:
-        """Find required resource to run InstanceContent from reserved resources by user or free resources.
+    def find_resources_available_for_user(self, message: ExecutableContent, user) -> set[GpuDevice]:
+        """Find required resource to run ExecutableContent from reserved resources by user or free resources.
 
         Only implement GPU for now"""
         # Calling function should use the creation_lock to avoid resource being stollem
