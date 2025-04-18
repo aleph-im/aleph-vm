@@ -7,6 +7,8 @@ from unittest.mock import call
 
 import pytest
 from aiohttp import web
+
+from aleph.vm.models import VmExecution
 from aleph_message.models import InstanceContent
 from pytest_mock import MockerFixture
 
@@ -14,12 +16,13 @@ from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from tests.supervisor.test_checkpayment import fake_instance_content
 
 
 @pytest.mark.asyncio
 async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid item_hash is provided."""
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     response: web.Response = await client.post(
@@ -89,7 +92,7 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 async def test_allocation_invalid_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid auth token is provided."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/allocations",
@@ -103,7 +106,7 @@ async def test_allocation_invalid_auth_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_allocation_missing_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when auth token is not provided."""
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     client = await aiohttp_client(app)
     response: web.Response = await client.post(
         "/control/allocations",
@@ -124,9 +127,8 @@ async def test_allocation_valid_token(aiohttp_client):
             return []
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp()
-    app["vm_pool"] = FakeVmPool()
-    app["pubsub"] = FakeVmPool()
+    app = setup_webapp(pool=FakeVmPool())
+    app["pubsub"] = None
     client = await aiohttp_client(app)
 
     response: web.Response = await client.post(
@@ -138,12 +140,130 @@ async def test_allocation_valid_token(aiohttp_client):
     assert await response.json() == {"success": True, "successful": [], "failing": [], "errors": {}}
 
 
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, fake_instance_content):
+    web_app = await mock_app_with_pool
+    pool = web_app['vm_pool']
+    message = InstanceContent.model_validate(fake_instance_content)
+
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+    execution = VmExecution(
+        vm_hash=hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    pool.executions = {hash: execution}
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/v2/about/executions/list",
+    )
+    assert response.status == 200
+    assert await response.json() == {
+        "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca": {
+            "networking": None,
+            "status": {
+                "defined_at": "2025-04-18 08:14:08.832522+00:00",
+                "preparing_at": None,
+                "prepared_at": None,
+                "starting_at": None,
+                "started_at": None,
+                "stopping_at": None,
+                "stopped_at": None,
+            },
+            "running": None,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool, fake_instance_content):
+    "Test locally but do not create"
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    message = InstanceContent.model_validate(fake_instance_content)
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+    execution = VmExecution(
+        vm_hash=hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    vm_id = 3
+    from aleph.vm.network.hostnetwork import Network
+    from aleph.vm.network.hostnetwork import make_ipv6_allocator
+    network = Network(
+        vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
+        vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
+        external_interface=settings.NETWORK_INTERFACE,
+        ipv6_allocator=make_ipv6_allocator(
+            allocation_policy=settings.IPV6_ALLOCATION_POLICY,
+            address_pool=settings.IPV6_ADDRESS_POOL,
+            subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+        ),
+        use_ndp_proxy=False,
+        ipv6_forwarding_enabled=False,
+    )
+    network.setup()
+
+    from aleph.vm.vm_type import VmType
+    vm_type = VmType.from_message_content(message)
+    tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
+    # await network.create_tap(vm_id, tap_interface)
+    execution.vm = mocker.Mock()
+    execution.vm.tap_interface = tap_interface
+
+    pool.executions = {vm_hash: execution}
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/v2/about/executions/list",
+    )
+    assert response.status == 200
+    assert await response.json() == {
+        "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca": {
+            "networking": {
+                "ipv4_network": "172.16.3.0/24",
+                "ipv6_network": "fc00:1:2:3:3:deca:deca:dec0/124",
+                "ipv6_ip": "fc00:1:2:3:3:deca:deca:dec1",
+            },
+            "status": {
+                "defined_at": str(execution.times.defined_at),
+                "preparing_at": None,
+                "prepared_at": None,
+                "starting_at": None,
+                "started_at": None,
+                "stopping_at": None,
+                "stopped_at": None,
+            },
+            "running": None,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_empty(aiohttp_client, mock_app_with_pool):
+    client = await aiohttp_client(await mock_app_with_pool)
+    response: web.Response = await client.get(
+        "/v2/about/executions/list",
+    )
+    assert response.status == 200
+    assert await response.json() == {}
+
+
 @pytest.mark.asyncio
 async def test_about_certificates_missing_setting(aiohttp_client):
     """Test that the certificates system endpoint returns an error if the setting isn't enabled"""
     settings.ENABLE_CONFIDENTIAL_COMPUTING = False
 
-    app = setup_webapp()
+    app = setup_webapp(pool=None)
     app["sev_client"] = SevClient(Path().resolve(), Path("/opt/sevctl").resolve())
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/certificates")
@@ -168,7 +288,7 @@ async def test_about_certificates(aiohttp_client):
             return_value=True,
         ) as export_mock:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                app = setup_webapp()
+                app = setup_webapp(pool=None)
                 sev_client = SevClient(Path(tmp_dir), Path("/opt/sevctl"))
                 app["sev_client"] = sev_client
                 # Create mock file to return it
@@ -269,11 +389,9 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
     )
 
     mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
-    loop = asyncio.new_event_loop()
-    pool = VmPool(loop=loop)
+    pool = VmPool()
     await pool.setup()
-    app = setup_webapp()
-    app["vm_pool"] = pool
+    app = setup_webapp(pool=pool)
     return app
 
 

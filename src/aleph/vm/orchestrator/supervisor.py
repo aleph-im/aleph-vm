@@ -33,6 +33,7 @@ from .views import (
     about_executions,
     about_login,
     list_executions,
+    list_executions_v2,
     notify_allocation,
     operate_reserve_resources,
     run_code_from_hostname,
@@ -73,13 +74,18 @@ async def server_version_middleware(
     return resp
 
 
-async def http_not_found(request: web.Request):
+async def http_not_found(request: web.Request):  # noqa: ARG001
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
 
-def setup_webapp():
+def setup_webapp(pool: VmPool | None):
+    """Create the webapp and set the VmPool
+
+    Only case where VmPool is None is in some tests that won't use it.
+    """
     app = web.Application(middlewares=[server_version_middleware])
+    app["vm_pool"] = pool
     cors = setup(
         app,
         defaults={
@@ -96,6 +102,7 @@ def setup_webapp():
         # /about APIs return information about the VM Orchestrator
         web.get("/about/login", about_login),
         web.get("/about/executions/list", list_executions),
+        web.get("/v2/about/executions/list", list_executions_v2),
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
@@ -153,7 +160,7 @@ def run():
     settings.check()
 
     loop = asyncio.new_event_loop()
-    pool = VmPool(loop)
+    pool = VmPool()
     asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
@@ -161,10 +168,11 @@ def run():
 
     # Require a random token to access /about APIs
     secret_token = token_urlsafe(nbytes=32)
-    app = setup_webapp()
+    (settings.EXECUTION_ROOT / "login_token").write_text(secret_token)
+    (settings.EXECUTION_ROOT / "login_token").chmod(0o400)
+    app = setup_webapp(pool=pool)
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
-    app["vm_pool"] = pool
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
