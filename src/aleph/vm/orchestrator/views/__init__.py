@@ -184,9 +184,12 @@ async def list_executions_v2(request: web.Request) -> web.Response:
         {
             item_hash: {
                 "networking": {
-                    "ipv4": execution.vm.tap_interface.ip_network,
-                    "ipv6": execution.vm.tap_interface.ipv6_network,
-                },
+                    "ipv4_network": execution.vm.tap_interface.ip_network,
+                    "ipv6_network": execution.vm.tap_interface.ipv6_network,
+                    "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
+                }
+                if execution.vm and execution.vm.tap_interface
+                else {},
                 "status": execution.times,
                 "running": execution.is_controller_running,
             }
