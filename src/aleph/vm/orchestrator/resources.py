@@ -166,7 +166,7 @@ async def about_certificates(request: web.Request):
     """Public endpoint to expose platform certificates for confidential computing."""
 
     if not settings.ENABLE_CONFIDENTIAL_COMPUTING:
-        return web.HTTPBadRequest(reason="Confidential computing setting not enabled on that server")
+        return web.HTTPServiceUnavailable(text="Confidential computing setting not enabled on that server")
 
     sev_client: SevClient = request.app["sev_client"]
 
