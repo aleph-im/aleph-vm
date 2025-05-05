@@ -1,8 +1,8 @@
 """
 The VM Supervisor is in charge of executing code, starting and stopping VMs and provides
-and API to launch these operations.
+an API to launch these operations.
 
-At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
+At its core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
 
@@ -12,7 +12,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from secrets import token_urlsafe
 
-from aiohttp import web
+from aiohttp import hdrs, web
+from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
@@ -73,13 +74,42 @@ async def server_version_middleware(
     return resp
 
 
+@web.middleware
+async def error_middleware(request, handler) -> web.Response:
+    "Ensure we always return a JSON response for errors."
+    try:
+        response = await handler(request)
+        if response.status == 404:
+            message = response.text
+            status = response.status
+            return web.json_response({"error": message}, status=status)
+        if isinstance(response, HTTPException):
+            if response.headers[hdrs.CONTENT_TYPE] != "application/json":
+                message = response.text or response.reason
+                status = response.status
+                return web.json_response(
+                    {"error": message},
+                    status=status,
+                )
+        return response
+    except web.HTTPException as exc:
+        message = exc.text or exc.reason
+        status = exc.status
+        return web.json_response({"error": message}, status=status)
+    except Exception as exc:
+        message = str(exc)
+        status = 500
+        return web.json_response({"error": message, "error_type": str(type(exc))}, status=status)
+    assert False, "unreachable"
+
+
 async def http_not_found(request: web.Request):
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
 
 def setup_webapp():
-    app = web.Application(middlewares=[server_version_middleware])
+    app = web.Application(middlewares=[server_version_middleware, error_middleware])
     cors = setup(
         app,
         defaults={
