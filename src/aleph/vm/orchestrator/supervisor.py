@@ -8,7 +8,6 @@ evolve in the future.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from secrets import token_urlsafe
 
@@ -62,19 +61,6 @@ logger = logging.getLogger(__name__)
 
 
 @web.middleware
-async def server_version_middleware(
-    request: web.Request,
-    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
-) -> web.StreamResponse:
-    """Add the version of Aleph-VM in the HTTP headers of the responses."""
-    resp: web.StreamResponse = await handler(request)
-    resp.headers.update(
-        {"Server": f"aleph-vm/{__version__}"},
-    )
-    return resp
-
-
-@web.middleware
 async def error_middleware(request, handler) -> web.Response:
     "Ensure we always return a JSON response for errors."
     try:
@@ -103,13 +89,19 @@ async def error_middleware(request, handler) -> web.Response:
     assert False, "unreachable"
 
 
+async def on_prepare_server_version(request: web.Request, response: web.Response) -> None:
+    """Add the version of Aleph-VM in the HTTP headers of the responses."""
+    response.headers["Server"] = f"aleph-vm/{__version__}"
+
+
 async def http_not_found(request: web.Request):
     """Return a 404 error for unknown URLs."""
     return web.HTTPNotFound()
 
 
 def setup_webapp():
-    app = web.Application(middlewares=[server_version_middleware, error_middleware])
+    app = web.Application(middlewares=[error_middleware])
+    app.on_response_prepare.append(on_prepare_server_version)
     cors = setup(
         app,
         defaults={
