@@ -100,13 +100,22 @@ EOF
 
 # Install Grub and regenerate grub.cfg
 mount /boot/efi
+
 grub-install --target=x86_64-efi --removable
 grub-install --target=x86_64-efi --recheck
-grub-mkconfig -o /boot/grub/grub.cfg
-umount /boot/efi
 
 # Force Grub config to use a crypt device
-sed -i "s+root=PARTUUID= +cryptdevice=UUID=${OS_PARTITION_UUID}:${MAPPER_NAME} root=${MAPPED_DEVICE_ID} +g" /boot/grub/grub.cfg
+GRUB_ROOT_DEVICE="cryptdevice=UUID=$OS_PARTITION_UUID:$MAPPER_NAME root=$MAPPED_DEVICE_ID"
+
+if grep -q "GRUB_CMDLINE_LINUX" /etc/default/grub
+then
+  sed -i "s+GRUB_CMDLINE_LINUX=\"\([^\"]*\)\"+GRUB_CMDLINE_LINUX=\"\1 $GRUB_ROOT_DEVICE\"+" /etc/default/grub
+else
+  echo "GRUB_CMDLINE_LINUX=$GRUB_ROOT_DEVICE" >> /etc/default/grub
+fi
+
+update-grub
+umount /boot/efi
 
 # Update initramfs after changes to fstab and crypttab
 update-initramfs -u
