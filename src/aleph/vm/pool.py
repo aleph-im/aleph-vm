@@ -405,7 +405,7 @@ class VmPool:
         return expiration_date
 
     def find_resources_available_for_user(self, message: ExecutableContent, user) -> set[GpuDevice]:
-        """Find required resource to run ExecutableContent from reserved resources by user or free resources.
+        """Find the required resource to run ExecutableContent from reserved resources by user or free resources.
 
         Only implement GPU for now"""
         # Calling function should use the creation_lock to avoid resource being stollem
