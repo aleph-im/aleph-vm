@@ -99,17 +99,17 @@ class ExtendedCpuProperties(CpuProperties):
     """CPU properties."""
 
     model: Optional[str] = Field(default=None, description="CPU model")
-    frequency: Optional[str] = Field(default=None, description="CPU frequency")
-    count: Optional[str] = Field(default=None, description="CPU count")
+    frequency: Optional[int] = Field(default=None, description="CPU frequency")
+    count: Optional[int] = Field(default=None, description="CPU count")
 
 
 class MemoryProperties(BaseModel):
     """MEMORY properties."""
 
-    size: Optional[str] = Field(default=None, description="Memory size")
+    size: Optional[int] = Field(default=None, description="Memory size")
     units: Optional[str] = Field(default=None, description="Memory size units")
     type: Optional[str] = Field(default=None, description="Memory type")
-    clock: Optional[str] = Field(default=None, description="Memory clock")
+    clock: Optional[int] = Field(default=None, description="Memory clock")
     clock_units: Optional[str] = Field(default=None, description="Memory clock units")
 
 
@@ -170,8 +170,8 @@ async def get_machine_capability() -> MachineCapability:
             architecture=cpu_info["architecture"],
             vendor=cpu_info["vendor"],
             model=cpu_info["model"],
-            frequency=cpu_info["frequency"],
-            count=cpu_info["count"],
+            frequency=(cpu_info["frequency"]),
+            count=(cpu_info["count"]),
             features=list(
                 filter(
                     None,

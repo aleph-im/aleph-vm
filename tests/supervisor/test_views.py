@@ -1,3 +1,5 @@
+import asyncio
+import os
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -71,6 +73,7 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 @pytest.mark.asyncio
 async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints responds. No auth needed"""
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
@@ -81,7 +84,7 @@ async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     assert resp["cpu"]["count"] > 0
 
 
-FAKE_SYSTEM_INFO = {
+MOCK_SYSTEM_INFO = {
     "cpu": {
         "id": "cpu",
         "class": "processor",
@@ -100,6 +103,7 @@ FAKE_SYSTEM_INFO = {
         "width": 64,
         "configuration": {"cores": "8", "enabledcores": "8", "microcode": "167776681", "threads": "1"},
         "capabilities": {
+            "x86-64": "64bits extensions (x86-64)",
             "fpu": "mathematical co-processor",
             "fpu_exception": "FPU exceptions reporting",
             "wp": True,
@@ -235,7 +239,7 @@ FAKE_SYSTEM_INFO = {
 async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints response value. No auth needed"""
 
-    mocker.patch("aleph.vm.orchestrator.machine.get_hardware_info", FAKE_SYSTEM_INFO)
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -259,7 +263,10 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 @pytest.mark.asyncio
 async def test_system_capability_mock(aiohttp_client, mocker):
     """Test that the capability system endpoints response value. No auth needed"""
-    mocker.patch("aleph.vm.orchestrator.machine.get_hardware_info", FAKE_SYSTEM_INFO)
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_supported", return_value=True)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_es_supported", return_value=True)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_snp_supported", return_value=False)
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -278,12 +285,32 @@ async def test_system_capability_mock(aiohttp_client, mocker):
         "cpu": {
             "architecture": "x86_64",
             "vendor": "AuthenticAMD",
+            "features": ["sev", "sev_es"],
             "model": "AMD EPYC 7763 64-Core Processor",
-            "frequency": "2000000000",
-            "count": "200",
+            "frequency": 2000000000,
+            "count": 200,
         },
-        "memory": {"size": "17179869184", "units": "bytes", "type": "", "clock": None, "clock_units": ""},
+        "memory": {"size": 17179869184, "units": "bytes", "type": "", "clock": None, "clock_units": None},
     }
+
+
+@pytest.mark.asyncio
+async def test_system_capability_real(aiohttp_client, mocker):
+    """Test that the capability system endpoints response value
+    with real system value, no mock so we don't know the definive value but want ot see that it works"""
+    if os.environ.get("GITHUB_JOB"):
+        pytest.xfail("Test fail inside GITHUB CI because of invalid lshw return inside worker")
+
+    app = setup_webapp(pool=None)
+    client = await aiohttp_client(app)
+    response: web.Response = await client.get("/about/capability")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert resp.get("cpu"), resp
+    assert resp["cpu"].get("architecture")
+    assert resp.get("memory")
+    assert resp["memory"].get("size")
 
 
 @pytest.mark.asyncio
@@ -597,6 +624,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
 async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with_pool):
     """Test gpu are properly listed"""
     client = await aiohttp_client(await mock_app_with_pool)
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
