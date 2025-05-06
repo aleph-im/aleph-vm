@@ -1,17 +1,18 @@
 import asyncio
 import json
 import re
+import shutil
 
 import psutil
 
+from aleph.vm.utils import run_in_subprocess
+
 
 async def get_hardware_info():
-    lshw = await asyncio.create_subprocess_shell(
-        "lshw -sanitize -json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-
-    output, _ = await lshw.communicate()
-    data = json.loads(output)
+    lshw_path = shutil.which("lshw")
+    assert lshw_path, "lshw not found in PATH. apt install lshw."
+    lshw_output = await run_in_subprocess([lshw_path, "-sanitize", "-json"])
+    data = json.loads(lshw_output)
 
     hw_info = {"cpu": None, "memory": None}
 
@@ -26,12 +27,13 @@ async def get_hardware_info():
 
 def get_cpu_info(hw):
     cpu_info = hw["cpu"]
-    architecture = cpu_info["width"]
 
     if "x86_64" in cpu_info["capabilities"] or "x86-64" in cpu_info["capabilities"]:
         architecture = "x86_64"
     elif "arm64" in cpu_info["capabilities"] or "arm-64" in cpu_info["capabilities"]:
         architecture = "arm64"
+    else:
+        architecture = None
 
     vendor = cpu_info["vendor"]
     # lshw vendor implementation => https://github.com/lyonel/lshw/blob/15e4ca64647ad119b69be63274e5de2696d3934f/src/core/cpuinfo.cc#L308
