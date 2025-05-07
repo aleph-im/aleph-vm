@@ -97,7 +97,7 @@ async def test_allocation_invalid_auth_token(aiohttp_client):
         headers={"X-Auth-Signature": "notTest"},
     )
     assert response.status == 401
-    assert await response.text() == "Authentication token received is invalid"
+    assert await response.json() == {"error": "Authentication token received is invalid"}
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_allocation_missing_auth_token(aiohttp_client):
         json={"persistent_vms": []},
     )
     assert response.status == 401
-    assert await response.text() == "Authentication token is missing"
+    assert await response.json() == {"error": "Authentication token is missing"}
 
 
 @pytest.mark.asyncio
@@ -147,8 +147,8 @@ async def test_about_certificates_missing_setting(aiohttp_client):
     app["sev_client"] = SevClient(Path().resolve(), Path("/opt/sevctl").resolve())
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/certificates")
-    assert response.status == 400
-    assert await response.text() == "400: Confidential computing setting not enabled on that server"
+    assert response.status == 503
+    assert await response.json() == {"error": "Confidential computing setting not enabled on that server"}
 
 
 @pytest.mark.asyncio

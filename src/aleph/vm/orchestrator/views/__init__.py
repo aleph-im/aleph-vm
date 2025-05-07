@@ -148,6 +148,7 @@ async def about_login(request: web.Request) -> web.Response:
 
 @cors_allow_all
 async def about_executions(request: web.Request) -> web.Response:
+    "/about/executions/details Debugging endpoint with full execution details."
     authenticate_request(request)
     pool: VmPool = request.app["vm_pool"]
     return web.json_response(
@@ -399,7 +400,7 @@ async def update_allocations(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
 
     async with allocation_lock:
-        # First free resources from persistent programs and instances that are not scheduled anymore.
+        # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances
         # Make a copy since the pool is modified
         for execution in list(pool.get_persistent_executions()):
@@ -494,7 +495,7 @@ async def notify_allocation(request: web.Request):
         data = await request.json()
         vm_notification = VMNotification.model_validate(data)
     except JSONDecodeError:
-        return web.HTTPBadRequest(reason="Body is not valid JSON")
+        return web.HTTPBadRequest(text="Body is not valid JSON")
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
@@ -639,7 +640,7 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
         data = await request.json()
         message = InstanceContent.model_validate(data)
     except JSONDecodeError:
-        return web.HTTPBadRequest(reason="Body is not valid JSON")
+        return web.HTTPBadRequest(text="Body is not valid JSON")
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
