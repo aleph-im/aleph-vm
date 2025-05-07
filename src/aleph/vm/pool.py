@@ -51,7 +51,7 @@ class VmPool:
     reservations: dict[Any, Reservation]
     """Resources reserved by an user, before launching (only GPU atm)"""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self):
         self.executions = {}
         self.message_cache = {}
         self.reservations = {}
@@ -201,6 +201,15 @@ class VmPool:
         msg = "No available value for vm_id."
         raise ValueError(msg)
 
+    def get_running_or_starting_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+        """Return a running VM or None. Disables the VM expiration task."""
+        execution = self.executions.get(vm_hash)
+        if execution and execution.is_running and not execution.is_stopping:
+            execution.cancel_expiration()
+            return execution
+        else:
+            return None
+
     def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Return a running VM or None. Disables the VM expiration task."""
         execution = self.executions.get(vm_hash)
@@ -213,20 +222,11 @@ class VmPool:
     async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
-        if execution:
-            if execution.persistent:
-                await self.stop_persistent_execution(execution)
-            else:
-                await execution.stop()
-            return execution
-        else:
+        if not execution:
+            logger.info("stop_vm No execution found for %s", vm_hash)
             return None
-
-    async def stop_persistent_execution(self, execution: VmExecution):
-        """Stop persistent VMs in the pool."""
-        assert execution.persistent, "Execution isn't persistent"
-        self.systemd_manager.stop_and_disable(execution.controller_service)
         await execution.stop()
+        return execution
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
         """Remove a VM from the executions pool.
