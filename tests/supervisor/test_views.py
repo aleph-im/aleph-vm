@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -44,6 +45,7 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 @pytest.mark.asyncio
 async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints responds. No auth needed"""
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
@@ -54,17 +56,162 @@ async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     assert resp["cpu"]["count"] > 0
 
 
+MOCK_SYSTEM_INFO = {
+    "cpu": {
+        "id": "cpu",
+        "class": "processor",
+        "claimed": True,
+        "handle": "DMI:0400",
+        "description": "CPU",
+        "product": "AMD EPYC 7763 64-Core Processor",
+        "vendor": "Advanced Micro Devices [AMD]",
+        "physid": "400",
+        "businfo": "cpu@0",
+        "version": "25.1.1",
+        "slot": "CPU 0",
+        "units": "Hz",
+        "size": 2000000000,
+        "capacity": 2000000000,
+        "width": 64,
+        "configuration": {"cores": "8", "enabledcores": "8", "microcode": "167776681", "threads": "1"},
+        "capabilities": {
+            "x86-64": "64bits extensions (x86-64)",
+            "fpu": "mathematical co-processor",
+            "fpu_exception": "FPU exceptions reporting",
+            "wp": True,
+            "vme": "virtual mode extensions",
+            "de": "debugging extensions",
+            "pse": "page size extensions",
+            "tsc": "time stamp counter",
+            "msr": "model-specific registers",
+            "pae": "4GB+ memory addressing (Physical Address Extension)",
+            "mce": "machine check exceptions",
+            "cx8": "compare and exchange 8-byte",
+            "apic": "on-chip advanced programmable interrupt controller (APIC)",
+            "sep": "fast system calls",
+            "mtrr": "memory type range registers",
+            "pge": "page global enable",
+            "mca": "machine check architecture",
+            "cmov": "conditional move instruction",
+            "pat": "page attribute table",
+            "pse36": "36-bit page size extensions",
+            "clflush": True,
+            "mmx": "multimedia extensions (MMX)",
+            "fxsr": "fast floating point save/restore",
+            "sse": "streaming SIMD extensions (SSE)",
+            "sse2": "streaming SIMD extensions (SSE2)",
+            "ht": "HyperThreading",
+            "syscall": "fast system calls",
+            "nx": "no-execute bit (NX)",
+            "mmxext": "multimedia extensions (MMXExt)",
+            "fxsr_opt": True,
+            "pdpe1gb": True,
+            "rdtscp": True,
+            "rep_good": True,
+            "nopl": True,
+            "cpuid": True,
+            "extd_apicid": True,
+            "tsc_known_freq": True,
+            "pni": True,
+            "pclmulqdq": True,
+            "ssse3": True,
+            "fma": True,
+            "cx16": True,
+            "pcid": True,
+            "sse4_1": True,
+            "sse4_2": True,
+            "x2apic": True,
+            "movbe": True,
+            "popcnt": True,
+            "tsc_deadline_timer": True,
+            "aes": True,
+            "xsave": True,
+            "avx": True,
+            "f16c": True,
+            "rdrand": True,
+            "hypervisor": True,
+            "lahf_lm": True,
+            "cmp_legacy": True,
+            "svm": True,
+            "cr8_legacy": True,
+            "abm": True,
+            "sse4a": True,
+            "misalignsse": True,
+            "3dnowprefetch": True,
+            "osvw": True,
+            "perfctr_core": True,
+            "invpcid_single": True,
+            "ssbd": True,
+            "ibrs": True,
+            "ibpb": True,
+            "stibp": True,
+            "vmmcall": True,
+            "fsgsbase": True,
+            "tsc_adjust": True,
+            "bmi1": True,
+            "avx2": True,
+            "smep": True,
+            "bmi2": True,
+            "erms": True,
+            "invpcid": True,
+            "rdseed": True,
+            "adx": True,
+            "clflushopt": True,
+            "clwb": True,
+            "sha_ni": True,
+            "xsaveopt": True,
+            "xsavec": True,
+            "xgetbv1": True,
+            "xsaves": True,
+            "clzero": True,
+            "xsaveerptr": True,
+            "wbnoinvd": True,
+            "arat": True,
+            "npt": True,
+            "nrip_save": True,
+            "umip": True,
+            "pku": True,
+            "vaes": True,
+            "vpclmulqdq": True,
+            "rdpid": True,
+            "fsrm": True,
+            "arch_capabilities": True,
+        },
+    },
+    "memory": {
+        "id": "memory",
+        "class": "memory",
+        "claimed": True,
+        "handle": "DMI:1000",
+        "description": "System Memory",
+        "physid": "1000",
+        "units": "bytes",
+        "size": 17179869184,
+        "configuration": {"errordetection": "multi-bit-ecc"},
+        "capabilities": {"ecc": "Multi-bit error-correcting code (ECC)"},
+        "children": [
+            {
+                "id": "bank",
+                "class": "memory",
+                "claimed": True,
+                "handle": "DMI:1100",
+                "description": "DIMM RAM",
+                "vendor": "QEMU",
+                "physid": "0",
+                "slot": "DIMM 0",
+                "units": "bytes",
+                "size": 17179869184,
+            }
+        ],
+    },
+}
+
+
 @pytest.mark.asyncio
 async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints response value. No auth needed"""
 
-    mocker.patch(
-        "cpuinfo.cpuinfo.get_cpu_info",
-        {
-            "arch_string_raw": "x86_64",
-            "vendor_id_raw": "AuthenticAMD",
-        },
-    )
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -83,6 +230,59 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     assert resp["properties"]["cpu"]["vendor"] == "AuthenticAMD"
     assert resp["cpu"]["load_average"] == {"load1": 1.0, "load15": 3.0, "load5": 2.0}
     assert resp["cpu"]["count"] == 200
+
+
+@pytest.mark.asyncio
+async def test_system_capability_mock(aiohttp_client, mocker):
+    """Test that the capability system endpoints response value. No auth needed"""
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_supported", return_value=True)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_es_supported", return_value=True)
+    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_snp_supported", return_value=False)
+    mocker.patch(
+        "psutil.getloadavg",
+        lambda: [1, 2, 3],
+    )
+    mocker.patch(
+        "psutil.cpu_count",
+        lambda: 200,
+    )
+    app = setup_webapp()
+    client = await aiohttp_client(app)
+    response: web.Response = await client.get("/about/capability")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert resp == {
+        "cpu": {
+            "architecture": "x86_64",
+            "vendor": "AuthenticAMD",
+            "features": ["sev", "sev_es"],
+            "model": "AMD EPYC 7763 64-Core Processor",
+            "frequency": 2000000000,
+            "count": 200,
+        },
+        "memory": {"size": 17179869184, "units": "bytes", "type": "", "clock": None, "clock_units": None},
+    }
+
+
+@pytest.mark.asyncio
+async def test_system_capability_real(aiohttp_client, mocker):
+    """Test that the capability system endpoints response value
+    with real system value, no mock so we don't know the definive value but want ot see that it works"""
+    if os.environ.get("GITHUB_JOB"):
+        pytest.xfail("Test fail inside GITHUB CI because of invalid lshw return inside worker")
+
+    app = setup_webapp()
+    client = await aiohttp_client(app)
+    response: web.Response = await client.get("/about/capability")
+    assert response.status == 200
+    # check if it is valid json
+    resp = await response.json()
+    assert resp.get("cpu"), resp
+    assert resp["cpu"].get("architecture")
+    assert resp.get("memory")
+    assert resp["memory"].get("size")
 
 
 @pytest.mark.asyncio
@@ -281,6 +481,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
 async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with_pool):
     """Test gpu are properly listed"""
     client = await aiohttp_client(await mock_app_with_pool)
+    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
