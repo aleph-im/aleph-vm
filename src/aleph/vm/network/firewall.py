@@ -35,7 +35,7 @@ def execute_json_nft_commands(commands: list[dict]) -> int:
     logger.debug("Inserting nftables rules")
     return_code, output, error = nft.json_cmd(commands_dict)
     if return_code != 0:
-        logger.error(f"Failed to add nftables rules: {error}")
+        logger.error("Failed to add nftables rules: %s -- %s", error, json.dumps(commands, indent=4))
 
     return return_code
 
