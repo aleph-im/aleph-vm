@@ -1,18 +1,18 @@
 """
 The VM Supervisor is in charge of executing code, starting and stopping VMs and provides
-and API to launch these operations.
+an API to launch these operations.
 
-At it's core, it is currently an asynchronous HTTP server using aiohttp, but this may
+At its core, it is currently an asynchronous HTTP server using aiohttp, but this may
 evolve in the future.
 """
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from secrets import token_urlsafe
 
-from aiohttp import web
+from aiohttp import hdrs, web
+from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
@@ -62,16 +62,37 @@ logger = logging.getLogger(__name__)
 
 
 @web.middleware
-async def server_version_middleware(
-    request: web.Request,
-    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
-) -> web.StreamResponse:
+async def error_middleware(request, handler) -> web.Response:
+    "Ensure we always return a JSON response for errors."
+    try:
+        response = await handler(request)
+        if response.status == 404:
+            message = response.text
+            status = response.status
+            return web.json_response({"error": message}, status=status)
+        if isinstance(response, HTTPException):
+            if response.headers[hdrs.CONTENT_TYPE] != "application/json":
+                message = response.text or response.reason
+                status = response.status
+                return web.json_response(
+                    {"error": message},
+                    status=status,
+                )
+        return response
+    except web.HTTPException as exc:
+        message = exc.text or exc.reason
+        status = exc.status
+        return web.json_response({"error": message}, status=status)
+    except Exception as exc:
+        message = str(exc)
+        status = 500
+        return web.json_response({"error": message, "error_type": str(type(exc))}, status=status)
+    assert False, "unreachable"
+
+
+async def on_prepare_server_version(request: web.Request, response: web.Response) -> None:
     """Add the version of Aleph-VM in the HTTP headers of the responses."""
-    resp: web.StreamResponse = await handler(request)
-    resp.headers.update(
-        {"Server": f"aleph-vm/{__version__}"},
-    )
-    return resp
+    response.headers["Server"] = f"aleph-vm/{__version__}"
 
 
 async def http_not_found(request: web.Request):  # noqa: ARG001
@@ -84,8 +105,9 @@ def setup_webapp(pool: VmPool | None):
 
     Only case where VmPool is None is in some tests that won't use it.
     """
-    app = web.Application(middlewares=[server_version_middleware])
+    app = web.Application(middlewares=[error_middleware])
     app["vm_pool"] = pool
+    app.on_response_prepare.append(on_prepare_server_version)
     cors = setup(
         app,
         defaults={

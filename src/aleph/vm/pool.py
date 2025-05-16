@@ -102,13 +102,13 @@ class VmPool:
             #  upon supervisor restart or upgrade.
             pass
 
-    def calculate_available_disk(self):
+    def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
 
-        This take into account the disk request (but not used) for Volume of executions in the pool
+        This takes into account the disk request (but not used) for Volume of executions in the pool
         Result in bytes."""
         free_space = shutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free
-        # Free disk space reported by system
+        # Free disk space reported by the system
 
         # Calculate the reservation
         total_delta = 0
@@ -118,12 +118,15 @@ class VmPool:
             delta = execution.resources.get_disk_usage_delta()
             logger.debug("Disk usage delta: %d for %s", delta, execution.vm_hash)
             total_delta += delta
-        available_space = free_space - total_delta
+        available_space = free_space + total_delta
+
         logger.info(
             "Disk: freespace : %.f Mb,   available space (non reserved) %.f Mb",
             free_space / 1024**2,
             available_space / 1024**2,
         )
+        available_space = max(available_space, 0)
+        # floor value to zero to avoid negative values
         return available_space
 
     async def create_a_vm(
