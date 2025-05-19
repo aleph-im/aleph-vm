@@ -98,19 +98,19 @@ class MachineUsage(BaseModel):
 class ExtendedCpuProperties(CpuProperties):
     """CPU properties."""
 
-    model: Optional[str] = Field(default=None, description="CPU model")
-    frequency: Optional[int] = Field(default=None, description="CPU frequency")
-    count: Optional[int] = Field(default=None, description="CPU count")
+    model: str | None = Field(default=None, description="CPU model")
+    frequency: int | None = Field(default=None, description="CPU frequency")
+    count: int | None = Field(default=None, description="CPU count")
 
 
 class MemoryProperties(BaseModel):
     """MEMORY properties."""
 
-    size: Optional[int] = Field(default=None, description="Memory size")
-    units: Optional[str] = Field(default=None, description="Memory size units")
-    type: Optional[str] = Field(default=None, description="Memory type")
-    clock: Optional[int] = Field(default=None, description="Memory clock")
-    clock_units: Optional[str] = Field(default=None, description="Memory clock units")
+    size: int | None = Field(default=None, description="Memory size")
+    units: str | None = Field(default=None, description="Memory size units")
+    type: str | None = Field(default=None, description="Memory type")
+    clock: int | None = Field(default=None, description="Memory clock")
+    clock_units: str | None = Field(default=None, description="Memory clock units")
 
 
 class MachineCapability(BaseModel):
