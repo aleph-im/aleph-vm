@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -252,3 +253,17 @@ def file_hashes_differ(source: Path, destination: Path, checksum: Callable[[Path
         return True
 
     return checksum(source) != checksum(destination)
+
+
+def async_cache(fn):
+    """Simple async function cache decorator."""
+    cache = {}
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        key = (args, frozenset(kwargs.items()))
+        if key not in cache:
+            cache[key] = await fn(*args, **kwargs)
+        return cache[key]
+
+    return wrapper

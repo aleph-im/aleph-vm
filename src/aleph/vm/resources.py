@@ -28,7 +28,7 @@ class GpuDevice(HashableModel):
     """GPU properties."""
 
     vendor: str = Field(description="GPU vendor name")
-    model: Optional[str] = Field(description="GPU model name on Aleph Network", default=None)
+    model: str | None = Field(description="GPU model name on Aleph Network", default=None)
     device_name: str = Field(description="GPU vendor card name")
     device_class: GpuDeviceClass = Field(
         description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"

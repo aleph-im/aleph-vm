@@ -1,8 +1,7 @@
 import math
 from datetime import datetime, timezone
-from functools import lru_cache
+from typing import Optional
 
-import cpuinfo
 import psutil
 from aiohttp import web
 from aleph_message.models import ItemHash
@@ -10,10 +9,16 @@ from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.machine import (
+    get_cpu_info,
+    get_hardware_info,
+    get_memory_info,
+)
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (
+    async_cache,
     check_amd_sev_es_supported,
     check_amd_sev_snp_supported,
     check_amd_sev_supported,
@@ -90,6 +95,29 @@ class MachineUsage(BaseModel):
     active: bool = True
 
 
+class ExtendedCpuProperties(CpuProperties):
+    """CPU properties."""
+
+    model: str | None = Field(default=None, description="CPU model")
+    frequency: int | None = Field(default=None, description="CPU frequency")
+    count: int | None = Field(default=None, description="CPU count")
+
+
+class MemoryProperties(BaseModel):
+    """MEMORY properties."""
+
+    size: int | None = Field(default=None, description="Memory size")
+    units: str | None = Field(default=None, description="Memory size units")
+    type: str | None = Field(default=None, description="Memory type")
+    clock: int | None = Field(default=None, description="Memory clock")
+    clock_units: str | None = Field(default=None, description="Memory clock units")
+
+
+class MachineCapability(BaseModel):
+    cpu: ExtendedCpuProperties
+    memory: MemoryProperties
+
+
 def get_machine_gpus(request: web.Request) -> GpuProperties:
     pool: VmPool = request.app["vm_pool"]
     gpus = pool.gpus
@@ -101,19 +129,22 @@ def get_machine_gpus(request: web.Request) -> GpuProperties:
     )
 
 
-@lru_cache
-def get_machine_properties() -> MachineProperties:
+machine_properties_cached = None
+
+
+@async_cache
+async def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
     These should not change while the supervisor is running.
 
     In the future, some properties may have to be fetched from within a VM.
     """
-    cpu_info = cpuinfo.get_cpu_info()  # Slow
-
+    hw = await get_hardware_info()
+    cpu_info = get_cpu_info(hw)
     return MachineProperties(
         cpu=CpuProperties(
-            architecture=cpu_info.get("raw_arch_string", cpu_info.get("arch_string_raw")),
-            vendor=cpu_info.get("vendor_id", cpu_info.get("vendor_id_raw")),
+            architecture=cpu_info["architecture"],
+            vendor=cpu_info["vendor"],
             features=list(
                 filter(
                     None,
@@ -128,6 +159,39 @@ def get_machine_properties() -> MachineProperties:
     )
 
 
+@async_cache
+async def get_machine_capability() -> MachineCapability:
+    hw = await get_hardware_info()
+    cpu_info = get_cpu_info(hw)
+    mem_info = get_memory_info(hw)
+
+    return MachineCapability(
+        cpu=ExtendedCpuProperties(
+            architecture=cpu_info["architecture"],
+            vendor=cpu_info["vendor"],
+            model=cpu_info["model"],
+            frequency=(cpu_info["frequency"]),
+            count=(cpu_info["count"]),
+            features=list(
+                filter(
+                    None,
+                    (
+                        "sev" if check_amd_sev_supported() else None,
+                        "sev_es" if check_amd_sev_es_supported() else None,
+                        "sev_snp" if check_amd_sev_snp_supported() else None,
+                    ),
+                )
+            ),
+        ),
+        memory=MemoryProperties(
+            size=mem_info["size"],
+            units=mem_info["units"],
+            type=mem_info["type"],
+            clock=mem_info["clock"],
+        ),
+    )
+
+
 @cors_allow_all
 async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
@@ -135,6 +199,7 @@ async def about_system_usage(request: web.Request):
     machine_properties = get_machine_properties()
     pool = request.app["vm_pool"]
 
+    machine_properties = await get_machine_properties()
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
             count=psutil.cpu_count(),
@@ -171,6 +236,13 @@ async def about_certificates(request: web.Request):
     sev_client: SevClient = request.app["sev_client"]
 
     return web.FileResponse(await sev_client.get_certificates())
+
+
+async def about_capability(_: web.Request):
+    """Public endpoint to expose information about the CRN capability."""
+
+    capability: MachineCapability = await get_machine_capability()
+    return web.json_response(text=capability.json(exclude_none=False))
 
 
 class Allocation(BaseModel):
