@@ -187,6 +187,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                     "ipv4_network": execution.vm.tap_interface.ip_network,
                     "ipv6_network": execution.vm.tap_interface.ipv6_network,
                     "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
+                    "mapped_ports": execution.mapped_ports,
                 }
                 if execution.vm and execution.vm.tap_interface
                 else {},
