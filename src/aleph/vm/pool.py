@@ -11,7 +11,6 @@ from typing import Any, cast
 from aleph_message.models import (
     Chain,
     ExecutableMessage,
-    InstanceContent,
     ItemHash,
     Payment,
     PaymentType,
@@ -31,6 +30,36 @@ from aleph.vm.vm_type import VmType
 from .models import ExecutableContent, VmExecution
 
 logger = logging.getLogger(__name__)
+
+
+async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
+    """
+    Get the settings Aggregate dict from the PyAleph API Aggregate.
+
+    API Endpoint:
+        GET /api/v0/aggregates/{address}.json?keys=settings
+
+    For more details, see the PyAleph API documentation:
+    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
+    """
+
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
+        logger.info(f"Fetching aggregate from {url}")
+        resp = await session.get(url, params={"keys": ",".join(keys_arg)})
+
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
+        resp_data = await resp.json()
+        return resp_data["data"] or {}
+
+
+async def get_user_settings(addr: str, key) -> dict:
+    aggregate = await get_user_aggregate(addr, [key])
+    return aggregate.get(key, {})
 
 
 class VmPool:
@@ -168,11 +197,24 @@ class VmPool:
                     if self.network.interface_exists(vm_id):
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
+
                 else:
                     tap_interface = None
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start()
+                try:
+                    port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
+                    port_requests = port_forwarding_settings.get(execution.vm_hash)
+                except Exception as e:
+                    logger.exception(e)
+
+                ports_requests = {
+                    22: {"tcp": True, "udp": False},
+                }
+                execution.map_requested_ports(ports_requests)
+                # port = get_available_host_port(start_port=25000)
+                # add_port_redirect_rule(vm_id, interface, port, 22)
 
                 # clear the user reservations
                 for resource in resources:
