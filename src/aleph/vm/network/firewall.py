@@ -376,6 +376,110 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
     return execute_json_nft_commands(command)
 
 
+def add_port_redirect_rule(
+    vm_id: int, interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp"
+) -> int:
+    """Creates a rule to redirect traffic from a host port to a VM port.
+
+    Args:
+        vm_id: The ID of the VM
+        interface: The TapInterface instance for the VM
+        host_port: The port number on the host to listen on
+        vm_port: The port number to forward to on the VM
+        protocol: The protocol to use (tcp or udp, defaults to tcp)
+
+    Returns:
+        The exit code from executing the nftables commands
+    """
+    table = get_table_for_hook("prerouting")
+
+    # FIXME DO NOT HARDCODE
+    prerouting_command = [
+        {
+            "add": {
+                "chain": {
+                    "family": "ip",
+                    "table": "nat",
+                    "name": "prerouting",
+                    "type": "nat",
+                    "hook": "prerouting",
+                    "prio": -100,
+                    "policy": "accept",
+                }
+            }
+        }
+    ]
+
+    commands = prerouting_command + [
+        {
+            "add": {
+                "rule": {
+                    "family": "ip",
+                    "table": "nat",
+                    # "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
+                    "chain": "prerouting",
+                    "expr": [
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"meta": {"key": "iifname"}},
+                                "right": settings.NETWORK_INTERFACE,
+                            }
+                        },
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                "right": host_port,
+                            }
+                        },
+                        {
+                            "dnat": {"addr": str(interface.guest_ip.ip), "port": vm_port},
+                        },
+                    ],
+                }
+            }
+        },
+    ]
+    # Add corresponding forward rule to allow the redirected traffic
+    #     {
+    #         "add": {
+    #             "rule": {
+    #                 "family": "ip",
+    #                 "table": table,
+    #                 "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+    #                 "expr": [
+    #                     {
+    #                         "match": {
+    #                             "op": "==",
+    #                             "left": {"meta": {"key": "iifname"}},
+    #                             "right": settings.NETWORK_INTERFACE,
+    #                         }
+    #                     },
+    #                     {
+    #                         "match": {
+    #                             "op": "==",
+    #                             "left": {"meta": {"key": "l4proto"}},
+    #                             "right": protocol,
+    #                         }
+    #                     },
+    #                     {
+    #                         "match": {
+    #                             "op": "==",
+    #                             "left": {"payload": {"protocol": protocol, "field": "dport"}},
+    #                             "right": vm_port,
+    #                         }
+    #                     },
+    #                     {"accept": None},
+    #                 ],
+    #             }
+    #         }
+    #     },
+    # ]
+
+    return execute_json_nft_commands(commands)
+
+
 def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
     """Sets up chains for filter and nat purposes specific to this VM, and makes sure those chains are jumped to"""
     add_postrouting_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
