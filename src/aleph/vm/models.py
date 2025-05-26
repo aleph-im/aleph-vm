@@ -30,7 +30,9 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
+from aleph.vm.network.firewall import add_port_redirect_rule
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.network.port_availability_checker import get_available_host_port
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_record,
@@ -92,6 +94,25 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
+    mapped_ports: list[tuple[int, int]] | None = None  # internal, external
+
+    def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
+        if self.mapped_ports is None:
+            self.mapped_ports = []
+        assert self.vm
+        for requested_port, protocol_detail in requested_ports.items():
+            tcp = protocol_detail["tcp"]
+            udp = protocol_detail["udp"]
+            host_port = get_available_host_port(start_port=25000)
+            interface = self.vm.tap_interface
+            vm_id = self.vm.vm_id
+            if tcp:
+                protocol = "tcp"
+                add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
+            if udp:
+                protocol = "udp"
+                add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
+            self.mapped_ports.append((host_port, requested_port))
 
     @property
     def is_starting(self) -> bool:
