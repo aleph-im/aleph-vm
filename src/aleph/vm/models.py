@@ -371,7 +371,8 @@ class VmExecution:
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
-
+            else:
+                self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             await self.save()
         except Exception:
