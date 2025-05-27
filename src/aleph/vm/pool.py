@@ -6,7 +6,7 @@ import logging
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any
 
 from aleph_message.models import (
     Chain,
@@ -49,8 +49,13 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
         url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
         logger.info(f"Fetching aggregate from {url}")
         resp = await session.get(url, params={"keys": ",".join(keys_arg)})
+        # No aggregate for the user
+        if resp.status == 404:
 
+            return {}
         # Raise an error if the request failed
+
+
         resp.raise_for_status()
 
         resp_data = await resp.json()
