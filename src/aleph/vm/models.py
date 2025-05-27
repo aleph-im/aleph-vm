@@ -95,6 +95,7 @@ class VmExecution:
 
     persistent: bool = False
     mapped_ports: list[tuple[int, int]] | None = None  # internal, external
+    record: ExecutionRecord | None = None
 
     def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
         if self.mapped_ports is None:
@@ -519,57 +520,38 @@ class VmExecution:
         """Save to DB"""
         assert self.vm, "The VM attribute has to be set before calling save()"
 
-        pid_info = self.vm.to_dict() if self.vm else None
-        # Handle cases when the process cannot be accessed
-        if not self.persistent and pid_info and pid_info.get("process"):
-            await save_record(
-                ExecutionRecord(
-                    uuid=str(self.uuid),
-                    vm_hash=self.vm_hash,
-                    vm_id=self.vm_id,
-                    time_defined=self.times.defined_at,
-                    time_prepared=self.times.prepared_at,
-                    time_started=self.times.started_at,
-                    time_stopping=self.times.stopping_at,
-                    cpu_time_user=pid_info["process"]["cpu_times"].user,
-                    cpu_time_system=pid_info["process"]["cpu_times"].system,
-                    io_read_count=pid_info["process"]["io_counters"][0],
-                    io_write_count=pid_info["process"]["io_counters"][1],
-                    io_read_bytes=pid_info["process"]["io_counters"][2],
-                    io_write_bytes=pid_info["process"]["io_counters"][3],
-                    vcpus=self.vm.hardware_resources.vcpus,
-                    memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
-                    message=self.message.model_dump_json(),
-                    original_message=self.original.model_dump_json(),
-                    persistent=self.persistent,
-                )
+        if not self.record:
+            self.record =  ExecutionRecord(
+                uuid=str(self.uuid),
+                vm_hash=self.vm_hash,
+                vm_id=self.vm_id,
+                time_defined=self.times.defined_at,
+                time_prepared=self.times.prepared_at,
+                time_started=self.times.started_at,
+                time_stopping=self.times.stopping_at,
+                cpu_time_user=None,
+                cpu_time_system=None,
+                io_read_count=None,
+                io_write_count=None,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                vcpus=self.vm.hardware_resources.vcpus,
+                memory=self.vm.hardware_resources.memory,
+                message=self.message.model_dump_json(),
+                original_message=self.original.model_dump_json(),
+                persistent=self.persistent,
+                gpus=json.dumps(self.gpus, default=pydantic_encoder),
             )
-        else:
-            # The process cannot be accessed, or it's a persistent VM.
-            await save_record(
-                ExecutionRecord(
-                    uuid=str(self.uuid),
-                    vm_hash=self.vm_hash,
-                    vm_id=self.vm_id,
-                    time_defined=self.times.defined_at,
-                    time_prepared=self.times.prepared_at,
-                    time_started=self.times.started_at,
-                    time_stopping=self.times.stopping_at,
-                    cpu_time_user=None,
-                    cpu_time_system=None,
-                    io_read_count=None,
-                    io_write_count=None,
-                    io_read_bytes=None,
-                    io_write_bytes=None,
-                    vcpus=self.vm.hardware_resources.vcpus,
-                    memory=self.vm.hardware_resources.memory,
-                    message=self.message.model_dump_json(),
-                    original_message=self.original.model_dump_json(),
-                    persistent=self.persistent,
-                    gpus=json.dumps(self.gpus, default=pydantic_encoder),
-                )
-            )
+            pid_info = self.vm.to_dict() if self.vm else None
+            # Handle cases when the process cannot be accessed
+            if not self.persistent and pid_info and pid_info.get("process"):
+                self.record.cpu_time_user = pid_info["process"]["cpu_times"].user
+                self.record.cpu_time_system = pid_info["process"]["cpu_times"].system
+                self.record.io_read_count = pid_info["process"]["io_counters"][0]
+                self.record.io_write_count = pid_info["process"]["io_counters"][1]
+                self.record.io_read_bytes = pid_info["process"]["io_counters"][2]
+                self.record.io_write_bytes = pid_info["process"]["io_counters"][3]
+        await save_record(self.record)
 
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
