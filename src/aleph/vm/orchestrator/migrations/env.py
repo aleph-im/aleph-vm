@@ -1,7 +1,7 @@
 from alembic import context
 from sqlalchemy import create_engine
 
-from aleph.vm.conf import make_db_url
+from aleph.vm.conf import make_sync_db_url
 
 # Auto-generate migrations
 from aleph.vm.orchestrator.metrics import Base
@@ -36,7 +36,8 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = make_db_url()
+    url = make_sync_db_url()
+
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -55,7 +56,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = create_engine(make_db_url())
+    connectable = create_engine(make_sync_db_url())
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
 

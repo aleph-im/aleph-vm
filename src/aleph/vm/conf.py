@@ -529,5 +529,9 @@ def make_db_url():
     return f"sqlite+aiosqlite:///{settings.EXECUTION_DATABASE}"
 
 
+def make_sync_db_url():
+    return f"sqlite:///{settings.EXECUTION_DATABASE}"
+
+
 # Settings singleton
 settings = Settings()
