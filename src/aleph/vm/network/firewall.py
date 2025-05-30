@@ -522,3 +522,47 @@ def teardown_nftables_for_vm(vm_id: int) -> None:
     """Remove all nftables rules related to the specified VM"""
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
+
+
+def check_nftables_redirections(port: int) -> bool:
+    """Check if there are any NAT rules redirecting to the given port.
+
+    Args:
+        port: The port number to check
+
+    Returns:
+        True if the port is being used in any NAT redirection rules
+    """
+    try:
+        rules = get_existing_nftables_ruleset()
+        # Navigate through the JSON structure
+        nftables = rules.get("nftables", [])
+
+        for item in nftables:
+            if "rule" not in item:
+                continue
+
+            rule = item["rule"]
+            if "expr" not in rule:
+                continue
+
+            for expr in rule["expr"]:
+                # Check destination port in matches
+                if "match" in expr:
+                    match = expr["match"]
+                    if "left" in match and "payload" in match["left"]:
+                        payload = match["left"]["payload"]
+                        if payload.get("field") == "dport" and match.get("right") == port:
+                            return True
+
+                # Check port in dnat rules
+                if "dnat" in expr:
+                    dnat = expr["dnat"]
+                    if dnat.get("port") == port:
+                        return True
+
+        return False
+
+    except Exception as e:
+        logger.warning(f"Error checking NAT redirections: {e}")
+        return False  # Assume no redirections in case of error

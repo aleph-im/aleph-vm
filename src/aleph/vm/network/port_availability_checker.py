@@ -1,6 +1,8 @@
 import socket
 from typing import Optional
 
+from aleph.vm.network.firewall import check_nftables_redirections
+
 MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
 
@@ -17,10 +19,13 @@ def get_available_host_port(start_port: Optional[int] = None) -> int:
     Raises:
         RuntimeError: If no ports are available in the valid range
     """
-    port = start_port if start_port and start_port >= MIN_DYNAMIC_PORT else MIN_DYNAMIC_PORT
-
-    while port <= MAX_PORT:
+    start_port = start_port if start_port and start_port >= MIN_DYNAMIC_PORT else MIN_DYNAMIC_PORT
+    for port in range(start_port, MAX_PORT):
         try:
+            print(port)
+            # check if there is already a redirect to that port
+            if check_nftables_redirections(port):
+                continue
             # Try both TCP and UDP on all interfaces
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -35,7 +40,5 @@ def get_available_host_port(start_port: Optional[int] = None) -> int:
 
         except (socket.error, OSError):
             pass
-
-        port += 1
 
     raise RuntimeError(f"No available ports found in range {MIN_DYNAMIC_PORT}-{MAX_PORT}")
