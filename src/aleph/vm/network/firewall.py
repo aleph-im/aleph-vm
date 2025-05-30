@@ -21,7 +21,7 @@ def get_customized_nftables() -> Nftables:
     return nft
 
 
-def execute_json_nft_commands(commands: list[dict]) -> int:
+def execute_json_nft_commands(commands: list[dict]) -> dict:
     """Executes a list of nftables commands, and returns the exit status"""
     nft = get_customized_nftables()
     commands_dict = {"nftables": commands}
@@ -197,7 +197,7 @@ def teardown_nftables() -> None:
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter")
 
 
-def add_chain(family: str, table: str, name: str) -> int:
+def add_chain(family: str, table: str, name: str) -> dict:
     """Helper function to quickly create a new chain in the nftables ruleset
     Returns the exit code from executing the nftables commands"""
     commands = [_make_add_chain_command(family, table, name)]
@@ -216,7 +216,7 @@ def _make_add_chain_command(family: str, table: str, name: str) -> dict:
     }
 
 
-def remove_chain(name: str) -> int:
+def remove_chain(name: str) -> dict:
     """Removes all rules that jump to the chain, and then removes the chain itself.
     Returns the exit code from executing the nftables commands"""
     nft_ruleset = get_existing_nftables_ruleset()
@@ -260,7 +260,7 @@ def remove_chain(name: str) -> int:
     return execute_json_nft_commands(commands)
 
 
-def add_postrouting_chain(name: str) -> int:
+def add_postrouting_chain(name: str) -> dict:
     """Adds a chain and creates a rule from the base chain with the postrouting hook.
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("postrouting")
@@ -280,7 +280,7 @@ def add_postrouting_chain(name: str) -> int:
     return execute_json_nft_commands(command)
 
 
-def add_forward_chain(name: str) -> int:
+def add_forward_chain(name: str) -> dict:
     """Adds a chain and creates a rule from the base chain with the forward hook.
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward")
@@ -300,7 +300,7 @@ def add_forward_chain(name: str) -> int:
     return execute_json_nft_commands(command)
 
 
-def add_masquerading_rule(vm_id: int, interface: TapInterface) -> int:
+def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic to be masqueraded (NAT)
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("postrouting")
@@ -336,7 +336,7 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> int:
     return execute_json_nft_commands(command)
 
 
-def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
+def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward")
@@ -372,7 +372,7 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
     return execute_json_nft_commands(command)
 
 
-def add_prerouting_chain() -> int:
+def add_prerouting_chain() -> dict:
     """Creates the prerouting chain if it doesn't exist already.
 
     Returns:
@@ -401,7 +401,7 @@ def add_prerouting_chain() -> int:
     return execute_json_nft_commands(commands)
 
 
-def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> int:
+def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> dict:
     """Creates a rule to redirect traffic from a host port to a VM port.
 
     Args:
@@ -414,7 +414,6 @@ def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int
     Returns:
         The exit code from executing the nftables commands
     """
-    # table = get_table_for_hook("prerouting")
     add_prerouting_chain()
     commands = [
         {
@@ -450,7 +449,7 @@ def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int
     return execute_json_nft_commands(commands)
 
 
-def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> int:
+def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> dict:
     """Removes a rule that redirects traffic from a host port to a VM port.
 
     Args:
