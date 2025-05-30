@@ -209,11 +209,13 @@ class VmPool:
                 try:
                     port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
                     ports_requests = port_forwarding_settings.get(execution.vm_hash)
+                    ports_requests = {22: {"tcp": True, "udp": False}}
+
                 except Exception as e:
                     ports_requests = {}
                     logger.exception(e)
-
-                await execution.map_requested_ports(ports_requests)
+                ports_requests = ports_requests or {}
+                await execution.update_port_redirects(ports_requests)
 
                 # clear the user reservations
                 for resource in resources:
@@ -221,7 +223,7 @@ class VmPool:
                         del self.reservations[resource]
             except Exception:
                 # ensure the VM is removed from the pool on creation error
-                await execution.removed_ports_redirection()
+                await execution.removed_all_ports_redirection()
                 self.forget_vm(vm_hash)
 
 
