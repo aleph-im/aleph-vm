@@ -380,7 +380,7 @@ def add_prerouting_chain() -> dict:
     # Check if prerouting chain exists by looking for chains with prerouting hook
     existing_chains = get_base_chains_for_hook("prerouting", "ip")
     if existing_chains:
-        return 0  # Chain already exists, nothing to do
+        return {}  # Chain already exists, nothing to do
 
     commands = [
         {
