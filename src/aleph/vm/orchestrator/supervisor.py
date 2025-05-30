@@ -36,6 +36,7 @@ from .views import (
     list_executions_v2,
     notify_allocation,
     operate_reserve_resources,
+    operate_update,
     run_code_from_hostname,
     run_code_from_path,
     status_check_fastapi,
@@ -134,6 +135,7 @@ def setup_webapp(pool: VmPool | None):
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocation/notify", notify_allocation),
         web.post("/control/reserve_resources", operate_reserve_resources),
+        web.post("/control/machine/{ref}/update", operate_update),
         web.get("/control/machine/{ref}/stream_logs", stream_logs),
         web.get("/control/machine/{ref}/logs", operate_logs_json),
         web.post("/control/machine/{ref}/expire", operate_expire),

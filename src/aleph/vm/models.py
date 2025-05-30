@@ -44,6 +44,7 @@ from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json, is_pinging
+from aleph.vm.utils.aggregate import get_user_settings
 
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 
@@ -99,8 +100,24 @@ class VmExecution:
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
+    async def fetch_port_redirect_config_and_setup(self):
+        message = self.message
+        try:
+            port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
+            ports_requests = port_forwarding_settings.get(self.vm_hash)
+
+        except Exception:
+            ports_requests = {}
+            logger.exception("Could not fetch the port redirect settings for user")
+        if not ports_requests:
+            # FIXME DEBUG FOR NOW
+            ports_requests = {22: {"tcp": True, "udp": False}}
+        ports_requests = ports_requests or {}
+        await self.update_port_redirects(ports_requests)
+
     async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):
         assert self.vm
+        logger.info("Updating port redirect. Current %s, New %s", self.mapped_ports, requested_ports)
         redirect_to_remove = set(self.mapped_ports.keys()) - set(requested_ports.keys())
         redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
         redirect_to_check = set(requested_ports.keys()).intersection(set(self.mapped_ports.keys()))
@@ -108,7 +125,6 @@ class VmExecution:
 
         for vm_port in redirect_to_remove:
             current = self.mapped_ports[vm_port]
-
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if current[protocol]:
                     host_port = current["host"]
