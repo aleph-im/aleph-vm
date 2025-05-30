@@ -22,7 +22,6 @@ def get_available_host_port(start_port: Optional[int] = None) -> int:
     start_port = start_port if start_port and start_port >= MIN_DYNAMIC_PORT else MIN_DYNAMIC_PORT
     for port in range(start_port, MAX_PORT):
         try:
-            print(port)
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
                 continue
