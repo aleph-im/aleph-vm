@@ -5,8 +5,7 @@ from functools import lru_cache
 from nftables import Nftables
 
 from aleph.vm.conf import settings
-
-from .interfaces import TapInterface
+from aleph.vm.network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +36,16 @@ def execute_json_nft_commands(commands: list[dict]) -> int:
     if return_code != 0:
         logger.error("Failed to add nftables rules: %s -- %s", error, json.dumps(commands, indent=4))
 
-    return return_code
+    return output
 
 
 def get_existing_nftables_ruleset() -> dict:
     """Retrieves the full nftables ruleset and returns it"""
     nft = get_customized_nftables()
-    return_code, output, error = nft.cmd("list ruleset")
+    # List all NAT rules
+    commands = [{"list": {"ruleset": {"family": "ip", "table": "nat"}}}]
 
-    if return_code != 0:
-        logger.error(f"Unable to get nftables ruleset: {error}")
-        return {"nftables": []}
-
-    nft_ruleset = json.loads(output)
+    nft_ruleset = execute_json_nft_commands(commands)
     return nft_ruleset
 
 
@@ -376,6 +372,35 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> int:
     return execute_json_nft_commands(command)
 
 
+def add_prerouting_chain() -> int:
+    """Creates the prerouting chain if it doesn't exist already.
+
+    Returns:
+        int: The exit code from executing the nftables commands
+    """
+    # Check if prerouting chain exists by looking for chains with prerouting hook
+    existing_chains = get_base_chains_for_hook("prerouting", "ip")
+    if existing_chains:
+        return 0  # Chain already exists, nothing to do
+
+    commands = [
+        {
+            "add": {
+                "chain": {
+                    "family": "ip",
+                    "table": "nat",
+                    "name": "prerouting",
+                    "type": "nat",
+                    "hook": "prerouting",
+                    "prio": -100,
+                    "policy": "accept",
+                }
+            }
+        }
+    ]
+    return execute_json_nft_commands(commands)
+
+
 def add_port_redirect_rule(
     vm_id: int, interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp"
 ) -> int:
@@ -391,32 +416,14 @@ def add_port_redirect_rule(
     Returns:
         The exit code from executing the nftables commands
     """
-    table = get_table_for_hook("prerouting")
-
-    # FIXME DO NOT HARDCODE
-    prerouting_command = [
-        {
-            "add": {
-                "chain": {
-                    "family": "ip",
-                    "table": "nat",
-                    "name": "prerouting",
-                    "type": "nat",
-                    "hook": "prerouting",
-                    "prio": -100,
-                    "policy": "accept",
-                }
-            }
-        }
-    ]
-
-    commands = prerouting_command + [
+    # table = get_table_for_hook("prerouting")
+    add_prerouting_chain()
+    commands = [
         {
             "add": {
                 "rule": {
                     "family": "ip",
                     "table": "nat",
-                    # "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
                     "chain": "prerouting",
                     "expr": [
                         {
@@ -441,41 +448,64 @@ def add_port_redirect_rule(
             }
         },
     ]
-    # Add corresponding forward rule to allow the redirected traffic
-    #     {
-    #         "add": {
-    #             "rule": {
-    #                 "family": "ip",
-    #                 "table": table,
-    #                 "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
-    #                 "expr": [
-    #                     {
-    #                         "match": {
-    #                             "op": "==",
-    #                             "left": {"meta": {"key": "iifname"}},
-    #                             "right": settings.NETWORK_INTERFACE,
-    #                         }
-    #                     },
-    #                     {
-    #                         "match": {
-    #                             "op": "==",
-    #                             "left": {"meta": {"key": "l4proto"}},
-    #                             "right": protocol,
-    #                         }
-    #                     },
-    #                     {
-    #                         "match": {
-    #                             "op": "==",
-    #                             "left": {"payload": {"protocol": protocol, "field": "dport"}},
-    #                             "right": vm_port,
-    #                         }
-    #                     },
-    #                     {"accept": None},
-    #                 ],
-    #             }
-    #         }
-    #     },
-    # ]
+
+    return execute_json_nft_commands(commands)
+
+
+def remove_port_redirect_rule(
+    vm_id: int, interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp"
+) -> int:
+    """Removes a rule that redirects traffic from a host port to a VM port.
+
+    Args:
+        vm_id: The ID of the VM
+        interface: The TapInterface instance for the VM
+        host_port: The port number on the host that was being listened on
+        vm_port: The port number that was being forwarded to on the VM
+        protocol: The protocol that was used (tcp or udp)
+
+    Returns:
+        The exit code from executing the nftables commands
+    """
+    nft_ruleset = get_existing_nftables_ruleset()
+    commands = []
+
+    for entry in nft_ruleset["nftables"]:
+        if (
+            isinstance(entry, dict)
+            and "rule" in entry
+            and entry["rule"].get("family") == "ip"
+            and entry["rule"].get("table") == "nat"
+            and entry["rule"].get("chain") == "prerouting"
+            and "expr" in entry["rule"]
+        ):
+            expr = entry["rule"]["expr"]
+            # Check if this is our redirect rule by matching all conditions
+            if (
+                len(expr) == 3
+                and "match" in expr[0]
+                and expr[0]["match"]["left"].get("meta", {}).get("key") == "iifname"
+                and expr[0]["match"]["right"] == settings.NETWORK_INTERFACE
+                and "match" in expr[1]
+                and expr[1]["match"]["left"].get("payload", {}).get("protocol") == protocol
+                and expr[1]["match"]["left"]["payload"].get("field") == "dport"
+                and expr[1]["match"]["right"] == host_port
+                and "dnat" in expr[2]
+                and expr[2]["dnat"].get("addr") == str(interface.guest_ip.ip)
+                and expr[2]["dnat"].get("port") == vm_port
+            ):
+                commands.append(
+                    {
+                        "delete": {
+                            "rule": {
+                                "family": "ip",
+                                "table": "nat",
+                                "chain": "prerouting",
+                                "handle": entry["rule"]["handle"],
+                            }
+                        }
+                    }
+                )
 
     return execute_json_nft_commands(commands)
 
