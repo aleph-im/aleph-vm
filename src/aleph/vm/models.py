@@ -45,6 +45,8 @@ from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json, is_pinging
 
+SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,41 +99,55 @@ class VmExecution:
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
-    async def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
+    async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):
         assert self.vm
-        for requested_port, protocol_detail in requested_ports.items():
-            tcp = protocol_detail["tcp"]
-            udp = protocol_detail["udp"]
-            host_port = get_available_host_port(start_port=25000)
-            interface = self.vm.tap_interface
-            vm_id = self.vm.vm_id
-            if tcp:
-                protocol = "tcp"
-                add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
-            if udp:
-                protocol = "udp"
-                add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
+        redirect_to_remove = set(self.mapped_ports.keys()) - set(requested_ports.keys())
+        redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
+        redirect_to_check = set(requested_ports.keys()).intersection(set(self.mapped_ports.keys()))
+        interface = self.vm.tap_interface
 
-            self.mapped_ports[requested_port] = {"host": host_port, **protocol_detail}
+        for vm_port in redirect_to_remove:
+            current = self.mapped_ports[vm_port]
+
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if current[protocol]:
+                    host_port = current["host"]
+                    remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+            del self.mapped_ports[vm_port]
+
+        for vm_port in redirect_to_add:
+            target = requested_ports[vm_port]
+            host_port = get_available_host_port(start_port=25000)
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if target[protocol]:
+                    add_port_redirect_rule(interface, host_port, vm_port, protocol)
+            self.mapped_ports[vm_port] = {"host": host_port, **target}
+
+        for vm_port in redirect_to_check:
+            current = self.mapped_ports[vm_port]
+            target = requested_ports[vm_port]
+            host_port = current["host"]
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if current[protocol] != target[protocol]:
+                    if target[protocol]:
+                        add_port_redirect_rule(interface, host_port, vm_port, protocol)
+                    else:
+                        remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+            self.mapped_ports[vm_port] = {"host": host_port, **target}
+
+        # Save to DB
         self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
 
-    async def removed_ports_redirection(self):
-        for requested_port, map_detail in self.mapped_ports.items():
-            tcp = map_detail["tcp"]
-            udp = map_detail["udp"]
+    async def removed_all_ports_redirection(self):
+        interface = self.vm.tap_interface
+        for vm_port, map_detail in self.mapped_ports.items():
             host_port = map_detail["host"]
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if map_detail[protocol]:
+                    remove_port_redirect_rule(interface, host_port, vm_port, protocol)
 
-            interface = self.vm.tap_interface
-            vm_id = self.vm.vm_id
-            if tcp:
-                protocol = "tcp"
-                remove_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
-            if udp:
-                protocol = "tcp"
-                remove_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
-
-            del self.mapped_ports[requested_port]
+            del self.mapped_ports[vm_port]
 
     @property
     def is_starting(self) -> bool:
@@ -498,7 +514,7 @@ class VmExecution:
             await self.all_runs_complete()
             await self.record_usage()
             await self.vm.teardown()
-            await self.removed_ports_redirection()
+            await self.removed_all_ports_redirection()
 
             self.times.stopped_at = datetime.now(tz=timezone.utc)
             self.cancel_expiration()
