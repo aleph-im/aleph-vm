@@ -152,10 +152,13 @@ class VmExecution:
             self.mapped_ports[vm_port] = {"host": host_port, **target}
 
         # Save to DB
-        self.record.mapped_ports = self.mapped_ports
-        await save_record(self.record)
+        if self.record:
+            self.record.mapped_ports = self.mapped_ports
+            await save_record(self.record)
 
     async def removed_all_ports_redirection(self):
+        if not self.vm:
+            return
         interface = self.vm.tap_interface
         for vm_port, map_detail in self.mapped_ports.items():
             host_port = map_detail["host"]

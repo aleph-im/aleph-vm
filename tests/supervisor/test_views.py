@@ -437,6 +437,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
         ipv6_forwarding_enabled=False,
     )
     network.setup()
+    network.host_ipv4 = "10.0.5.201"
 
     from aleph.vm.vm_type import VmType
 
@@ -455,9 +456,11 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
     assert await response.json() == {
         "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca": {
             "networking": {
+                "host_ipv4": "10.0.5.201",
                 "ipv4_network": "172.16.3.0/24",
                 "ipv6_network": "fc00:1:2:3:3:deca:deca:dec0/124",
                 "ipv6_ip": "fc00:1:2:3:3:deca:deca:dec1",
+                "mapped_ports" : {}
             },
             "status": {
                 "defined_at": str(execution.times.defined_at),
