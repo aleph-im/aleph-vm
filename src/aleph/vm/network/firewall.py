@@ -401,9 +401,7 @@ def add_prerouting_chain() -> int:
     return execute_json_nft_commands(commands)
 
 
-def add_port_redirect_rule(
-    vm_id: int, interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp"
-) -> int:
+def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> int:
     """Creates a rule to redirect traffic from a host port to a VM port.
 
     Args:
@@ -452,17 +450,14 @@ def add_port_redirect_rule(
     return execute_json_nft_commands(commands)
 
 
-def remove_port_redirect_rule(
-    vm_id: int, interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp"
-) -> int:
+def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> int:
     """Removes a rule that redirects traffic from a host port to a VM port.
 
     Args:
-        vm_id: The ID of the VM
         interface: The TapInterface instance for the VM
-        host_port: The port number on the host that was being listened on
-        vm_port: The port number that was being forwarded to on the VM
-        protocol: The protocol that was used (tcp or udp)
+        host_port: The port number on the host that is listened on
+        vm_port: The port number that is being forwarded to on the VM
+        protocol: The protocol used (tcp or udp)
 
     Returns:
         The exit code from executing the nftables commands
