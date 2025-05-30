@@ -436,7 +436,7 @@ def add_port_redirect_rule(
                         {
                             "match": {
                                 "op": "==",
-                                "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                "left": {"payload": {"protocol": protocol, "field": "dport"}},
                                 "right": host_port,
                             }
                         },
