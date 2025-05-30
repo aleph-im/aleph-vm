@@ -94,12 +94,10 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
-    mapped_ports: list[tuple[int, int]] | None = None  # internal, external
+    mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
     async def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
-        if self.mapped_ports is None:
-            self.mapped_ports = []
         assert self.vm
         for requested_port, protocol_detail in requested_ports.items():
             tcp = protocol_detail["tcp"]
@@ -113,7 +111,8 @@ class VmExecution:
             if udp:
                 protocol = "udp"
                 add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
-            self.mapped_ports.append((host_port, requested_port))
+
+            self.mapped_ports[requested_port] = {"host": host_port, **protocol_detail}
         self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
 
@@ -214,6 +213,7 @@ class VmExecution:
         self.snapshot_manager = snapshot_manager
         self.systemd_manager = systemd_manager
         self.persistent = persistent
+        self.mapped_ports = {}
 
     def to_dict(self) -> dict:
         return {
