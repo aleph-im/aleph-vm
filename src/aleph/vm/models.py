@@ -97,7 +97,7 @@ class VmExecution:
     mapped_ports: list[tuple[int, int]] | None = None  # internal, external
     record: ExecutionRecord | None = None
 
-    def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
+    async def map_requested_ports(self, requested_ports: dict[int, dict[str, bool]]):
         if self.mapped_ports is None:
             self.mapped_ports = []
         assert self.vm
@@ -114,6 +114,8 @@ class VmExecution:
                 protocol = "udp"
                 add_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
             self.mapped_ports.append((host_port, requested_port))
+        self.record.mapped_ports = self.mapped_ports
+        await save_record(self.record)
 
     @property
     def is_starting(self) -> bool:
@@ -521,7 +523,7 @@ class VmExecution:
         assert self.vm, "The VM attribute has to be set before calling save()"
 
         if not self.record:
-            self.record =  ExecutionRecord(
+            self.record = ExecutionRecord(
                 uuid=str(self.uuid),
                 vm_hash=self.vm_hash,
                 vm_id=self.vm_id,

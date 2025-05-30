@@ -51,10 +51,8 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
         resp = await session.get(url, params={"keys": ",".join(keys_arg)})
         # No aggregate for the user
         if resp.status == 404:
-
             return {}
         # Raise an error if the request failed
-
 
         resp.raise_for_status()
 
@@ -217,7 +215,7 @@ class VmPool:
                 ports_requests = {
                     22: {"tcp": True, "udp": False},
                 }
-                execution.map_requested_ports(ports_requests)
+                await execution.map_requested_ports(ports_requests)
                 # port = get_available_host_port(start_port=25000)
                 # add_port_redirect_rule(vm_id, interface, port, 22)
 
