@@ -41,12 +41,11 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
 
 def get_existing_nftables_ruleset() -> dict:
     """Retrieves the full nftables ruleset and returns it"""
-    nft = get_customized_nftables()
     # List all NAT rules
     commands = [{"list": {"ruleset": {"family": "ip", "table": "nat"}}}]
 
     nft_ruleset = execute_json_nft_commands(commands)
-    return nft_ruleset
+    return nft_ruleset["nftables"]
 
 
 def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
@@ -55,7 +54,7 @@ def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
     nft_ruleset = get_existing_nftables_ruleset()
     chains = []
 
-    for entry in nft_ruleset["nftables"]:
+    for entry in nft_ruleset:
         if (
             not isinstance(entry, dict)
             or "chain" not in entry
@@ -81,7 +80,7 @@ def get_table_for_hook(hook: str, family: str = "ip") -> str:
 def check_if_table_exists(family: str, table: str) -> bool:
     """Checks whether the specified table exists in the nftables ruleset"""
     nft_ruleset = get_existing_nftables_ruleset()
-    for entry in nft_ruleset["nftables"]:
+    for entry in nft_ruleset:
         if (
             isinstance(entry, dict)
             and "table" in entry
@@ -223,7 +222,7 @@ def remove_chain(name: str) -> dict:
     commands = []
     remove_chain_commands = []
 
-    for entry in nft_ruleset["nftables"]:
+    for entry in nft_ruleset:
         if (
             isinstance(entry, dict)
             and "rule" in entry
@@ -530,9 +529,7 @@ def check_nftables_redirections(port: int) -> bool:
     try:
         rules = get_existing_nftables_ruleset()
         # Navigate through the JSON structure
-        nftables = rules.get("nftables", [])
-
-        for item in nftables:
+        for item in rules:
             if "rule" not in item:
                 continue
 
