@@ -30,7 +30,7 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
-from aleph.vm.network.firewall import add_port_redirect_rule
+from aleph.vm.network.firewall import add_port_redirect_rule, remove_port_redirect_rule
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.network.port_availability_checker import get_available_host_port
 from aleph.vm.orchestrator.metrics import (
@@ -115,6 +115,23 @@ class VmExecution:
             self.mapped_ports[requested_port] = {"host": host_port, **protocol_detail}
         self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
+
+    async def removed_ports_redirection(self):
+        for requested_port, map_detail in self.mapped_ports.items():
+            tcp = map_detail["tcp"]
+            udp = map_detail["udp"]
+            host_port = map_detail["host"]
+
+            interface = self.vm.tap_interface
+            vm_id = self.vm.vm_id
+            if tcp:
+                protocol = "tcp"
+                remove_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
+            if udp:
+                protocol = "tcp"
+                remove_port_redirect_rule(vm_id, interface, host_port, requested_port, protocol)
+
+            del self.mapped_ports[requested_port]
 
     @property
     def is_starting(self) -> bool:
@@ -481,6 +498,8 @@ class VmExecution:
             await self.all_runs_complete()
             await self.record_usage()
             await self.vm.teardown()
+            await self.removed_ports_redirection()
+
             self.times.stopped_at = datetime.now(tz=timezone.utc)
             self.cancel_expiration()
             self.cancel_update()
