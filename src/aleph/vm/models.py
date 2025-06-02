@@ -116,7 +116,8 @@ class VmExecution:
         await self.update_port_redirects(ports_requests)
 
     async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):
-        assert self.vm
+        assert self.vm, "The VM attribute has to be set before calling update_port_redirects()"
+
         logger.info("Updating port redirect. Current %s, New %s", self.mapped_ports, requested_ports)
         redirect_to_remove = set(self.mapped_ports.keys()) - set(requested_ports.keys())
         redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
