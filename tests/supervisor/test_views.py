@@ -1,4 +1,3 @@
-import asyncio
 import os
 import tempfile
 from copy import deepcopy
@@ -408,7 +407,7 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
 async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     "Test locally but do not create"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool: VmPool = web_app["vm_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -424,6 +423,8 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
     vm_id = 3
     from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
+    mocker.patch("aleph.vm.network.hostnetwork.get_interface_ipv4", return_value="10.0.5.201")
+
     network = Network(
         vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
         vm_network_size=settings.IPV4_NETWORK_PREFIX_LENGTH,
@@ -437,7 +438,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
         ipv6_forwarding_enabled=False,
     )
     network.setup()
-    network.host_ipv4 = "10.0.5.201"
+    pool.network = network
 
     from aleph.vm.vm_type import VmType
 
@@ -617,6 +618,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
     )
 
     mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     pool = VmPool()
     await pool.setup()
     app = setup_webapp(pool=pool)
