@@ -838,3 +838,58 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     resp = await response.json()
     assert resp["status"] == "error", await response.text()
     assert len(app["vm_pool"].reservations) == 0
+
+
+@pytest.mark.asyncio
+async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_instance_content, mocker):
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    client = await aiohttp_client(web_app)
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    message = InstanceContent.model_validate(mock_instance_content)
+
+    mocker.patch.object(VmExecution, "update_port_redirects", new=mocker.AsyncMock(return_value=False))
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+
+    pool.executions = {vm_hash: execution}
+    response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
+    assert response.status == 200, await response.text()
+    response.raise_for_status()
+    resp = await response.json()
+    assert resp == {"msg": "VM not starting yet", "status": "ok"}
+    assert execution.update_port_redirects.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content, mocker):
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    client = await aiohttp_client(web_app)
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    message = InstanceContent.model_validate(mock_instance_content)
+
+    mocker.patch.object(VmExecution, "update_port_redirects", new=mocker.AsyncMock(return_value=False))
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    execution.vm = mocker.Mock()
+
+    pool.executions = {vm_hash: execution}
+    response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
+    assert response.status == 200, await response.text()
+    response.raise_for_status()
+    resp = await response.json()
+    assert resp == {}
+    assert execution.update_port_redirects.call_count == 1

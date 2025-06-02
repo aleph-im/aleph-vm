@@ -690,15 +690,19 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
 
 
 @cors_allow_all
-async def operate_update(request: web.Request, authenticated_sender: str) -> web.Response:
+async def operate_update(request: web.Request) -> web.Response:
     """Notify that the instance configuration has changed
 
-    For now used to notify the CRN that  port forwarding config has changed
-    and that the we should fetch the latest user aggregate"""
+    For now used to notify the CRN that port-forwarding config has changed
+    and that it should be fetched and the setup upgraded"""
     vm_hash = get_itemhash_or_400(request.match_info)
 
     pool: VmPool = request.app["vm_pool"]
     execution: VmExecution = pool.executions.get(vm_hash)
+    if not execution:
+        raise HTTPNotFound(reason="VM not found")
+    if not execution.vm:
+        # Configuration will be fetched when the VM start so no need to return an error
+        return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
     await execution.fetch_port_redirect_config_and_setup()
-
     return web.json_response({}, dumps=dumps_for_json, status=200)
