@@ -57,6 +57,7 @@ from .views.operator import (
     operate_reboot,
     operate_stop,
     stream_logs,
+    operate_serial,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/update", operate_update),
         web.get("/control/machine/{ref}/stream_logs", stream_logs),
         web.get("/control/machine/{ref}/logs", operate_logs_json),
+        web.get("/control/machine/{ref}/serial", operate_serial), # websocket
         web.post("/control/machine/{ref}/expire", operate_expire),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),

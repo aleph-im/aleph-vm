@@ -1,8 +1,10 @@
+import asyncio
 import json
 import logging
 from datetime import timedelta
 from http import HTTPStatus
 
+import aiohttp
 import aiohttp.web_exceptions
 import pydantic
 from aiohttp import web
@@ -421,3 +423,72 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
                     volume.path_on_host.unlink()
 
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
+
+
+BUFFER_SIZE = 1024
+
+
+@cors_allow_all
+async def operate_serial(request: web.Request) -> web.StreamResponse:
+    """Connect to the serial console of a virtual machine.
+
+    The authentication method is slightly different because browsers do not
+    allow Javascript to set headers in WebSocket requests.
+    """
+    # "/var/lib/aleph/vm/executions/decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca/serial.sock"
+    vm_hash = get_itemhash_or_400(request.match_info)
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if execution.vm is None:
+            raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
+        unix_socket_path = f"/var/lib/aleph/vm/executions/{execution.vm_hash}/serial.sock"
+        ws = web.WebSocketResponse()
+        logger.info(f"starting websocket: {request.path}")
+        await ws.prepare(request)
+        try:
+            # await authenticate_websocket_for_vm_or_403(execution, vm_hash, ws)
+            # await ws.send_json({"status": "connected"})
+            reader, writer = await asyncio.open_unix_connection(unix_socket_path)
+
+            async def ws_to_unix():
+                msg: aiohttp.WSMessage
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.BINARY:
+                        logger.info('bytes, %s', msg.data)
+                        writer.write(msg.data)
+                        await writer.drain()
+                    elif msg.type == aiohttp.WSMsgType.TEXT:
+                        print('r')
+                        writer.write(msg.data.encode())  # allow basic text clients
+                        await writer.drain()
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                        break
+                writer.close()
+                await writer.wait_closed()
+
+            async def unix_to_ws():
+                try:
+                    while not ws.closed:
+                        data = await reader.read(BUFFER_SIZE)
+                        if not data:
+                            break
+                        logger.info('sending data, %s', data)
+                        await ws.send_bytes(data)
+                except asyncio.CancelledError:
+                    pass
+
+            to_unix = asyncio.create_task(ws_to_unix())
+            from_unix = asyncio.create_task(unix_to_ws())
+
+            await asyncio.wait([to_unix, from_unix], return_when=asyncio.FIRST_COMPLETED)
+
+            for task in (to_unix, from_unix):
+                task.cancel()
+
+            return ws
+
+        finally:
+            await ws.close()
+            logger.info(f"connection  {ws} closed")
