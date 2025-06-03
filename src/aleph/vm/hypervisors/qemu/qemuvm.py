@@ -44,6 +44,9 @@ class QemuVM:
         self.image_path = config.image_path
         self.monitor_socket_path = config.monitor_socket_path
         self.qmp_socket_path = config.qmp_socket_path
+        self.dir = Path("/var/lib/aleph/vm/executions/{}".format(vm_hash))
+        self.dir.mkdir(exist_ok=True, parents=True)
+        self.serial_socket_path = self.dir / "serial.sock"
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
@@ -80,6 +83,9 @@ class QemuVM:
         self.journal_stderr: BinaryIO = journal.stream(self._journal_stderr_name)
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
+        # open('/proc/self/stdout', 'w').write('x\r\n')
+        # open('/dev/stdout', 'wb').write('x\r\n')
+
         args = [
             self.qemu_bin_path,
             "-enable-kvm",
@@ -90,10 +96,10 @@ class QemuVM:
             str(self.vcpu_count),
             "-drive",
             f"file={self.image_path},media=disk,if=virtio",
-            # To debug you can pass gtk or curses instead
+            # To debug pass gtk or curses instead of none
             "-display",
             "none",
-            # "--no-reboot",  # Rebooting from inside the VM shuts down the machine
+            # "--no-reboot", # Rebooting from inside the VM shuts down the machine
             # Disable --no-reboot so user can reboot from inside the VM. see ALEPH-472
             # Listen for commands on this socket
             "-monitor",
@@ -103,10 +109,21 @@ class QemuVM:
             "-qmp",
             f"unix:{self.qmp_socket_path},server,nowait",
             # Tell to put the output to std fd, so we can include them in the log
-            "-serial",
-            "stdio",
-            # nographics. Seems redundant with -serial stdio but without it the boot process is not displayed on stdout
+            # "-serial",
+            # "stdio",
+            # nographic. Disable graphic ui, redirect serial to stdio (which will be modified afterward), redirect parallel to stdio also (necessary to see bios boot)
             "-nographic",
+            # Redirect the serial, which expose an unix console, to a unix socket, used for remote debug
+            #  Ideally, parallel should be redirected too with mux=on, but in practice it crashes qemu
+            # logfile=/dev/stdout allow the output to be displayed in journalctl for the log endpoint
+            "-chardev",
+            f"socket,id=iounix,path={str(self.serial_socket_path)},wait=off,server=on"
+            # f",logfile=/dev/stdout,mux=off,logappend=off", # DOES NOT WORK WITH SYSTEMD
+            f",logfile={self.dir/ "execution.log"},mux=off,logappend=off", # DOES NOT WORK WITH SYSTEMD
+            # Ideally insted of logfile we would use  chardev.hub but it is qemu >= 10 only
+            "-serial",
+            "chardev:iounix",
+            ###
             # Boot
             # order=c only first hard drive
             # reboot-timeout in combination with -no-reboot, makes it so qemu stop if there is no bootable device
@@ -114,7 +131,7 @@ class QemuVM:
             "order=c,reboot-timeout=1",
             # Uncomment for debug
             # "-serial", "telnet:localhost:4321,server,nowait",
-            # "-snapshot",  # Do not save anything to disk
+            # "-snapshot", # Do not save anything to disk
         ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
@@ -130,6 +147,7 @@ class QemuVM:
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
+            # stdout= asyncio.subprocess.STDOUT,
             stdout=self.journal_stdout,
             stderr=self.journal_stderr,
         )

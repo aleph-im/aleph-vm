@@ -6,12 +6,11 @@ import logging
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any
 
 from aleph_message.models import (
     Chain,
     ExecutableMessage,
-    InstanceContent,
     ItemHash,
     Payment,
     PaymentType,
@@ -168,11 +167,13 @@ class VmPool:
                     if self.network.interface_exists(vm_id):
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
+
                 else:
                     tap_interface = None
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start()
+                await execution.fetch_port_redirect_config_and_setup()
 
                 # clear the user reservations
                 for resource in resources:
@@ -180,7 +181,9 @@ class VmPool:
                         del self.reservations[resource]
             except Exception:
                 # ensure the VM is removed from the pool on creation error
+                await execution.removed_all_ports_redirection()
                 self.forget_vm(vm_hash)
+
                 raise
 
             self._schedule_forget_on_stop(execution)
@@ -281,6 +284,7 @@ class VmPool:
                     if saved_execution.gpus
                     else []
                 )
+                execution.mapped_ports = saved_execution.mapped_ports
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:

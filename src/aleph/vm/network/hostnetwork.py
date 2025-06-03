@@ -10,6 +10,7 @@ from aleph.vm.conf import IPv6AllocationPolicy
 from aleph.vm.vm_type import VmType
 
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
+from .get_interface_ipv4 import get_interface_ipv4
 from .interfaces import TapInterface
 from .ipaddresses import IPv4NetworkWithInterfaces
 from .ndp_proxy import NdpProxy
@@ -115,6 +116,7 @@ class Network:
     ipv6_address_pool: IPv6Network
     network_size: int
     ndp_proxy: NdpProxy | None = None
+    host_ipv4: str
 
     IPV6_SUBNET_PREFIX: int = 124
 
@@ -138,6 +140,7 @@ class Network:
         self.ipv6_forwarding_enabled = ipv6_forwarding_enabled
         self.use_ndp_proxy = use_ndp_proxy
         self.ndb = pyroute2.NDB()
+        self.host_ipv4 = get_interface_ipv4(external_interface)
 
         if not self.ipv4_address_pool.is_private:
             logger.warning(f"Using a network range that is not private: {self.ipv4_address_pool}")

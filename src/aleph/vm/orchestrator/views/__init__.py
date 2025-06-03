@@ -25,6 +25,7 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
+from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
@@ -55,6 +56,7 @@ from aleph.vm.orchestrator.views.host_status import (
     check_host_egress_ipv4,
     check_host_egress_ipv6,
 )
+from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import (
     HostNotFoundError,
@@ -185,8 +187,10 @@ async def list_executions_v2(request: web.Request) -> web.Response:
             item_hash: {
                 "networking": {
                     "ipv4_network": execution.vm.tap_interface.ip_network,
+                    "host_ipv4": pool.network.host_ipv4,
                     "ipv6_network": execution.vm.tap_interface.ipv6_network,
                     "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
+                    "mapped_ports": execution.mapped_ports,
                 }
                 if execution.vm and execution.vm.tap_interface
                 else {},
@@ -683,3 +687,22 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
         },
         dumps=dumps_for_json,
     )
+
+
+@cors_allow_all
+async def operate_update(request: web.Request) -> web.Response:
+    """Notify that the instance configuration has changed
+
+    For now used to notify the CRN that port-forwarding config has changed
+    and that it should be fetched and the setup upgraded"""
+    vm_hash = get_itemhash_or_400(request.match_info)
+
+    pool: VmPool = request.app["vm_pool"]
+    execution: VmExecution = pool.executions.get(vm_hash)
+    if not execution:
+        raise HTTPNotFound(reason="VM not found")
+    if not execution.vm:
+        # Configuration will be fetched when the VM start so no need to return an error
+        return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
+    await execution.fetch_port_redirect_config_and_setup()
+    return web.json_response({}, dumps=dumps_for_json, status=200)

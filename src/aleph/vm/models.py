@@ -30,7 +30,9 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
+from aleph.vm.network.firewall import add_port_redirect_rule, remove_port_redirect_rule
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.network.port_availability_checker import get_available_host_port
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_record,
@@ -42,6 +44,9 @@ from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import create_task_log_exceptions, dumps_for_json, is_pinging
+from aleph.vm.utils.aggregate import get_user_settings
+
+SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,78 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
+    mapped_ports: dict[int, dict]  # Port redirect to the VM
+    record: ExecutionRecord | None = None
+
+    async def fetch_port_redirect_config_and_setup(self):
+        message = self.message
+        try:
+            port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
+            ports_requests = port_forwarding_settings.get(self.vm_hash)
+
+        except Exception:
+            ports_requests = {}
+            logger.exception("Could not fetch the port redirect settings for user")
+        if not ports_requests:
+            # FIXME DEBUG FOR NOW
+            ports_requests = {22: {"tcp": True, "udp": False}}
+        ports_requests = ports_requests or {}
+        await self.update_port_redirects(ports_requests)
+
+    async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):
+        assert self.vm, "The VM attribute has to be set before calling update_port_redirects()"
+
+        logger.info("Updating port redirect. Current %s, New %s", self.mapped_ports, requested_ports)
+        redirect_to_remove = set(self.mapped_ports.keys()) - set(requested_ports.keys())
+        redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
+        redirect_to_check = set(requested_ports.keys()).intersection(set(self.mapped_ports.keys()))
+        interface = self.vm.tap_interface
+
+        for vm_port in redirect_to_remove:
+            current = self.mapped_ports[vm_port]
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if current[protocol]:
+                    host_port = current["host"]
+                    remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+            del self.mapped_ports[vm_port]
+
+        for vm_port in redirect_to_add:
+            target = requested_ports[vm_port]
+            host_port = get_available_host_port(start_port=25000)
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if target[protocol]:
+                    add_port_redirect_rule(interface, host_port, vm_port, protocol)
+            self.mapped_ports[vm_port] = {"host": host_port, **target}
+
+        for vm_port in redirect_to_check:
+            current = self.mapped_ports[vm_port]
+            target = requested_ports[vm_port]
+            host_port = current["host"]
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if current[protocol] != target[protocol]:
+                    if target[protocol]:
+                        add_port_redirect_rule(interface, host_port, vm_port, protocol)
+                    else:
+                        remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+            self.mapped_ports[vm_port] = {"host": host_port, **target}
+
+        # Save to DB
+        if self.record:
+            self.record.mapped_ports = self.mapped_ports
+            await save_record(self.record)
+
+    async def removed_all_ports_redirection(self):
+        if not self.vm:
+            return
+        interface = self.vm.tap_interface
+        # copy in a list since we modify dict during iteration
+        for vm_port, map_detail in list(self.mapped_ports.items()):
+            host_port = map_detail["host"]
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if map_detail[protocol]:
+                    remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+
+            del self.mapped_ports[vm_port]
 
     @property
     def is_starting(self) -> bool:
@@ -190,6 +267,7 @@ class VmExecution:
         self.snapshot_manager = snapshot_manager
         self.systemd_manager = systemd_manager
         self.persistent = persistent
+        self.mapped_ports = {}
 
     def to_dict(self) -> dict:
         return {
@@ -350,7 +428,8 @@ class VmExecution:
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
-
+            else:
+                self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
             await self.save()
         except Exception:
@@ -398,7 +477,10 @@ class VmExecution:
         except Exception as e:
             logger.warning("%s failed to responded to ping or is not running, stopping it.: %s ", self, e)
             assert self.vm
-            await self.stop()
+            try:
+                await self.stop()
+            except Exception as f:
+                logger.exception("%s failed to stop: %s", self, f)
             return False
 
     async def wait_for_init(self):
@@ -456,6 +538,8 @@ class VmExecution:
             await self.all_runs_complete()
             await self.record_usage()
             await self.vm.teardown()
+            await self.removed_all_ports_redirection()
+
             self.times.stopped_at = datetime.now(tz=timezone.utc)
             self.cancel_expiration()
             self.cancel_update()
@@ -497,57 +581,38 @@ class VmExecution:
         """Save to DB"""
         assert self.vm, "The VM attribute has to be set before calling save()"
 
-        pid_info = self.vm.to_dict() if self.vm else None
-        # Handle cases when the process cannot be accessed
-        if not self.persistent and pid_info and pid_info.get("process"):
-            await save_record(
-                ExecutionRecord(
-                    uuid=str(self.uuid),
-                    vm_hash=self.vm_hash,
-                    vm_id=self.vm_id,
-                    time_defined=self.times.defined_at,
-                    time_prepared=self.times.prepared_at,
-                    time_started=self.times.started_at,
-                    time_stopping=self.times.stopping_at,
-                    cpu_time_user=pid_info["process"]["cpu_times"].user,
-                    cpu_time_system=pid_info["process"]["cpu_times"].system,
-                    io_read_count=pid_info["process"]["io_counters"][0],
-                    io_write_count=pid_info["process"]["io_counters"][1],
-                    io_read_bytes=pid_info["process"]["io_counters"][2],
-                    io_write_bytes=pid_info["process"]["io_counters"][3],
-                    vcpus=self.vm.hardware_resources.vcpus,
-                    memory=self.vm.hardware_resources.memory,
-                    network_tap=self.vm.tap_interface.device_name if self.vm.tap_interface else "",
-                    message=self.message.model_dump_json(),
-                    original_message=self.original.model_dump_json(),
-                    persistent=self.persistent,
-                )
+        if not self.record:
+            self.record = ExecutionRecord(
+                uuid=str(self.uuid),
+                vm_hash=self.vm_hash,
+                vm_id=self.vm_id,
+                time_defined=self.times.defined_at,
+                time_prepared=self.times.prepared_at,
+                time_started=self.times.started_at,
+                time_stopping=self.times.stopping_at,
+                cpu_time_user=None,
+                cpu_time_system=None,
+                io_read_count=None,
+                io_write_count=None,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                vcpus=self.vm.hardware_resources.vcpus,
+                memory=self.vm.hardware_resources.memory,
+                message=self.message.model_dump_json(),
+                original_message=self.original.model_dump_json(),
+                persistent=self.persistent,
+                gpus=json.dumps(self.gpus, default=pydantic_encoder),
             )
-        else:
-            # The process cannot be accessed, or it's a persistent VM.
-            await save_record(
-                ExecutionRecord(
-                    uuid=str(self.uuid),
-                    vm_hash=self.vm_hash,
-                    vm_id=self.vm_id,
-                    time_defined=self.times.defined_at,
-                    time_prepared=self.times.prepared_at,
-                    time_started=self.times.started_at,
-                    time_stopping=self.times.stopping_at,
-                    cpu_time_user=None,
-                    cpu_time_system=None,
-                    io_read_count=None,
-                    io_write_count=None,
-                    io_read_bytes=None,
-                    io_write_bytes=None,
-                    vcpus=self.vm.hardware_resources.vcpus,
-                    memory=self.vm.hardware_resources.memory,
-                    message=self.message.model_dump_json(),
-                    original_message=self.original.model_dump_json(),
-                    persistent=self.persistent,
-                    gpus=json.dumps(self.gpus, default=pydantic_encoder),
-                )
-            )
+            pid_info = self.vm.to_dict() if self.vm else None
+            # Handle cases when the process cannot be accessed
+            if not self.persistent and pid_info and pid_info.get("process"):
+                self.record.cpu_time_user = pid_info["process"]["cpu_times"].user
+                self.record.cpu_time_system = pid_info["process"]["cpu_times"].system
+                self.record.io_read_count = pid_info["process"]["io_counters"][0]
+                self.record.io_write_count = pid_info["process"]["io_counters"][1]
+                self.record.io_read_bytes = pid_info["process"]["io_counters"][2]
+                self.record.io_write_bytes = pid_info["process"]["io_counters"][3]
+        await save_record(self.record)
 
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
