@@ -463,7 +463,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     nft_ruleset = get_existing_nftables_ruleset()
     commands = []
 
-    for entry in nft_ruleset["nftables"]:
+    for entry in nft_ruleset:
         if (
             isinstance(entry, dict)
             and "rule" in entry
