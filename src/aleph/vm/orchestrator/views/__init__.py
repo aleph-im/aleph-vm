@@ -195,7 +195,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 if execution.vm and execution.vm.tap_interface
                 else {},
                 "status": execution.times,
-                "running": execution.is_controller_running,
+                "running": execution.is_running,
             }
             for item_hash, execution in pool.executions.items()
         },
