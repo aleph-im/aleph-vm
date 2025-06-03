@@ -161,7 +161,8 @@ class VmExecution:
         if not self.vm:
             return
         interface = self.vm.tap_interface
-        for vm_port, map_detail in self.mapped_ports.items():
+        # copy in a list since we modify dict during iteration
+        for vm_port, map_detail in list(self.mapped_ports.items()):
             host_port = map_detail["host"]
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if map_detail[protocol]:
@@ -476,7 +477,10 @@ class VmExecution:
         except Exception as e:
             logger.warning("%s failed to responded to ping or is not running, stopping it.: %s ", self, e)
             assert self.vm
-            await self.stop()
+            try:
+                await self.stop()
+            except Exception as f:
+                logger.exception("%s failed to stop: %s", self, f)
             return False
 
     async def wait_for_init(self):
