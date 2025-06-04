@@ -19,7 +19,7 @@ RUN curl -fsSL -o /opt/firecracker/vmlinux.bin https://s3.amazonaws.com/spec.ccf
 RUN ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
 RUN ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 
-RUN pip3 install typing-extensions 'aleph-message==1.0.0'
+RUN pip3 install typing-extensions 'aleph-message~=1.0.1'
 
 RUN mkdir -p /var/lib/aleph/vm/jailer
 
