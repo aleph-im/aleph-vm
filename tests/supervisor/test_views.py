@@ -398,7 +398,7 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
                 "stopping_at": None,
                 "stopped_at": None,
             },
-            "running": None,
+            "running": False,
         }
     }
 
@@ -413,7 +413,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     execution = VmExecution(
-        vm_hash=hash,
+        vm_hash=vm_hash,
         message=message,
         original=message,
         persistent=False,
@@ -472,7 +472,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
                 "stopping_at": None,
                 "stopped_at": None,
             },
-            "running": None,
+            "running": False,
         }
     }
 
