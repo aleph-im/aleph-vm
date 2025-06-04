@@ -104,15 +104,15 @@ class VmExecution:
         message = self.message
         try:
             port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
-            ports_requests = port_forwarding_settings.get(self.vm_hash)
+            ports_requests = port_forwarding_settings.get(self.vm_hash, {})
 
         except Exception:
             ports_requests = {}
-            logger.exception("Could not fetch the port redirect settings for user")
-        if not ports_requests:
-            # FIXME DEBUG FOR NOW
-            ports_requests = {22: {"tcp": True, "udp": False}}
-        ports_requests = ports_requests or {}
+            logger.info("Could not fetch the port redirect settings for user %s", message.address, exc_info=True)
+
+        # Always forward port 22
+        ports_requests[22] = {"tcp": True, "udp": False}
+
         await self.update_port_redirects(ports_requests)
 
     async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):

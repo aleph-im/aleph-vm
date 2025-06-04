@@ -307,12 +307,15 @@ class VmPool:
                 await vm.start_guest_api()
                 execution.ready_event.set()
                 execution.times.started_at = datetime.now(tz=timezone.utc)
+                execution.times.starting_at = saved_execution.time_prepared
+                execution.times.prepared_at = saved_execution.time_defined
 
                 self._schedule_forget_on_stop(execution)
 
                 # Start the snapshot manager for the VM
                 if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
+                await execution.fetch_port_redirect_config_and_setup()
 
                 self.executions[vm_hash] = execution
             else:
