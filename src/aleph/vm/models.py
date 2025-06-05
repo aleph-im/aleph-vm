@@ -140,7 +140,7 @@ class VmExecution:
             host_port = get_available_host_port(start_port=24000)
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
-                    add_port_redirect_rule(interface, host_port, vm_port, protocol)
+                    add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
             self.mapped_ports[vm_port] = {"host": host_port, **target}
 
         for vm_port in redirect_to_check:
@@ -150,7 +150,7 @@ class VmExecution:
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if current[protocol] != target[protocol]:
                     if target[protocol]:
-                        add_port_redirect_rule(interface, host_port, vm_port, protocol)
+                        add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
             self.mapped_ports[vm_port] = {"host": host_port, **target}
