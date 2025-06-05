@@ -120,10 +120,9 @@ def initialize_nftables() -> None:
             }
             commands.append({"add": new_chain})
             chains.append(new_chain)
-        elif len(chains) > 1:
-            msg = f"Multiple base chains for an nftables basechain are not supported: {hook}"
-            raise NotImplementedError(msg)
-        base_chains[hook] = chains.pop()["chain"]
+        # If multiple base chain for the hook, use the less priority one
+        chains.sort(key=lambda x: x["chain"]["prio"])
+        base_chains[hook] = chains[0]["chain"]
 
     commands.append(
         _make_add_chain_command(
