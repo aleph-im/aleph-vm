@@ -416,7 +416,7 @@ def add_or_get_prerouting_chain() -> dict:
 
 
 def add_port_redirect_rule(
-    interface: TapInterface, host_port: int, vm_port: int, protocol: Literal["tcp"] | Literal["udp"] = "tcp"
+    vm_id, interface: TapInterface, host_port: int, vm_port: int, protocol: Literal["tcp"] | Literal["udp"] = "tcp"
 ) -> dict:
     """Creates a rule to redirect traffic from a host port to a VM port.
 
@@ -460,6 +460,36 @@ def add_port_redirect_rule(
                 }
             }
         },
+    ]
+    # Add rule to accept that trafic on the host interface to that destination port
+    table = get_table_for_hook("forward")
+    commands += [
+        {
+            "add": {
+                "rule": {
+                    "family": "ip",
+                    "table": table,
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                    "expr": [
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"meta": {"key": "iifname"}},
+                                "right": interface.device_name,
+                            }
+                        },
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                "right": vm_port,
+                            }
+                        },
+                        {"accept": None},
+                    ],
+                }
+            }
+        }
     ]
 
     return execute_json_nft_commands(commands)
