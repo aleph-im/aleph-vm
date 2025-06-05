@@ -384,7 +384,7 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> dict:
     return execute_json_nft_commands(command)
 
 
-def add_prerouting_chain() -> dict:
+def add_or_get_prerouting_chain() -> dict:
     """Creates the prerouting chain if it doesn't exist already.
 
     Returns:
@@ -393,7 +393,7 @@ def add_prerouting_chain() -> dict:
     # Check if prerouting chain exists by looking for chains with prerouting hook
     existing_chains = get_base_chains_for_hook("prerouting", "ip")
     if existing_chains:
-        return {}  # Chain already exists, nothing to do
+        return  existing_chains[0]  # Chain already exists, nothing to do
 
     commands = [
         {
@@ -410,6 +410,7 @@ def add_prerouting_chain() -> dict:
             }
         }
     ]
+    chain = commands[0]["add"]["chain"]
     return execute_json_nft_commands(commands)
 
 
@@ -428,14 +429,14 @@ def add_port_redirect_rule(
     Returns:
         The exit code from executing the nftables commands
     """
-    add_prerouting_chain()
+    chain = add_or_get_prerouting_chain()
     commands = [
         {
             "add": {
                 "rule": {
                     "family": "ip",
                     "table": "nat",
-                    "chain": "prerouting",
+                    "chain": chain['name'],
                     "expr": [
                         {
                             "match": {
