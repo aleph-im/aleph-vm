@@ -508,6 +508,8 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
         The exit code from executing the nftables commands
     """
     nft_ruleset = get_existing_nftables_ruleset()
+    chain = add_or_get_prerouting_chain()
+
     commands = []
 
     for entry in nft_ruleset:
@@ -516,7 +518,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
             and "rule" in entry
             and entry["rule"].get("family") == "ip"
             and entry["rule"].get("table") == "nat"
-            and entry["rule"].get("chain") == "prerouting"
+            and entry["rule"].get("chain") == chain["name"]
             and "expr" in entry["rule"]
         ):
             expr = entry["rule"]["expr"]
