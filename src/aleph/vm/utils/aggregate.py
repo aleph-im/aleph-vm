@@ -1,5 +1,7 @@
 from logging import getLogger
 
+import aiohttp
+
 from aleph.vm.conf import settings
 
 logger = getLogger(__name__)
@@ -15,8 +17,6 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
     For more details, see the PyAleph API documentation:
     https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
     """
-
-    import aiohttp
 
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
