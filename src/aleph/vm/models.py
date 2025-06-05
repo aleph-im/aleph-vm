@@ -101,6 +101,8 @@ class VmExecution:
     record: ExecutionRecord | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
+        if not self.is_instance:
+            return
         message = self.message
         try:
             port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
