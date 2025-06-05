@@ -196,7 +196,6 @@ async def get_machine_capability() -> MachineCapability:
 async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    machine_properties = get_machine_properties()
     pool = request.app["vm_pool"]
 
     machine_properties = await get_machine_properties()
