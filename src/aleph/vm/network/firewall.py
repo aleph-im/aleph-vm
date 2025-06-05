@@ -393,7 +393,7 @@ def add_or_get_prerouting_chain() -> dict:
     # Check if prerouting chain exists by looking for chains with prerouting hook
     existing_chains = get_base_chains_for_hook("prerouting", "ip")
     if existing_chains:
-        return existing_chains[0]  # Chain already exists, nothing to do
+        return existing_chains[0]["chain"]  # Chain already exists, nothing to do
 
     commands = [
         {
@@ -410,8 +410,9 @@ def add_or_get_prerouting_chain() -> dict:
             }
         }
     ]
+    execute_json_nft_commands(commands)
     chain = commands[0]["add"]["chain"]
-    return execute_json_nft_commands(commands)
+    return chain
 
 
 def add_port_redirect_rule(
