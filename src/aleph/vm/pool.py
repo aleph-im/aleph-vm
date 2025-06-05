@@ -284,7 +284,7 @@ class VmPool:
                     if saved_execution.gpus
                     else []
                 )
-                execution.mapped_ports = saved_execution.mapped_ports
+                execution.mapped_ports = saved_execution.mapped_ports or {}
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:

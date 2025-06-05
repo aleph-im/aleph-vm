@@ -97,19 +97,18 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
-    mapped_ports: dict[int, dict]  # Port redirect to the VM
+    mapped_ports: dict[int, dict] = {}  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
         if not self.is_instance:
             return
         message = self.message
+        ports_requests: dict[int, dict] = {}
         try:
             port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
-            ports_requests = port_forwarding_settings.get(self.vm_hash, {})
-
+            ports_requests = port_forwarding_settings.get(self.vm_hash, {}) or {}
         except Exception:
-            ports_requests = {}
             logger.info("Could not fetch the port redirect settings for user %s", message.address, exc_info=True)
 
         # Always forward port 22
@@ -136,7 +135,7 @@ class VmExecution:
 
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
-            host_port = get_available_host_port(start_port=25000)
+            host_port = get_available_host_port(start_port=24000)
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
                     add_port_redirect_rule(interface, host_port, vm_port, protocol)
