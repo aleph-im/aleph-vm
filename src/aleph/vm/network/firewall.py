@@ -1,6 +1,12 @@
+"""
+IPv4 network setup using NFTABLES.
+Add Nat to the VM in ipv4 and port forwarding for direct acess.
+"""
+
 import json
 import logging
 from functools import lru_cache
+from typing import Literal
 
 from nftables import Nftables
 
@@ -93,8 +99,16 @@ def check_if_table_exists(family: str, table: str) -> bool:
 
 
 def initialize_nftables() -> None:
-    """Creates basic chains and rules in the nftables ruleset to build on further.
-    Additionally, stores some information in the class for later use."""
+    """
+    Initializes `nftables` configurations for managing networking rules and chains. The
+    function ensures that the base chains for the relevant hooks (postrouting and forward)
+    are properly set up and, if missing, creates them. Additionally, it adds the necessary
+    custom chains and rules in the nftables configuration for network supervision.
+
+    Chain aleph-vm-supervisor-nat are created and aleph-vm-supervisor-filter are created
+    to contains our rules.
+
+    """
     commands: list[dict] = []
     base_chains: dict[str, dict[str, str]] = {
         "postrouting": {},
@@ -399,7 +413,9 @@ def add_prerouting_chain() -> dict:
     return execute_json_nft_commands(commands)
 
 
-def add_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> dict:
+def add_port_redirect_rule(
+    interface: TapInterface, host_port: int, vm_port: int, protocol: Literal["tcp"] | Literal["udp"] = "tcp"
+) -> dict:
     """Creates a rule to redirect traffic from a host port to a VM port.
 
     Args:
