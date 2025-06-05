@@ -22,7 +22,7 @@ def get_customized_nftables() -> Nftables:
 
 
 def execute_json_nft_commands(commands: list[dict]) -> dict:
-    """Executes a list of nftables commands, and returns the exit status"""
+    """Executes a list of nftables commands and returns the json output"""
     nft = get_customized_nftables()
     commands_dict = {"nftables": commands}
     try:
@@ -42,7 +42,7 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
 def get_existing_nftables_ruleset() -> dict:
     """Retrieves the full nftables ruleset and returns it"""
     # List all NAT rules
-    commands = [{"list": {"ruleset": {"family": "ip", "table": "nat"}}}]
+    commands = [{"list": {"ruleset": {"family": "ip"}}}]
 
     nft_ruleset = execute_json_nft_commands(commands)
     return nft_ruleset["nftables"]
