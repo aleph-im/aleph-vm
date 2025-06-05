@@ -393,7 +393,7 @@ def add_or_get_prerouting_chain() -> dict:
     # Check if prerouting chain exists by looking for chains with prerouting hook
     existing_chains = get_base_chains_for_hook("prerouting", "ip")
     if existing_chains:
-        return  existing_chains[0]  # Chain already exists, nothing to do
+        return existing_chains[0]  # Chain already exists, nothing to do
 
     commands = [
         {
@@ -436,7 +436,7 @@ def add_port_redirect_rule(
                 "rule": {
                     "family": "ip",
                     "table": "nat",
-                    "chain": chain['name'],
+                    "chain": chain["name"],
                     "expr": [
                         {
                             "match": {
