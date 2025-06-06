@@ -153,9 +153,8 @@ def initialize_nftables() -> None:
     are properly set up and, if missing, creates them. Additionally, it adds the necessary
     custom chains and rules in the nftables configuration for network supervision.
 
-    Chain aleph-vm-supervisor-nat are created and aleph-vm-supervisor-filter are created
-    to contains our rules.
-
+    Chain aleph-vm-supervisor-nat, aleph-vm-supervisor-filter, and aleph-vm-supervisor-prerouting are created
+    to contains the rules.
     """
     nft_ruleset = get_existing_nftables_ruleset()
     commands: list[dict] = []
@@ -183,7 +182,21 @@ def initialize_nftables() -> None:
                 "hook": "forward",
                 "prio": 0,
             }
-            chain = default_base_chain_hook_forward if hook == "forward" else default_base_chain_hook_postrouting
+            default_base_chain_hook_prerouting = {
+                "family": "ip",
+                "table": "nat",
+                "name": "PREROUTING",
+                "type": "nat",
+                "hook": "prerouting",
+                "prio": -100,
+                "policy": "accept",
+            }
+            if hook == "forward":
+                chain = default_base_chain_hook_forward
+            elif hook == "postrouting":
+                chain = default_base_chain_hook_postrouting
+            elif hook == "prerouting":
+                chain = default_base_chain_hook_prerouting
             # Check if table exists, if not create it.
             commands += add_entity_if_not_present(
                 nft_ruleset,
@@ -270,6 +283,31 @@ def initialize_nftables() -> None:
         },
     )
 
+    # Add chain aleph-supervisor-prerouting
+    commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "chain": {
+                "family": "ip",
+                "table": base_chains["prerouting"]["table"],
+                "name": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting",
+            }
+        },
+    )
+
+    # Add jump to chain aleph-supervisor-prerouting
+    commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "rule": {
+                "family": "ip",
+                "table": base_chains["prerouting"]["table"],
+                "chain": base_chains["prerouting"]["name"],
+                "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"}}],
+            }
+        },
+    )
+
     execute_json_nft_commands(commands)
 
 
@@ -278,6 +316,7 @@ def teardown_nftables() -> None:
     logger.debug("Tearing down nftables setup")
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat")
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting")
 
 
 def remove_chain(name: str) -> dict:
@@ -492,16 +531,17 @@ def add_port_redirect_rule(
     Returns:
         The exit code from executing the nftables commands
     """
-    chain = add_or_get_prerouting_chain()
-    table = get_table_for_hook("forward")
+    chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
+    prerouting_table = get_table_for_hook("prerouting")
+    forward_table = get_table_for_hook("forward")
 
     return ensure_entities(
         [
             {
                 "rule": {
                     "family": "ip",
-                    "table": "nat",
-                    "chain": chain["name"],
+                    "table": prerouting_table,
+                    "chain": chain_name,
                     "expr": [
                         {
                             "match": {
@@ -527,7 +567,7 @@ def add_port_redirect_rule(
             {
                 "rule": {
                     "family": "ip",
-                    "table": table,
+                    "table": forward_table,
                     "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
                     "expr": [
                         {
@@ -565,8 +605,8 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
         The exit code from executing the nftables commands
     """
     nft_ruleset = get_existing_nftables_ruleset()
-    chain = add_or_get_prerouting_chain()
-    table = chain['table']
+    chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
+    prerouting_table = get_table_for_hook("prerouting")
 
     commands = []
 
@@ -575,8 +615,8 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
             isinstance(entry, dict)
             and "rule" in entry
             and entry["rule"].get("family") == "ip"
-            and entry["rule"].get("table") == table
-            and entry["rule"].get("chain") == chain["name"]
+            and entry["rule"].get("table") == prerouting_table
+            and entry["rule"].get("chain") == chain_name
             and "expr" in entry["rule"]
         ):
             expr = entry["rule"]["expr"]
@@ -599,8 +639,8 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
                         "delete": {
                             "rule": {
                                 "family": "ip",
-                                "table": table,
-                                "chain": chain["name"],
+                                "table": prerouting_table,
+                                "chain": chain_name,
                                 "handle": entry["rule"]["handle"],
                             }
                         }

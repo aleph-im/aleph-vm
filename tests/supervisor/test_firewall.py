@@ -126,6 +126,20 @@ async def test_initialize_nftables_fresh(mock_full_ruleset, mocker):
             "add": {
                 "chain": {
                     "family": "ip",
+                    "hook": "prerouting",
+                    "name": "PREROUTING",
+                    "policy": "accept",
+                    "prio": -100,
+                    "table": "nat",
+                    "type": "nat",
+                }
+            }
+        },
+        {"add": {"table": {"family": "ip", "name": "nat"}}},
+        {
+            "add": {
+                "chain": {
+                    "family": "ip",
                     "hook": "postrouting",
                     "name": "POSTROUTING",
                     "prio": 100,
@@ -182,6 +196,17 @@ async def test_initialize_nftables_fresh(mock_full_ruleset, mocker):
                 }
             }
         },
+        {"add": {"chain": {"family": "ip", "name": "aleph-supervisor-prerouting", "table": "nat"}}},
+        {
+            "add": {
+                "rule": {
+                    "chain": "PREROUTING",
+                    "expr": [{"jump": {"target": "aleph-supervisor-prerouting"}}],
+                    "family": "ip",
+                    "table": "nat",
+                }
+            }
+        },
     ]
 
 
@@ -210,3 +235,502 @@ async def test_get_base_chains_for_hook_full_ruleset(mock_full_ruleset, mocker):
     chains = get_base_chains_for_hook("forward")
     assert r.call_count == 2
     assert len(chains) == 1
+
+
+# test regression from server with docker that broke detection
+_mock_ruleset_regression = {
+    "nftables": [
+        {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+        {"table": {"family": "ip", "name": "nat", "handle": 1}},
+        {"chain": {"family": "ip", "table": "nat", "name": "DOCKER", "handle": 1}},
+        {
+            "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "POSTROUTING",
+                "handle": 2,
+                "type": "nat",
+                "hook": "postrouting",
+                "prio": 100,
+                "policy": "accept",
+            }
+        },
+        {
+            "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "PREROUTING",
+                "handle": 5,
+                "type": "nat",
+                "hook": "prerouting",
+                "prio": -100,
+                "policy": "accept",
+            }
+        },
+        {
+            "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "OUTPUT",
+                "handle": 7,
+                "type": "nat",
+                "hook": "output",
+                "prio": -100,
+                "policy": "accept",
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "DOCKER",
+                "handle": 931,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"return": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "DOCKER",
+                "handle": 12,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"return": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "DOCKER",
+                "handle": 923,
+                "expr": [
+                    {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 4021}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"xt": {"type": "target", "name": "DNAT"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "handle": 930,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                            "right": {"prefix": {"addr": "172.19.0.0", "len": 16}},
+                        }
+                    },
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"xt": {"type": "target", "name": "MASQUERADE"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "handle": 11,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                            "right": {"prefix": {"addr": "172.17.0.0", "len": 16}},
+                        }
+                    },
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 1906, "bytes": 113590}},
+                    {"xt": {"type": "target", "name": "MASQUERADE"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "handle": 924,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                            "right": "172.17.0.2",
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": "ip", "field": "daddr"}},
+                            "right": "172.17.0.2",
+                        }
+                    },
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 4021}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"xt": {"type": "target", "name": "MASQUERADE"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "PREROUTING",
+                "handle": 6,
+                "expr": [
+                    {"xt": {"type": "match", "name": "addrtype"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"jump": {"target": "DOCKER"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "OUTPUT",
+                "handle": 8,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "!=",
+                            "left": {"payload": {"protocol": "ip", "field": "daddr"}},
+                            "right": {"prefix": {"addr": "127.0.0.0", "len": 8}},
+                        }
+                    },
+                    {"xt": {"type": "match", "name": "addrtype"}},
+                    {"counter": {"packets": 3, "bytes": 204}},
+                    {"jump": {"target": "DOCKER"}},
+                ],
+            }
+        },
+        {"table": {"family": "ip", "name": "filter", "handle": 2}},
+        {"chain": {"family": "ip", "table": "filter", "name": "DOCKER", "handle": 1}},
+        {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-ISOLATION-STAGE-1", "handle": 2}},
+        {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-ISOLATION-STAGE-2", "handle": 3}},
+        {
+            "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "FORWARD",
+                "handle": 6,
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0,
+                "policy": "drop",
+            }
+        },
+        {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-USER", "handle": 22}},
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER",
+                "handle": 1274,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": "ip", "field": "daddr"}},
+                            "right": "172.17.0.2",
+                        }
+                    },
+                    {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 4021}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-1",
+                "handle": 1291,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "br-bae9a3398396"}},
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"jump": {"target": "DOCKER-ISOLATION-STAGE-2"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-1",
+                "handle": 20,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 217648, "bytes": 12108397}},
+                    {"jump": {"target": "DOCKER-ISOLATION-STAGE-2"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-1",
+                "handle": 4,
+                "expr": [{"counter": {"packets": 1041367, "bytes": 4421770493}}, {"return": None}],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-2",
+                "handle": 1292,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"drop": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-2",
+                "handle": 21,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"drop": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-ISOLATION-STAGE-2",
+                "handle": 5,
+                "expr": [{"counter": {"packets": 217648, "bytes": 12108397}}, {"return": None}],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1293,
+                "expr": [{"counter": {"packets": 474896, "bytes": 3456531213}}, {"jump": {"target": "DOCKER-USER"}}],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1290,
+                "expr": [
+                    {"counter": {"packets": 474896, "bytes": 3456531213}},
+                    {"jump": {"target": "DOCKER-ISOLATION-STAGE-1"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1289,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"xt": {"type": "match", "name": "conntrack"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1288,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"jump": {"target": "DOCKER"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1287,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "br-bae9a3398396"}},
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 1286,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "br-bae9a3398396"}},
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "br-bae9a3398396"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 18,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"xt": {"type": "match", "name": "conntrack"}},
+                    {"counter": {"packets": 292965, "bytes": 3174877421}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 17,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"jump": {"target": "DOCKER"}},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 16,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 217648, "bytes": 12108397}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 15,
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}},
+                    {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}},
+                    {"counter": {"packets": 0, "bytes": 0}},
+                    {"accept": None},
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "DOCKER-USER",
+                "handle": 23,
+                "expr": [{"counter": {"packets": 1041367, "bytes": 4421770493}}, {"return": None}],
+            }
+        },
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_initialize_nftables_regression(mocker):
+    """test regression from server with docker rule that broke detection"""
+    mocker.patch(
+        "aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=_mock_ruleset_regression["nftables"]
+    )
+    execute_json_nft_commands = mocker.Mock(return_value=[])
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", execute_json_nft_commands)
+
+    initialize_nftables()
+    # No commands
+    assert execute_json_nft_commands.call_count == 1
+    assert execute_json_nft_commands.call_args[0][0] == [
+        {"add": {"chain": {"family": "ip", "name": "aleph-supervisor-nat", "table": "nat"}}},
+        {
+            "add": {
+                "rule": {
+                    "chain": "POSTROUTING",
+                    "expr": [{"jump": {"target": "aleph-supervisor-nat"}}],
+                    "family": "ip",
+                    "table": "nat",
+                }
+            }
+        },
+        {"add": {"chain": {"family": "ip", "name": "aleph-supervisor-filter", "table": "filter"}}},
+        {
+            "add": {
+                "rule": {
+                    "chain": "FORWARD",
+                    "expr": [{"jump": {"target": "aleph-supervisor-filter"}}],
+                    "family": "ip",
+                    "table": "filter",
+                }
+            }
+        },
+        {
+            "add": {
+                "rule": {
+                    "chain": "aleph-supervisor-filter",
+                    "expr": [
+                        {"match": {"left": {"ct": {"key": "state"}}, "op": "in", "right": ["related", "established"]}},
+                        {"accept": None},
+                    ],
+                    "family": "ip",
+                    "table": "filter",
+                }
+            }
+        },
+        {"add": {"chain": {"family": "ip", "name": "aleph-supervisor-prerouting", "table": "nat"}}},
+        {
+            "add": {
+                "rule": {
+                    "chain": "PREROUTING",
+                    "expr": [{"jump": {"target": "aleph-supervisor-prerouting"}}],
+                    "family": "ip",
+                    "table": "nat",
+                }
+            }
+        },
+    ]
