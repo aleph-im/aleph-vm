@@ -1,6 +1,6 @@
 """
 IPv4 network setup using NFTABLES.
-Add Nat to the VM in ipv4 and port forwarding for direct acess.
+Add Nat to the VM in ipv4 and port forwarding for direct access.
 """
 
 import json
