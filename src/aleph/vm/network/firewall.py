@@ -524,9 +524,11 @@ def add_port_redirect_rule(
         The exit code from executing the nftables commands
     """
     chain = add_or_get_prerouting_chain()
-    commands = [
-        {
-            "add": {
+    table = get_table_for_hook("forward")
+
+    return ensure_entities(
+        [
+            {
                 "rule": {
                     "family": "ip",
                     "table": "nat",
@@ -551,14 +553,9 @@ def add_port_redirect_rule(
                         },
                     ],
                 }
-            }
-        },
-    ]
-    # Add rule to accept that traffic on the host interface to that destination port
-    table = get_table_for_hook("forward")
-    commands += [
-        {
-            "add": {
+            },
+            # Add rule to accept that traffic on the host interface to that destination port
+            {
                 "rule": {
                     "family": "ip",
                     "table": table,
@@ -581,11 +578,9 @@ def add_port_redirect_rule(
                         {"accept": None},
                     ],
                 }
-            }
-        }
-    ]
-
-    return execute_json_nft_commands(commands)
+            },
+        ]
+    )
 
 
 def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> dict:
