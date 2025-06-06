@@ -509,6 +509,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     """
     nft_ruleset = get_existing_nftables_ruleset()
     chain = add_or_get_prerouting_chain()
+    table = chain['table']
 
     commands = []
 
@@ -517,7 +518,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
             isinstance(entry, dict)
             and "rule" in entry
             and entry["rule"].get("family") == "ip"
-            and entry["rule"].get("table") == "nat"
+            and entry["rule"].get("table") == table
             and entry["rule"].get("chain") == chain["name"]
             and "expr" in entry["rule"]
         ):
@@ -541,8 +542,8 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
                         "delete": {
                             "rule": {
                                 "family": "ip",
-                                "table": "nat",
-                                "chain": "prerouting",
+                                "table": table,
+                                "chain": chain["name"],
                                 "handle": entry["rule"]["handle"],
                             }
                         }
