@@ -28,6 +28,7 @@ from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
 from .models import ExecutableContent, VmExecution
+from .network.firewall import setup_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ class VmPool:
                     if saved_execution.gpus
                     else []
                 )
-                execution.mapped_ports = dict(**saved_execution.mapped_ports) or {}
+                execution.mapped_ports = dict(**saved_execution.mapped_ports) if saved_execution.mapped_ports else {}
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
@@ -300,6 +301,8 @@ class VmPool:
                             update_service=False,
                         )
                         logger.debug(f"Re-added ndp_proxy rule for existing interface {tap_interface.device_name}")
+                    # Ensure the routing table and rule for the VM are present
+                    setup_nftables_for_vm(vm_id, interface=tap_interface)
                 else:
                     tap_interface = None
 
