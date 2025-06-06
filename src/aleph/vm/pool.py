@@ -264,7 +264,7 @@ class VmPool:
                 continue
 
             vm_id = saved_execution.vm_id
-
+            logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
             message_dict = json.loads(saved_execution.message)
             original_dict = json.loads(saved_execution.original_message)
 
@@ -276,6 +276,7 @@ class VmPool:
                 systemd_manager=self.systemd_manager,
                 persistent=saved_execution.persistent,
             )
+
 
             if execution.is_running:
                 # TODO: Improve the way that we re-create running execution
