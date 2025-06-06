@@ -143,6 +143,14 @@ def add_entity_if_not_present(nft_ruleset, entity: dict[EntityType, dict]) -> li
     return commands
 
 
+def add_entities_if_not_present(nft_ruleset: list[dict], entites: list[dict[str, dict]]) -> list[dict]:
+    """Return the nft command to create entity if it doesn't exist within the ruleset"""
+    commands = []
+    for entity in entites:
+        commands += add_entity_if_not_present(nft_ruleset, entity)
+    return commands
+
+
 def initialize_nftables() -> None:
     """
     Initializes `nftables` configurations for managing networking rules and chains. The
@@ -339,62 +347,75 @@ def remove_chain(name: str) -> dict:
     return execute_json_nft_commands(commands)
 
 
-def add_postrouting_chain(name: str) -> dict:
-    """Adds a chain and creates a rule from the base chain with the postrouting hook.
-    Returns the exit code from executing the nftables commands"""
+def add_postrouting_chain(chain_name: str) -> dict:
+    """Adds a chain and creates a rule from the base chain with the forward hook.
+    Returns the output from executing the nftables commands"""
     table = get_table_for_hook("postrouting")
-    add_chain("ip", table, name)
-    command = [
-        {
-            "add": {
+    return ensure_entities(
+        [
+            # Chain for VM
+            {
+                "chain": {
+                    "family": "ip",
+                    "table": table,
+                    "name": chain_name,
+                }
+            },
+            # Jump to that chain
+            {
                 "rule": {
                     "family": "ip",
                     "table": table,
                     "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
-                    "expr": [{"jump": {"target": name}}],
+                    "expr": [{"jump": {"target": chain_name}}],
                 }
-            }
-        }
-    ]
-    return execute_json_nft_commands(command)
+            },
+        ],
+    )
 
 
-def add_forward_chain(name: str) -> dict:
-    """Adds a chain and creates a rule from the base chain with the forward hook.
-    Returns the exit code from executing the nftables commands"""
-    table = get_table_for_hook("forward")
+def ensure_entities(entities: list[dict[str, dict]]) -> dict:
+    """Ensure entities are present in the nftables ruleset. Execute them
+    Returns the output from executing the nftables commands"""
     nft_ruleset = get_existing_nftables_ruleset()
-    commands = add_entity_if_not_present(
-        nft_ruleset,
-        {
-            "chain": {
-                "family": "ip",
-                "table": table,
-                "name": name,
-            }
-        },
-    )
-    commands += add_entity_if_not_present(
-        nft_ruleset,
-        {
-            "rule": {
-                "family": "ip",
-                "table": table,
-                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
-                "expr": [{"jump": {"target": name}}],
-            }
-        },
-    )
+    commands = add_entities_if_not_present(nft_ruleset, entities)
     return execute_json_nft_commands(commands)
+
+
+def add_forward_chain(chain_name: str) -> dict:
+    """Adds a chain and creates a rule from the base chain with the forward hook.
+    Returns the output from executing the nftables commands"""
+    table = get_table_for_hook("forward")
+    return ensure_entities(
+        [
+            # Chain for VM
+            {
+                "chain": {
+                    "family": "ip",
+                    "table": table,
+                    "name": chain_name,
+                }
+            },
+            # Jump to that chain
+            {
+                "rule": {
+                    "family": "ip",
+                    "table": table,
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+                    "expr": [{"jump": {"target": chain_name}}],
+                }
+            },
+        ],
+    )
 
 
 def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic to be masqueraded (NAT)
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("postrouting")
-    command = [
-        {
-            "add": {
+    return ensure_entities(
+        [
+            {
                 "rule": {
                     "family": "ip",
                     "table": table,
@@ -418,19 +439,17 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
                     ],
                 }
             }
-        }
-    ]
-
-    return execute_json_nft_commands(command)
+        ]
+    )
 
 
 def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward")
-    command = [
-        {
-            "add": {
+    return ensure_entities(
+        [
+            {
                 "rule": {
                     "family": "ip",
                     "table": table,
@@ -454,10 +473,8 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> dict:
                     ],
                 }
             }
-        }
-    ]
-
-    return execute_json_nft_commands(command)
+        ]
+    )
 
 
 def add_or_get_prerouting_chain() -> dict:
