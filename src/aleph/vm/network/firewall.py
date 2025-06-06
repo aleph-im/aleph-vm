@@ -509,7 +509,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     """
     nft_ruleset = get_existing_nftables_ruleset()
     chain = add_or_get_prerouting_chain()
-    table = chain['table']
+    table = chain["table"]
 
     commands = []
 
