@@ -594,7 +594,7 @@ def add_port_redirect_rule(
                             "match": {
                                 "op": "==",
                                 "left": {"meta": {"key": "iifname"}},
-                                "right": interface.device_name,
+                                "right": settings.NETWORK_INTERFACE,
                             }
                         },
                         {
