@@ -97,7 +97,7 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
-    mapped_ports: dict[int, dict] = {}  # Port redirect to the VM
+    mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
