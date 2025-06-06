@@ -113,10 +113,19 @@ def is_entity_present(nft_ruleset: list[dict], t: EntityType, **kwargs) -> bool:
 
 
 def _is_superset(a, b):
-    for k, v in a.items():
-        if b.get(k) != v:
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k, v in a.items():
+            if k not in b:
+                return False
+            if not _is_superset(v, b[k]):
+                return False
+        return True
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
             return False
-    return True
+        return all(_is_superset(x, y) for x, y in zip(a, b))
+    else:
+        return a == b
 
 
 def if_chain_exists(nft_ruleset: list[dict], family: str, table: str, name: str) -> bool:
@@ -285,7 +294,7 @@ def initialize_nftables() -> None:
                         "match": {
                             "op": "in",
                             "left": {"ct": {"key": "state"}},
-                            "right": ["related", "established"],
+                            "right": ["established", "related"],
                         }
                     },
                     {"accept": None},
