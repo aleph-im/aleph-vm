@@ -45,7 +45,7 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
     return output
 
 
-def get_existing_nftables_ruleset() -> dict:
+def get_existing_nftables_ruleset() -> list[dict]:
     """Retrieves the full nftables ruleset and returns it"""
     # List all NAT rules
     commands = [{"list": {"ruleset": {"family": "ip"}}}]
@@ -91,11 +91,72 @@ def check_if_table_exists(family: str, table: str) -> bool:
             isinstance(entry, dict)
             and "table" in entry
             # Key "family" was reported by users as not always present, so we use .get() instead of [].
-            and entry.get("family") == family
-            and entry.get("name") == table
+            # Fixed an issue with this so it might not be the case anymroe
+            and entry["table"].get("family") == family
+            and entry["table"].get("name") == table
         ):
             return True
     return False
+
+
+def find_entity(nft_ruleset: list[dict], t: Literal["chain"] | Literal["rule"], **kwargs) -> dict | None:
+    """Is the rule/chain with these paramater present in the nft rule lists
+
+    Note: This check if at least the passed kwargs is present but ignore additional attribute on the entity
+    This avoiding problem with for e.g the handle
+    But it might lead to false positive it they are unexpected parameters"""
+    for entry in nft_ruleset:
+        if not isinstance(entry, dict) or t not in entry:
+            continue
+        e = entry[t]
+        for k, v in kwargs.items():
+            if e.get(k) != v:
+                continue
+        return e
+    return None
+
+
+def is_entity_present(nft_ruleset: list[dict], t: Literal["chain"] | Literal["rule"], **kwargs) -> bool:
+    """Is the rule/chain with these paramater present in the nft rule lists
+
+    Note: This check if at least the passed kwargs is present but ignore additional attribute on the entity
+    This avoiding problem with for e.g the handle
+    But it might lead to false positive it they are unexpected parameters"""
+    for entry in nft_ruleset:
+        if not isinstance(entry, dict) or t not in entry:
+            continue
+        e = entry[t]
+        if _is_superset(kwargs, e):
+            return True
+    return False
+
+
+def _is_superset(a, b):
+    for k, v in a.items():
+        if b.get(k) != v:
+            return False
+    return True
+
+
+def if_chain_exists(nft_ruleset: list[dict], family: str, table: str, name: str) -> bool:
+    """Checks whether the specified table exists in the nftables ruleset"""
+    return is_entity_present(
+        nft_ruleset,
+        t="chain",
+        family=family,
+        table=table,
+        name=name,
+    )
+
+
+def add_entity_if_not_present(nft_ruleset, entity: dict[EntityType, dict]) -> list[dict]:
+    """Return the nft command to create entity if it doesn't exist within the ruleset"""
+    assert len(entity) == 1
+    commands = []
+    for k, v in entity.items():
+        if not is_entity_present(nft_ruleset, k, **v):
+            commands.append({"add": {k: v}})
+    return commands
 
 
 def initialize_nftables() -> None:
@@ -109,6 +170,7 @@ def initialize_nftables() -> None:
     to contains our rules.
 
     """
+    nft_ruleset = get_existing_nftables_ruleset()
     commands: list[dict] = []
     base_chains: dict[str, dict[str, str]] = {
         "postrouting": {},
@@ -116,87 +178,108 @@ def initialize_nftables() -> None:
     }
     for hook in base_chains:
         chains = get_base_chains_for_hook(hook)
-        if len(chains) == 0:
-            table = "nat" if hook == "postrouting" else "filter"
-            chain = "POSTROUTING" if hook == "postrouting" else "FORWARD"
-            prio = 100 if hook == "postrouting" else 0
-            if not check_if_table_exists("ip", table):
-                commands.append({"add": {"table": {"family": "ip", "name": table}}})
-            new_chain = {
-                "chain": {
-                    "family": "ip",
-                    "table": table,
-                    "name": chain,
-                    "type": table,
-                    "hook": hook,
-                    "prio": prio,
-                }
+        if len(chains) == 0:  # If no chain create it.
+            default_base_chain_hook_postrouting = {
+                "family": "ip",
+                "table": "nat",
+                "name": "POSTROUTING",
+                "type": "filter",
+                "hook": "postrouting",
+                "prio": 100,
             }
+            default_base_chain_hook_forward = {
+                "family": "ip",
+                "table": "filter",
+                "name": "FORWARD",
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0,
+            }
+            chain = default_base_chain_hook_forward if hook == "forward" else default_base_chain_hook_postrouting
+            # Check if table exists, if not create it.
+            commands += add_entity_if_not_present(
+                nft_ruleset,
+                {
+                    "table": {
+                        "family": "ip",
+                        "name": chain['table'],
+                }
+                    }
+            )
+            new_chain = {"chain": chain}
             commands.append({"add": new_chain})
             chains.append(new_chain)
         # If multiple base chain for the hook, use the less priority one
         chains.sort(key=lambda x: x["chain"]["prio"])
         base_chains[hook] = chains[0]["chain"]
 
-    commands.append(
-        _make_add_chain_command(
-            "ip",
-            base_chains["postrouting"]["table"],
-            f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
-        )
-    )
-    commands.append(
+    # Add chain aleph-supervisor-nat
+    commands += add_entity_if_not_present(
+        nft_ruleset,
         {
-            "add": {
-                "rule": {
-                    "family": "ip",
-                    "table": base_chains["postrouting"]["table"],
-                    "chain": base_chains["postrouting"]["name"],
-                    "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat"}}],
-                }
+            "chain": {
+                "family": "ip",
+                "table": base_chains["postrouting"]["table"],
+                "name": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
             }
-        }
+        },
     )
 
-    commands.append(
-        _make_add_chain_command(
-            "ip",
-            base_chains["forward"]["table"],
-            f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
-        )
-    )
-    commands.append(
+    # Add jump to chain aleph-supervisor-nat
+    commands += add_entity_if_not_present(
+        nft_ruleset,
         {
-            "add": {
-                "rule": {
-                    "family": "ip",
-                    "table": base_chains["forward"]["table"],
-                    "chain": base_chains["forward"]["name"],
-                    "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter"}}],
-                }
+            "rule": {
+                "family": "ip",
+                "table": base_chains["postrouting"]["table"],
+                "chain": base_chains["postrouting"]["name"],
+                "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat"}}],
             }
-        }
+        },
     )
-    commands.append(
+    # Add chain aleph-supervisor-filter
+    commands += add_entity_if_not_present(
+        nft_ruleset,
         {
-            "add": {
-                "rule": {
-                    "family": "ip",
-                    "table": base_chains["forward"]["table"],
-                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
-                    "expr": [
-                        {
-                            "match": {
-                                "op": "in",
-                                "left": {"ct": {"key": "state"}},
-                                "right": ["related", "established"],
-                            }
-                        },
-                        {"accept": None},
-                    ],
-                }
+            "chain": {
+                "family": "ip",
+                "table": base_chains["forward"]["table"],
+                "name": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
             }
-        }
+        },
+    )
+    # Add jump to chain aleph-supervisor-filter
+    commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "rule": {
+                "family": "ip",
+                "table": base_chains["forward"]["table"],
+                "chain": base_chains["forward"]["name"],
+                "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter"}}],
+            }
+        },
+    )
+    # Add rule to allow return traffic and already established/related connections
+    commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "rule": {
+                "family": "ip",
+                "table": base_chains["forward"]["table"],
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "in",
+                            "left": {"ct": {"key": "state"}},
+                            "right": ["related", "established"],
+                        }
+                    },
+                    {"accept": None},
+                ],
+            }
+        },
     )
 
     execute_json_nft_commands(commands)
@@ -296,20 +379,28 @@ def add_forward_chain(name: str) -> dict:
     """Adds a chain and creates a rule from the base chain with the forward hook.
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward")
-    add_chain("ip", table, name)
-    command = [
+    commands = add_entity_if_not_present(
+        get_existing_nftables_ruleset(),
         {
-            "add": {
-                "rule": {
-                    "family": "ip",
-                    "table": table,
-                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
-                    "expr": [{"jump": {"target": name}}],
-                }
+            "chain": {
+                "family": "ip",
+                "table": table,
+                "name": name,
             }
-        }
-    ]
-    return execute_json_nft_commands(command)
+        },
+    )
+    commands += add_entity_if_not_present(
+        get_existing_nftables_ruleset(),
+        {
+            "rule": {
+                "family": "ip",
+                "table": table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+                "expr": [{"jump": {"target": name}}],
+            }
+        },
+    )
+    return execute_json_nft_commands(commands)
 
 
 def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
@@ -461,7 +552,7 @@ def add_port_redirect_rule(
             }
         },
     ]
-    # Add rule to accept that trafic on the host interface to that destination port
+    # Add rule to accept that traffic on the host interface to that destination port
     table = get_table_for_hook("forward")
     commands += [
         {
