@@ -29,7 +29,10 @@ def get_customized_nftables() -> Nftables:
 
 def execute_json_nft_commands(commands: list[dict]) -> dict:
     """Executes a list of nftables commands and returns the json output"""
+    if not commands:
+        return {}
     nft = get_customized_nftables()
+
     commands_dict = {"nftables": commands}
     try:
         logger.debug("Validating nftables rules")
@@ -37,7 +40,15 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
     except Exception as e:
         logger.error(f"Failed to verify nftables rules: {e}")
 
-    logger.debug("Inserting nftables rules")
+    def _format_command_for_debug():
+        l = []
+        for c in commands:
+            for command_name, entity in c.items():
+                for entity_type, entity_args in entity.items():
+                    l.append(f"{command_name} {entity_type} {entity_args.get('name', '')}")
+        return ", ".join(l)
+
+    logger.debug("Nftables commands: %s", _format_command_for_debug())
     return_code, output, error = nft.json_cmd(commands_dict)
     if return_code != 0:
         logger.error("Failed to add nftables rules: %s -- %s", error, json.dumps(commands, indent=4))
