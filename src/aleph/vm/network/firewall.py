@@ -670,33 +670,23 @@ def check_nftables_redirections(port: int) -> bool:
         True if the port is being used in any NAT redirection rules
     """
     try:
-        rules = get_existing_nftables_ruleset()
-        # Navigate through the JSON structure
-        for item in rules:
-            if "rule" not in item:
+        for item in get_existing_nftables_ruleset():
+            if not isinstance(item, dict) or "rule" not in item:
                 continue
 
-            rule = item["rule"]
-            if "expr" not in rule:
-                continue
+            expr = item["rule"].get("expr", [])
+            for e in expr:
+                # Check destination port match
+                match = e.get("match", {})
+                if match.get("left", {}).get("payload", {}).get("field") == "dport" and match.get("right") == port:
+                    return True
 
-            for expr in rule["expr"]:
-                # Check destination port in matches
-                if "match" in expr:
-                    match = expr["match"]
-                    if "left" in match and "payload" in match["left"]:
-                        payload = match["left"]["payload"]
-                        if payload.get("field") == "dport" and match.get("right") == port:
-                            return True
-
-                # Check port in dnat rules
-                if "dnat" in expr:
-                    dnat = expr["dnat"]
-                    if dnat.get("port") == port:
-                        return True
+                # Check DNAT port
+                if e.get("dnat", {}).get("port") == port:
+                    return True
 
         return False
 
     except Exception as e:
         logger.warning(f"Error checking NAT redirections: {e}")
-        return False  # Assume no redirections in case of error
+        return False
