@@ -83,24 +83,10 @@ def get_table_for_hook(hook: str, family: str = "ip") -> str:
     return table
 
 
-def find_entity(nft_ruleset: list[dict], t: Literal["chain"] | Literal["rule"], **kwargs) -> dict | None:
-    """Is the rule/chain with these paramater present in the nft rule lists
-
-    Note: This check if at least the passed kwargs is present but ignore additional attribute on the entity
-    This avoiding problem with for e.g the handle
-    But it might lead to false positive it they are unexpected parameters"""
-    for entry in nft_ruleset:
-        if not isinstance(entry, dict) or t not in entry:
-            continue
-        e = entry[t]
-        for k, v in kwargs.items():
-            if e.get(k) != v:
-                continue
-        return e
-    return None
+EntityType = Literal["table", "rule", "chain"]
 
 
-def is_entity_present(nft_ruleset: list[dict], t: Literal["chain"] | Literal["rule"], **kwargs) -> bool:
+def is_entity_present(nft_ruleset: list[dict], t: EntityType, **kwargs) -> bool:
     """Is the rule/chain with these paramater present in the nft rule lists
 
     Note: This check if at least the passed kwargs is present but ignore additional attribute on the entity
@@ -136,6 +122,7 @@ def if_chain_exists(nft_ruleset: list[dict], family: str, table: str, name: str)
 def add_entity_if_not_present(nft_ruleset, entity: dict[EntityType, dict]) -> list[dict]:
     """Return the nft command to create entity if it doesn't exist within the ruleset"""
     assert len(entity) == 1
+
     commands = []
     for k, v in entity.items():
         if not is_entity_present(nft_ruleset, k, **v):
@@ -143,12 +130,20 @@ def add_entity_if_not_present(nft_ruleset, entity: dict[EntityType, dict]) -> li
     return commands
 
 
-def add_entities_if_not_present(nft_ruleset: list[dict], entites: list[dict[str, dict]]) -> list[dict]:
-    """Return the nft command to create entity if it doesn't exist within the ruleset"""
+def add_entities_if_not_present(nft_ruleset: list[dict], entites: list[dict[EntityType, dict]]) -> list[dict]:
+    """Return the nft command to create the if it doesn't exist within the ruleset"""
     commands = []
     for entity in entites:
         commands += add_entity_if_not_present(nft_ruleset, entity)
     return commands
+
+
+def ensure_entities(entities: list[dict[EntityType, dict]]) -> dict:
+    """Ensure entities are present in the nftables ruleset. Execute them
+    Returns the output from executing the nftables commands"""
+    nft_ruleset = get_existing_nftables_ruleset()
+    commands = add_entities_if_not_present(nft_ruleset, entities)
+    return execute_json_nft_commands(commands)
 
 
 def initialize_nftables() -> None:
@@ -165,6 +160,7 @@ def initialize_nftables() -> None:
     nft_ruleset = get_existing_nftables_ruleset()
     commands: list[dict] = []
     base_chains: dict[str, dict[str, str]] = {
+        "prerouting": {},
         "postrouting": {},
         "forward": {},
     }
@@ -284,25 +280,6 @@ def teardown_nftables() -> None:
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter")
 
 
-def add_chain(family: str, table: str, name: str) -> dict:
-    """Helper function to quickly create a new chain in the nftables ruleset
-    Returns the exit code from executing the nftables commands"""
-    commands = [_make_add_chain_command(family, table, name)]
-    return execute_json_nft_commands(commands)
-
-
-def _make_add_chain_command(family: str, table: str, name: str) -> dict:
-    return {
-        "add": {
-            "chain": {
-                "family": family,
-                "table": table,
-                "name": name,
-            }
-        }
-    }
-
-
 def remove_chain(name: str) -> dict:
     """Removes all rules that jump to the chain, and then removes the chain itself.
     Returns the exit code from executing the nftables commands"""
@@ -372,14 +349,6 @@ def add_postrouting_chain(chain_name: str) -> dict:
             },
         ],
     )
-
-
-def ensure_entities(entities: list[dict[str, dict]]) -> dict:
-    """Ensure entities are present in the nftables ruleset. Execute them
-    Returns the output from executing the nftables commands"""
-    nft_ruleset = get_existing_nftables_ruleset()
-    commands = add_entities_if_not_present(nft_ruleset, entities)
-    return execute_json_nft_commands(commands)
 
 
 def add_forward_chain(chain_name: str) -> dict:
