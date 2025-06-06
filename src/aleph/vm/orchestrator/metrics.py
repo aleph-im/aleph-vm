@@ -114,7 +114,9 @@ async def delete_record(execution_uuid: str):
 async def get_execution_records() -> Iterable[ExecutionRecord]:
     """Get the execution records from the database."""
     async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
-        result = await session.execute(select(ExecutionRecord))  # Use execute for querying
+        result = await session.execute(
+            select(ExecutionRecord).order_by(ExecutionRecord.time_defined.desc())
+        )  # Use execute for querying
         executions = result.scalars().all()
         await session.commit()
         return executions

@@ -28,6 +28,7 @@ from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
 from .models import ExecutableContent, VmExecution
+from .network.firewall import setup_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ class VmPool:
                 continue
 
             vm_id = saved_execution.vm_id
-
+            logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
             message_dict = json.loads(saved_execution.message)
             original_dict = json.loads(saved_execution.original_message)
 
@@ -284,14 +285,19 @@ class VmPool:
                     if saved_execution.gpus
                     else []
                 )
-                execution.mapped_ports = saved_execution.mapped_ports or {}
+
+                mapped_ports = saved_execution.mapped_ports if saved_execution.mapped_ports else {}
+                # Ensure the key are int and not string. They get converted when serialized in the db
+                for k, v in mapped_ports.items():
+                    execution.mapped_ports[int(k)] = v
+
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
                     tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
 
-                    # Activate ndp_proxy for existing interface if needed
+                    # Activate ndp_proxy for existing interfaces if needed
                     if self.network.ndp_proxy and self.network.interface_exists(vm_id):
                         ipv6_gateway = tap_interface.host_ipv6
                         await self.network.ndp_proxy.add_range(
@@ -300,6 +306,8 @@ class VmPool:
                             update_service=False,
                         )
                         logger.debug(f"Re-added ndp_proxy rule for existing interface {tap_interface.device_name}")
+                    # Ensure the routing table and rule for the VM are present
+                    setup_nftables_for_vm(vm_id, interface=tap_interface)
                 else:
                     tap_interface = None
 
