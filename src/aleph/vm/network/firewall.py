@@ -83,22 +83,6 @@ def get_table_for_hook(hook: str, family: str = "ip") -> str:
     return table
 
 
-def check_if_table_exists(family: str, table: str) -> bool:
-    """Checks whether the specified table exists in the nftables ruleset"""
-    nft_ruleset = get_existing_nftables_ruleset()
-    for entry in nft_ruleset:
-        if (
-            isinstance(entry, dict)
-            and "table" in entry
-            # Key "family" was reported by users as not always present, so we use .get() instead of [].
-            # Fixed an issue with this so it might not be the case anymroe
-            and entry["table"].get("family") == family
-            and entry["table"].get("name") == table
-        ):
-            return True
-    return False
-
-
 def find_entity(nft_ruleset: list[dict], t: Literal["chain"] | Literal["rule"], **kwargs) -> dict | None:
     """Is the rule/chain with these paramater present in the nft rule lists
 
@@ -202,9 +186,9 @@ def initialize_nftables() -> None:
                 {
                     "table": {
                         "family": "ip",
-                        "name": chain['table'],
-                }
+                        "name": chain["table"],
                     }
+                },
             )
             new_chain = {"chain": chain}
             commands.append({"add": new_chain})
@@ -379,8 +363,9 @@ def add_forward_chain(name: str) -> dict:
     """Adds a chain and creates a rule from the base chain with the forward hook.
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward")
+    nft_ruleset = get_existing_nftables_ruleset()
     commands = add_entity_if_not_present(
-        get_existing_nftables_ruleset(),
+        nft_ruleset,
         {
             "chain": {
                 "family": "ip",
@@ -390,7 +375,7 @@ def add_forward_chain(name: str) -> dict:
         },
     )
     commands += add_entity_if_not_present(
-        get_existing_nftables_ruleset(),
+        nft_ruleset,
         {
             "rule": {
                 "family": "ip",
