@@ -4,7 +4,6 @@ from aleph.vm.network import firewall
 from aleph.vm.network.firewall import (
     add_entity_if_not_present,
     get_base_chains_for_hook,
-    if_chain_exists,
     initialize_nftables,
 )
 
@@ -44,38 +43,6 @@ async def test_get_base_chains_for_hook(mocker):
             "policy": "accept",
         }
     }
-
-
-@pytest.mark.asyncio
-async def test_check_if_chain_exist_true(mocker):
-    rules = [
-        {"chain": {"family": "ip", "table": "nat", "name": "aleph-supervisor-nat", "handle": 17}},
-    ]
-    assert (
-        if_chain_exists(
-            rules,
-            family="ip",
-            table="nat",
-            name="aleph-supervisor-nat",
-        )
-        is True
-    )
-
-
-@pytest.mark.asyncio
-async def test_check_if_chain_exist_false(mocker):
-    rules = [
-        {"chain": {"family": "ip", "table": "nat", "name": "aleph-supervisor-nat", "handle": 17}},
-    ]
-    assert (
-        if_chain_exists(
-            rules,
-            family="ip",
-            table="nat",
-            name="aleph-supervisor-filter",
-        )
-        is True
-    )
 
 
 @pytest.mark.asyncio
