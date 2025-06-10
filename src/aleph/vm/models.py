@@ -108,8 +108,7 @@ class VmExecution:
         try:
             port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
             vm_port_forwarding = port_forwarding_settings.get(self.vm_hash, {}) or {}
-            if "ports" in ports_requests:
-                ports_requests = vm_port_forwarding.get("ports", {})
+            ports_requests = vm_port_forwarding.get("ports", {})
         except Exception:
             logger.info("Could not fetch the port redirect settings for user %s", message.address, exc_info=True)
 
