@@ -396,9 +396,9 @@ async def run_executable_http(scope: dict) -> tuple[dict, dict, str, bytes | Non
                 tries += 1
                 headers, body = await make_request(session, scope)
             except aiohttp.ClientConnectorError:
-                if tries > 20:
+                if tries > 10:
                     headers, body = show_loading()
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.5)
 
     output = ""  # Process stdout is not captured per request
     output_data = None
