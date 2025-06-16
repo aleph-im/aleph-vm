@@ -182,7 +182,7 @@ def get_current_backends(socket_path, backend_name):
     return servers
 
 
-def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1, max_retries=3):
+def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     """
     Update HAProxy backend servers config based on the map file.
 
