@@ -706,4 +706,5 @@ async def operate_update(request: web.Request) -> web.Response:
         # Configuration will be fetched when the VM start so no need to return an error
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
     await execution.fetch_port_redirect_config_and_setup()
+    await pool.update_domain_mapping()
     return web.json_response({}, dumps=dumps_for_json, status=200)
