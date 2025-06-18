@@ -28,6 +28,7 @@ from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
+from .haproxy import fetch_list_and_update2
 from .models import ExecutableContent, VmExecution
 from .network.firewall import setup_nftables_for_vm
 
@@ -330,7 +331,7 @@ class VmPool:
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
-        await self.update_domain_mapping()
+        await self.update_domain_mapping(force_update=True)
         logger.info(f"Loaded {len(self.executions)} executions")
 
     async def stop(self):
@@ -449,7 +450,7 @@ class VmPool:
                 raise Exception(err)
         return resources
 
-    async def update_domain_mapping(self):
+    async def update_domain_mapping(self, force_update=False):
         socket = settings.HAPROXY_SOCKET
         if not pathlib.Path(socket).exists():
             logger.info("HAProxy not running? socket not found, skip domain mapping update")
@@ -460,6 +461,7 @@ class VmPool:
         await fetch_list_and_update2(
             socket,
             local_vms,
+            force_update=force_update,
         )
 
 
