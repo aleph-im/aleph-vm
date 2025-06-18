@@ -16,6 +16,7 @@ import re
 import socket
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 
@@ -53,13 +54,13 @@ def validate_target(target):
     return True
 
 
-def send_socket_command(socket_path, command):
+def send_socket_command(socket_path: Path | str, command):
     """Send a command to the HAProxy socket and return the response."""
     logger.debug(f"Send socket command: {command}")
 
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(socket_path)
+        sock.connect(str(socket_path))
         sock.send(f"{command}\n".encode())
 
         # Read the response
@@ -75,7 +76,7 @@ def send_socket_command(socket_path, command):
         logger.debug(f"Response: {response!r}")
         return response
     except Exception as e:
-        logger.error(f"Socket command failed: {e!s}")
+        logger.exception(f"Socket command failed: {e!s}")
         return None
 
 
