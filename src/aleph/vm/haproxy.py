@@ -20,6 +20,21 @@ from pathlib import Path
 
 import aiohttp
 
+
+# This should match the config in haproxy.cfg
+HAPROXY_BACKENDS = [
+    {
+        "name": "bk_http",
+        "port": 80,
+        "map_file": "/etc/haproxy/domain.map",
+    },
+    {
+        "name": "bk_ssl",
+        "port": 443,
+        "map_file": "/etc/haproxy/https_domain.map",
+    },
+]
+
 logger = logging.getLogger(__name__)
 
 
@@ -290,20 +305,24 @@ async def fetch_list_() -> list[dict]:
             return []
         return instances
 
-async def fetch_list_and_update2(backend_name, map_file_path, port, socket_path, running_instances: list[str]):
-    send_socket_command(socket_path, 'show backend')
+async def fetch_list_and_update2(socket_path, local_vms: list[str]):
     instances = await fetch_list()
-    previous_mapfile = ""
+    # filter on local hash
+    instances = [i for i in instances if i["item_hash"] in local_vms]
+    # This should match the config in haproxy.cfg
+    for backend in HAPROXY_BACKENDS:
+        update_backend(backend['name'], backend["map_file"], backend["port"], socket_path, instances)
 
+
+def update_backend(backend_name, map_file_path, port, socket_path, instances):
     mapfile = Path(map_file_path)
+    previous_mapfile = ""
     if mapfile.exists():
         content = mapfile.read_text()
         previous_mapfile = content
 
     current_content = ""
     for instance in instances:
-        if instance["item_hash"] not in running_instances:
-            continue
         local_ip = instance["ipv4"]["local"]
         if local_ip:
             local_ip = local_ip.split("/")[0]
@@ -314,6 +333,9 @@ async def fetch_list_and_update2(backend_name, map_file_path, port, socket_path,
         mapfile.write_text(current_content)
         logger.info("Map file content changed, updating backends")
         update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+
+    else:
+        logger.debug("Map file content no modification")
 
 
 async def fetch_list_and_update(backend_name, map_file_path, port, socket_path, weight):

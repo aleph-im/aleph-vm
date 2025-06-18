@@ -330,8 +330,8 @@ class VmPool:
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
-
-        logger.debug(f"Loaded {len(self.executions)} executions")
+        await self.update_domain_mapping()
+        logger.info(f"Loaded {len(self.executions)} executions")
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
@@ -452,28 +452,14 @@ class VmPool:
     async def update_domain_mapping(self):
         socket = settings.HAPROXY_SOCKET
         if not pathlib.Path(socket).exists():
-            logger.info("haproxy socket not found, skip domain mapping update. HAProxy not running?")
+            logger.info("HAProxy not running? socket not found, skip domain mapping update")
             return False
 
-        map_file = "/etc/haproxy/https_domain.map"
-
-        local_port = 443
-        backend = "bk_ssl"
-        instances = list(self.executions.keys())
-        # await fetch_list_and_update2(
-        #     backend,
-        #     map_file,
-        #     local_port,
-        #     socket,
-        #     instances,
-        # )
+        local_vms = list(self.executions.keys())
 
         await fetch_list_and_update2(
-            "bk_http",
-            "/etc/haproxy/domain.map",
-            80,
             socket,
-            instances,
+            local_vms,
         )
 
 
