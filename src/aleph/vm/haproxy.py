@@ -244,8 +244,10 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     if servers_to_remove:
         logger.info(f"Removing {len(servers_to_remove)} servers no longer in map file")
         for server_name in servers_to_remove:
+            logger.info(f"Removing server: {server_name}")
+            command = f"set  server {backend_name}/{server_name} state maint"
+            response = send_socket_command(socket_path, command)
             command = f"del server {backend_name}/{server_name}"
-            logger.info(f"Removing server: {command}")
             response = send_socket_command(socket_path, command)
             logger.info(f"Response: {response}")
 
