@@ -3,23 +3,28 @@
 Instance domain support.
 aka HAProxy Dynamic Configuration Updater
 
-This script reads domain-to-IP mappings from a map file and uses HAProxy's
-socket commands to dynamically add/update backend servers without reloading
-the HAProxy configuration.
+HAProxy is a proxy server that is used to redirect the HTTP, HTTPS and SSL trafic
+to the instance, if they have it configured.
+
+This module get the instance domain ip mapping and update the HAProxy config
+both live via it's unix socket and via the map file.
+
+
+For the HAP protocol and commands used refer to
+https://www.haproxy.com/documentation/haproxy-configuration-manual/2-8r1/management/
+
+FIXME A known bug is that at HAProxy startup, the map file is loaded but the backend are
+not set.
 """
 
-import argparse
 import dataclasses
 import logging
 import os
 import re
 import socket
-import sys
-import time
 from pathlib import Path
 
 import aiohttp
-
 
 # This should match the config in haproxy.cfg
 HAPROXY_BACKENDS = [
@@ -199,14 +204,15 @@ def get_current_backends(socket_path, backend_name):
 
 
 def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
-    """
-    Update HAProxy backend servers config based on the map file.
+    """Update HAProxy backend servers config based on the map file.
 
-    Control HaProxy config via the unix socket
+    Sync the running config with the content of the map file.
 
-    This function:
-    1. Reads domain-to-IP mappings from the map file
-    2. For each mapping, adds or updates a server in the specified backend
+     This allow us to update the config without needing to reload or restart HAProxy.
+
+    It reads domain-to-IP mappings from a map file and uses HAProxy's
+    socket commands to dynamically add/update backend servers allowing update without requiring a reload
+    HAProxy.
     """
     mappings = parse_map_file(map_file_path)
     if not mappings:
@@ -270,33 +276,8 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     return True
 
 
-def watch_and_update(socket_path, backend_name, map_file_path, interval=60, weight=1, port=80):
-    """Watch the map file for changes and update HAProxy backends when needed."""
-    while True:
-        try:
-            fetch_list_and_update(backend_name, map_file_path, port, socket_path, weight)
-            time.sleep(interval)
-        except KeyboardInterrupt:
-            logger.info("Received keyboard interrupt, exiting")
-            break
-        except Exception as e:
-            logger.exception(f"Error in watch loop: {e!s}")
-            time.sleep(interval)
-
-
 
 async def fetch_list() -> list[dict]:
-    return [
-        {
-            "name": "echo.agot.be",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
-        }
-    ]
-
-
-async def fetch_list_() -> list[dict]:
     async with aiohttp.ClientSession() as client:
         resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
         resp.raise_for_status()
@@ -340,93 +321,3 @@ def update_backend(backend_name, map_file_path, port, socket_path, instances, fo
 
     else:
         logger.debug("Map file content no modification")
-
-
-async def fetch_list_and_update(backend_name, map_file_path, port, socket_path, weight):
-    with aiohttp.ClientSession() as client:
-        resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
-        resp.raise_for_status()
-        instances = resp.json()
-        # Should filter the instance we actually have
-        # instances = [i for i in instances if i['item_hash'] in pool.keys()]
-        if len(instances) == 0:
-            return
-    previous_mapfile = ""
-    if os.path.exists(map_file_path):
-        with open(map_file_path) as f:
-            previous_mapfile = f.read()
-
-    current_content = ""
-    for instance in instances:
-        local_ip = instance["ipv4"]["local"]
-        if local_ip:
-            local_ip:str = local_ip.split("/")[0]
-            if local_ip.endswith(".1"):
-                local_ip = local_ip.rstrip(".1") +  ".2"
-            current_content += f"{instance['name']} {local_ip}:{port}\n"
-    if current_content != previous_mapfile:
-        with open(map_file_path, "w") as file:
-            file.write(current_content)
-        logger.info("Map file content changed, updating backends")
-        update_haproxy_backends(socket_path, backend_name, map_file_path, weight)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Update HAProxy backends from a map file")
-    parser.add_argument("--socket", "-s", required=True, help="Path to HAProxy socket file")
-    parser.add_argument("--backend", "-b", required=True, help="Name of the backend to update")
-    parser.add_argument("--map-file", "-m", required=True, help="Path to domain-to-IP map file")
-    parser.add_argument("--weight", "-w", type=int, default=1, help="Server weight (default: 1)")
-    parser.add_argument("--watch", "-W", action="store_true", help="Watch map file for changes")
-    parser.add_argument(
-        "--interval",
-        "-i",
-        type=int,
-        default=60,
-        help="Watch interval in seconds (default: 60)",
-    )
-
-    parser.add_argument(
-        "--port",
-        "-p",
-        type=int,
-        default=80,
-        help="Specify port number on watch mode (default: 80)",
-    )
-
-    args = parser.parse_args()
-
-    # Validate socket path
-    if not os.path.exists(args.socket):
-        logger.error(f"HAProxy socket not found: {args.socket}")
-        return 1
-
-    # Validate map file
-    if not args.watch and not os.path.exists(args.map_file):
-        logger.error(f"Map file not found: {args.map_file}")
-        return 1
-
-    if args.watch:
-        logger.info(f"Watching map file {args.map_file} for changes, updating backend {args.backend}")
-        watch_and_update(
-            args.socket,
-            args.backend,
-            args.map_file,
-            args.interval,
-            args.weight,
-            args.port,
-        )
-    else:
-        result = update_haproxy_backends(args.socket, args.backend, args.map_file, args.weight)
-        return 0 if result else 1
-
-
-if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()],
-    )
-
-    sys.exit(main())
