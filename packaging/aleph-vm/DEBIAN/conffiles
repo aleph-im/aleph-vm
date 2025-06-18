@@ -4,7 +4,6 @@
 /etc/haproxy/https_domains.map
 /etc/haproxy/ssh_domains.map
 /etc/haproxy/haproxy.cfg
-/etc/haproxy/errors
 /etc/haproxy/errors/403.http
 /etc/haproxy/errors/408.http
 /etc/haproxy/errors/504.http
