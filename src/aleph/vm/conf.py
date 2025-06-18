@@ -333,6 +333,11 @@ class Settings(BaseSettings):
         description="Sensitive fields, redacted from `--print-settings`.",
     )
 
+    # Used to control HA Proxy
+    HAPROXY_SOCKET: Path = Field(
+        default=Path("/run/haproxy/admin.sock"), description="Control HAPROXY for domain mapping"
+    )
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if key != key.upper():
