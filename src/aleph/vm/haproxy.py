@@ -214,7 +214,8 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
         if server_name in current_servers:
             # FIXME : In the future, don't update the address if it hasn't changed'
             # Update existing server
-            command = f"set server {backend_name}/{server_name} addr,port {target} weight {weight} maxconn 30"
+            addr, port = target.split(":")
+            command = f"set server {backend_name}/{server_name} addr {addr} port {port}"
             logger.info(f"Updating server: {command}")
             response = send_socket_command(socket_path, command)
             if response and "not found" in response:
