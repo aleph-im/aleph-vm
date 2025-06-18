@@ -1,1 +1,14 @@
 /etc/aleph-vm/supervisor.env
+/etc/needrestart/conf.d/aleph-vm.conf
+/etc/haproxy/http_domains.map
+/etc/haproxy/https_domains.map
+/etc/haproxy/ssh_domains.map
+/etc/haproxy/haproxy.cfg
+/etc/haproxy/errors
+/etc/haproxy/errors/403.http
+/etc/haproxy/errors/408.http
+/etc/haproxy/errors/504.http
+/etc/haproxy/errors/500.http
+/etc/haproxy/errors/400.http
+/etc/haproxy/errors/503.http
+/etc/haproxy/errors/502.http
