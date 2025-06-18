@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pathlib
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -447,6 +448,33 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
+
+    async def update_domain_mapping(self):
+        socket = settings.HAPROXY_SOCKET
+        if not pathlib.Path(socket).exists():
+            logger.info("haproxy socket not found, skip domain mapping update. HAProxy not running?")
+            return False
+
+        map_file = "/etc/haproxy/https_domain.map"
+
+        local_port = 443
+        backend = "bk_ssl"
+        instances = list(self.executions.keys())
+        # await fetch_list_and_update2(
+        #     backend,
+        #     map_file,
+        #     local_port,
+        #     socket,
+        #     instances,
+        # )
+
+        await fetch_list_and_update2(
+            "bk_http",
+            "/etc/haproxy/domain.map",
+            80,
+            socket,
+            instances,
+        )
 
 
 class Reservation:

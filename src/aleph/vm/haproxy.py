@@ -268,6 +268,53 @@ def watch_and_update(socket_path, backend_name, map_file_path, interval=60, weig
             time.sleep(interval)
 
 
+
+async def fetch_list() -> list[dict]:
+    return [
+        {
+            "name": "echo.agot.be",
+            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
+            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+        }
+    ]
+
+
+async def fetch_list_() -> list[dict]:
+    async with aiohttp.ClientSession() as client:
+        resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
+        resp.raise_for_status()
+        instances = await resp.json()
+        if len(instances) == 0:
+            return []
+        return instances
+
+async def fetch_list_and_update2(backend_name, map_file_path, port, socket_path, running_instances: list[str]):
+    send_socket_command(socket_path, 'show backend')
+    instances = await fetch_list()
+    previous_mapfile = ""
+
+    mapfile = Path(map_file_path)
+    if mapfile.exists():
+        content = mapfile.read_text()
+        previous_mapfile = content
+
+    current_content = ""
+    for instance in instances:
+        if instance["item_hash"] not in running_instances:
+            continue
+        local_ip = instance["ipv4"]["local"]
+        if local_ip:
+            local_ip = local_ip.split("/")[0]
+            if local_ip.endswith(".1"):
+                local_ip = local_ip.rstrip(".1") + ".2"
+            current_content += f"{instance['name']} {local_ip}:{port}\n"
+    if current_content != previous_mapfile:
+        mapfile.write_text(current_content)
+        logger.info("Map file content changed, updating backends")
+        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+
+
 async def fetch_list_and_update(backend_name, map_file_path, port, socket_path, weight):
     with aiohttp.ClientSession() as client:
         resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
