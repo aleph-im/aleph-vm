@@ -283,7 +283,9 @@ async def fetch_list_and_update(backend_name, map_file_path, port, socket_path, 
     for instance in instances:
         local_ip = instance["ipv4"]["local"]
         if local_ip:
-            local_ip = local_ip.split("/")[0]
+            local_ip:str = local_ip.split("/")[0]
+            if local_ip.endswith(".1"):
+                local_ip = local_ip.rstrip(".1") +  ".2"
             current_content += f"{instance['name']} {local_ip}:{port}\n"
     if current_content != previous_mapfile:
         with open(map_file_path, "w") as file:
