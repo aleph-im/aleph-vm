@@ -31,12 +31,17 @@ HAPROXY_BACKENDS = [
     {
         "name": "bk_http",
         "port": 80,
-        "map_file": "/etc/haproxy/domain.map",
+        "map_file": "/etc/haproxy/http_domains.map",
     },
     {
         "name": "bk_ssl",
         "port": 443,
-        "map_file": "/etc/haproxy/https_domain.map",
+        "map_file": "/etc/haproxy/https_domains.map",
+    },
+    {
+        "name": "bk_ssh",
+        "port": 22,
+        "map_file": "/etc/haproxy/ssh_domain.map",
     },
 ]
 
