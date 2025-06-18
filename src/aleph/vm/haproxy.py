@@ -305,16 +305,17 @@ async def fetch_list_() -> list[dict]:
             return []
         return instances
 
-async def fetch_list_and_update2(socket_path, local_vms: list[str]):
+
+async def fetch_list_and_update2(socket_path, local_vms: list[str], force_update):
     instances = await fetch_list()
     # filter on local hash
     instances = [i for i in instances if i["item_hash"] in local_vms]
     # This should match the config in haproxy.cfg
     for backend in HAPROXY_BACKENDS:
-        update_backend(backend['name'], backend["map_file"], backend["port"], socket_path, instances)
+        update_backend(backend["name"], backend["map_file"], backend["port"], socket_path, instances, force_update)
 
 
-def update_backend(backend_name, map_file_path, port, socket_path, instances):
+def update_backend(backend_name, map_file_path, port, socket_path, instances, force_update=False):
     mapfile = Path(map_file_path)
     previous_mapfile = ""
     if mapfile.exists():
@@ -329,7 +330,10 @@ def update_backend(backend_name, map_file_path, port, socket_path, instances):
             if local_ip.endswith(".1"):
                 local_ip = local_ip.rstrip(".1") + ".2"
             current_content += f"{instance['name']} {local_ip}:{port}\n"
-    if current_content != previous_mapfile:
+    if force_update:
+        logger.info("Updating backends")
+        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+    elif current_content != previous_mapfile:
         mapfile.write_text(current_content)
         logger.info("Map file content changed, updating backends")
         update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
