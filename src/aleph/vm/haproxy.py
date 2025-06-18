@@ -281,7 +281,6 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     return True
 
 
-
 async def fetch_list() -> list[dict]:
     async with aiohttp.ClientSession() as client:
         resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
