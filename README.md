@@ -1,6 +1,6 @@
 # Aleph-VM
 
-The Aleph-VM project allows you to run programs on [Aleph.im](https://aleph.im/).
+The Aleph-VM project allows you to run programs on [Aleph Cloud](https://aleph.cloud/).
 
 Aleph-VM is optimized to run programs on demand in a "function-as-as-service",
 as a response to HTTP requests.
@@ -17,7 +17,7 @@ Writing programs in Python using ASGI compatible frameworks (
 ## Installation from packages
 
 
-Head over to the  official user doc https://docs.aleph.im/nodes/compute/ on how to run an Aleph.im Compute Resource
+Head over to the  official user doc [https://docs.aleph.im/nodes/compute/](https://docs.aleph.cloud/nodes/compute/) on how to run an Aleph Cloud Compute Resource
 Node
 
 ## 2. Install Aleph-VM from source
