@@ -304,6 +304,8 @@ def main():
 
     logging.getLogger("aiosqlite").setLevel(settings.LOG_LEVEL)
     logging.getLogger("sqlalchemy.engine").setLevel(settings.LOG_LEVEL)
+    # Example to set a higher lever on a sub component when developing
+    # logging.getLogger("aleph.vm.haproxy").setLevel(logging.DEBUG)
 
     settings.update(
         USE_JAILER=args.use_jailer,
