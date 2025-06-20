@@ -3,6 +3,6 @@ Version: 0.1.8
 Architecture: all
 Maintainer: Aleph.im
 Description: Aleph.im VM execution engine
-Depends: python3,python3-pip,python3-aiohttp,python3-msgpack,python3-aiodns,python3-alembic,python3-sqlalchemy,python3-setproctitle,redis,python3-aioredis,python3-psutil,sudo,acl,curl,systemd-container,squashfs-tools,debootstrap,python3-packaging,python3-cpuinfo,python3-nftables,python3-jsonschema,cloud-image-utils,ndppd,python3-yaml,python3-dotenv,python3-schedule,qemu-system-x86,qemu-utils,python3-systemd,python3-dbus,btrfs-progs,nftables,lshw,python3-jwcrypto,python3-netifaces
+Depends: python3,python3-pip,python3-aiohttp,python3-msgpack,python3-aiodns,python3-alembic,python3-sqlalchemy,python3-setproctitle,redis,python3-aioredis,python3-psutil,sudo,acl,curl,systemd-container,squashfs-tools,debootstrap,python3-packaging,python3-cpuinfo,python3-nftables,python3-jsonschema,cloud-image-utils,ndppd,python3-yaml,python3-dotenv,python3-schedule,qemu-system-x86,qemu-utils,python3-systemd,python3-dbus,btrfs-progs,nftables,lshw,python3-jwcrypto,python3-netifaces,haproxy
 Section: aleph-im
 Priority: Extra
