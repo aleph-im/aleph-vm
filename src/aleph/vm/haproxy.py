@@ -105,14 +105,14 @@ def send_socket_command(socket_path: Path | str, command):
         return None
 
 
-def parse_map_file(map_file_path):
+def parse_map_file(map_file_path) -> list[tuple[str, str]]:
     """
     Parse the domain-to-IP map file.
 
     Format:
     domain.name target_ip:port
     """
-    mappings = []
+    mappings: list[tuple[str, str]] = []
 
     if not os.path.exists(map_file_path):
         logger.error(f"Map file not found: {map_file_path}")
