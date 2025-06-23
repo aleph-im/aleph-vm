@@ -301,12 +301,24 @@ async def fetch_list_and_update2(socket_path, local_vms: list[str], force_update
 
 
 def update_backend(backend_name, map_file_path, port, socket_path, instances, force_update=False):
+    updated = update_mapfile(instances, map_file_path, port)
+    if force_update:
+        logger.info("Updating backends")
+        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+    elif updated:
+        logger.info("Map file content changed, updating backends")
+        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+
+    else:
+        logger.debug("Map file content no modification")
+
+
+def update_mapfile(instances: list, map_file_path: str, port) -> bool:
     mapfile = Path(map_file_path)
     previous_mapfile = ""
     if mapfile.exists():
         content = mapfile.read_text()
         previous_mapfile = content
-
     current_content = ""
     for instance in instances:
         local_ip = instance["ipv4"]["local"]
@@ -315,13 +327,7 @@ def update_backend(backend_name, map_file_path, port, socket_path, instances, fo
             if local_ip.endswith(".1"):
                 local_ip = local_ip.rstrip(".1") + ".2"
             current_content += f"{instance['name']} {local_ip}:{port}\n"
-    if force_update:
-        logger.info("Updating backends")
-        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
-    elif current_content != previous_mapfile:
+    updated = current_content != previous_mapfile
+    if updated:
         mapfile.write_text(current_content)
-        logger.info("Map file content changed, updating backends")
-        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
-
-    else:
-        logger.debug("Map file content no modification")
+    return updated
