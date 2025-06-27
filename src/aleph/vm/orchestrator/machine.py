@@ -17,7 +17,7 @@ async def get_hardware_info():
     hw_info = {"cpu": None, "memory": None}
 
     for hw in data["children"][0]["children"]:
-        if hw["id"] == "cpu":
+        if hw["id"] == "cpu" or hw["id"].startswith("cpu"):
             hw_info["cpu"] = hw
         elif hw["class"] == "memory" and hw["id"] == "memory":
             hw_info["memory"] = hw
