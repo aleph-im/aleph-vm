@@ -11,19 +11,67 @@ from dbus.proxies import Interface
 logger = logging.getLogger(__name__)
 
 
+class SystemDManagerError(Exception):
+    """Raised when SystemD manager operations fail."""
+
+    pass
+
+
 class SystemDManager:
     """SystemD Manager class.
 
     Used to manage the systemd services on the host on Linux.
     """
 
-    bus: SystemBus
-    manager: Interface
-
     def __init__(self):
-        self.bus = dbus.SystemBus()
-        systemd = self.bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
-        self.manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+        self._bus: SystemBus | None = None
+        self._manager: Interface | None = None
+        self._connect()
+
+    def _connect(self, max_retries: int = 3) -> None:
+        """Establish connection to D-Bus with a retry mechanism."""
+        for attempt in range(max_retries):
+            if self._bus:
+                self._bus.close()
+            try:
+                self._bus = dbus.SystemBus()
+                systemd = self._bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+                self._manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+                return
+            except DBusException as e:
+                logger.warning(f"D-Bus connection attempt {attempt + 1} failed: {e}")
+        msg = "Failed to establish D-Bus connection after multiple attempts"
+        raise DBusException(msg)
+
+    def _ensure_connection(self) -> None:
+        """Ensure D-Bus connection is active, reconnect if necessary."""
+        try:
+            if self._bus is None or self._manager is None:
+                self._connect()
+                return
+            self._bus.get_is_connected()
+            # Try a simple operation to test the connection
+            if self._manager is not None:
+                self._manager.ListUnits()
+        except (DBusException, AttributeError):
+            logger.info("D-Bus connection lost, attempting to reconnect...")
+            self._connect()
+
+    def _get_manager(self) -> Interface:
+        """Get the D-Bus manager interface or raise an error."""
+        self._ensure_connection()
+        if self._manager is None:
+            msg = "D-Bus manager is not initialized"
+            raise SystemDManagerError(msg)
+        return self._manager
+
+    def _get_bus(self) -> SystemBus:
+        """Get the D-Bus system bus or raise an error."""
+        self._ensure_connection()
+        if self._bus is None:
+            msg = "D-Bus system bus is not initialized"
+            raise SystemDManagerError(msg)
+        return self._bus
 
     def stop_and_disable(self, service: str) -> None:
         if self.is_service_active(service):
@@ -32,28 +80,34 @@ class SystemDManager:
             self.disable(service)
 
     def enable(self, service: str) -> None:
-        self.manager.EnableUnitFiles([service], False, True)
+        manager = self._get_manager()
+        manager.EnableUnitFiles([service], False, True)  # noqa: FBT003
         logger.debug(f"Enabled {service} service")
 
     def start(self, service: str) -> None:
-        self.manager.StartUnit(service, "replace")
+        manager = self._get_manager()
+        manager.StartUnit(service, "replace")
         logger.debug(f"Started {service} service")
 
     def stop(self, service: str) -> None:
-        self.manager.StopUnit(service, "replace")
+        manager = self._get_manager()
+        manager.StopUnit(service, "replace")
         logger.debug(f"Stopped {service} service")
 
     def restart(self, service: str) -> None:
-        self.manager.RestartUnit(service, "replace")
+        manager = self._get_manager()
+        manager.RestartUnit(service, "replace")
         logger.debug(f"Restarted {service} service")
 
     def disable(self, service: str) -> None:
-        self.manager.DisableUnitFiles([service], False)
+        manager = self._get_manager()
+        manager.DisableUnitFiles([service], False)  # noqa: FBT003
         logger.debug(f"Disabled {service} service")
 
     def is_service_enabled(self, service: str) -> bool:
         try:
-            return self.manager.GetUnitFileState(service) == "enabled"
+            manager = self._get_manager()
+            return manager.GetUnitFileState(service) == "enabled"
         except DBusException as error:
             logger.error(error)
             return False
@@ -62,8 +116,12 @@ class SystemDManager:
         try:
             if not self.is_service_enabled(service):
                 return False
-            unit_path = self.manager.GetUnit(service)
-            systemd_service = self.bus.get_object("org.freedesktop.systemd1", object_path=unit_path)
+
+            manager = self._get_manager()
+            bus = self._get_bus()
+
+            unit_path = manager.GetUnit(service)
+            systemd_service = bus.get_object("org.freedesktop.systemd1", object_path=unit_path)
             unit = dbus.Interface(systemd_service, "org.freedesktop.systemd1.Unit")
             unit_properties = dbus.Interface(unit, "org.freedesktop.DBus.Properties")
             active_state = unit_properties.Get("org.freedesktop.systemd1.Unit", "ActiveState")
