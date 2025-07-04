@@ -26,6 +26,8 @@ from pathlib import Path
 
 import aiohttp
 
+from aleph.vm.conf import settings
+
 # This should match the config in haproxy.cfg
 HAPROXY_BACKENDS = [
     {
@@ -283,7 +285,7 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
 
 async def fetch_list() -> list[dict]:
     async with aiohttp.ClientSession() as client:
-        resp = await client.get(url="https://api.dns.public.aleph.sh/instances/list")
+        resp = await client.get(url=str(settings.DOMAIN_SERVICE_URL))
         resp.raise_for_status()
         instances = await resp.json()
         if len(instances) == 0:
