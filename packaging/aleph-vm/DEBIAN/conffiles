@@ -1,1 +1,5 @@
 /etc/aleph-vm/supervisor.env
+/etc/needrestart/conf.d/aleph-vm.conf
+/etc/haproxy/http_domains.map
+/etc/haproxy/https_domains.map
+/etc/haproxy/ssh_domains.map
