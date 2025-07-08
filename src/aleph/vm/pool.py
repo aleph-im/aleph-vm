@@ -176,7 +176,8 @@ class VmPool:
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start()
-                await execution.fetch_port_redirect_config_and_setup()
+                if execution.is_instance:
+                    await execution.fetch_port_redirect_config_and_setup()
 
                 # clear the user reservations
                 for resource in resources:
