@@ -259,7 +259,7 @@ jobs:
 
       - name: Export aleph logs
         continue-on-error: true
-        if: ${{ !cancelled() && steps.system-booted.outcome == 'sucess'}}
+        if: ${{ !cancelled() && steps.system-booted.outcome == 'success'}}
         run: |
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
 
@@ -380,7 +380,7 @@ jobs:
           curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Export aleph logs
-        if: ${{ !cancelled() && steps.system-booted.outcome == 'sucess'}}
+        if: ${{ !cancelled() && steps.system-booted.outcome == 'success'}}
         run: |
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
 
