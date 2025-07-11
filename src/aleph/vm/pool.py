@@ -332,7 +332,8 @@ class VmPool:
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
-        await self.update_domain_mapping(force_update=True)
+        if self.executions:
+            await self.update_domain_mapping(force_update=True)
         logger.info(f"Loaded {len(self.executions)} executions")
 
     async def stop(self):
