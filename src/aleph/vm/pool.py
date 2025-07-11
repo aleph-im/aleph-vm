@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pathlib
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
+from .haproxy import fetch_list_and_update2
 from .models import ExecutableContent, VmExecution
 from .network.firewall import setup_nftables_for_vm
 
@@ -174,7 +176,8 @@ class VmPool:
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start()
-                await execution.fetch_port_redirect_config_and_setup()
+                if execution.is_instance:
+                    await execution.fetch_port_redirect_config_and_setup()
 
                 # clear the user reservations
                 for resource in resources:
@@ -329,8 +332,9 @@ class VmPool:
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
-
-        logger.debug(f"Loaded {len(self.executions)} executions")
+        if self.executions:
+            await self.update_domain_mapping(force_update=True)
+        logger.info(f"Loaded {len(self.executions)} executions")
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
@@ -447,6 +451,20 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
+
+    async def update_domain_mapping(self, force_update=False):
+        socket = settings.HAPROXY_SOCKET
+        if not pathlib.Path(socket).exists():
+            logger.info("HAProxy not running? socket not found, skip domain mapping update")
+            return False
+
+        local_vms = list(self.executions.keys())
+
+        await fetch_list_and_update2(
+            socket,
+            local_vms,
+            force_update=force_update,
+        )
 
 
 class Reservation:

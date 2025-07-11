@@ -189,6 +189,8 @@ class Settings(BaseSettings):
     INIT_TIMEOUT: float = 20.0
 
     CONNECTOR_URL: HttpUrl = HttpUrl("http://localhost:4021")
+    # To fetch the list of domain mapping for the ipv4 domain features
+    DOMAIN_SERVICE_URL: HttpUrl = HttpUrl("https://api.dns.public.aleph.sh/instances/list")
 
     CACHE_ROOT: Path = Path("/var/cache/aleph/vm")
     MESSAGE_CACHE: Path | None = Field(
@@ -331,6 +333,11 @@ class Settings(BaseSettings):
     SENSITIVE_FIELDS: list[str] = Field(
         default=["SENTRY_DSN"],
         description="Sensitive fields, redacted from `--print-settings`.",
+    )
+
+    # Used to control HA Proxy
+    HAPROXY_SOCKET: Path = Field(
+        default=Path("/run/haproxy/admin.sock"), description="Control HAPROXY for domain mapping"
     )
 
     def update(self, **kwargs):
