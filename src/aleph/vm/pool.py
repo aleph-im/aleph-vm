@@ -28,7 +28,7 @@ from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
-from .haproxy import fetch_list_and_update2
+from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
 from .network.firewall import setup_nftables_for_vm
 
@@ -460,7 +460,7 @@ class VmPool:
 
         local_vms = list(self.executions.keys())
 
-        await fetch_list_and_update2(
+        await fetch_list_and_update(
             socket,
             local_vms,
             force_update=force_update,
