@@ -293,7 +293,7 @@ async def fetch_list() -> list[dict]:
         return instances
 
 
-async def fetch_list_and_update2(socket_path, local_vms: list[str], force_update):
+async def fetch_list_and_update(socket_path, local_vms: list[str], force_update):
     instances = await fetch_list()
     # filter on local hash
     instances = [i for i in instances if i["item_hash"] in local_vms]
