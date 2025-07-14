@@ -43,7 +43,7 @@ HAPROXY_BACKENDS = [
     {
         "name": "bk_ssh",
         "port": 22,
-        "map_file": "/etc/haproxy/ssh_domain.map",
+        "map_file": "/etc/haproxy/ssh_domains.map",
     },
 ]
 
