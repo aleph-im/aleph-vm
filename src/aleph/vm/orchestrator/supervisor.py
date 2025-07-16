@@ -85,6 +85,7 @@ async def error_middleware(request, handler) -> web.Response:
         status = exc.status
         return web.json_response({"error": message}, status=status)
     except Exception as exc:
+        logger.exception("Unhandled exception for %s", request.path)
         message = str(exc)
         status = 500
         return web.json_response({"error": message, "error_type": str(type(exc))}, status=status)
