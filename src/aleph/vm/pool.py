@@ -332,6 +332,7 @@ class VmPool:
                 await execution.fetch_port_redirect_config_and_setup()
 
                 self.executions[vm_hash] = execution
+                execution.record = saved_execution
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
