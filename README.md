@@ -70,6 +70,8 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    ```
 
 2. **Install the Debian Package**
+   This will also install required some dep and config file, making the setup easier. 
+ 
    Replace `1.2.0` with the latest release version.
 
    **On Debian 12 (Bookworm)**:
@@ -94,16 +96,27 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    To prevent conflicts, deactivate the system version of aleph-vm by disabling its `systemd` service.
 
    ```shell
+   sudo systemctl stop aleph-vm-supervisor
    sudo systemctl disable aleph-vm-supervisor.service
    ```
 
 4. **Clone the Repository and Set Up a Virtual Environment**
     - Clone the aleph-vm repository to your development environment.
-    - Create a virtual environment to manage dependencies.
-
-   Inside the virtual environment, run:
+    - Install the system dependencies required to build the python venv and packages
 
    ```shell
+   apt install libdbus-1-dev libglib2.0-dev libsystemd-dev python3.12-venv
+   ```
+   
+    - Create a virtual environment to manage dependencies. It need to be a system site package as we use some dependencies provided via debian packages. Such as network interfaces
+   ```shell
+   python3 -m venv --system-site-packages ~/.virtualenvs/aleph-vm
+   ```
+   
+   Active the virtual environment and install the deps:
+
+   ```shell
+   source ~/.virtualenvs/aleph-vm/bin/activate
    pip install -e .
    ```
 
