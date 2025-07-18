@@ -18,6 +18,7 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import InstanceContent, ItemHash, MessageType, PaymentType
 from pydantic import ValidationError
 
+from aleph.vm import haproxy
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import (
     ResourceDownloadError,
@@ -146,6 +147,26 @@ async def about_login(request: web.Request) -> web.Response:
         return response
     else:
         return web.json_response({"success": False}, status=401)
+
+
+async def debug_haproxy(request: web.Request) -> web.Response:
+    """ "Debug endpoint to check the status of HAProxy and the domains mapped to it.
+
+    This is a debug endpoint and should not be used in production. The interface is subject to change.
+    """
+    socket = settings.HAPROXY_SOCKET
+    import pathlib
+
+    if not pathlib.Path(socket).exists():
+        logger.info("HAProxy not running? socket not found, skip domain mapping update")
+        return web.json_response({"status": "no socket"}, status=http.HTTPStatus)
+    r: dict = {"status": "ok", "backends": {}}
+    for backend in haproxy.HAPROXY_BACKENDS:
+        r["backends"][str(backend["name"])] = haproxy.get_current_backends(socket, backend["name"])
+    return web.json_response(
+        r,
+        dumps=dumps_for_json,
+    )
 
 
 @cors_allow_all
