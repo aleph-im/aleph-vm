@@ -65,6 +65,9 @@ class VmExecutionTimes:
         return self.__dict__
 
 
+LAST_ASSIGNED_HOST_PORT = 24000
+
+
 class VmExecution:
     """
     Control the execution of a VM on a high level.
@@ -136,7 +139,11 @@ class VmExecution:
 
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
-            host_port = get_available_host_port(start_port=24000)
+            host_port = get_available_host_port(start_port=LAST_ASSIGNED_HOST_PORT)
+            LAST_ASSIGNED_HOST_PORT = host_port
+            if LAST_ASSIGNED_HOST_PORT > 65535:
+                LAST_ASSIGNED_HOST_PORT = 24000
+
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
                     add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
