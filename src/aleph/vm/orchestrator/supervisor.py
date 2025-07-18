@@ -32,6 +32,7 @@ from .views import (
     about_execution_records,
     about_executions,
     about_login,
+    debug_haproxy,
     list_executions,
     list_executions_v2,
     notify_allocation,
@@ -146,6 +147,7 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
         web.get("/control/machine/{ref}/confidential/measurement", operate_confidential_measurement),
         web.post("/control/machine/{ref}/confidential/inject_secret", operate_confidential_inject_secret),
+        web.get("/debug/haproxy", debug_haproxy),
         # /status APIs are used to check that the VM Orchestrator is running properly
         web.get("/status/check/fastapi", status_check_fastapi),
         web.get("/status/check/fastapi/legacy", status_check_fastapi_legacy),
