@@ -272,6 +272,7 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     servers_to_remove = set(current_servers) - processed_servers
     # Do not remove the fallback server
     servers_to_remove.discard("fallback_local")
+    servers_to_remove.discard("web1")
     if servers_to_remove:
         logger.info(f"Removing {len(servers_to_remove)} servers no longer in map file")
         for server_name in servers_to_remove:
