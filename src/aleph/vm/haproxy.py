@@ -296,6 +296,7 @@ async def fetch_list(domain=None) -> list[dict]:
             return []
         return instances
 
+
 async def fetch_list_and_update(socket_path, local_vms: list[str], force_update):
     if settings.DOMAIN_NAME in ("localhost", "vm.example.org"):
         logger.info("Skipping domain update because DOMAIN_NAME is not set")
