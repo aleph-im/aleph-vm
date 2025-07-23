@@ -285,18 +285,21 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     return True
 
 
-async def fetch_list() -> list[dict]:
+async def fetch_list(domain=None) -> list[dict]:
     async with aiohttp.ClientSession() as client:
-        resp = await client.get(url=str(settings.DOMAIN_SERVICE_URL))
+        resp = await client.get(url=str(settings.DOMAIN_SERVICE_URL), params={"crn": domain} if domain else None)
+        # print(resp.real_url)
         resp.raise_for_status()
         instances = await resp.json()
         if len(instances) == 0:
             return []
         return instances
 
-
 async def fetch_list_and_update(socket_path, local_vms: list[str], force_update):
-    instances = await fetch_list()
+    if settings.DOMAIN_NAME in ("localhost", "vm.example.org"):
+        logger.info("Skipping domain update because DOMAIN_NAME is not set")
+
+    instances = await fetch_list(settings.DOMAIN_NAME)
     # filter on local hash
     instances = [i for i in instances if i["item_hash"] in local_vms]
     # This should match the config in haproxy.cfg
