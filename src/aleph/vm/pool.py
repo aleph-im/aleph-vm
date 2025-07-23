@@ -299,6 +299,9 @@ class VmPool:
                 if self.network:
                     vm_type = VmType.from_message_content(execution.message)
                     tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+                    if not self.network.interface_exists(vm_id):
+                        # In case of a reboot, the network is not automatically created
+                        await self.network.create_tap(vm_id, tap_interface)
 
                     # Activate ndp_proxy for existing interfaces if needed
                     if self.network.ndp_proxy and self.network.interface_exists(vm_id):
