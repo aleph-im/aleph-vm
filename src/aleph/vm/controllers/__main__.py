@@ -6,6 +6,7 @@ import signal
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
+from time import sleep
 
 from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
@@ -127,21 +128,27 @@ def main():
 
     config.settings.check()
 
-    if args.initialize_network_settings:
-        network = Network(
-            vm_ipv4_address_pool_range=config.settings.IPV4_ADDRESS_POOL,
-            vm_network_size=config.settings.IPV4_NETWORK_PREFIX_LENGTH,
-            external_interface=config.settings.NETWORK_INTERFACE,
-            ipv6_allocator=make_ipv6_allocator(
-                allocation_policy=config.settings.IPV6_ALLOCATION_POLICY,
-                address_pool=config.settings.IPV6_ADDRESS_POOL,
-                subnet_prefix=config.settings.IPV6_SUBNET_PREFIX,
-            ),
-            use_ndp_proxy=config.settings.USE_NDP_PROXY,
-            ipv6_forwarding_enabled=config.settings.IPV6_FORWARDING_ENABLED,
-        )
+    network = Network(
+        vm_ipv4_address_pool_range=config.settings.IPV4_ADDRESS_POOL,
+        vm_network_size=config.settings.IPV4_NETWORK_PREFIX_LENGTH,
+        external_interface=config.settings.NETWORK_INTERFACE,
+        ipv6_allocator=make_ipv6_allocator(
+            allocation_policy=config.settings.IPV6_ALLOCATION_POLICY,
+            address_pool=config.settings.IPV6_ADDRESS_POOL,
+            subnet_prefix=config.settings.IPV6_SUBNET_PREFIX,
+        ),
+        use_ndp_proxy=config.settings.USE_NDP_PROXY,
+        ipv6_forwarding_enabled=config.settings.IPV6_FORWARDING_ENABLED,
+    )
 
+    if args.initialize_network_settings:
         network.setup()
+    else:
+        # Wait for the network interface to be by the supervisor
+        # Otherwise QEMU will create a new one, and it won't be properly setup as a tuntap as we expect
+        while not network.interface_exists(config.vm_id):
+            logger.info("Waiting for network interface to be created...")
+            sleep(1)
 
     asyncio.run(run_persistent_vm(config))
 
