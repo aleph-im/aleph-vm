@@ -3,18 +3,16 @@
 Instance domain support.
 aka HAProxy Dynamic Configuration Updater
 
-HAProxy is a proxy server that is used to redirect the HTTP, HTTPS and SSL trafic
-to the instance, if they have it configured.
+HAProxy is a proxy server used to redirect the HTTP, HTTPS and SSL traffic
+to the instances if they have it configured.
 
-This module get the instance domain ip mapping and update the HAProxy config
-both live via it's unix socket and via the map file.
+This module gets the instance domain ip mapping and updates the HAProxy config
+both live via its unix control socket and via the map file.
 
 
-For the HAP protocol and commands used refer to
+For the control protocol and commands used, refer to
 https://www.haproxy.com/documentation/haproxy-configuration-manual/2-8r1/management/
 
-FIXME A known bug is that at HAProxy startup, the map file is loaded but the backend are
-not set.
 """
 
 import dataclasses
@@ -210,21 +208,42 @@ def get_current_backends(socket_path, backend_name):
     return servers
 
 
-def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
+def get_current_mappings(socket_path, map_file) -> dict[str, str]:
+    """Get a list of current mapping from HaProxy"""
+    # show map /etc/haproxy/http_domains.map
+    command = f"show map {map_file}"
+    response = send_socket_command(socket_path, command)
+
+    if not response:
+        return {}
+    try:
+        mappings = {}
+        lines = response.splitlines()
+        for line in lines:
+            if not line:
+                continue
+            mapping_id, mapping_name, mapping_target = line.split()
+            mappings[mapping_name] = mapping_target
+
+    except Exception as e:
+        msg = f"Error retrieving current mapping: {e!s}"
+        raise Exception(msg) from e
+    return mappings
+
+
+def update_haproxy_backend(socket_path, backend_name, instances, map_file_path, port, weight=1):
     """Update HAProxy backend servers config based on the map file.
 
     Sync the running config with the content of the map file.
 
-     This allow us to update the config without needing to reload or restart HAProxy.
+     This allows us to update the config without needing to reload or restart HAProxy.
 
     It reads domain-to-IP mappings from a map file and uses HAProxy's
     socket commands to dynamically add/update backend servers allowing update without requiring a reload
     HAProxy.
     """
-    mappings = parse_map_file(map_file_path)
-    if not mappings:
-        logger.error("No valid mappings found in the map file.")
-        return False
+
+    mappings = get_current_mappings(socket_path, map_file_path)
 
     # Get current backend servers
     current_servers = get_current_backends(socket_path, backend_name)
@@ -234,39 +253,50 @@ def update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1):
     processed_servers = set()
 
     # Process each mapping
-    for domain, target in mappings:
-        server_name = domain
+    for instance in instances:
+        server_name = instance["name"]
+        local_ip = instance["ipv4"]["local"]
+        # custom domain name doesn't return the ip addr but the network range
+        addr = local_ip.split("/")[0]
+        if addr.endswith(".1"):
+            addr = addr.rstrip(".1") + ".2"
         processed_servers.add(server_name)
 
-        # Check if server already exists in mapping
+        # Check if the server already exists
         if server_name in current_servers:
-            # FIXME : In the future, don't update the address if it hasn't changed'
             # Update existing server
-            addr, port = target.split(":")
             command = f"set server {backend_name}/{server_name} addr {addr} port {port}"
             logger.info(f"Updating server: {command}")
             response = send_socket_command(socket_path, command)
-            if response and "not found" in response:
+            if response and "not found" in response:  # Fall back
                 logger.warning(f"Server not found: {server_name}, trying to add it")
                 # If server doesn't exist, add it
-                command = f"add server {backend_name}/{server_name} {target} weight {weight} maxconn 30"
+                command = f"add server {backend_name}/{server_name} {addr}:{port} weight {weight} maxconn 30"
                 logger.info(f"Adding server: {command}")
                 response = send_socket_command(socket_path, command)
-        else:
-            # Add new server
-            command = f"add server {backend_name}/{server_name} {target} weight {weight} maxconn 30"
+                if response.strip() != "":
+                    logger.info(f"Error adding server {response}")
+
+        else:  # Add the new server
+            command = f"add server {backend_name}/{server_name} {addr}:{port} weight {weight} maxconn 30"
             logger.info(f"Adding server: {command}")
             response = send_socket_command(socket_path, command)
-
-        # Check response
-        if response and "not found" in response:
-            logger.error(f"Error processing server {server_name}: {response}")
-        else:
-            command = f"enable server {backend_name}/{server_name}"
-            logger.info(f"Enable server: {command}")
-            response = send_socket_command(socket_path, command)
             if response.strip() != "":
-                logger.info("Error enabling server Response")
+                logger.info(f"Error adding server {response}")
+        # Enable the server
+        command = f"enable server {backend_name}/{server_name}"
+        logger.info(f"Enable server: {command}")
+        response = send_socket_command(socket_path, command)
+        if response.strip() != "":
+            logger.info(f"Error enabling server {response}")
+
+        # Add/set mapping
+        if server_name not in mappings:
+            response = send_socket_command(socket_path, f"add map {map_file_path} {server_name} {server_name}")
+            logger.info(f"Added mapping: {server_name} {response=}")
+        elif mappings[server_name] != server_name:
+            response = send_socket_command(socket_path, f"set map {map_file_path} {server_name} {server_name}")
+            logger.info(f"updated mapping: {server_name} {response=}")
 
     # Remove servers that are not in the map file
     servers_to_remove = set(current_servers) - processed_servers
@@ -306,36 +336,33 @@ async def fetch_list_and_update(socket_path, local_vms: list[str], force_update)
     instances = [i for i in instances if i["item_hash"] in local_vms]
     # This should match the config in haproxy.cfg
     for backend in HAPROXY_BACKENDS:
-        update_backend(backend["name"], backend["map_file"], backend["port"], socket_path, instances, force_update)
+        update_backends(backend["name"], backend["map_file"], backend["port"], socket_path, instances, force_update)
 
 
-def update_backend(backend_name, map_file_path, port, socket_path, instances, force_update=False):
-    updated = update_mapfile(instances, map_file_path, port)
+def update_backends(backend_name, map_file_path, port, socket_path, instances, force_update=False):
+    updated = update_mapfile(instances, map_file_path)
     if force_update:
         logger.info("Updating backends")
-        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+        update_haproxy_backend(socket_path, backend_name, instances, map_file_path, port, weight=1)
     elif updated:
         logger.info("Map file content changed, updating backends")
-        update_haproxy_backends(socket_path, backend_name, map_file_path, weight=1)
+        update_haproxy_backend(socket_path, backend_name, instances, map_file_path, port, weight=1)
 
     else:
         logger.debug("Map file content no modification")
 
 
-def update_mapfile(instances: list, map_file_path: str, port) -> bool:
+def update_mapfile(instances: list, map_file_path: str) -> bool:
     mapfile = Path(map_file_path)
     previous_mapfile = ""
     if mapfile.exists():
         content = mapfile.read_text()
         previous_mapfile = content
     current_content = ""
+
     for instance in instances:
-        local_ip = instance["ipv4"]["local"]
-        if local_ip:
-            local_ip = local_ip.split("/")[0]
-            if local_ip.endswith(".1"):
-                local_ip = local_ip.rstrip(".1") + ".2"
-            current_content += f"{instance['name']} {local_ip}:{port}\n"
+        if instance["ipv4"]["local"]:
+            current_content += f"{instance['name']} {instance['name']}\n"
     updated = current_content != previous_mapfile
     if updated:
         mapfile.write_text(current_content)
