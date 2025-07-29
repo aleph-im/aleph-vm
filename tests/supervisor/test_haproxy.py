@@ -68,8 +68,8 @@ def mock_sample_domain_instance_list(mocker):
 
 @pytest.mark.asyncio
 async def test_fetch_list(mock_sample_domain_instance_list):
-    list = await haproxy.fetch_list()
-    assert len(list) == 9
+    istance_list = await haproxy.fetch_list()
+    assert len(istance_list) == 9
 
 
 @pytest.fixture
@@ -91,20 +91,32 @@ async def test_update_map_file(mock_small_domain_list, tmp_path):
     instance_list = await haproxy.fetch_list()
     assert instance_list
 
-    haproxy.update_mapfile(instance_list, str(map_file_path), 22)
+    haproxy.update_mapfile(instance_list, str(map_file_path))
     content = map_file_path.read_text()
-    assert content == "echo.agot.be 172.16.4.2:22\n"
+    assert content == "echo.agot.be echo.agot.be\n"
 
 
 @pytest.fixture
-def mock_socket_command(mocker):
+def mock_haproxy_server(mocker):
+    """Mock a haproxy proxy server by patching haproxy.send_socket_command
+
+    Update the backend server response via:
+        mock_socket_command.existing_servers = [
+        "8 test_backend 1 existing_bk 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
+    ]
+    Idem existing mappings
+    """
     commands = []
+
     existing_servers: list[str] = []
+    existing_mappings: list[str] = []
 
     def mock_response(socket_path, command):  # noqa: ARG001
         commands.append(command)
         if "show servers state" in command:
             return "1\n# be_id be_name srv_id srv_name srv_addr srv_op_state\n" + "\n".join(mock.existing_servers)
+        if "show map" in command:
+            return "\n" + "\n".join(mock.existing_mappings)
         elif "disable server" in command:
             return ""
         elif "set server" in command:
@@ -115,65 +127,97 @@ def mock_socket_command(mocker):
 
     mock = mocker.patch("aleph.vm.haproxy.send_socket_command", mock_response)
     mock.existing_servers = existing_servers
+    mock.existing_mappings = existing_mappings
+    mock.socket_path = "/fakepath/to/haproxy.sock"
     mock.commands = commands
     return mock
 
 
 @pytest.mark.asyncio
-async def test_update_backend_add_server(mock_socket_command, tmp_path):
-    map_file_path = tmp_path / "backend.map"
-    map_file_path.write_text("echo.agot.be 172.16.4.2:22\n")
-    socket_path = "fakyfake"
+async def test_update_backend_add_server(mock_haproxy_server):
+    instances = [
+        {
+            "name": "echo.agot.be",
+            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
+            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+        }
+    ]
+    map_file_path = "fakyfake"
 
     # Run test
-    haproxy.update_haproxy_backends(socket_path, "test_backend", map_file_path, weight=1)
+    haproxy.update_haproxy_backend(
+        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 22, weight=1
+    )
 
     # Verify commands
-    assert mock_socket_command.commands == [
+    assert mock_haproxy_server.commands == [
+        "show map fakyfake",
         "show servers state test_backend",
-        # "disable server test_backend echo.agot.be",
         "add server test_backend/echo.agot.be 172.16.4.2:22 weight 1 maxconn 30",
-        # "set server test_backend echo.agot.be addr 172.16.4.2 port 22",
-        # "set server test_backend echo.agot.be weight 1",
         "enable server test_backend/echo.agot.be",
+        "add map fakyfake echo.agot.be echo.agot.be",
     ]
 
 
 @pytest.mark.asyncio
-def test_update_backend_add_server_remove_server(mock_socket_command, tmp_path):
-    map_file_path = tmp_path / "backend.map"
-    map_file_path.write_text("echo.agot.be 172.16.4.2:22\n")
-    socket_path = "fakyfake"
-
-    mock_socket_command.existing_servers = [
-        "8 test_backend 1 existing_bk 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
+def test_update_backend_add_server_remove_server(mock_haproxy_server):
+    instances = [
+        {
+            "name": "echo.agot.be",
+            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
+            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+        }
     ]
-    haproxy.update_haproxy_backends(socket_path, "test_backend", map_file_path, weight=1)
+
+    map_file_path = "backend.map"
+
+    mock_haproxy_server.existing_servers = [
+        "8 test_backend 1 toremove.agot.be 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
+    ]
+    mock_haproxy_server.existing_mappings = ["0x563a8ebca6b0 toremove.agot.be toremove.agot.be"]
+    haproxy.update_haproxy_backend(
+        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 22, weight=1
+    )
 
     # Verify commands
-    assert mock_socket_command.commands == [
+    assert mock_haproxy_server.commands == [
+        "show map backend.map",
         "show servers state test_backend",
         "add server test_backend/echo.agot.be 172.16.4.2:22 weight 1 maxconn 30",
         "enable server test_backend/echo.agot.be",
-        "set  server test_backend/existing_bk state maint",
-        "del server test_backend/existing_bk",
+        "add map backend.map echo.agot.be echo.agot.be",
+        "set  server test_backend/toremove.agot.be state maint",
+        "del server test_backend/toremove.agot.be",
     ]
 
 
 @pytest.mark.asyncio
-def test_update_backend_do_no_remove_fallback(mock_socket_command, tmp_path):
-    map_file_path = tmp_path / "backend.map"
-    map_file_path.write_text("echo.agot.be 172.16.4.2:22\n")
-    socket_path = "fakyfake"
+def test_update_backend_do_no_remove_fallback(mock_haproxy_server):
+    instances = [
+        {
+            "name": "echo.agot.be",
+            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
+            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+        }
+    ]
 
-    mock_socket_command.existing_servers = [
+    map_file_path = "backend.map"
+
+    mock_haproxy_server.existing_servers = [
         "8 test_backend 1 fallback_local 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
     ]
-    haproxy.update_haproxy_backends(socket_path, "test_backend", map_file_path, weight=1)
+    haproxy.update_haproxy_backend(
+        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 80, weight=1
+    )
 
     # Verify commands
-    assert mock_socket_command.commands == [
+    assert mock_haproxy_server.commands == [
+        "show map backend.map",
         "show servers state test_backend",
-        "add server test_backend/echo.agot.be 172.16.4.2:22 weight 1 maxconn 30",
+        "add server test_backend/echo.agot.be 172.16.4.2:80 weight 1 maxconn 30",
         "enable server test_backend/echo.agot.be",
+        "add map backend.map echo.agot.be echo.agot.be",
     ]
