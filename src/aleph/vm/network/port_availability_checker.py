@@ -1,5 +1,4 @@
 import socket
-from typing import Optional
 
 from aleph.vm.network.firewall import check_nftables_redirections
 
@@ -7,7 +6,7 @@ MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
 
 
-def get_available_host_port(start_port: Optional[int] = None) -> int:
+def get_available_host_port(start_port: int | None = None) -> int:
     """Find an available port on the host system.
 
     Args:
@@ -37,7 +36,31 @@ def get_available_host_port(start_port: Optional[int] = None) -> int:
 
             return port
 
-        except (socket.error, OSError):
+        except OSError:
             pass
 
     raise RuntimeError(f"No available ports found in range {MIN_DYNAMIC_PORT}-{MAX_PORT}")
+
+
+LAST_ASSIGNED_HOST_PORT = MIN_DYNAMIC_PORT
+
+
+def fast_get_available_host_port() -> int:
+    """Find an available port on the host system.
+    Use a global state to not start as each check may take several seconds and return a resulta faster
+
+    Args:
+        start_port: Optional starting port number. If not provided, starts from MIN_DYNAMIC_PORT
+
+    Returns:
+        An available port number
+
+    Raises:
+        RuntimeError: If no ports are available in the valid range
+    """
+    global LAST_ASSIGNED_HOST_PORT  # noqa: PLW0603
+    host_port = get_available_host_port(start_port=LAST_ASSIGNED_HOST_PORT)
+    LAST_ASSIGNED_HOST_PORT = host_port
+    if LAST_ASSIGNED_HOST_PORT > MAX_PORT:
+        LAST_ASSIGNED_HOST_PORT = MIN_DYNAMIC_PORT
+    return host_port
