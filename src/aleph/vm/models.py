@@ -32,7 +32,7 @@ from aleph.vm.controllers.qemu_confidential.instance import (
 )
 from aleph.vm.network.firewall import add_port_redirect_rule, remove_port_redirect_rule
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.network.port_availability_checker import get_available_host_port
+from aleph.vm.network.port_availability_checker import fast_get_available_host_port
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_record,
@@ -63,9 +63,6 @@ class VmExecutionTimes:
 
     def to_dict(self):
         return self.__dict__
-
-
-LAST_ASSIGNED_HOST_PORT = 24000
 
 
 class VmExecution:
@@ -136,13 +133,9 @@ class VmExecution:
                     host_port = current["host"]
                     remove_port_redirect_rule(interface, host_port, vm_port, protocol)
             del self.mapped_ports[vm_port]
-
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
-            host_port = get_available_host_port(start_port=LAST_ASSIGNED_HOST_PORT)
-            LAST_ASSIGNED_HOST_PORT = host_port
-            if LAST_ASSIGNED_HOST_PORT > 65535:
-                LAST_ASSIGNED_HOST_PORT = 24000
+            host_port = fast_get_available_host_port()
 
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
