@@ -160,9 +160,10 @@ async def debug_haproxy(request: web.Request) -> web.Response:
     if not pathlib.Path(socket).exists():
         logger.info("HAProxy not running? socket not found, skip domain mapping update")
         return web.json_response({"status": "no socket"}, status=http.HTTPStatus)
-    r: dict = {"status": "ok", "backends": {}}
+    r: dict = {"status": "ok", "backends": {}, "mappings": {}}
     for backend in haproxy.HAPROXY_BACKENDS:
         r["backends"][str(backend["name"])] = haproxy.get_current_backends(socket, backend["name"])
+        r["mappings"][backend["name"]] = haproxy.get_current_mappings(socket, backend["map_file"])
     return web.json_response(
         r,
         dumps=dumps_for_json,
