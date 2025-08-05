@@ -46,7 +46,7 @@ error_handler() {
 	echo ""
 	echo "An error occured while building the image and the process was not completed properly."
 	echo "Please check the log, fix any error if required and restart the script."
-	echo "For more help see https://docs.aleph.im/computing/confidential/encrypted-disk/"
+	echo "For more help see https://docs.aleph.cloud/devhub/compute-resources/confidential-instances/03-confidential-instance-create-encrypted-disk.html"
 }
 
 trap error_handler ERR
