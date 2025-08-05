@@ -65,7 +65,7 @@ dependencies = [
 ]
 
 urls.Discussions = "https://community.aleph.im/"
-urls.Documentation = "https://docs.aleph.im/nodes/compute/"
+urls.Documentation = "https://docs.aleph.cloud/nodes/compute/introduction/"
 urls.Issues = "https://github.com/aleph-im/aleph-vm/issues"
 urls.Source = "https://github.com/aleph-im/aleph-vm"
 scripts.aleph-vm = "aleph.vm.orchestrator.cli:main"
