@@ -181,7 +181,7 @@ async def check_payment(pool: VmPool):
         if vm_hash == settings.FAKE_INSTANCE_ID:
             continue
         message_status = await get_message_status(vm_hash)
-        if message_status != MessageStatus.PROCESSED:
+        if message_status != MessageStatus.PROCESSED or message_status != MessageStatus.REMOVING:
             logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
             await pool.stop_vm(vm_hash)
             pool.forget_vm(vm_hash)
