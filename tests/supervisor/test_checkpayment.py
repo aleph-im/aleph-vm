@@ -224,3 +224,88 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     await check_payment(pool=pool)
 
     execution.stop.assert_called_with()
+
+
+@pytest.mark.asyncio
+async def test_message_removing_status(mocker, fake_instance_content):
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+
+    pool = VmPool()
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
+
+    async def get_stream(sender, receiver, chain):
+        if receiver == mock_community_wallet_address:
+            return 0
+        elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
+            return 10
+
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVING)
+    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    message = InstanceContent.model_validate(fake_instance_content)
+
+    mocker.patch.object(VmExecution, "is_running", new=True)
+    mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    execution = VmExecution(
+        vm_hash=hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+
+    pool.executions = {hash: execution}
+
+    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    assert len(executions_by_sender) == 1
+    assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
+
+    await check_payment(pool=pool)
+
+    execution.stop.assert_not_called()
+
+
+async def test_removed_message_status(mocker, fake_instance_content):
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+
+    pool = VmPool()
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
+
+    async def get_stream(sender, receiver, chain):
+        if receiver == mock_community_wallet_address:
+            return 0
+        elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
+            return 10
+
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVED)
+    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    message = InstanceContent.model_validate(fake_instance_content)
+
+    mocker.patch.object(VmExecution, "is_running", new=True)
+    mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    execution = VmExecution(
+        vm_hash=hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+
+    pool.executions = {hash: execution}
+
+    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    assert len(executions_by_sender) == 1
+    assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
+
+    await check_payment(pool=pool)
+
+    execution.stop.assert_called_with()
