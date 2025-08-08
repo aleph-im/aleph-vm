@@ -82,7 +82,7 @@ async def test_enough_flow(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -136,7 +136,7 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -173,7 +173,7 @@ async def test_not_enough_flow(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -217,7 +217,7 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
