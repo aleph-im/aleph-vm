@@ -207,16 +207,18 @@ async def list_executions_v2(request: web.Request) -> web.Response:
     return web.json_response(
         {
             item_hash: {
-                "networking": {
-                    "ipv4_network": execution.vm.tap_interface.ip_network,
-                    "host_ipv4": pool.network.host_ipv4,
-                    "ipv6_network": execution.vm.tap_interface.ipv6_network,
-                    "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
-                    "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
-                    "mapped_ports": execution.mapped_ports,
-                }
-                if execution.vm and execution.vm.tap_interface
-                else {},
+                "networking": (
+                    {
+                        "ipv4_network": execution.vm.tap_interface.ip_network,
+                        "host_ipv4": pool.network.host_ipv4,
+                        "ipv6_network": execution.vm.tap_interface.ipv6_network,
+                        "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
+                        "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
+                        "mapped_ports": execution.mapped_ports,
+                    }
+                    if execution.vm and execution.vm.tap_interface
+                    else {}
+                ),
                 "status": execution.times,
                 "running": execution.is_running,
             }
