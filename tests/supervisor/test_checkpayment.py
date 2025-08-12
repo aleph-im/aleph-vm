@@ -234,13 +234,7 @@ async def test_message_removing_status(mocker, fake_instance_content):
     pool = VmPool()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
-    async def get_stream(sender, receiver, chain):
-        if receiver == mock_community_wallet_address:
-            return 0
-        elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
-            return 10
-
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVING)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
@@ -248,7 +242,7 @@ async def test_message_removing_status(mocker, fake_instance_content):
 
     mocker.patch.object(VmExecution, "is_running", new=True)
     mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
-    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
     execution = VmExecution(
         vm_hash=hash,
         message=message,
@@ -269,6 +263,7 @@ async def test_message_removing_status(mocker, fake_instance_content):
     execution.stop.assert_not_called()
 
 
+@pytest.mark.asyncio
 async def test_removed_message_status(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
@@ -276,13 +271,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
     pool = VmPool()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
-    async def get_stream(sender, receiver, chain):
-        if receiver == mock_community_wallet_address:
-            return 0
-        elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
-            return 10
-
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
@@ -290,7 +279,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
 
     mocker.patch.object(VmExecution, "is_running", new=True)
     mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
-    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
     execution = VmExecution(
         vm_hash=hash,
         message=message,
