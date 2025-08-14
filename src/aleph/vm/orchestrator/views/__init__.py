@@ -35,7 +35,7 @@ from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
     InvalidChainError,
-    fetch_execution_flow_price,
+    fetch_execution_price,
     get_stream,
 )
 from aleph.vm.orchestrator.pubsub import PubSub
@@ -570,7 +570,7 @@ async def notify_allocation(request: web.Request):
         if have_gpu:
             logger.debug(f"GPU Instance {item_hash} not using PAYG")
         user_balance = await payment.fetch_balance_of_address(message.sender)
-        hold_price = await payment.fetch_execution_hold_price(item_hash)
+        hold_price = await payment.fetch_execution_price(item_hash, [PaymentType.hold], False)
         logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
         if hold_price > user_balance:
             return web.HTTPPaymentRequired(
@@ -599,7 +599,7 @@ async def notify_allocation(request: web.Request):
         if not active_flow:
             raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
 
-        required_flow: Decimal = await fetch_execution_flow_price(item_hash)
+        required_flow: Decimal = await fetch_execution_price(item_hash, [PaymentType.superfluid])
         community_wallet = await get_community_wallet_address()
         required_crn_stream: Decimal
         required_community_stream: Decimal
