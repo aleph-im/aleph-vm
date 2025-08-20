@@ -256,6 +256,10 @@ def update_haproxy_backend(socket_path, backend_name, instances, map_file_path, 
     for instance in instances:
         server_name = instance["name"]
         local_ip = instance["ipv4"]["local"]
+
+        if local_ip == None:
+            continue
+
         # custom domain name doesn't return the ip addr but the network range
         addr = local_ip.split("/")[0]
         if addr.endswith(".1"):

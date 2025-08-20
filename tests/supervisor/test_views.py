@@ -361,7 +361,7 @@ async def test_allocation_valid_token(aiohttp_client):
         headers={"X-Auth-Signature": "test"},
     )
     assert response.status == 200
-    assert await response.json() == {"success": True, "successful": [], "failing": [], "errors": {}}
+    assert await response.json() == {"success": True, "successful": [], "failing": [], "errors": {}, "stopped": []}
 
 
 @pytest.mark.asyncio

@@ -207,16 +207,18 @@ async def list_executions_v2(request: web.Request) -> web.Response:
     return web.json_response(
         {
             item_hash: {
-                "networking": {
-                    "ipv4_network": execution.vm.tap_interface.ip_network,
-                    "host_ipv4": pool.network.host_ipv4,
-                    "ipv6_network": execution.vm.tap_interface.ipv6_network,
-                    "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
-                    "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
-                    "mapped_ports": execution.mapped_ports,
-                }
-                if execution.vm and execution.vm.tap_interface
-                else {},
+                "networking": (
+                    {
+                        "ipv4_network": execution.vm.tap_interface.ip_network,
+                        "host_ipv4": pool.network.host_ipv4,
+                        "ipv6_network": execution.vm.tap_interface.ipv6_network,
+                        "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
+                        "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
+                        "mapped_ports": execution.mapped_ports,
+                    }
+                    if execution.vm and execution.vm.tap_interface
+                    else {}
+                ),
                 "status": execution.times,
                 "running": execution.is_running,
             }
@@ -430,6 +432,7 @@ allocation_lock = None
 
 async def update_allocations(request: web.Request):
     """Main entry for the start of persistence VM and instance, called by the Scheduler,
+    POST /control/allocations
 
 
     auth via the SETTINGS.ALLOCATION_TOKEN_HASH  sent in header X-Auth-Signature.
@@ -451,8 +454,10 @@ async def update_allocations(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
 
     async with allocation_lock:
+        logger.debug("Got allocation_lock, updating allocations")
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances
+        stopped_vms = []
         # Make a copy since the pool is modified
         for execution in list(pool.get_persistent_executions()):
             if (
@@ -466,6 +471,7 @@ async def update_allocations(request: web.Request):
                 logger.info("Stopping %s %s", vm_type, execution.vm_hash)
                 await pool.stop_vm(execution.vm_hash)
                 pool.forget_vm(execution.vm_hash)
+                stopped_vms.append(execution.vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.
 
@@ -532,6 +538,7 @@ async def update_allocations(request: web.Request):
                 "success": not failing,
                 "successful": list(successful),
                 "failing": list(failing),
+                "stopped": list(stopped_vms),
                 "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
             },
             status=status_code,
