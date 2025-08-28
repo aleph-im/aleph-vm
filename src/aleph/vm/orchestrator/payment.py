@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from decimal import Decimal
+from typing import List
 
 import aiohttp
 from aleph_message.models import ItemHash, PaymentType
@@ -44,8 +45,36 @@ async def fetch_balance_of_address(address: str) -> Decimal:
         return resp_data["balance"]
 
 
-async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
-    """Fetch the flow price of an execution from the reference API server."""
+async def fetch_credit_balance_of_address(address: str) -> Decimal:
+    """
+    Get the balance of the user from the PyAleph API.
+
+    API Endpoint:
+        GET /api/v0/addresses/{address}/balance
+
+    For more details, see the PyAleph API documentation:
+    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
+    """
+
+    async with aiohttp.ClientSession() as session:
+        url = f"{settings.API_SERVER}/api/v0/addresses/{address}/credit_balance"
+        resp = await session.get(url)
+
+        # Consider the balance as null if the address is not found
+        if resp.status == 404:
+            return Decimal(0)
+
+        # Raise an error if the request failed
+        resp.raise_for_status()
+
+        resp_data = await resp.json()
+        return resp_data["credits"]
+
+
+async def fetch_execution_price(
+    item_hash: ItemHash, allowed_payments: List[PaymentType], payment_type_required: bool = True
+) -> Decimal:
+    """Fetch the credit price of an execution from the reference API server."""
     async with aiohttp.ClientSession() as session:
         url = f"{settings.API_SERVER}/api/v0/price/{item_hash}"
         resp = await session.get(url)
@@ -53,36 +82,19 @@ async def fetch_execution_flow_price(item_hash: ItemHash) -> Decimal:
         resp.raise_for_status()
 
         resp_data = await resp.json()
-        required_flow: float = resp_data["required_tokens"]
+        required_credits: float = resp_data["required_credits"]  # Field not defined yet on API side.
         payment_type: str | None = resp_data["payment_type"]
 
-        if payment_type is None:
+        if payment_type_required and payment_type is None:
             msg = "Payment type must be specified in the message"
             raise ValueError(msg)
-        elif payment_type != PaymentType.superfluid:
-            msg = f"Payment type {payment_type} is not supported"
-            raise ValueError(msg)
 
-        return Decimal(required_flow)
+        if payment_type:
+            if payment_type not in allowed_payments:
+                msg = f"Payment type {payment_type} is not supported"
+                raise ValueError(msg)
 
-
-async def fetch_execution_hold_price(item_hash: ItemHash) -> Decimal:
-    """Fetch the hold price of an execution from the reference API server."""
-    async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/price/{item_hash}"
-        resp = await session.get(url)
-        # Raise an error if the request failed
-        resp.raise_for_status()
-
-        resp_data = await resp.json()
-        required_hold: float = resp_data["required_tokens"]
-        payment_type: str | None = resp_data["payment_type"]
-
-        if payment_type not in (None, PaymentType.hold):
-            msg = f"Payment type {payment_type} is not supported"
-            raise ValueError(msg)
-
-        return Decimal(required_hold)
+        return Decimal(required_credits)
 
 
 class InvalidAddressError(ValueError):
@@ -133,11 +145,26 @@ async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
 
 async def compute_required_balance(executions: Iterable[VmExecution]) -> Decimal:
     """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
-    costs = await asyncio.gather(*(fetch_execution_hold_price(execution.vm_hash) for execution in executions))
+    costs = await asyncio.gather(
+        *(
+            fetch_execution_price(execution.vm_hash, [PaymentType.hold], payment_type_required=False)
+            for execution in executions
+        )
+    )
+    return sum(costs, Decimal(0))
+
+
+async def compute_required_credit_balance(executions: Iterable[VmExecution]) -> Decimal:
+    """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
+    costs = await asyncio.gather(
+        *(fetch_execution_price(execution.vm_hash, [PaymentType.credit]) for execution in executions)
+    )
     return sum(costs, Decimal(0))
 
 
 async def compute_required_flow(executions: Iterable[VmExecution]) -> Decimal:
     """Compute the flow required for a collection of executions, typically all executions from a specific address"""
-    flows = await asyncio.gather(*(fetch_execution_flow_price(execution.vm_hash) for execution in executions))
+    flows = await asyncio.gather(
+        *(fetch_execution_price(execution.vm_hash, [PaymentType.superfluid]) for execution in executions)
+    )
     return sum(flows, Decimal(0))
