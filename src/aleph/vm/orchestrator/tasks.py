@@ -31,8 +31,10 @@ from aleph.vm.utils import create_task_log_exceptions
 from .messages import get_message_status
 from .payment import (
     compute_required_balance,
+    compute_required_credit_balance,
     compute_required_flow,
     fetch_balance_of_address,
+    fetch_credit_balance_of_address,
     get_stream,
 )
 from .pubsub import PubSub
@@ -187,44 +189,71 @@ async def check_payment(pool: VmPool):
             pool.forget_vm(vm_hash)
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-    for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.hold).items():
+    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.hold).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions if execution.is_confidential]
             if not executions:
                 continue
-            balance = await fetch_balance_of_address(sender)
+            balance = await fetch_balance_of_address(execution_address)
 
             # Stop executions until the required balance is reached
             required_balance = await compute_required_balance(executions)
-            logger.debug(f"Required balance for Sender {sender} executions: {required_balance}, {executions}")
+            logger.debug(
+                f"Required balance for Sender {execution_address} executions: {required_balance}, {executions}"
+            )
             # Stop executions until the required balance is reached
             while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
                 logger.debug(f"Stopping {last_execution} due to insufficient balance")
                 await pool.stop_vm(last_execution.vm_hash)
                 required_balance = await compute_required_balance(executions)
+
     community_wallet = await get_community_wallet_address()
     if not community_wallet:
         logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
 
+    # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
+    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.credit).items():
+        for chain, executions in chains.items():
+            executions = [execution for execution in executions]
+            if not executions:
+                continue
+            balance = await fetch_credit_balance_of_address(execution_address)
+
+            # Stop executions until the required credits are reached
+            required_credits = await compute_required_credit_balance(executions)
+            logger.debug(
+                f"Required credit balance for Address {execution_address} executions: {required_credits}, {executions}"
+            )
+            # Stop executions until the required credits are reached
+            while executions and balance < (required_credits + settings.PAYMENT_BUFFER):
+                last_execution = executions.pop(-1)
+                logger.debug(f"Stopping {last_execution} due to insufficient credit balance")
+                await pool.stop_vm(last_execution.vm_hash)
+                required_credits = await compute_required_credit_balance(executions)
+
     # Check if the balance held in the wallet is sufficient stream tier resources
-    for sender, chains in pool.get_executions_by_sender(payment_type=PaymentType.superfluid).items():
+    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.superfluid).items():
         for chain, executions in chains.items():
             try:
-                stream = await get_stream(sender=sender, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain)
+                stream = await get_stream(
+                    sender=execution_address, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain
+                )
 
                 logger.debug(
-                    f"Stream flow from {sender} to {settings.PAYMENT_RECEIVER_ADDRESS} = {stream} {chain.value}"
+                    f"Stream flow from {execution_address} to {settings.PAYMENT_RECEIVER_ADDRESS} = {stream} {chain.value}"
                 )
             except ValueError as error:
-                logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
+                logger.error(f"Error found getting stream for chain {chain} and sender {execution_address}: {error}")
                 continue
             try:
-                community_stream = await get_stream(sender=sender, receiver=community_wallet, chain=chain)
-                logger.debug(f"Stream flow from {sender} to {community_wallet} (community) : {stream} {chain}")
+                community_stream = await get_stream(sender=execution_address, receiver=community_wallet, chain=chain)
+                logger.debug(
+                    f"Stream flow from {execution_address} to {community_wallet} (community) : {stream} {chain}"
+                )
 
             except ValueError as error:
-                logger.error(f"Error found getting stream for chain {chain} and sender {sender}: {error}")
+                logger.error(f"Error found getting stream for chain {chain} and sender {execution_address}: {error}")
                 continue
 
             while executions:
@@ -249,7 +278,7 @@ async def check_payment(pool: VmPool):
                 )
                 required_community_stream = format_cost(required_stream * COMMUNITY_STREAM_RATIO)
                 logger.debug(
-                    f"Stream for senders {sender} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
+                    f"Stream for senders {execution_address} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"
                 )
                 # Can pay all executions
@@ -259,7 +288,7 @@ async def check_payment(pool: VmPool):
                     break
                 # Stop executions until the required stream is reached
                 last_execution = executions.pop(-1)
-                logger.info(f"Stopping {last_execution} of {sender} due to insufficient stream")
+                logger.info(f"Stopping {last_execution} of {execution_address} due to insufficient stream")
                 await pool.stop_vm(last_execution.vm_hash)
 
 
