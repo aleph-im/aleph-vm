@@ -47,6 +47,7 @@ from .views import (
     status_check_version,
     status_public_config,
     update_allocations,
+    list_executions_resources,
 )
 from .views.operator import (
     operate_confidential_initialize,
@@ -128,6 +129,7 @@ def setup_webapp(pool: VmPool | None):
         web.get("/about/login", about_login),
         web.get("/about/executions/list", list_executions),
         web.get("/v2/about/executions/list", list_executions_v2),
+        web.get("/about/executions/resources", list_executions_resources),
         web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
