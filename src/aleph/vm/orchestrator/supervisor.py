@@ -34,6 +34,7 @@ from .views import (
     about_login,
     debug_haproxy,
     list_executions,
+    list_executions_resources,
     list_executions_v2,
     notify_allocation,
     operate_reserve_resources,
@@ -47,7 +48,6 @@ from .views import (
     status_check_version,
     status_public_config,
     update_allocations,
-    list_executions_resources,
 )
 from .views.operator import (
     operate_confidential_initialize,

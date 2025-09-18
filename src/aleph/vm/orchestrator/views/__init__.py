@@ -229,7 +229,6 @@ async def list_executions_v2(request: web.Request) -> web.Response:
     )
 
 
-
 @cors_allow_all
 async def list_executions_resources(request: web.Request) -> web.Response:
     """List all executions with detail on their resource usage"""
