@@ -91,7 +91,7 @@ async def fetch_execution_price(
         resp.raise_for_status()
 
         resp_data = await resp.json()
-        required_credits: float = resp_data["required_credits"]  # Field not defined yet on API side.
+        required_credits: float = resp_data["cost"]
         payment_type: str | None = resp_data["payment_type"]
 
         if payment_type_required and payment_type is None:
