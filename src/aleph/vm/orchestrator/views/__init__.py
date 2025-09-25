@@ -654,7 +654,8 @@ async def notify_allocation(request: web.Request):
 
         credit_balance = await fetch_credit_balance_of_address(message.content.address)
 
-        required_credits = await fetch_execution_price(item_hash, [PaymentType.credit])
+        credits_price_x_second = await fetch_execution_price(item_hash, [PaymentType.credit])
+        required_credits = Decimal(credits_price_x_second) * Decimal(60) * Decimal(60)
         logger.debug(
             f"Required credit balance for Address {message.content.address} executions: {required_credits}, {item_hash}"
         )
