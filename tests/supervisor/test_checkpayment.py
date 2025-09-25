@@ -254,7 +254,7 @@ async def test_message_removing_status(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -291,7 +291,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
 
     pool.executions = {hash: execution}
 
-    executions_by_sender = pool.get_executions_by_sender(payment_type=PaymentType.superfluid)
+    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
