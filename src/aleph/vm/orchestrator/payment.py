@@ -47,35 +47,23 @@ async def get_address_balance(address: str) -> dict:
 async def fetch_balance_of_address(address: str) -> Decimal:
     """
     Get the balance of the user from the PyAleph API.
-
-    API Endpoint:
-        GET /api/v0/addresses/{address}/balance
-
-    For more details, see the PyAleph API documentation:
-    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
     """
 
     resp_data = await get_address_balance(address)
     if hasattr(resp_data, "balance"):
-        return resp_data["balance"]
+        return Decimal(resp_data["balance"])
 
     return Decimal(0)
 
 
 async def fetch_credit_balance_of_address(address: str) -> Decimal:
     """
-    Get the balance of the user from the PyAleph API.
-
-    API Endpoint:
-        GET /api/v0/addresses/{address}/balance
-
-    For more details, see the PyAleph API documentation:
-    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
+    Get the credits of the user from the PyAleph API.
     """
 
     resp_data = await get_address_balance(address)
     if hasattr(resp_data, "credit_balance"):
-        return resp_data["credit_balance"]
+        return Decimal(resp_data["credit_balance"])
 
     return Decimal(0)
 
