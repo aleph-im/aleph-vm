@@ -19,7 +19,7 @@ from .chain import ChainInfo, InvalidChainError, get_chain
 logger = logging.getLogger(__name__)
 
 
-async def fetch_balance_of_address(address: str) -> Decimal:
+async def get_address_balance(address: str) -> dict:
     """
     Get the balance of the user from the PyAleph API.
 
@@ -36,13 +36,30 @@ async def fetch_balance_of_address(address: str) -> Decimal:
 
         # Consider the balance as null if the address is not found
         if resp.status == 404:
-            return Decimal(0)
+            return {}
 
         # Raise an error if the request failed
         resp.raise_for_status()
 
-        resp_data = await resp.json()
+        return await resp.json()
+
+
+async def fetch_balance_of_address(address: str) -> Decimal:
+    """
+    Get the balance of the user from the PyAleph API.
+
+    API Endpoint:
+        GET /api/v0/addresses/{address}/balance
+
+    For more details, see the PyAleph API documentation:
+    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
+    """
+
+    resp_data = await get_address_balance(address)
+    if hasattr(resp_data, "balance"):
         return resp_data["balance"]
+
+    return Decimal(0)
 
 
 async def fetch_credit_balance_of_address(address: str) -> Decimal:
@@ -56,19 +73,11 @@ async def fetch_credit_balance_of_address(address: str) -> Decimal:
     https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
     """
 
-    async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/addresses/{address}/credit_balance"
-        resp = await session.get(url)
+    resp_data = await get_address_balance(address)
+    if hasattr(resp_data, "credit_balance"):
+        return resp_data["credit_balance"]
 
-        # Consider the balance as null if the address is not found
-        if resp.status == 404:
-            return Decimal(0)
-
-        # Raise an error if the request failed
-        resp.raise_for_status()
-
-        resp_data = await resp.json()
-        return resp_data["credits"]
+    return Decimal(0)
 
 
 async def fetch_execution_price(

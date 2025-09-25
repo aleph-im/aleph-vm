@@ -35,6 +35,7 @@ from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
     InvalidChainError,
+    fetch_credit_balance_of_address,
     fetch_execution_price,
     get_stream,
 )
@@ -645,6 +646,27 @@ async def notify_allocation(request: web.Request):
                     f"Present: {active_flow_per_month} / month (flow = {community_flow})\n"
                     f"Address: {community_wallet}",
                 )
+    elif payment_type == PaymentType.credit:
+        if is_confidential:
+            logger.debug(f"Confidential instance {item_hash} using Credits")
+        if have_gpu:
+            logger.debug(f"GPU Instance {item_hash} using Credits")
+
+        credit_balance = await fetch_credit_balance_of_address(message.content.address)
+
+        required_credits = await fetch_execution_price(item_hash, [PaymentType.credit])
+        logger.debug(
+            f"Required credit balance for Address {message.content.address} executions: {required_credits}, {item_hash}"
+        )
+
+        if required_credits > credit_balance:
+            return web.HTTPPaymentRequired(
+                reason="Insufficient balance",
+                text="Insufficient credits for this instance\n\n"
+                f"Required: {required_credits} credits \n"
+                f"Current user credits: {credit_balance}",
+            )
+
     else:
         return web.HTTPBadRequest(reason="Invalid payment method")
 
