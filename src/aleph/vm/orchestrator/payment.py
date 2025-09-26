@@ -50,10 +50,13 @@ async def fetch_balance_of_address(address: str) -> Decimal:
     """
 
     resp_data = await get_address_balance(address)
-    if hasattr(resp_data, "balance"):
-        return Decimal(resp_data["balance"])
-
-    return Decimal(0)
+    balance = resp_data.get("balance")
+    if not isinstance(balance, Decimal | int | float | str | tuple):
+        logger.warning(
+            "Invalid balance format for address %s: %r. API Server : %s", address, balance, settings.API_SERVER
+        )
+        return Decimal(0)
+    return Decimal(balance)
 
 
 async def fetch_credit_balance_of_address(address: str) -> Decimal:
@@ -62,10 +65,13 @@ async def fetch_credit_balance_of_address(address: str) -> Decimal:
     """
 
     resp_data = await get_address_balance(address)
-    if hasattr(resp_data, "credit_balance"):
-        return Decimal(resp_data["credit_balance"])
-
-    return Decimal(0)
+    balance = resp_data.get("credit_balance", 0)
+    if not isinstance(balance, Decimal | int | float | str | tuple):
+        logger.warning(
+            "Invalid balance format for address %s: %r. API Server : %s", address, balance, settings.API_SERVER
+        )
+        return Decimal(0)
+    return Decimal(balance)
 
 
 async def fetch_execution_price(
