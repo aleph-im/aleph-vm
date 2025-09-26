@@ -50,7 +50,7 @@ async def fetch_balance_of_address(address: str) -> Decimal:
     """
 
     resp_data = await get_address_balance(address)
-    balance = resp_data.get("balance")
+    balance = resp_data.get("balance", 0)
     if not isinstance(balance, Decimal | int | float | str | tuple):
         logger.warning(
             "Invalid balance format for address %s: %r. API Server : %s", address, balance, settings.API_SERVER
