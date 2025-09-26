@@ -40,8 +40,12 @@ async def get_address_balance(address: str) -> dict:
 
         # Raise an error if the request failed
         resp.raise_for_status()
+        ret = await resp.json()
+        if not isinstance(ret, dict):
+            msg = f"get_address_blaance: Invalid response received from  {url}, should be dict"
+            raise Exception(msg)
 
-        return await resp.json()
+        return ret
 
 
 async def fetch_balance_of_address(address: str) -> Decimal:
