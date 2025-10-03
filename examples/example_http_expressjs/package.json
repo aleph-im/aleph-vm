@@ -1,0 +1,17 @@
+{
+  "name": "example_http_js",
+  "version": "1.0.0",
+  "description": "A simple example program written in JS that can run in an Aleph VM.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Aleph.im",
+  "license": "MIT",
+  "dependencies": {
+    "aleph-sdk-ts": "^3.0.3",
+    "express": "^4.18.2"
+  }
+}
