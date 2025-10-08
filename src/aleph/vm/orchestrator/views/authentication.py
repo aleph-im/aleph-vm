@@ -104,22 +104,22 @@ class SignedPubKeyHeader(BaseModel):
         return bytes.fromhex(v.decode())
 
     @model_validator(mode="after")
-    def check_expiry(values) -> Self:
+    def check_expiry(self) -> Self:
         """Check that the token has not expired"""
-        payload = values.payload
+        payload = self.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
         if not is_token_still_valid(content.expires):
             raise ValueError("Token expired")
-        return values
+        return self
 
     @model_validator(mode="after")
-    def check_signature(values) -> Self:
+    def check_signature(self) -> Self:
         """Check that the signature is valid"""
-        signature = values.signature
-        payload = values.payload
+        signature = self.signature
+        payload = self.payload
         content = SignedPubKeyPayload.model_validate_json(payload)
         check_wallet_signature_or_raise(content.address, content.chain, payload, signature)
-        return values
+        return self
 
     @property
     def content(self) -> SignedPubKeyPayload:
