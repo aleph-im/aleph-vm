@@ -16,7 +16,6 @@ Writing programs in Python using ASGI compatible frameworks (
 # Production install for Aleph-VM
 ## Installation from packages
 
-
 Head over to the  official user doc [https://docs.aleph.cloud/nodes/compute/introduction/](https://docs.aleph.cloud/nodes/compute/introduction/) on how to run an Aleph Cloud Compute Resource
 Node
 
