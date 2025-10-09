@@ -22,13 +22,14 @@ debian-package-code:
 	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message~=1.0.1' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pydantic-settings==2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2' 'protobuf==5.28.3'
 	build_venv/bin/python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
-debian-package-resources: firecracker-bins vmlinux download-ipfs-kubo  target/bin/sevctl
+debian-package-resources: firecracker-bins vmlinux target/bin/sevctl
 	rm -fr ./aleph-vm/opt/firecracker
 	mkdir -p ./aleph-vm/opt/firecracker
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
 	cp -pr ./target/firecracker ./aleph-vm/opt/firecracker/
 	cp -pr ./target/jailer ./aleph-vm/opt/firecracker/
-	cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
+	# Disable Kubo installation for now
+	# cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
 	cp -pr ./target/bin/sevctl ./aleph-vm/opt/sevctl
 
 firecracker-bins: target-dir build-dir

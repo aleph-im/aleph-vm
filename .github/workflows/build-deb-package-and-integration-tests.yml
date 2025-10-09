@@ -40,7 +40,6 @@ jobs:
 
       - name: Ensure that the relevant files are present in the package
         run: |
-          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/kubo/ipfs
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/firecracker
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/jailer
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/vmlinux.bin
