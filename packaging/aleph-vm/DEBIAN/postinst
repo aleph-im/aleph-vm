@@ -9,18 +9,27 @@ rm -fr /srv/jailer  # Upgrade from < 0.1.11
 rm -fr /tmp/aleph   # Upgrade from < 0.1.11
 mkdir -p /var/lib/aleph/vm/jailer
 
-# Create the IPFS directory if it does not exist
-if [ ! -d "/var/lib/ipfs" ]; then
-    mkdir -p /var/lib/ipfs
-    # Set appropriate permissions if needed
-    chown ipfs:ipfs /var/lib/ipfs
+# Clean the IPFS directory if it does exist
+if [ -d "/var/lib/ipfs" ]; then
+  if ! [[ -v container ]]; then
+    # Check if service is running to stop it
+    if systemctl is-active --quiet ipfs.service; then
+      systemctl stop ipfs.service
+    fi
+
+    # Check if service is enabled to disable it
+    if systemctl is-enabled --quiet ipfs.service; then
+      systemctl disable ipfs.service
+    fi
+  fi
+
+  # Remove existing IPFS files to free some space
+  rm -rf /var/lib/ipfs
 fi
 
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
   systemctl daemon-reload
-  systemctl enable ipfs.service
-  systemctl restart ipfs.service
   systemctl enable aleph-vm-supervisor.service
   systemctl restart aleph-vm-supervisor.service
 fi
