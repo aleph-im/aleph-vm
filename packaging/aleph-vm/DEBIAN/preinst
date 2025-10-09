@@ -12,6 +12,4 @@ fi
 
 set -e
 
-# We will not delete this user on uninstall since there may be files owned by that user in /var/lib/ipfs
-addgroup --system ipfs
-adduser --system --ingroup ipfs ipfs
+
