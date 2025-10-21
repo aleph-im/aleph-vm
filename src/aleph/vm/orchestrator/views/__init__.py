@@ -46,6 +46,7 @@ from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
+    get_execution_disk_size,
     is_after_community_wallet_start,
     update_aggregate_settings,
 )
@@ -220,38 +221,13 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                     if execution.vm and execution.vm.tap_interface
                     else {}
                 ),
+                "resources": {
+                    "vcpus": execution.message.resources.vcpus,
+                    "memory": execution.message.resources.memory,
+                    "disk_mib": get_execution_disk_size(execution.message),
+                },
                 "status": execution.times,
                 "running": execution.is_running,
-            }
-            for item_hash, execution in pool.executions.items()
-        },
-        dumps=dumps_for_json,
-    )
-
-
-@cors_allow_all
-async def list_executions_resources(request: web.Request) -> web.Response:
-    """List all executions with detail on their resource usage"""
-    pool: VmPool = request.app["vm_pool"]
-
-    return web.json_response(
-        {
-            item_hash: {
-                "networking": (
-                    {
-                        "ipv4_network": execution.vm.tap_interface.ip_network,
-                        "host_ipv4": pool.network.host_ipv4,
-                        "ipv6_network": execution.vm.tap_interface.ipv6_network,
-                        "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
-                        "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
-                        "mapped_ports": execution.mapped_ports,
-                    }
-                    if execution.vm and execution.vm.tap_interface
-                    else {}
-                ),
-                "status": execution.times,
-                "message": execution.message,
-                "resources": execution.resources,
             }
             for item_hash, execution in pool.executions.items()
         },

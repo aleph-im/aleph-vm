@@ -4,6 +4,7 @@ from logging import getLogger
 from typing import Any, TypedDict
 
 import aiohttp
+from aleph_message.models import InstanceContent, ProgramContent
 
 from aleph.vm.conf import settings
 
@@ -106,3 +107,20 @@ def get_compatible_gpus() -> list[Any]:
     if not LAST_AGGREGATE_SETTINGS:
         return []
     return LAST_AGGREGATE_SETTINGS["compatible_gpus"]
+
+
+def get_execution_disk_size(message: InstanceContent | ProgramContent) -> Decimal:
+    disk_size_mib = 0
+
+    # For Programs the disk size depends on the runtime
+    # TODO: Find the real size of the runtime and for the code volumes
+    if isinstance(message, InstanceContent):
+        disk_size_mib = message.rootfs.size_mib
+
+    # For volumes, only the persistent and ephemeral volumes have a size field
+    # TODO: Find the real size of Inmutable volumes
+    for volume in message.volumes:
+        if getattr(volume, "size_mib", None):
+            disk_size_mib += volume.size_mib
+
+    return Decimal(disk_size_mib)
