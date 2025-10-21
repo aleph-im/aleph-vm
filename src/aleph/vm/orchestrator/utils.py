@@ -109,7 +109,7 @@ def get_compatible_gpus() -> list[Any]:
     return LAST_AGGREGATE_SETTINGS["compatible_gpus"]
 
 
-def get_execution_disk_size(message: InstanceContent | ProgramContent) -> Decimal:
+def get_execution_disk_size(message: InstanceContent | ProgramContent) -> int:
     disk_size_mib = 0
 
     # For Programs the disk size depends on the runtime
@@ -123,4 +123,4 @@ def get_execution_disk_size(message: InstanceContent | ProgramContent) -> Decima
         if getattr(volume, "size_mib", None):
             disk_size_mib += volume.size_mib
 
-    return Decimal(disk_size_mib)
+    return disk_size_mib
