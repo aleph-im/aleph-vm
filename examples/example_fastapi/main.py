@@ -59,7 +59,7 @@ ALEPH_API_HOSTS: list[str] = [
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global startup_lifespan_executed
+    global startup_lifespan_executed, cache
     startup_lifespan_executed = True
     cache = VmCache()
 
@@ -124,13 +124,40 @@ async def environ() -> dict[str, str]:
     return dict(os.environ)
 
 
+async def get_aleph_messages(api_host: str, message_filter: MessageFilter):
+    async with AlephHttpClient(api_server=api_host) as client:
+        data = await client.get_messages(
+            message_filter=message_filter
+        )
+        return data.dict()
+
+
 @app.get("/messages")
 async def read_aleph_messages() -> dict[str, MessagesResponse]:
     """Read data from Aleph using the Aleph Client library."""
-    async with AlephHttpClient() as client:
-        message_filter = MessageFilter(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
-        data = await client.get_messages(message_filter=message_filter)
-    return {"Messages": data}
+    message_filter = MessageFilter(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
+
+    # Create a list of tasks to check the URLs in parallel
+    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_messages(host, message_filter)) for host in ALEPH_API_HOSTS}
+
+    failures = []
+
+    # While no tasks have completed, keep waiting for the next one to finish
+    while tasks:
+        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        result = done.pop().result()
+
+        if result.get("messages", None):
+            # The task was successful, cancel the remaining tasks and return the result
+            for task in tasks:
+                task.cancel()
+            return {"Messages": result}
+        else:
+            failures.append(result)
+            continue
+
+    # No Aleph API Host was reachable
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 @app.get("/dns")
@@ -315,43 +342,52 @@ async def get_a_message():
     # Create a list of tasks to check the URLs in parallel
     tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_message(host, item_hash)) for host in ALEPH_API_HOSTS}
 
+    failures = []
+
     # While no tasks have completed, keep waiting for the next one to finish
     while tasks:
         done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         result = done.pop().result()
 
-        if result["status"]:
+        if result.get("item_hash", None):
             # The task was successful, cancel the remaining tasks and return the result
             for task in tasks:
                 task.cancel()
             return result
         else:
+            failures.append(result)
             continue
 
-    # No API Host was reachable
-    return {"result": False}
+    # No Aleph API Host was reachable
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 async def get_aleph_message(api_host: str, item_hash: str):
-    async with AlephHttpClient(api_server=api_host) as client:
-        message = await client.get_message(
-            item_hash=item_hash,
-            message_type=ProgramMessage,
-        )
-        return message.dict()
+    try:
+        async with AlephHttpClient(api_server=api_host) as client:
+            message = await client.get_message(
+                item_hash=item_hash,
+                message_type=ProgramMessage,
+            )
+            return message.dict()
+    except Exception as e:
+        reason = f"Unexpected error: {type(e).__name__}"
+        logger.error(f"Unexpected error for host {api_host}: {e}", exc_info=True)
+        return {"result": False, "reason": reason}
 
 
 @app.post("/post_a_message")
 async def post_with_remote_account():
     """Post a message on the Aleph.im network using the remote account of the host."""
-    account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
+    failures = []
+    try:
+        account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+        # Create a list of tasks to check the URLs in parallel
+        tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        try:
+        # While no tasks have completed, keep waiting for the next one to finish
+        while tasks:
             done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             message, status = done.pop().result()
 
@@ -363,12 +399,13 @@ async def post_with_remote_account():
                     "message": message,
                 }
             else:
+                failures.append(message)
                 continue
-        except aiohttp.client_exceptions.UnixClientConnectorError:
-            return JSONResponse(status_code=500, content={"error": "Could not connect to the remote account"})
+    except aiohttp.client_exceptions.UnixClientConnectorError:
+        failures.append({"error": "Could not connect to the remote account"})
 
     # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 @app.post("/post_a_message_local_account")
@@ -380,6 +417,8 @@ async def post_with_local_account():
 
     # Create a list of tasks to check the URLs in parallel
     tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+
+    failures = []
 
     # While no tasks have completed, keep waiting for the next one to finish
     while tasks:
@@ -394,35 +433,45 @@ async def post_with_local_account():
                 "message": message,
             }
         else:
+            failures.append(message)
             continue
 
     # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 async def send_post_aleph_message(api_host: str, account: RemoteAccount | ETHAccount):
     """Post a message on the Aleph.im network using a local or the remote account of the host."""
-    content = {
-        "date": datetime.now(tz=timezone.utc).isoformat(),
-        "test": True,
-        "answer": 42,
-        "something": "interesting",
-    }
-    async with AuthenticatedAlephHttpClient(
-        account=account,
-        api_server=api_host,
-    ) as client:
-        message: PostMessage
-        status: MessageStatus
-        return await client.create_post(
-            post_content=content,
-            post_type="test",
-            ref=None,
-            channel="TEST",
-            inline=True,
-            storage_engine=StorageEnum.storage,
-            sync=True,
-        )
+    try:
+        content = {
+            "date": datetime.now(tz=timezone.utc).isoformat(),
+            "test": True,
+            "answer": 42,
+            "something": "interesting",
+        }
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+            api_server=api_host,
+        ) as client:
+            message: PostMessage
+            status: MessageStatus
+            return await client.create_post(
+                post_content=content,
+                post_type="test",
+                ref=None,
+                channel="TEST",
+                inline=True,
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+    except aiohttp.client_exceptions.UnixClientConnectorError as e:
+        reason = f"{type(e).__name__}"
+        logger.error(f"Connection error for host {api_host} with account {account}: {e}", exc_info=True)
+        return {"result": False, "reason": reason}, MessageStatus.REJECTED
+    except Exception as e:
+        reason = f"Unexpected error: {type(e).__name__}"
+        logger.error(f"Unexpected error for host {api_host} with account {account}: {e}", exc_info=True)
+        return {"result": False, "reason": reason}, MessageStatus.REJECTED
 
 
 @app.post("/post_a_file")
@@ -437,6 +486,8 @@ async def post_a_file():
         asyncio.create_task(send_store_aleph_message(host, account, file_path)) for host in ALEPH_API_HOSTS
     }
 
+    failures = []
+
     # While no tasks have completed, keep waiting for the next one to finish
     while tasks:
         done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -450,27 +501,37 @@ async def post_a_file():
                 "message": message,
             }
         else:
+            failures.append(message)
             continue
 
     # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 async def send_store_aleph_message(api_host: str, account: ETHAccount, file_path: Path):
     """Store a file on the Aleph.im network using a local account."""
-    async with AuthenticatedAlephHttpClient(
-        account=account,
-        api_server=api_host,
-    ) as client:
-        message: StoreMessage
-        status: MessageStatus
-        return await client.create_store(
-            file_path=file_path,
-            ref=None,
-            channel="TEST",
-            storage_engine=StorageEnum.storage,
-            sync=True,
-        )
+    try:
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+            api_server=api_host,
+        ) as client:
+            message: StoreMessage
+            status: MessageStatus
+            return await client.create_store(
+                file_path=file_path,
+                ref=None,
+                channel="TEST",
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+    except aiohttp.client_exceptions.UnixClientConnectorError as e:
+        reason = f"{type(e).__name__}"
+        logger.error(f"Connection error for host {api_host} with account {account}: {e}", exc_info=True)
+        return {"result": False, "reason": reason}, MessageStatus.REJECTED
+    except Exception as e:
+        reason = f"Unexpected error: {type(e).__name__}"
+        logger.error(f"Unexpected error for host {api_host} with account {account}: {e}", exc_info=True)
+        return {"result": False, "reason": reason}, MessageStatus.REJECTED
 
 
 @app.get("/sign_a_message")
@@ -480,7 +541,7 @@ async def sign_a_message():
     from aleph.sdk.chains.ethereum import get_fallback_account
 
     account = get_fallback_account()
-    message = {"hello": "world", "chain": "ETH"}
+    message = {"hello": "world", "chain": "ETH", "type": "POST", "item_hash": "0x000"}
     signed_message = await account.sign_message(message)
     return {"message": signed_message}
 
