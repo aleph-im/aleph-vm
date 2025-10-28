@@ -45,7 +45,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-cache = VmCache()
+
+# Initialize cache on startup event to avoid running loop errors
+cache: VmCache | None = None
 
 startup_lifespan_executed: bool = False
 
@@ -59,6 +61,7 @@ ALEPH_API_HOSTS: list[str] = [
 async def startup_event() -> None:
     global startup_lifespan_executed
     startup_lifespan_executed = True
+    cache = VmCache()
 
 
 @app.get("/")
@@ -169,33 +172,23 @@ async def ip_address():
 
 @app.get("/ip/4")
 async def connect_ipv4():
-    """Connect to the Quad9 VPN provider using their IPv4 address."""
-    ipv4_host = "9.9.9.9"
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect((ipv4_host, 53))
-        return {"result": True}
-    except TimeoutError:
-        logger.warning(f"Socket connection for host {ipv4_host} failed")
-        return {"result": False}
-
-
-@app.get("/ip/6")
-async def connect_ipv6():
-    """Connect to the Quad9 VPN provider using their IPv6 address.
-    The webserver on that address returns a 404 error, so we accept that response code.
+    """Connect to some DNS services using their IPv4 address.
+    The webserver on that address can return a 404 error, and it is normal, so we accept that response code.
     """
-    ipv6_hosts: list[str] = [
-        "https://[2620:fe::fe]",  # Quad9 DNS service
-        "https://[2606:4700:4700::1111]",  # CloudFlare DNS service
+    ipv4_hosts: list[str] = [
+        "https://9.9.9.9",  # Quad9 VPN service
+        "https://1.1.1.1",  # CloudFlare DNS service
+        "https://208.67.222.222",  # OpenDNS service
     ]
     timeout_seconds = 5
 
     # Create a list of tasks to check the URLs in parallel
     tasks: set[asyncio.Task] = {
-        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET6)) for host in ipv6_hosts
+        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET, accept_404=True))
+        for host in ipv4_hosts
     }
+
+    failures = []
 
     # While no tasks have completed, keep waiting for the next one to finish
     while tasks:
@@ -208,24 +201,78 @@ async def connect_ipv6():
                 task.cancel()
             return result
         else:
+            failures.append(result)
             continue
 
-    # No IPv6 URL was reachable
-    return {"result": False}
+    # No IPv6 URL was reachable, return the collected failure reasons
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
-async def check_url(internet_host: str, timeout_seconds: int = 5, socket_family=socket.AF_INET):
+@app.get("/ip/6")
+async def connect_ipv6():
+    """Connect to some DNS services using their IPv6 address.
+    The webserver on that address can return a 404 error, and it is normal, so we accept that response code.
+    """
+    ipv6_hosts: list[str] = [
+        "https://[2620:fe::fe]",  # Quad9 DNS service
+        "https://[2606:4700:4700::1111]",  # CloudFlare DNS service
+        "https://[2620:0:ccc::2]",  # OpenDNS service
+    ]
+    timeout_seconds = 5
+
+    # Create a list of tasks to check the URLs in parallel
+    tasks: set[asyncio.Task] = {
+        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET6, accept_404=True))
+        for host in ipv6_hosts
+    }
+
+    failures = []
+
+    # While no tasks have completed, keep waiting for the next one to finish
+    while tasks:
+        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        result = done.pop().result()
+
+        if result["result"]:
+            # The task was successful, cancel the remaining tasks and return the result
+            for task in tasks:
+                task.cancel()
+            return result
+        else:
+            failures.append(result)
+            continue
+
+    # No IPv6 URL was reachable, return the collected failure reasons
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+
+
+async def check_url(
+    internet_host: str, timeout_seconds: int = 5, socket_family=socket.AF_INET, accept_404: bool = False
+):
     """Check the connectivity of a single URL."""
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     tcp_connector = aiohttp.TCPConnector(family=socket_family)
     async with aiohttp.ClientSession(timeout=timeout, connector=tcp_connector) as session:
         try:
             async with session.get(internet_host) as resp:
-                resp.raise_for_status()
-                return {"result": resp.status, "headers": resp.headers, "url": internet_host}
-        except (aiohttp.ClientConnectionError, TimeoutError):
-            logger.warning(f"Session connection for host {internet_host} failed")
-            return {"result": False, "url": internet_host}
+                if 200 <= resp.status < 300:
+                    return {"result": True, "headers": resp.headers, "url": internet_host}
+
+                if resp.status == 404 and accept_404:
+                    return {"result": True, "headers": resp.headers, "url": internet_host}
+
+                reason = f"HTTP Status {resp.status}"
+                logger.warning(f"Session connection for host {internet_host} failed with status {resp.status}")
+                return {"result": False, "url": internet_host, "reason": reason}
+        except (aiohttp.ClientConnectionError, TimeoutError) as e:
+            reason = f"{type(e).__name__}"
+            logger.warning(f"Session connection for host {internet_host} failed ({reason})")
+            return {"result": False, "url": internet_host, "reason": reason}
+        except Exception as e:
+            # Catch other errors not related to timeouts like DNS errors, SSL certificates, etc.
+            reason = f"Unexpected error: {type(e).__name__}"
+            logger.error(f"Unexpected error for host {internet_host}: {e}", exc_info=True)
+            return {"result": False, "url": internet_host, "reason": reason}
 
 
 @app.get("/internet")
@@ -241,6 +288,8 @@ async def read_internet():
     # Create a list of tasks to check the URLs in parallel
     tasks: set[asyncio.Task] = {asyncio.create_task(check_url(host, timeout_seconds)) for host in internet_hosts}
 
+    failures = []
+
     # While no tasks have completed, keep waiting for the next one to finish
     while tasks:
         done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -252,10 +301,11 @@ async def read_internet():
                 task.cancel()
             return result
         else:
+            failures.append(result)
             continue
 
-    # No URL was reachable
-    return {"result": False}
+    # No URL was reachable, return the collected failure reasons
+    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
 
 
 @app.get("/get_a_message")
@@ -438,18 +488,24 @@ async def sign_a_message():
 @app.get("/cache/get/{key}")
 async def get_from_cache(key: str):
     """Get data in the VM cache"""
+    if cache is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not initialized"})
     return await cache.get(key)
 
 
 @app.get("/cache/set/{key}/{value}")
 async def store_in_cache(key: str, value: str):
     """Store data in the VM cache"""
+    if cache is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not initialized"})
     return await cache.set(key, value)
 
 
 @app.get("/cache/remove/{key}")
 async def remove_from_cache(key: str):
     """Store data in the VM cache"""
+    if cache is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not initialized"})
     result = await cache.delete(key)
     return result == 1
 
@@ -457,6 +513,8 @@ async def remove_from_cache(key: str):
 @app.get("/cache/keys")
 async def keys_from_cache(pattern: str = "*"):
     """List keys from the VM cache"""
+    if cache is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not initialized"})
     return await cache.keys(pattern)
 
 
