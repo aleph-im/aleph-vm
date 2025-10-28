@@ -465,6 +465,7 @@ async def update_allocations(request: web.Request):
                 execution.vm_hash not in allocations
                 and execution.is_running
                 and not execution.uses_payment_stream
+                and not execution.uses_payment_credit
                 and not execution.gpus
                 and not execution.is_confidential
             ):
