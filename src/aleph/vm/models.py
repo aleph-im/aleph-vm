@@ -234,6 +234,10 @@ class VmExecution:
         return self.message.payment and self.message.payment.is_stream
 
     @property
+    def uses_payment_credit(self) -> bool:
+        return self.message.payment and self.message.payment.is_credit
+
+    @property
     def has_resources(self) -> bool:
         assert self.vm, "The VM attribute has to be set before calling has_resources()"
         if isinstance(self.vm, AlephFirecrackerExecutable):
