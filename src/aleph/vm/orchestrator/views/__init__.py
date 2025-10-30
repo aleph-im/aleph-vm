@@ -46,6 +46,7 @@ from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
+    get_execution_disk_size,
     is_after_community_wallet_start,
     update_aggregate_settings,
 )
@@ -220,6 +221,11 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                     if execution.vm and execution.vm.tap_interface
                     else {}
                 ),
+                "resources": {
+                    "vcpus": execution.message.resources.vcpus,
+                    "memory": execution.message.resources.memory,
+                    "disk_mib": get_execution_disk_size(execution.message),
+                },
                 "status": execution.times,
                 "running": execution.is_running,
             }
