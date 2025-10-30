@@ -126,9 +126,7 @@ async def environ() -> dict[str, str]:
 
 async def get_aleph_messages(api_host: str, message_filter: MessageFilter):
     async with AlephHttpClient(api_server=api_host) as client:
-        data = await client.get_messages(
-            message_filter=message_filter
-        )
+        data = await client.get_messages(message_filter=message_filter)
         return data.dict()
 
 
@@ -138,7 +136,9 @@ async def read_aleph_messages() -> dict[str, MessagesResponse]:
     message_filter = MessageFilter(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
 
     # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_messages(host, message_filter)) for host in ALEPH_API_HOSTS}
+    tasks: set[asyncio.Task] = {
+        asyncio.create_task(get_aleph_messages(host, message_filter)) for host in ALEPH_API_HOSTS
+    }
 
     failures = []
 
@@ -204,7 +204,7 @@ async def connect_ipv4():
     """
     ipv4_hosts: list[str] = [
         "https://9.9.9.9",  # Quad9 VPN service
-        "https://1.1.1.1",  # CloudFlare DNS service
+        "https://94.140.14.14",  # AdGuard DNS service
         "https://208.67.222.222",  # OpenDNS service
     ]
     timeout_seconds = 5
@@ -384,7 +384,9 @@ async def post_with_remote_account():
         account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
 
         # Create a list of tasks to check the URLs in parallel
-        tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+        tasks: set[asyncio.Task] = {
+            asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS
+        }
 
         # While no tasks have completed, keep waiting for the next one to finish
         while tasks:
