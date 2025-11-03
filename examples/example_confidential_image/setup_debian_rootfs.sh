@@ -60,9 +60,6 @@ locale-gen "en_US.UTF-8"
 DEBIAN_FRONTEND=noninteractive apt update
 DEBIAN_FRONTEND=noninteractive apt install -y -f openssh-server openssh-client cryptsetup cryptsetup-initramfs cloud-init
 
-#  Force to update cloud-init tool to prevent bugs from old versions
-DEBIAN_FRONTEND=noninteractive apt install -y -f cloud-init
-
 # The original password of the OS partition. Must be provided by the caller of the script.
 BOOT_KEY_FILE="${SCRIPT_DIR}/os_partition.key"
 
