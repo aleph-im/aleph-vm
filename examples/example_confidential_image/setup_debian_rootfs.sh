@@ -56,12 +56,9 @@ mount -t devpts devpts /dev/pts
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen "en_US.UTF-8"
 
-#  Install crypsetup and openssh
+#  Install crypsetup and openssh and force to update cloud-init tool to prevent bugs from old versions
 DEBIAN_FRONTEND=noninteractive apt update
-DEBIAN_FRONTEND=noninteractive apt install -y -f openssh-server openssh-client cryptsetup cryptsetup-initramfs
-
-#  Force to update cloud-init tool to prevent bugs from old versions
-DEBIAN_FRONTEND=noninteractive apt install -y -f cloud-init
+DEBIAN_FRONTEND=noninteractive apt install -y -f openssh-server openssh-client cryptsetup cryptsetup-initramfs cloud-init
 
 # The original password of the OS partition. Must be provided by the caller of the script.
 BOOT_KEY_FILE="${SCRIPT_DIR}/os_partition.key"
