@@ -16,6 +16,18 @@ from aleph.vm.network.interfaces import TapInterface
 logger = logging.getLogger(__name__)
 
 
+class NoBaseChainFound(Exception):
+    hook: str
+
+    def __init__(self, hook, message: Optional[str]):
+        self.hook = hook
+        self.message = message or f"Could not find any base chain for hook '{hook}'"
+        super().__init__(message)
+
+    def __str__(self):
+        return f"Could not find any base chain for hook '{hook}'"
+
+
 @lru_cache
 def get_customized_nftables() -> Nftables:
     nft = Nftables()
@@ -91,7 +103,7 @@ def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
 def get_table_for_hook(hook: str, family: str = "ip") -> str:
     chains = get_base_chains_for_hook(hook, family)
     if not chains:
-        raise Exception(f"Could not find any base chain for hook '{hook}'")
+        raise NoBaseChainFound(hook=hook)
 
     # Sort by priority, lowest-to-highest
     chains.sort(key=lambda x: x["chain"].get("prio", 0))
