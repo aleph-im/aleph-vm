@@ -65,8 +65,8 @@ async def test_create_execution(mocker):
     assert isinstance(vm, AlephFirecrackerProgram)
     assert vm.vm_id == 3
 
-    await execution.start()
-    await execution.stop()
+    await asyncio.wait_for(execution.start(), timeout=60)
+    await asyncio.wait_for(execution.stop(), timeout=30)
 
 
 # This test depends on having a vm-connector running on port 4021
@@ -109,8 +109,8 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
     vm.fvm.enable_log = True
     assert vm.vm_id == 3
 
-    await execution.start()
-    await execution.stop()
+    await asyncio.wait_for(execution.start(), timeout=120)
+    await asyncio.wait_for(execution.stop(), timeout=60)
 
 
 @pytest.fixture()
@@ -245,8 +245,8 @@ async def test_create_execution_from_fake_message(fake_message):
     vm.fvm.enable_log = True
     assert vm.vm_id == 3
 
-    await execution.start()
-    await execution.stop()
+    await asyncio.wait_for(execution.start(), timeout=120)
+    await asyncio.wait_for(execution.stop(), timeout=60)
 
 
 @pytest.mark.asyncio
@@ -307,8 +307,8 @@ async def test_create_execution_volume_with_no_name(fake_message):
     vm.fvm.enable_log = True
     assert vm.vm_id == 3
 
-    await execution.start()
-    await execution.stop()
+    await asyncio.wait_for(execution.start(), timeout=120)
+    await asyncio.wait_for(execution.stop(), timeout=60)
 
 
 # This test depends on having a vm-connector running on port 4021

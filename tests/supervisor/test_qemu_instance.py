@@ -114,7 +114,7 @@ async def test_create_qemu_instance(mocker):
     assert isinstance(vm, AlephQemuInstance)
     assert vm.vm_id == vm_id
 
-    await execution.start()
+    await asyncio.wait_for(execution.start(), timeout=120)
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.controller_service)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
@@ -122,7 +122,7 @@ async def test_create_qemu_instance(mocker):
     await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await qemu_execution.qemu_process.wait()
     assert qemu_execution.qemu_process.returncode is not None
-    await execution.stop()
+    await asyncio.wait_for(execution.stop(), timeout=60)
     settings.LINUX_PATH = original_linux_path
 
 
@@ -208,14 +208,14 @@ async def test_create_qemu_instance_online(mocker):
     assert isinstance(vm, AlephQemuInstance)
     assert vm.vm_id == vm_id
 
-    await execution.start()
+    await asyncio.wait_for(execution.start(), timeout=120)
     qemu_execution = mock_systemd_manager.execution
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
     await execution.init_task
     assert execution.init_task.result() is True, "VM failed to start"
     qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
-    await execution.stop()
+    await asyncio.wait_for(execution.stop(), timeout=60)
     assert qemu_execution is None
 
     settings.LINUX_PATH = original_linux_path
