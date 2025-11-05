@@ -19,7 +19,7 @@ def mock_get_address_balance(mocker):
         "locked_amount": 4010.008710650127,
         "credit_balance": 10000,
     }
-    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", return_value=fake)
+    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", new=mocker.AsyncMock(return_value=fake))
 
     return fake
 
@@ -46,7 +46,7 @@ async def test_fetch_credit_balance_of_address_empty_response(
 ):
     """ """
     mocker.patch.object(settings, "API_SERVER", "https://fake.aleph.cloud")
-    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", return_value={})
+    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", new=mocker.AsyncMock(return_value={}))
 
     balance = await fetch_credit_balance_of_address("0x555559cd833c1dc1735bee4a7416caaE58Facca")
     assert balance == Decimal("0")
@@ -58,7 +58,7 @@ async def test_fetch_balance_of_address_empty_response(
 ):
     """ """
     mocker.patch.object(settings, "API_SERVER", "https://fake.aleph.cloud")
-    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", return_value={})
+    mocker.patch("aleph.vm.orchestrator.payment.get_address_balance", new=mocker.AsyncMock(return_value={}))
 
     balance = await fetch_balance_of_address("0x555559cd833c1dc1735bee4a7416caaE58Facca")
     assert balance == Decimal("0")
