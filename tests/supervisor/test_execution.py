@@ -57,7 +57,7 @@ async def test_create_execution(mocker):
     )
 
     # Downloading the resources required may take some time, limit it to 10 seconds
-    await asyncio.wait_for(execution.prepare(), timeout=30)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
 
     vm = execution.create(vm_id=3, tap_interface=None)
 
@@ -99,7 +99,7 @@ async def test_create_execution_online(vm_hash: ItemHash = None):
 
     # Downloading the resources required may take some time, limit it to 120 seconds
     # since it is a bit slow in GitHub Actions
-    await asyncio.wait_for(execution.prepare(), timeout=120)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
 
     vm = execution.create(vm_id=3, tap_interface=None)
 
@@ -235,7 +235,7 @@ async def test_create_execution_from_fake_message(fake_message):
 
     # Downloading the resources required may take some time, limit it to 120 seconds
     # since it is a bit slow in GitHub Actions
-    await asyncio.wait_for(execution.prepare(), timeout=120)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
 
     vm = execution.create(vm_id=3, tap_interface=None)
 
@@ -297,7 +297,7 @@ async def test_create_execution_volume_with_no_name(fake_message):
 
     # Downloading the resources required may take some time, limit it to 120 seconds
     # since it is a bit slow in GitHub Actions
-    await asyncio.wait_for(execution.prepare(), timeout=120)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
 
     vm = execution.create(vm_id=3, tap_interface=None)
 

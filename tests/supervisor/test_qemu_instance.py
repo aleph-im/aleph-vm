@@ -105,7 +105,7 @@ async def test_create_qemu_instance(mocker):
         persistent=True,
     )
 
-    await asyncio.wait_for(execution.prepare(), timeout=60)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
     vm_id = 3
 
     vm = execution.create(vm_id=vm_id, tap_interface=None)
@@ -195,7 +195,7 @@ async def test_create_qemu_instance_online(mocker):
         persistent=True,
     )
 
-    await asyncio.wait_for(execution.prepare(), timeout=60)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
     vm_id = 3
 
     vm_type = VmType.from_message_content(message.content)

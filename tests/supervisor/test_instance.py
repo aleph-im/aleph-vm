@@ -108,7 +108,7 @@ async def test_create_firecracker_instance(mocker):
     )
 
     # Downloading the resources required may take some time, limit it to 10 seconds
-    await asyncio.wait_for(execution.prepare(), timeout=30)
+    await asyncio.wait_for(execution.prepare(), timeout=300)
 
     vm_id = 3
     vm_type = VmType.from_message_content(message.content)
