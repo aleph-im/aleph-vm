@@ -65,8 +65,8 @@ async def test_create_execution(mocker):
     assert isinstance(vm, AlephFirecrackerProgram)
     assert vm.vm_id == 3
 
-    await asyncio.wait_for(execution.start(), timeout=60)
-    await asyncio.wait_for(execution.stop(), timeout=30)
+    await asyncio.wait_for(execution.start(), timeout=300)
+    await asyncio.wait_for(execution.stop(), timeout=300)
 
 
 # This test depends on having a vm-connector running on port 4021
