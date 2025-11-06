@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from os import listdir
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 from aleph_message.models import (
@@ -36,6 +36,174 @@ from aleph.sdk.vm.cache import VmCache
 logger = logging.getLogger(__name__)
 logger.debug("imports done")
 
+ALEPH_API_HOSTS: list[str] = [
+    "https://official.aleph.cloud",
+    "https://api.aleph.im",
+]
+
+DEFAULT_TIMEOUT_SECONDS = 10
+
+
+class APIFailoverError(Exception):
+    """Raised when all API endpoints fail."""
+
+    pass
+
+
+async def _safe_request_with_timeout(
+    host: str,
+    request_func: Callable[[str], Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Safely execute a request function with timeout and error handling."""
+    try:
+        result = await asyncio.wait_for(
+            request_func(host),
+            timeout=timeout_seconds,
+        )
+        return {"host": host, "result": result}
+    except asyncio.TimeoutError as e:
+        logger.warning(f"Request to {host} timed out after {timeout_seconds}s")
+        return {"host": host, "error": e}
+    except aiohttp.ClientError as e:
+        logger.warning(f"Client error connecting to {host}: {e}")
+        return {"host": host, "error": e}
+    except Exception as e:
+        logger.error(f"Unexpected error connecting to {host}: {e}", exc_info=True)
+        return {"host": host, "error": e}
+
+
+async def try_api_hosts(
+    api_hosts: list[str],
+    request_func: Callable[[str], Any],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    success_check: Callable[[Any], bool] | None = None,
+) -> Any:
+    """Try multiple API hosts in parallel and return the first successful result."""
+    if not api_hosts:
+        raise APIFailoverError("No API hosts provided")
+
+    # Create tasks for all API hosts with individual timeouts
+    tasks: set[asyncio.Task] = set()
+    for host in api_hosts:
+        try:
+            task = asyncio.create_task(
+                _safe_request_with_timeout(
+                    host=host,
+                    request_func=request_func,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            tasks.add(task)
+        except Exception as e:
+            logger.warning(f"Failed to create task for host {host}: {e}")
+            continue
+
+    if not tasks:
+        raise APIFailoverError("Failed to create any API request tasks")
+
+    errors: list[tuple[str, Exception]] = []
+
+    try:
+        # Wait for tasks to complete one by one
+        while tasks:
+            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            for task in done:
+                try:
+                    result = await task
+                    host = result.get("host", "unknown")
+
+                    # Check if this is an error result
+                    if "error" in result:
+                        error = result["error"]
+                        logger.warning(f"API request to {host} failed: {error}")
+                        errors.append((host, error))
+                        continue
+
+                    # Extract the actual result
+                    actual_result = result.get("result")
+
+                    # Validate the result if a success check is provided
+                    if success_check and not success_check(actual_result):
+                        logger.warning(f"API request to {host} returned invalid result")
+                        errors.append((host, ValueError("Invalid result from API")))
+                        continue
+
+                    # Success! Cancel remaining tasks and return
+                    logger.info(f"Successfully connected to API host: {host}")
+                    for remaining_task in tasks:
+                        remaining_task.cancel()
+                        try:
+                            await remaining_task
+                        except asyncio.CancelledError:
+                            pass
+
+                    return actual_result
+
+                except asyncio.CancelledError:
+                    continue
+                except Exception as e:
+                    logger.error(f"Unexpected error processing task result: {e}", exc_info=True)
+                    errors.append(("unknown", e))
+                    continue
+
+    finally:
+        # Ensure all tasks are cancelled
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    # If we get here, all hosts failed
+    error_summary = "; ".join([f"{host}: {str(error)}" for host, error in errors])
+    raise APIFailoverError(f"All API hosts failed. Errors: {error_summary}")
+
+
+async def try_url_check(
+    urls: list[str],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    socket_family: int | None = None,
+) -> dict[str, Any]:
+    """Check multiple URLs in parallel and return the first successful connection."""
+
+    async def check_single_url(url: str) -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        connector_kwargs = {}
+        if socket_family is not None:
+            connector_kwargs["family"] = socket_family
+
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(**connector_kwargs),
+            timeout=timeout,
+        ) as session:
+            async with session.get(url) as resp:
+                # Accept 404 as success for some endpoints (like Quad9)
+                if resp.status in (200, 404):
+                    return {"result": True, "status": resp.status, "url": url, "headers": dict(resp.headers)}
+                else:
+                    resp.raise_for_status()
+                    return {"result": True, "status": resp.status, "url": url, "headers": dict(resp.headers)}
+
+    try:
+        result = await try_api_hosts(
+            api_hosts=urls,
+            request_func=check_single_url,
+            timeout_seconds=timeout_seconds,
+            success_check=lambda r: r.get("result") is True,
+        )
+        return result
+    except APIFailoverError as e:
+        logger.warning(f"All URL checks failed: {e}")
+        return {"result": False, "reason": str(e)}
+    except Exception as e:
+        logger.error(f"Unexpected error in URL check: {e}", exc_info=True)
+        return {"result": False, "reason": str(e)}
+
+
 http_app = FastAPI()
 app = AlephApp(http_app=http_app)
 app.add_middleware(
@@ -49,16 +217,12 @@ cache = VmCache()
 
 startup_lifespan_executed: bool = False
 
-ALEPH_API_HOSTS: list[str] = [
-    "https://official.aleph.cloud",
-    "https://api.aleph.im",
-]
-
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global startup_lifespan_executed
+    global startup_lifespan_executed, cache
     startup_lifespan_executed = True
+    # Initialize cache - no network calls here to avoid blocking startup
 
 
 @app.get("/")
@@ -183,35 +347,14 @@ async def connect_ipv4():
 
 @app.get("/ip/6")
 async def connect_ipv6():
-    """Connect to the Quad9 VPN provider using their IPv6 address.
-    The webserver on that address returns a 404 error, so we accept that response code.
+    """Connect to IPv6 DNS providers using their IPv6 addresses.
+    Tests IPv6 connectivity by trying multiple providers in parallel.
     """
     ipv6_hosts: list[str] = [
         "https://[2620:fe::fe]",  # Quad9 DNS service
-        "https://[2606:4700:4700::1111]",  # CloudFlare DNS service
+        "https://[2606:4700:4700::1111]",  # Cloudflare DNS service
     ]
-    timeout_seconds = 5
-
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET6)) for host in ipv6_hosts
-    }
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result["result"]:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            continue
-
-    # No IPv6 URL was reachable
-    return {"result": False}
+    return await try_url_check(urls=ipv6_hosts, timeout_seconds=5, socket_family=socket.AF_INET6)
 
 
 async def check_url(internet_host: str, timeout_seconds: int = 5, socket_family=socket.AF_INET):
@@ -260,65 +403,77 @@ async def read_internet():
 
 @app.get("/get_a_message")
 async def get_a_message():
-    """Get a message from the Aleph.im network"""
+    """Get a message from the Aleph.im network with automatic failover."""
     item_hash = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_message(host, item_hash)) for host in ALEPH_API_HOSTS}
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
+    async def fetch_message(api_host: str):
+        """Fetch a message from a specific API host."""
+        async with AlephHttpClient(api_server=api_host) as client:
+            message = await client.get_message(
+                item_hash=item_hash,
+                message_type=ProgramMessage,
+            )
+            return message.dict()
 
-        if result["status"]:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            continue
-
-    # No API Host was reachable
-    return {"result": False}
-
-
-async def get_aleph_message(api_host: str, item_hash: str):
-    async with AlephHttpClient(api_server=api_host) as client:
-        message = await client.get_message(
-            item_hash=item_hash,
-            message_type=ProgramMessage,
+    try:
+        result = await try_api_hosts(
+            api_hosts=ALEPH_API_HOSTS,
+            request_func=fetch_message,
+            timeout_seconds=10,
         )
-        return message.dict()
+        return result
+    except APIFailoverError as e:
+        logger.error(f"Failed to fetch message from all API hosts: {e}")
+        return JSONResponse(status_code=503, content={"error": "All API hosts unavailable", "details": str(e)})
 
 
 @app.post("/post_a_message")
 async def post_with_remote_account():
     """Post a message on the Aleph.im network using the remote account of the host."""
-    account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
+    try:
+        account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
+    except aiohttp.client_exceptions.UnixClientConnectorError:
+        return JSONResponse(status_code=500, content={"error": "Could not connect to the remote account"})
+    except Exception as e:
+        logger.error(f"Failed to create remote account: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"Failed to create account: {str(e)}"})
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+    async def post_message(api_host: str) -> tuple[PostMessage, MessageStatus]:
+        """Post a message to a specific API host."""
+        content = {
+            "date": datetime.now(tz=timezone.utc).isoformat(),
+            "test": True,
+            "answer": 42,
+            "something": "interesting",
+        }
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+            api_server=api_host,
+        ) as client:
+            message, status = await client.create_post(
+                post_content=content,
+                post_type="test",
+                ref=None,
+                channel="TEST",
+                inline=True,
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+            return message, status
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        try:
-            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            message, status = done.pop().result()
-
-            if status == MessageStatus.PROCESSED:
-                # The task was successful, cancel the remaining tasks and return the result
-                for task in tasks:
-                    task.cancel()
-                return {
-                    "message": message,
-                }
-            else:
-                continue
-        except aiohttp.client_exceptions.UnixClientConnectorError:
-            return JSONResponse(status_code=500, content={"error": "Could not connect to the remote account"})
-
-    # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
+    try:
+        message, status = await try_api_hosts(
+            api_hosts=ALEPH_API_HOSTS,
+            request_func=post_message,
+            timeout_seconds=15,
+            success_check=lambda result: result[1] == MessageStatus.PROCESSED,
+        )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": f"Message status: {status}"})
+        return {"message": message}
+    except APIFailoverError as e:
+        logger.error(f"Failed to post message to all API hosts: {e}")
+        return JSONResponse(status_code=503, content={"error": "All API hosts unavailable", "details": str(e)})
 
 
 @app.post("/post_a_message_local_account")
@@ -326,101 +481,92 @@ async def post_with_local_account():
     """Post a message on the Aleph.im network using a local private key."""
     from aleph.sdk.chains.ethereum import get_fallback_account
 
-    account = get_fallback_account()
+    try:
+        account = get_fallback_account()
+    except Exception as e:
+        logger.error(f"Failed to get fallback account: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"Failed to create account: {str(e)}"})
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+    async def post_message(api_host: str) -> tuple[PostMessage, MessageStatus]:
+        """Post a message to a specific API host."""
+        content = {
+            "date": datetime.now(tz=timezone.utc).isoformat(),
+            "test": True,
+            "answer": 42,
+            "something": "interesting",
+        }
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+            api_server=api_host,
+            allow_unix_sockets=False,
+        ) as client:
+            message, status = await client.create_post(
+                post_content=content,
+                post_type="test",
+                ref=None,
+                channel="TEST",
+                inline=True,
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+            return message, status
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        message, status = done.pop().result()
-
-        if status == MessageStatus.PROCESSED:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {
-                "message": message,
-            }
-        else:
-            continue
-
-    # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
-
-
-async def send_post_aleph_message(api_host: str, account: RemoteAccount | ETHAccount):
-    """Post a message on the Aleph.im network using a local or the remote account of the host."""
-    content = {
-        "date": datetime.now(tz=timezone.utc).isoformat(),
-        "test": True,
-        "answer": 42,
-        "something": "interesting",
-    }
-    async with AuthenticatedAlephHttpClient(
-        account=account,
-        api_server=api_host,
-    ) as client:
-        message: PostMessage
-        status: MessageStatus
-        return await client.create_post(
-            post_content=content,
-            post_type="test",
-            ref=None,
-            channel="TEST",
-            inline=True,
-            storage_engine=StorageEnum.storage,
-            sync=True,
+    try:
+        message, status = await try_api_hosts(
+            api_hosts=ALEPH_API_HOSTS,
+            request_func=post_message,
+            timeout_seconds=15,
+            success_check=lambda result: result[1] == MessageStatus.PROCESSED,
         )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": f"Message status: {status}"})
+        return {"message": message}
+    except APIFailoverError as e:
+        logger.error(f"Failed to post message to all API hosts: {e}")
+        return JSONResponse(status_code=503, content={"error": "All API hosts unavailable", "details": str(e)})
 
 
 @app.post("/post_a_file")
 async def post_a_file():
+    """Store a file on the Aleph.im network using a local account."""
     from aleph.sdk.chains.ethereum import get_fallback_account
 
-    account = get_fallback_account()
+    try:
+        account = get_fallback_account()
+    except Exception as e:
+        logger.error(f"Failed to get fallback account: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"Failed to create account: {str(e)}"})
+
     file_path = Path(__file__).absolute()
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(send_store_aleph_message(host, account, file_path)) for host in ALEPH_API_HOSTS
-    }
+    async def store_file(api_host: str) -> tuple[StoreMessage, MessageStatus]:
+        """Store a file on a specific API host."""
+        async with AuthenticatedAlephHttpClient(
+            account=account,
+            api_server=api_host,
+        ) as client:
+            message, status = await client.create_store(
+                file_path=file_path,
+                ref=None,
+                channel="TEST",
+                storage_engine=StorageEnum.storage,
+                sync=True,
+            )
+            return message, status
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        message, status = done.pop().result()
-
-        if status == MessageStatus.PROCESSED:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {
-                "message": message,
-            }
-        else:
-            continue
-
-    # No API Host was reachable
-    return JSONResponse(status_code=500, content={"error": status})
-
-
-async def send_store_aleph_message(api_host: str, account: ETHAccount, file_path: Path):
-    """Store a file on the Aleph.im network using a local account."""
-    async with AuthenticatedAlephHttpClient(
-        account=account,
-        api_server=api_host,
-    ) as client:
-        message: StoreMessage
-        status: MessageStatus
-        return await client.create_store(
-            file_path=file_path,
-            ref=None,
-            channel="TEST",
-            storage_engine=StorageEnum.storage,
-            sync=True,
+    try:
+        message, status = await try_api_hosts(
+            api_hosts=ALEPH_API_HOSTS,
+            request_func=store_file,
+            timeout_seconds=20,
+            success_check=lambda result: result[1] == MessageStatus.PROCESSED,
         )
+        if status != MessageStatus.PROCESSED:
+            return JSONResponse(status_code=500, content={"error": f"Message status: {status}"})
+        return {"message": message}
+    except APIFailoverError as e:
+        logger.error(f"Failed to store file to all API hosts: {e}")
+        return JSONResponse(status_code=503, content={"error": "All API hosts unavailable", "details": str(e)})
 
 
 @app.get("/sign_a_message")
@@ -526,30 +672,29 @@ def platform_pip_freeze() -> list[str]:
 
 @app.event(filters=filters)
 async def aleph_event(event) -> dict[str, str]:
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_json(host)) for host in ALEPH_API_HOSTS}
+    """Handle Aleph events by verifying API connectivity."""
+    logger.info(f"Received aleph_event: {event}")
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        status = done.pop().result()
+    async def check_api_info(api_host: str) -> bool:
+        """Check if API info endpoint is accessible."""
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), timeout=timeout) as session:
+                async with session.get(f"{api_host}/api/v0/info/public.json") as resp:
+                    resp.raise_for_status()
+                    return True
+        except Exception as e:
+            logger.warning(f"Failed to check API info at {api_host}: {e}")
+            return False
 
-        if status:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {"result": "Good"}
-        else:
-            continue
-
-    return {"result": "Bad"}
-
-
-async def get_aleph_json(api_host: str) -> bool:
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector()) as session:
-            async with session.get(f"{api_host}/api/v0/info/public.json") as resp:
-                resp.raise_for_status()
-                return True
-    except Exception:
-        return False
+        await try_api_hosts(
+            api_hosts=ALEPH_API_HOSTS,
+            request_func=check_api_info,
+            timeout_seconds=5,
+            success_check=lambda result: result is True,
+        )
+        return {"result": "Good"}
+    except APIFailoverError as e:
+        logger.error(f"All API hosts failed for event handling: {e}")
+        return {"result": "Bad", "error": str(e)}
