@@ -37,7 +37,7 @@ locale-gen en_US.UTF-8
 echo "Pip installing aleph-sdk-python"
 mkdir -p /opt/aleph/libs
 # Fixing this protobuf dependency version to avoid getting CI errors as version 5.29.0 have this compilation issue.
-pip3 install --target /opt/aleph/libs 'aleph-sdk-python==2.0.0' 'aleph-message~=1.0.1' 'fastapi~=0.109.2' 'protobuf==5.28.3'
+pip3 install --target /opt/aleph/libs 'aleph-sdk-python==2.0.0' 'aleph-message~=1.0.1' 'fastapi~=0.121.0' 'protobuf==5.28.3'
 
 # Compile Python code to bytecode for faster execution
 # -o2 is needed to compile with optimization level 2 which is what we launch init1.py ("python -OO")

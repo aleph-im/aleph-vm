@@ -185,12 +185,7 @@ async def try_url_check(
             timeout=timeout,
         ) as session:
             async with session.get(url) as resp:
-                # Accept 404 as success for some endpoints (like Quad9)
-                if resp.status in (200, 404):
-                    return {"result": True, "status": resp.status, "url": url, "headers": dict(resp.headers)}
-                else:
-                    resp.raise_for_status()
-                    return {"result": True, "status": resp.status, "url": url, "headers": dict(resp.headers)}
+                return {"result": True, "status": resp.status, "url": url, "headers": dict(resp.headers)}
 
     try:
         result = await try_api_hosts(
@@ -352,16 +347,12 @@ async def ip_address():
 
 @app.get("/ip/4")
 async def connect_ipv4():
-    """Connect to the Quad9 VPN provider using their IPv4 address."""
-    ipv4_host = "9.9.9.9"
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect((ipv4_host, 53))
-        return {"result": True}
-    except TimeoutError:
-        logger.warning(f"Socket connection for host {ipv4_host} failed")
-        return {"result": False}
+    ipv4_hosts: list[str] = [
+        "https://9.9.9.9",  # Quad9 DNS service
+        "https://1.1.1.1",  # Cloudflare DNS service
+        "https://94.140.14.14",  # AdGuard DNS service
+    ]
+    return await try_url_check(urls=ipv4_hosts, timeout_seconds=5, socket_family=socket.AF_INET)
 
 
 @app.get("/ip/6")
