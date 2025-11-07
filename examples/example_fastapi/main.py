@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from os import listdir
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import aiohttp
 from aleph_message.models import (
@@ -25,7 +25,6 @@ from pip._internal.operations.freeze import freeze
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from aleph.sdk.chains.ethereum import ETHAccount
 from aleph.sdk.chains.remote import RemoteAccount
 from aleph.sdk.client import AlephHttpClient, AuthenticatedAlephHttpClient
 from aleph.sdk.query.filters import MessageFilter
@@ -33,9 +32,14 @@ from aleph.sdk.types import StorageEnum
 from aleph.sdk.vm.app import AlephApp
 from aleph.sdk.vm.cache import VmCache
 
+if TYPE_CHECKING:
+    from aleph.sdk.vm.cache import VmCache
+
+
 logger = logging.getLogger(__name__)
 logger.debug("imports done")
 
+# API Failover code - commented out for testing
 ALEPH_API_HOSTS: list[str] = [
     "https://official.aleph.cloud",
     "https://api.aleph.im",
@@ -213,16 +217,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-cache = VmCache()
 
+# Initialize cache as None - will be created during startup event
+cache: VmCache | None = None
 startup_lifespan_executed: bool = False
+
+cache = VmCache()
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global startup_lifespan_executed, cache
+    global startup_lifespan_executed
     startup_lifespan_executed = True
-    # Initialize cache - no network calls here to avoid blocking startup
+
+
+def get_cache():
+    """Get or create the cache instance on-demand (lazy import + lazy initialization)."""
+    global cache
+    if cache is None:
+        try:
+            cache = VmCache()
+            logger.info("Cache initialized on-demand")
+        except Exception as e:
+            logger.warning(f"Failed to initialize cache: {e}")
+            # Don't retry - return None so endpoint can handle it
+    return cache
 
 
 @app.get("/")
@@ -403,7 +422,7 @@ async def read_internet():
 
 @app.get("/get_a_message")
 async def get_a_message():
-    """Get a message from the Aleph.im network with automatic failover."""
+    """Get a message from the Aleph.im network."""
     item_hash = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
 
     async def fetch_message(api_host: str):
@@ -446,10 +465,7 @@ async def post_with_remote_account():
             "answer": 42,
             "something": "interesting",
         }
-        async with AuthenticatedAlephHttpClient(
-            account=account,
-            api_server=api_host,
-        ) as client:
+        async with AuthenticatedAlephHttpClient(account=account, api_server=api_host) as client:
             message, status = await client.create_post(
                 post_content=content,
                 post_type="test",
@@ -459,6 +475,7 @@ async def post_with_remote_account():
                 storage_engine=StorageEnum.storage,
                 sync=True,
             )
+
             return message, status
 
     try:
@@ -496,9 +513,7 @@ async def post_with_local_account():
             "something": "interesting",
         }
         async with AuthenticatedAlephHttpClient(
-            account=account,
-            api_server=api_host,
-            allow_unix_sockets=False,
+            account=account, api_server=api_host, allow_unix_sockets=False
         ) as client:
             message, status = await client.create_post(
                 post_content=content,
@@ -531,6 +546,24 @@ async def post_a_file():
     """Store a file on the Aleph.im network using a local account."""
     from aleph.sdk.chains.ethereum import get_fallback_account
 
+    """ OLD
+    account = get_fallback_account()
+    file_path = Path(__file__).absolute()
+
+    async with AuthenticatedAlephHttpClient(account=account) as client:
+        message, status = await client.create_store(
+            file_path=file_path,
+            ref=None,
+            channel="TEST",
+            storage_engine=StorageEnum.storage,
+            sync=True,
+        )
+
+    if status != MessageStatus.PROCESSED:
+        return JSONResponse(status_code=500, content={"error": f"Message status: {status}"})
+
+    return {"message": message}
+    """
     try:
         account = get_fallback_account()
     except Exception as e:
@@ -541,10 +574,7 @@ async def post_a_file():
 
     async def store_file(api_host: str) -> tuple[StoreMessage, MessageStatus]:
         """Store a file on a specific API host."""
-        async with AuthenticatedAlephHttpClient(
-            account=account,
-            api_server=api_host,
-        ) as client:
+        async with AuthenticatedAlephHttpClient(account=account, api_server=api_host) as client:
             message, status = await client.create_store(
                 file_path=file_path,
                 ref=None,
@@ -584,26 +614,38 @@ async def sign_a_message():
 @app.get("/cache/get/{key}")
 async def get_from_cache(key: str):
     """Get data in the VM cache"""
-    return await cache.get(key)
+    cache_instance = get_cache()
+    if cache_instance is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not available"})
+    return await cache_instance.get(key)
 
 
 @app.get("/cache/set/{key}/{value}")
 async def store_in_cache(key: str, value: str):
     """Store data in the VM cache"""
-    return await cache.set(key, value)
+    cache_instance = get_cache()
+    if cache_instance is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not available"})
+    return await cache_instance.set(key, value)
 
 
 @app.get("/cache/remove/{key}")
 async def remove_from_cache(key: str):
     """Store data in the VM cache"""
-    result = await cache.delete(key)
+    cache_instance = get_cache()
+    if cache_instance is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not available"})
+    result = await cache_instance.delete(key)
     return result == 1
 
 
 @app.get("/cache/keys")
 async def keys_from_cache(pattern: str = "*"):
     """List keys from the VM cache"""
-    return await cache.keys(pattern)
+    cache_instance = get_cache()
+    if cache_instance is None:
+        return JSONResponse(status_code=503, content={"error": "Cache not available"})
+    return await cache_instance.keys(pattern)
 
 
 @app.get("/state/increment")
@@ -672,7 +714,7 @@ def platform_pip_freeze() -> list[str]:
 
 @app.event(filters=filters)
 async def aleph_event(event) -> dict[str, str]:
-    """Handle Aleph events by verifying API connectivity."""
+    """Handle Aleph events."""
     logger.info(f"Received aleph_event: {event}")
 
     async def check_api_info(api_host: str) -> bool:

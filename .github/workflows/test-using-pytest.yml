@@ -1,6 +1,5 @@
 ---
-name: "Test execution only"
-# name: "py.test and linting"
+name: "py.test and linting"
 
 on: push
 
@@ -8,8 +7,7 @@ on: push
 jobs:
   test-execution:
   # tests-python:
-    name: "Test execution.py only"
-    # name: "Test Python code"
+    name: "Test Python code"
     runs-on: ubuntu-22.04
     services:
       # Run vm connector for the execution tests
@@ -35,13 +33,13 @@ jobs:
         run: |
           python3 -m pip install hatch hatch-vcs coverage
 
-      # - name: Test style wth ruff, black and isort
-      #   run: |
-      #     hatch run linting:style
+      - name: Test style wth ruff, black and isort
+        run: |
+          hatch run linting:style
 
-      # - name: Test typing with Mypy
-      #   run: |
-      #     hatch run linting:typing
+      - name: Test typing with Mypy
+        run: |
+          hatch run linting:typing
 
       - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
@@ -74,9 +72,7 @@ jobs:
           cd examples/volumes && bash build_squashfs.sh
 
       # Unit tests create and delete network interfaces, and therefore require to run as root
-      # Run only test_execution.py
-      - name: Run test_execution.py only
-      # - name: Run unit tests
+      - name: Run unit tests
         run: |
           sudo python3 -m pip install hatch hatch-vcs coverage
           sudo hatch run testing:test tests/supervisor/test_execution.py -v
@@ -89,26 +85,26 @@ jobs:
           sudo python3 -m pip install hatch hatch-vcs coverage
           sudo hatch -e testing run pip freeze
 
-      # - name: Upload coverage reports to Codecov
-      #   uses: codecov/codecov-action@v4.0.1
-      #   with:
-      #     token: ${{ secrets.CODECOV_TOKEN }}
-      #     slug: aleph-im/aleph-vm
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: aleph-im/aleph-vm
 
-  # code-quality-shell:
-  #   runs-on: ubuntu-22.04
-  #
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #
-  #     - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
-  #       run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
-  #
-  #     - name: Install required system packages only for Ubuntu Linux
-  #       run: |
-  #         sudo apt-get update
-  #         sudo apt-get install -y shellcheck
-  #
-  #     - name: Run Shellcheck on all shell scripts
-  #       run: |-
-  #         find ./ -type f -name "*.sh" -exec shellcheck {} \;
+  code-quality-shell:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
+        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
+
+      - name: Install required system packages only for Ubuntu Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run Shellcheck on all shell scripts
+        run: |-
+          find ./ -type f -name "*.sh" -exec shellcheck {} \;
