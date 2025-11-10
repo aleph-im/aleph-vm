@@ -5,8 +5,7 @@ on: push
 
 
 jobs:
-  test-execution:
-  # tests-python:
+  tests-python:
     name: "Test Python code"
     runs-on: ubuntu-22.04
     services:
@@ -75,8 +74,7 @@ jobs:
       - name: Run unit tests
         run: |
           sudo python3 -m pip install hatch hatch-vcs coverage
-          sudo hatch run testing:test tests/supervisor/test_execution.py -v
-          # sudo hatch run testing:cov
+          sudo hatch run testing:cov
 
       - name: Output modules used and their version
         if: ${{ !cancelled() }}
