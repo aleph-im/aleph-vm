@@ -6,7 +6,7 @@ Add Nat to the VM in ipv4 and port forwarding for direct access.
 import json
 import logging
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from nftables import Nftables
 
@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 class NoBaseChainFound(Exception):
     hook: str
 
-    def __init__(self, hook, message: Optional[str]):
+    def __init__(self, hook, message: Optional[str] = None):
         self.hook = hook
         self.message = message or f"Could not find any base chain for hook '{hook}'"
         super().__init__(message)
 
     def __str__(self):
-        return f"Could not find any base chain for hook '{hook}'"
+        return f"Could not find any base chain for hook '{self.hook}'"
 
 
 @lru_cache
