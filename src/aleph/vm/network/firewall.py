@@ -267,6 +267,11 @@ def initialize_nftables() -> None:
         if hook == "prerouting":
             # For prerouting, we MUST use the 'nat' type hook which has a higher priority than the 'raw' hook,
             # We filter for 'nat' type, and if multiple, pick the one with highest priority (last in list).
+            # The raw table's base chain hooks into the network stack at the earliest possible point
+            # (high priority, e.g., -300). This is to allow system services or security frameworks to perform
+            # early packet processing (e.g., explicitly tracking or not tracking certain local traffic) without
+            # interfering with the main NAT and filtering logic.
+            # For more info check the link https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks
             nat_chains = [c for c in chains if c["chain"].get("type") == "nat"]
             if not nat_chains:
                 raise Exception("Failed to find or create a 'nat' type prerouting chain")
