@@ -43,7 +43,7 @@
         },
         "resources": {
             "vcpus": 1,
-            "memory": 128,
+            "memory": 256,
             "seconds": 30
         },
         "runtime": {
