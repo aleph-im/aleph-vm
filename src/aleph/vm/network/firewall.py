@@ -6,7 +6,7 @@ Add Nat to the VM in ipv4 and port forwarding for direct access.
 import json
 import logging
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from nftables import Nftables
 
@@ -14,6 +14,18 @@ from aleph.vm.conf import settings
 from aleph.vm.network.interfaces import TapInterface
 
 logger = logging.getLogger(__name__)
+
+
+class NoBaseChainFound(Exception):
+    hook: str
+
+    def __init__(self, hook, message: Optional[str] = None):
+        self.hook = hook
+        self.message = message or f"Could not find any base chain for hook '{hook}'"
+        super().__init__(message)
+
+    def __str__(self):
+        return f"Could not find any base chain for hook '{self.hook}'"
 
 
 @lru_cache
@@ -90,7 +102,25 @@ def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
 
 def get_table_for_hook(hook: str, family: str = "ip") -> str:
     chains = get_base_chains_for_hook(hook, family)
-    table = chains.pop()["chain"]["table"]
+    if not chains:
+        raise NoBaseChainFound(hook=hook)
+
+    # Sort by priority, lowest-to-highest
+    chains.sort(key=lambda x: x["chain"].get("prio", 0))
+
+    if hook == "prerouting":
+        # For prerouting (DNAT), we MUST use the 'nat' type hook.
+        # Filter for 'nat' type chains and pick the one with the highest priority (last in list).
+        nat_chains = [c for c in chains if c["chain"].get("type") == "nat"]
+        if not nat_chains:
+            # Fallback: maybe only the 'raw' chain exists. This will fail, but it's what the log shows.
+            logger.warning(f"No 'nat' type prerouting chain found. Falling back to highest prio chain.")
+            table = chains[-1]["chain"]["table"]
+        else:
+            table = nat_chains[-1]["chain"]["table"]  # Pick highest prio 'nat' chain
+    else:
+        # For forward/postrouting, use the lowest priority (earliest)
+        table = chains[0]["chain"]["table"]
     return table
 
 
@@ -230,9 +260,26 @@ def initialize_nftables() -> None:
             new_chain = {"chain": chain}
             commands.append({"add": new_chain})
             chains.append(new_chain)
-        # If multiple base chain for the hook, use the less priority one
+
+        # Sort by priority, lowest-to-highest
         chains.sort(key=lambda x: x["chain"]["prio"])
-        base_chains[hook] = chains[0]["chain"]
+
+        if hook == "prerouting":
+            # For prerouting, we MUST use the 'nat' type hook which has a higher priority than the 'raw' hook,
+            # We filter for 'nat' type, and if multiple, pick the one with highest priority (last in list).
+            # The raw table's base chain hooks into the network stack at the earliest possible point
+            # (high priority, e.g., -300). This is to allow system services or security frameworks to perform
+            # early packet processing (e.g., explicitly tracking or not tracking certain local traffic) without
+            # interfering with the main NAT and filtering logic.
+            # For more info check the link https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks
+            nat_chains = [c for c in chains if c["chain"].get("type") == "nat"]
+            if not nat_chains:
+                raise Exception("Failed to find or create a 'nat' type prerouting chain")
+            base_chains[hook] = nat_chains[-1]["chain"]  # Pick highest prio 'nat' chain
+        else:
+            # For other hooks (forward, postrouting), use the original logic:
+            # the one with the lowest priority (earliest).
+            base_chains[hook] = chains[0]["chain"]
 
     # Add chain aleph-supervisor-nat
     commands += add_entity_if_not_present(
