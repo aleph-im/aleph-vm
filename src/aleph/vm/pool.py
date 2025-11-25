@@ -292,9 +292,7 @@ class VmPool:
 
                 mapped_ports = saved_execution.mapped_ports if saved_execution.mapped_ports else {}
                 execution.mapped_ports = {int(key): value for key, value in mapped_ports.items()}
-                logger.info("Loading existing mapped_ports", execution.mapped_ports)
-                # Clean any existing firewall chain for that vm_id
-                teardown_nftables_for_vm(vm_id)
+                logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
 
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
@@ -332,9 +330,7 @@ class VmPool:
                 if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
 
-                # Force to refresh redirect firewall rules from scratch
-                await execution.removed_all_ports_redirection()
-                # Add again all port redirections
+                # Refresh port redirection changes
                 await execution.fetch_port_redirect_config_and_setup()
 
                 self.executions[vm_hash] = execution
