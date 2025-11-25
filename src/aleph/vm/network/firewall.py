@@ -696,11 +696,12 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
                 and "match" in expr[1]
                 and expr[1]["match"]["left"].get("payload", {}).get("protocol") == protocol
                 and expr[1]["match"]["left"]["payload"].get("field") == "dport"
-                and expr[1]["match"]["right"] == host_port
+                and int(expr[1]["match"]["right"]) == int(host_port)
                 and "dnat" in expr[2]
                 and expr[2]["dnat"].get("addr") == str(interface.guest_ip.ip)
-                and expr[2]["dnat"].get("port") == vm_port
+                and int(expr[2]["dnat"].get("port")) == int(vm_port)
             ):
+                rule_handle = entry["rule"]["handle"]
                 commands.append(
                     {
                         "delete": {
@@ -708,7 +709,7 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
                                 "family": "ip",
                                 "table": prerouting_table,
                                 "chain": chain_name,
-                                "handle": entry["rule"]["handle"],
+                                "handle": rule_handle,
                             }
                         }
                     }

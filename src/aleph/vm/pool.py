@@ -30,7 +30,7 @@ from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
-from .network.firewall import setup_nftables_for_vm
+from .network.firewall import setup_nftables_for_vm, teardown_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +184,9 @@ class VmPool:
                     if resource in self.reservations:
                         del self.reservations[resource]
             except Exception:
-                # ensure the VM is removed from the pool on creation error
-                await execution.removed_all_ports_redirection()
+                if execution.is_instance:
+                    # ensure the VM is removed from the pool on creation error
+                    await execution.removed_all_ports_redirection()
                 self.forget_vm(vm_hash)
 
                 raise
@@ -290,9 +291,10 @@ class VmPool:
                 )
 
                 mapped_ports = saved_execution.mapped_ports if saved_execution.mapped_ports else {}
-                # Ensure the key are int and not string. They get converted when serialized in the db
-                for k, v in mapped_ports.items():
-                    execution.mapped_ports[int(k)] = v
+                execution.mapped_ports = {int(key): value for key, value in mapped_ports.items()}
+                logger.info("Loading existing mapped_ports", execution.mapped_ports)
+                # Clean any existing firewall chain for that vm_id
+                teardown_nftables_for_vm(vm_id)
 
                 # Load and instantiate the rest of resources and already assigned GPUs
                 await execution.prepare()
@@ -329,6 +331,10 @@ class VmPool:
                 # Start the snapshot manager for the VM
                 if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
+
+                # Force to refresh redirect firewall rules from scratch
+                await execution.removed_all_ports_redirection()
+                # Add again all port redirections
                 await execution.fetch_port_redirect_config_and_setup()
 
                 self.executions[vm_hash] = execution
