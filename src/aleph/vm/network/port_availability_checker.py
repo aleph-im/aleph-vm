@@ -63,4 +63,4 @@ def fast_get_available_host_port() -> int:
     LAST_ASSIGNED_HOST_PORT = host_port
     if LAST_ASSIGNED_HOST_PORT > MAX_PORT:
         LAST_ASSIGNED_HOST_PORT = MIN_DYNAMIC_PORT
-    return host_port
+    return int(host_port)

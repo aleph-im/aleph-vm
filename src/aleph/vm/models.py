@@ -108,12 +108,15 @@ class VmExecution:
         try:
             port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
             vm_port_forwarding = port_forwarding_settings.get(self.vm_hash, {}) or {}
-            ports_requests = vm_port_forwarding.get("ports", {})
+            fetched_ports_requests = vm_port_forwarding.get("ports", {})
+            # Force port always to be int and save it as int
+            ports_requests = {int(key): value for key, value in fetched_ports_requests.items()}
+            # Always forward port 22
+            if not ports_requests.get(22, None):
+                ports_requests[22] = {"tcp": True, "udp": False}
+
         except Exception:
             logger.info("Could not fetch the port redirect settings for user %s", message.address, exc_info=True)
-
-        # Always forward port 22
-        ports_requests[22] = {"tcp": True, "udp": False}
 
         await self.update_port_redirects(ports_requests)
 
@@ -130,9 +133,9 @@ class VmExecution:
             current = self.mapped_ports[vm_port]
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if current[protocol]:
-                    host_port = current["host"]
+                    host_port = int(current["host"])
                     remove_port_redirect_rule(interface, host_port, vm_port, protocol)
-            del self.mapped_ports[vm_port]
+            del self.mapped_ports[int(vm_port)]
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
             host_port = fast_get_available_host_port()
@@ -140,30 +143,29 @@ class VmExecution:
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
                     add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
-            self.mapped_ports[vm_port] = {"host": host_port, **target}
+            self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
         for vm_port in redirect_to_check:
             current = self.mapped_ports[vm_port]
             target = requested_ports[vm_port]
-            host_port = current["host"]
+            host_port = int(current["host"])
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if current[protocol] != target[protocol]:
                     if target[protocol]:
                         add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
-            self.mapped_ports[vm_port] = {"host": host_port, **target}
+            self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
         # Save to DB
-        if self.record:
-            self.record.mapped_ports = self.mapped_ports
-            await save_record(self.record)
+        await self.save()
 
     async def removed_all_ports_redirection(self):
         if not self.vm:
             return
         interface = self.vm.tap_interface
         # copy in a list since we modify dict during iteration
+        self.mapped_ports = {int(key): value for key, value in self.mapped_ports.items()}
         for vm_port, map_detail in list(self.mapped_ports.items()):
             host_port = map_detail["host"]
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
@@ -543,8 +545,10 @@ class VmExecution:
             self.times.stopping_at = datetime.now(tz=timezone.utc)
             await self.all_runs_complete()
             await self.record_usage()
-            await self.vm.teardown()
+            # First remove existing redirect rules for that VM
             await self.removed_all_ports_redirection()
+            # After do the teardown
+            await self.vm.teardown()
 
             self.times.stopped_at = datetime.now(tz=timezone.utc)
             self.cancel_expiration()
@@ -608,6 +612,7 @@ class VmExecution:
                 original_message=self.original.model_dump_json(),
                 persistent=self.persistent,
                 gpus=json.dumps(self.gpus, default=pydantic_encoder),
+                mapped_ports = self.mapped_ports
             )
             pid_info = self.vm.to_dict() if self.vm else None
             # Handle cases when the process cannot be accessed
