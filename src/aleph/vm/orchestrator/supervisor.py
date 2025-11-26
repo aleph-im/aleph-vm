@@ -38,6 +38,7 @@ from .views import (
     notify_allocation,
     operate_reserve_resources,
     operate_update,
+    recreate_network,
     run_code_from_hostname,
     run_code_from_path,
     status_check_fastapi,
@@ -164,6 +165,7 @@ def setup_webapp(pool: VmPool | None):
     other_routes = [
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocations", update_allocations),
+        web.post("/control/network/recreate", recreate_network),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", http_not_found),
         web.get("/control/{suffix:.*}", http_not_found),
