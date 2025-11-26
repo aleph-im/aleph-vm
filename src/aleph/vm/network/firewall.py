@@ -762,3 +762,127 @@ def check_nftables_redirections(port: int) -> bool:
     except Exception as e:
         logger.warning(f"Error checking NAT redirections: {e}")
         return False
+
+
+def get_all_aleph_chains() -> list[str]:
+    """Query nftables ruleset and return all chains created by aleph software.
+
+    This function scans the entire nftables ruleset and identifies all chains
+    whose names start with the configured NFTABLES_CHAIN_PREFIX. This includes
+    both supervisor chains (e.g., aleph-supervisor-nat, aleph-supervisor-filter,
+    aleph-supervisor-prerouting) and VM-specific chains (e.g., aleph-vm-nat-123,
+    aleph-vm-filter-123).
+
+    Returns:
+        A list of chain names that belong to aleph software
+
+    Raises:
+        Exception: If the nftables query fails
+    """
+    logger.debug("Querying nftables for all aleph-related chains")
+    nft_ruleset = get_existing_nftables_ruleset()
+    aleph_chains = []
+
+    for entry in nft_ruleset:
+        if isinstance(entry, dict) and "chain" in entry:
+            chain_name = entry["chain"].get("name", "")
+            # Find all chains created by aleph software
+            if chain_name.startswith(settings.NFTABLES_CHAIN_PREFIX):
+                aleph_chains.append(chain_name)
+                logger.debug(f"Found aleph chain: {chain_name}")
+
+    logger.info(f"Found {len(aleph_chains)} aleph-related chains")
+    return aleph_chains
+
+
+def remove_all_aleph_chains() -> tuple[list[str], list[tuple[str, str]]]:
+    """Remove all chains created by aleph software from the nftables ruleset.
+
+    This function queries the nftables ruleset to find all chains that start with
+    the configured NFTABLES_CHAIN_PREFIX, then attempts to remove each one. This
+    ensures a clean slate by removing both tracked and untracked chains that may
+    have been left behind due to software crashes or inconsistent state.
+
+    The function uses the remove_chain() helper which handles:
+    - Removing all rules that jump to the chain
+    - Removing the chain itself
+
+    Returns:
+        A tuple containing:
+        - List of successfully removed chain names
+        - List of tuples (chain_name, error_message) for failed removals
+
+    Example:
+        removed, failed = remove_all_aleph_chains()
+        if failed:
+            logger.warning(f"Failed to remove {len(failed)} chains")
+    """
+    logger.info("Removing all aleph-related chains from nftables")
+    aleph_chains = get_all_aleph_chains()
+
+    removed_chains = []
+    failed_chains = []
+
+    for chain_name in aleph_chains:
+        try:
+            remove_chain(chain_name)
+            removed_chains.append(chain_name)
+            logger.debug(f"Successfully removed chain: {chain_name}")
+        except Exception as e:
+            error_msg = str(e)
+            failed_chains.append((chain_name, error_msg))
+            logger.warning(f"Failed to remove chain {chain_name}: {error_msg}")
+
+    logger.info(f"Chain removal complete. Removed: {len(removed_chains)}, Failed: {len(failed_chains)}")
+    return removed_chains, failed_chains
+
+
+def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], list[dict]]:
+    """Recreate network rules for a list of VMs.
+
+    This function sets up nftables chains and rules for each VM in the provided list.
+    For each VM, it creates:
+    - NAT chain and masquerading rules for outbound traffic
+    - Filter chain and forwarding rules for traffic control
+    - Port forwarding rules if the VM is an instance (handled by caller)
+
+    Args:
+        vm_configurations: List of dictionaries, each containing:
+            - vm_id: Integer ID of the VM
+            - tap_interface: TapInterface object for the VM
+            - vm_hash: ItemHash of the VM (for logging)
+
+    Returns:
+        A tuple containing:
+        - List of successfully recreated VM hashes (as strings)
+        - List of dictionaries with failed VMs:
+          [{"vm_hash": str, "error": str}, ...]
+
+    Example:
+        vms = [
+            {"vm_id": 1, "tap_interface": tap1, "vm_hash": hash1},
+            {"vm_id": 2, "tap_interface": tap2, "vm_hash": hash2},
+        ]
+        recreated, failed = recreate_network_for_vms(vms)
+    """
+    logger.info(f"Recreating network rules for {len(vm_configurations)} VMs")
+    recreated_vms = []
+    failed_vms = []
+
+    for vm_config in vm_configurations:
+        vm_id = vm_config["vm_id"]
+        tap_interface = vm_config["tap_interface"]
+        vm_hash = vm_config["vm_hash"]
+
+        try:
+            # Recreate the basic VM network chains and rules
+            setup_nftables_for_vm(vm_id, tap_interface)
+            recreated_vms.append(str(vm_hash))
+            logger.debug(f"Recreated nftables for VM {vm_hash} (vm_id={vm_id})")
+        except Exception as e:
+            error_msg = str(e)
+            failed_vms.append({"vm_hash": str(vm_hash), "error": error_msg})
+            logger.error(f"Failed to recreate network for VM {vm_hash}: {error_msg}")
+
+    logger.info(f"VM network recreation complete. Success: {len(recreated_vms)}, Failed: {len(failed_vms)}")
+    return recreated_vms, failed_vms
