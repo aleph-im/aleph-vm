@@ -30,7 +30,7 @@ from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
-from .network.firewall import setup_nftables_for_vm, teardown_nftables_for_vm
+from .network.firewall import setup_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 

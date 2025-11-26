@@ -612,7 +612,7 @@ class VmExecution:
                 original_message=self.original.model_dump_json(),
                 persistent=self.persistent,
                 gpus=json.dumps(self.gpus, default=pydantic_encoder),
-                mapped_ports = self.mapped_ports
+                mapped_ports=self.mapped_ports,
             )
             pid_info = self.vm.to_dict() if self.vm else None
             # Handle cases when the process cannot be accessed
