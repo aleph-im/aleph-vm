@@ -621,11 +621,11 @@ def add_port_redirect_rule(
                             "match": {
                                 "op": "==",
                                 "left": {"payload": {"protocol": protocol, "field": "dport"}},
-                                "right": host_port,
+                                "right": int(host_port),
                             }
                         },
                         {
-                            "dnat": {"addr": str(interface.guest_ip.ip), "port": vm_port},
+                            "dnat": {"addr": str(interface.guest_ip.ip), "port": int(vm_port)},
                         },
                     ],
                 }
@@ -648,7 +648,7 @@ def add_port_redirect_rule(
                             "match": {
                                 "op": "==",
                                 "left": {"payload": {"protocol": protocol, "field": "dport"}},
-                                "right": vm_port,
+                                "right": int(vm_port),
                             }
                         },
                         {"accept": None},
