@@ -27,6 +27,11 @@ from aleph.vm.controllers.firecracker.executable import (
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
+from aleph.vm.network.firewall import (
+    initialize_nftables,
+    recreate_network_for_vms,
+    remove_all_aleph_chains,
+)
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
@@ -429,6 +434,7 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 
 allocation_lock = None
+network_recreation_lock = None
 
 
 async def update_allocations(request: web.Request):
@@ -544,6 +550,130 @@ async def update_allocations(request: web.Request):
                 "errors": {vm_hash: repr(error) for vm_hash, error in scheduling_errors.items()},
             },
             status=status_code,
+        )
+
+
+async def recreate_network(request: web.Request):
+    """Recreate network settings for the CRN and all running VMs.
+
+    This endpoint performs a complete network reconfiguration by:
+    1. Querying the nftables ruleset to find all aleph-related chains
+    2. Removing ALL chains created by aleph software (both tracked and untracked)
+       including VM-specific chains and supervisor chains
+    3. Re-initializing the base network setup with nftables (creating fresh
+       supervisor chains: aleph-supervisor-nat, aleph-supervisor-filter,
+       aleph-supervisor-prerouting)
+    4. Recreating VM-specific chains and rules for each currently running VM
+    5. Restoring port forwarding rules for all running instances
+
+    This method is designed to handle cases where:
+    - Network rules have become duplicated or inconsistent
+    - Chains exist on the host that are no longer tracked by the software
+    - The firewall state needs to be reset to match the current VM pool
+
+    The operation is atomic and uses a lock to prevent concurrent modifications.
+
+    Returns:
+        JSON response with:
+        - success: Boolean indicating if all VMs were successfully recreated
+        - removed_chains_count: Number of chains that were removed
+        - removed_chains: List of chain names that were removed
+        - recreated_count: Number of VMs that were successfully recreated
+        - failed_count: Number of VMs that failed to recreate
+        - recreated_vms: List of VM hashes that were recreated
+        - failed_vms: List of VM hashes and errors for failed recreations
+    """
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    global network_recreation_lock
+    if network_recreation_lock is None:
+        network_recreation_lock = asyncio.Lock()
+
+    pool: VmPool = request.app["vm_pool"]
+
+    async with network_recreation_lock:
+        logger.info("Starting network recreation process")
+
+        # Step 1: Collect all running VMs and their network configuration
+        running_vms = []
+        for vm_hash, execution in pool.executions.items():
+            if execution.is_running and execution.vm and execution.vm.tap_interface:
+                running_vms.append(
+                    {
+                        "vm_hash": vm_hash,
+                        "vm_id": execution.vm.vm_id,
+                        "tap_interface": execution.vm.tap_interface,
+                        "execution": execution,
+                    }
+                )
+                logger.debug(f"Found running VM {vm_hash} with vm_id={execution.vm.vm_id}")
+
+        logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
+
+        # Step 2: Remove all aleph-related chains (VM-specific and supervisor chains)
+        try:
+            removed_chains, failed_removals = remove_all_aleph_chains()
+            if failed_removals:
+                logger.warning(f"Failed to remove {len(failed_removals)} chains")
+                for chain_name, error in failed_removals:
+                    logger.warning(f"  - {chain_name}: {error}")
+        except Exception as e:
+            logger.error(f"Error removing aleph chains: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to remove existing chains: {str(e)}"},
+                status=500,
+            )
+
+        # Step 3: Re-initialize the base network setup
+        logger.info("Re-initializing nftables")
+        try:
+            initialize_nftables()
+        except Exception as e:
+            logger.error(f"Error initializing nftables: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to initialize network: {str(e)}"},
+                status=500,
+            )
+
+        # Step 4: Recreate VM-specific chains and rules
+        try:
+            recreated_vms, failed_vms = recreate_network_for_vms(running_vms)
+        except Exception as e:
+            logger.error(f"Error recreating VM networks: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to recreate VM networks: {str(e)}"},
+                status=500,
+            )
+
+        # Step 5: Recreate port forwarding rules for instances
+        logger.info("Recreating port forwarding rules for instances")
+        for vm_info in running_vms:
+            execution = vm_info["execution"]
+            if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
+                try:
+                    await execution.fetch_port_redirect_config_and_setup()
+                    logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
+                except Exception as e:
+                    logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")
+                    # Don't add to failed_vms as the VM network itself was created successfully
+
+        logger.info(
+            f"Network recreation complete. Removed chains: {len(removed_chains)}, "
+            f"Recreated VMs: {len(recreated_vms)}, Failed: {len(failed_vms)}"
+        )
+
+        return web.json_response(
+            {
+                "success": len(failed_vms) == 0,
+                "removed_chains_count": len(removed_chains),
+                "removed_chains": removed_chains,
+                "recreated_count": len(recreated_vms),
+                "failed_count": len(failed_vms),
+                "recreated_vms": recreated_vms,
+                "failed_vms": failed_vms,
+            },
+            status=200 if len(failed_vms) == 0 else 207,
         )
 
 
