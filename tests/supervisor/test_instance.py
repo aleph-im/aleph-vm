@@ -123,7 +123,7 @@ async def test_create_firecracker_instance(mocker):
     assert vm.persistent
     assert vm.enable_networking
 
-    await execution.start()
+    await asyncio.wait_for(execution.start(), timeout=120)
     # firecracker_execution, process = await mock_systemd_manager.enable_and_start(execution.vm_hash)
     firecracker_execution = mock_systemd_manager.execution
     assert isinstance(firecracker_execution, MicroVM)
@@ -136,5 +136,5 @@ async def test_create_firecracker_instance(mocker):
     # up and prevent disk corruption
     await asyncio.sleep(60)
     firecracker_execution, process = await mock_systemd_manager.stop_and_disable(execution.controller_service)
-    await execution.stop()
+    await asyncio.wait_for(execution.stop(), timeout=60)
     assert firecracker_execution is None
