@@ -3,12 +3,13 @@ import logging
 from datetime import timedelta
 from http import HTTPStatus
 
+import aiohttp
 import aiohttp.web_exceptions
 import pydantic
 from aiohttp import web
 from aiohttp.web_urldispatcher import UrlMappingMatchInfo
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash
+from aleph_message.models import ItemHash, MessageType
 from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
@@ -54,12 +55,84 @@ def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
         raise web.HTTPNotFound(body=f"No virtual machine with ref {ref}")
 
 
-def is_sender_authorized(authenticated_sender: str, message: BaseExecutableContent) -> bool:
+async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
+    """
+    Check if the authenticated sender has delegation permissions from the message owner.
+
+    Fetches the security aggregate for the message address and checks if the authenticated_sender
+    is listed in the delegations.
+
+    Args:
+        authenticated_sender: The address of the authenticated user
+        message: The message containing the owner address
+
+    Returns:
+        True if the authenticated_sender has delegation permissions, False otherwise
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{settings.API_SERVER}/api/v0/aggregates/{message.address}.json?keys=security"
+            logger.debug(f"Fetching security aggregate from {url}")
+            resp = await session.get(url)
+
+            # Raise an error if the request failed
+            resp.raise_for_status()
+
+            resp_data = await resp.json()
+            security_data = resp_data.get("data", {}).get("security", {})
+
+            # Check if authenticated_sender is in the delegations list
+            delegations = security_data.get("authorizations", [])
+
+            # Check if the authenticated_sender is authorized
+            for delegation in delegations:
+                if not isinstance(delegation, dict):
+                    continue
+
+                delegated_message_types = delegation.get("types", [])
+
+                if len(delegated_message_types) > 0 and MessageType.instance not in delegated_message_types:
+                    continue
+
+                authorized_address = delegation.get("address", "")
+
+                if authorized_address.lower() == authenticated_sender.lower():
+                    logger.debug(f"Found delegation for {authenticated_sender} from {message.address}")
+                    return True
+
+            logger.debug(f"No delegation found for {authenticated_sender} from {message.address}")
+            return False
+
+    except Exception as error:
+        logger.warning(f"Failed to check owner permissions: {error}")
+        return False
+
+
+async def is_sender_authorized(authenticated_sender: str, message: BaseExecutableContent) -> bool:
+    """
+    Check if the authenticated sender is authorized to access the message resources.
+
+    Authorization is granted if:
+    1. The authenticated sender matches the message owner address, OR
+    2. The authenticated sender has delegation permissions from the owner
+
+    Args:
+        authenticated_sender: The address of the authenticated user
+        message: The message containing the owner address
+
+    Returns:
+        True if authorized, False otherwise
+    """
+    # Check if sender is the owner
     if authenticated_sender.lower() == message.address.lower():
         return True
-    else:
-        logger.debug(f"Unauthorized sender {authenticated_sender} is not {message.address}")
-        return False
+
+    # Check if sender has delegation permissions
+    if await check_owner_permissions(authenticated_sender, message):
+        return True
+
+    logger.debug(f"Unauthorized sender {authenticated_sender} is not {message.address}")
+    return False
 
 
 @cors_allow_all
@@ -121,7 +194,7 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
             if not record:
                 raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
             message = get_message_executable_content(json.loads(record.message))
-        if not is_sender_authorized(authenticated_sender, message):
+        if not await is_sender_authorized(authenticated_sender, message):
             return web.Response(status=403, body="Unauthorized sender")
 
         _journal_stdout_name = f"vm-{vm_hash}-stdout"
@@ -169,7 +242,7 @@ async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: 
     try:
         authenticated_sender = await authenticate_websocket_message(credentials)
 
-        if is_sender_authorized(authenticated_sender, execution.message):
+        if await is_sender_authorized(authenticated_sender, execution.message):
             logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
             return True
     except Exception as error:
@@ -201,7 +274,7 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
         pool: VmPool = request.app["vm_pool"]
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
@@ -221,7 +294,7 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         logger.debug(f"Iterating through running executions... {pool.executions}")
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         if execution.is_running:
@@ -275,10 +348,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
         logger.debug(f"Iterating through running executions... {pool.executions}")
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
-            return web.Response(status=403, body="Unauthorized sender")
-
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         if execution.is_running:
@@ -300,7 +370,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
         pool: VmPool = request.app["vm_pool"]
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         if execution.is_running:
@@ -328,7 +398,7 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
         pool: VmPool = request.app["vm_pool"]
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         if not execution.is_running:
@@ -372,7 +442,7 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
         execution = get_execution_or_404(vm_hash, pool=pool)
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         # if not execution.is_running:
@@ -402,7 +472,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         pool: VmPool = request.app["vm_pool"]
         execution = get_execution_or_404(vm_hash, pool=pool)
 
-        if not is_sender_authorized(authenticated_sender, execution.message):
+        if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         logger.info(f"Erasing {execution.vm_hash}")
