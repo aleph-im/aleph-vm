@@ -23,6 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import HostNotFoundError
 
 from .messages import load_updated_message
@@ -75,6 +76,10 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
+    except InsufficientResourcesError as error:
+        logger.exception(error)
+        pool.forget_vm(vm_hash=vm_hash)
+        raise HTTPBadRequest(reason=str(error)) from error
     except FileTooLargeError as error:
         raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:
