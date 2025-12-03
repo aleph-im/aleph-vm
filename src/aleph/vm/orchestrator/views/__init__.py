@@ -65,6 +65,7 @@ from aleph.vm.orchestrator.views.host_status import (
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.pool import VmPool
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
@@ -492,6 +493,7 @@ async def update_allocations(request: web.Request):
             MicroVMFailedInitError,
             HostNotFoundError,
             HTTPNotFound,
+            InsufficientResourcesError,
         )
 
         scheduling_errors: dict[ItemHash, Exception] = {}
@@ -812,6 +814,7 @@ async def notify_allocation(request: web.Request):
         VmSetupError,
         MicroVMFailedInitError,
         HostNotFoundError,
+        InsufficientResourcesError,
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}

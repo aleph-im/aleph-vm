@@ -23,7 +23,12 @@ from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator.metrics import get_execution_records
 from aleph.vm.orchestrator.utils import update_aggregate_settings
-from aleph.vm.resources import GpuDevice, HostGPU, get_gpu_devices
+from aleph.vm.resources import (
+    GpuDevice,
+    HostGPU,
+    check_sufficient_resources,
+    get_gpu_devices,
+)
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -141,16 +146,20 @@ class VmPool:
             current_execution = self.get_running_vm(vm_hash)
             if current_execution:
                 return current_execution
-            else:
-                execution = VmExecution(
-                    vm_hash=vm_hash,
-                    message=message,
-                    original=original,
-                    snapshot_manager=self.snapshot_manager,
-                    systemd_manager=self.systemd_manager,
-                    persistent=persistent,
-                )
-                self.executions[vm_hash] = execution
+
+            # Check if there are sufficient resources available before creating the VM
+            check_sufficient_resources(self.calculate_available_disk(), message)
+
+            execution = VmExecution(
+                vm_hash=vm_hash,
+                message=message,
+                original=original,
+                snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
+                persistent=persistent,
+            )
+            self.executions[vm_hash] = execution
+
             resources = set()
             try:
                 if message.requirements and message.requirements.gpu:
