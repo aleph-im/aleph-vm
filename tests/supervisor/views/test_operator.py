@@ -530,3 +530,534 @@ async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
             "file": "stderr",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
+    """Test that a delegated address can successfully stop a VM"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    # Mock authentication to return the delegated address
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response for security aggregate with valid delegation
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address,
+                            "types": ["INSTANCE"],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 200, await response.text()
+    assert fake_vm_pool.stop_vm.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker):
+    """Test that a non-delegated address cannot stop a VM"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_owner_address = "0x40684b43B88356F62DCc56017547B6A7AC68780B"
+    unauthorized_address = "0x8888888888888888888888888888888888888888"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    # Mock authentication to return an unauthorized address
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=unauthorized_address,
+    )
+
+    # Mock the API response for security aggregate with no delegations for this address
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": "0x9999999999999999999999999999999999999999",
+                            "types": ["INSTANCE"],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 403
+    assert await response.text() == "Unauthorized sender"
+    assert fake_vm_pool.stop_vm.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
+    """Test that a delegated address can successfully reboot a VM"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.Mock(
+        executions={
+            vm_hash: mocker.Mock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+                persistent=True,
+                controller_service="vm-service",
+            ),
+        },
+        systemd_manager=mocker.Mock(restart=mocker.Mock()),
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response for security aggregate with valid delegation
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address,
+                            "types": ["INSTANCE"],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    app["pubsub"] = mocker.Mock()
+    client = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/reboot",
+    )
+
+    assert response.status == 200
+    assert fake_vm_pool.systemd_manager.restart.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_operator_erase_with_delegation(aiohttp_client, mocker):
+    """Test that a delegated address can successfully erase a VM"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_volume = mocker.Mock()
+    fake_volume.read_only = False
+    fake_volume.path_on_host = mocker.Mock()
+
+    fake_resources = mocker.Mock()
+    fake_resources.volumes = [fake_volume]
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=False,
+                resources=fake_resources,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response for security aggregate with valid delegation
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address,
+                            "types": ["INSTANCE"],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/erase",
+    )
+
+    assert response.status == 200
+    assert fake_vm_pool.stop_vm.call_count == 1
+    assert fake_volume.path_on_host.unlink.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
+    """Test that empty authorizations list denies access"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response with empty authorizations
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(return_value={"data": {"security": {"authorizations": []}}})
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 403
+    assert await response.text() == "Unauthorized sender"
+
+
+@pytest.mark.asyncio
+async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
+    """Test that delegation with wrong message type denies access"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response with wrong message type (not INSTANCE)
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address,
+                            "types": ["POST", "AGGREGATE"],  # Wrong types
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 403
+    assert await response.text() == "Unauthorized sender"
+
+
+@pytest.mark.asyncio
+async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
+    """Test that address comparison is case insensitive"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address_lower = "0x9999999999999999999999999999999999999aaa"
+    delegated_address_mixed = delegated_address_lower.upper()
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address_lower,
+    )
+
+    # Mock the API response with uppercase address
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address_mixed,
+                            "types": ["INSTANCE"],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 200
+    assert fake_vm_pool.stop_vm.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
+    """Test that API errors during delegation check deny access"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API to raise an error
+    mock_response = mocker.AsyncMock()
+    mock_response.raise_for_status = mocker.Mock(side_effect=aiohttp.ClientResponseError(None, None, status=500))
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 403
+    assert await response.text() == "Unauthorized sender"
+
+
+@pytest.mark.asyncio
+async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
+    """Test that delegation with empty types list allows INSTANCE operations"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    delegated_address = "0x9999999999999999999999999999999999999999"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=delegated_address,
+    )
+
+    # Mock the API response with empty types (should allow all types)
+    mock_response = mocker.AsyncMock()
+    mock_response.json = mocker.AsyncMock(
+        return_value={
+            "data": {
+                "security": {
+                    "authorizations": [
+                        {
+                            "address": delegated_address,
+                            "types": [],  # Empty types means all types allowed
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    mock_response.raise_for_status = mocker.Mock()
+
+    mock_session = mocker.AsyncMock()
+    mock_session.get = mocker.AsyncMock(return_value=mock_response)
+    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = mocker.AsyncMock()
+
+    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/stop",
+    )
+
+    assert response.status == 200
+    assert fake_vm_pool.stop_vm.call_count == 1
