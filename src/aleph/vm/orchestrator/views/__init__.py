@@ -652,6 +652,8 @@ async def recreate_network(request: web.Request):
             execution = vm_info["execution"]
             if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
                 try:
+                    # Remove previous assigned ports as all forwarding port rules were deleted before
+                    execution.mapped_ports = {}
                     await execution.fetch_port_redirect_config_and_setup()
                     logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
                 except Exception as e:
