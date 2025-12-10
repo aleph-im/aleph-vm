@@ -176,6 +176,9 @@ def check_sufficient_resources(pool_available_disk: int, message: ExecutableCont
     required_memory_mb = message.resources.memory  # Memory in MB
     required_disk_mb = 0
 
+    if message.rootfs:
+        required_disk_mb = message.rootfs.size_mib
+
     # Calculate required disk space from volumes if present
     if message.volumes:
         for volume in message.volumes:
