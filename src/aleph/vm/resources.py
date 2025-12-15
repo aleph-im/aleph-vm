@@ -3,7 +3,7 @@ import subprocess
 from enum import Enum
 
 import psutil
-from aleph_message.models import ExecutableContent, HashableModel
+from aleph_message.models import ExecutableContent, HashableModel, InstanceContent
 from pydantic import BaseModel, ConfigDict, Field
 
 from aleph.vm.orchestrator.utils import get_compatible_gpus
@@ -176,7 +176,7 @@ def check_sufficient_resources(pool_available_disk: int, message: ExecutableCont
     required_memory_mb = message.resources.memory  # Memory in MB
     required_disk_mb = 0
 
-    if message.rootfs:
+    if isinstance(message, InstanceContent) and message.rootfs:
         required_disk_mb = message.rootfs.size_mib
 
     # Calculate required disk space from volumes if present
