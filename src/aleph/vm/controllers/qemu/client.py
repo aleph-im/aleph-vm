@@ -74,3 +74,42 @@ class QemuVmClient:
         """
         # {'status': 'prelaunch', 'singlestep': False, 'running': False}
         return self.qmp_client.command("query-status")
+
+    def guest_fsfreeze_freeze(self) -> int:
+        """
+        Freeze all freezable guest filesystems via QEMU guest agent.
+
+        Returns:
+            Number of filesystems frozen.
+
+        Raises:
+            Exception: If guest agent not available or freeze fails.
+        """
+        result = self.qmp_client.command("guest-fsfreeze-freeze")
+        return result
+
+    def guest_fsfreeze_thaw(self) -> int:
+        """
+        Thaw all frozen guest filesystems via QEMU guest agent.
+
+        Returns:
+            Number of filesystems thawed.
+
+        Raises:
+            Exception: If guest agent not available or thaw fails.
+        """
+        result = self.qmp_client.command("guest-fsfreeze-thaw")
+        return result
+
+    def guest_fsfreeze_status(self) -> str:
+        """
+        Check the freeze status of guest filesystems via QEMU guest agent.
+
+        Returns:
+            'thawed' or 'frozen'
+
+        Raises:
+            Exception: If guest agent not available.
+        """
+        result = self.qmp_client.command("guest-fsfreeze-status")
+        return result
