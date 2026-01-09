@@ -585,11 +585,11 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
             if not isinstance(execution.vm, (AlephQemuInstance, AlephQemuConfidentialInstance)):
                 return web.HTTPBadRequest(body="Snapshot migration only supported for QEMU VMs")
 
-            if execution.vm.image_path is None:
+            if not execution.vm.resources or not execution.vm.resources.rootfs_path:
                 return web.HTTPBadRequest(body="VM has no disk image")
 
             # 3. Check disk space
-            source_disk_path = Path(execution.vm.image_path)
+            source_disk_path = Path(execution.vm.resources.rootfs_path)
             destination_dir = get_snapshots_directory()
 
             has_space, space_msg = await check_disk_space_for_snapshot(source_disk_path, destination_dir)
@@ -679,7 +679,7 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
             raise  # Re-raise HTTP exceptions
         except Exception as e:
             logger.exception(f"Failed to create snapshot for {vm_hash}")
-            raise web.HTTPInternalServerError(body=f"Snapshot creation failed: {e}") from e
+            raise web.HTTPInternalServerError(body=f"Snapshot creation failed") from e
 
         finally:
             # ALWAYS cleanup
