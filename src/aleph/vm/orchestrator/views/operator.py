@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 from datetime import timedelta
 from http import HTTPStatus
+from pathlib import Path
 
 import aiohttp
 import aiohttp.web_exceptions
@@ -15,6 +17,15 @@ from pydantic import BaseModel
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.client import QemuVmClient
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance
+from aleph.vm.controllers.qemu.snapshots import (
+    check_disk_space_for_snapshot,
+    create_qemu_disk_snapshot,
+    get_snapshots_directory,
+)
+from aleph.vm.controllers.qemu_confidential.instance import (
+    AlephQemuConfidentialInstance,
+)
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
@@ -527,3 +538,167 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
+
+
+async def operate_snapshot(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
+    """Create a QEMU VM snapshot and stream it to the client.
+
+    This endpoint creates a compressed QCOW2 snapshot of a running QEMU VM's disk.
+    It uses the QEMU guest agent to freeze filesystems during snapshot creation
+    to ensure consistency.
+
+    The snapshot is streamed directly to the client via HTTP chunked encoding.
+
+    Query Parameters:
+        skip_fsfreeze: Set to 'true' to skip filesystem freeze (not recommended).
+
+    Returns:
+        StreamResponse with the compressed QCOW2 snapshot file.
+
+    Raises:
+        400: VM not running or not a QEMU VM.
+        403: Unauthorized sender.
+        409: Guest agent not available (with option to skip fsfreeze).
+        507: Insufficient disk space.
+        500: Snapshot creation failed.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+
+    # Track resources for cleanup
+    snapshot_path: Path | None = None
+    qemu_client: QemuVmClient | None = None
+    fs_frozen = False
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        try:
+            # 1. Validate VM
+            pool: VmPool = request.app["vm_pool"]
+            execution = get_execution_or_404(vm_hash, pool=pool)
+
+            if not await is_sender_authorized(authenticated_sender, execution.message):
+                return web.Response(status=403, body="Unauthorized sender")
+
+            if not execution.is_running:
+                return web.HTTPBadRequest(body="VM must be running to create snapshot")
+
+            # 2. Check VM type is QEMU
+            if not isinstance(execution.vm, (AlephQemuInstance, AlephQemuConfidentialInstance)):
+                return web.HTTPBadRequest(body="Snapshot migration only supported for QEMU VMs")
+
+            if execution.vm.image_path is None:
+                return web.HTTPBadRequest(body="VM has no disk image")
+
+            # 3. Check disk space
+            source_disk_path = Path(execution.vm.image_path)
+            destination_dir = get_snapshots_directory()
+
+            has_space, space_msg = await check_disk_space_for_snapshot(source_disk_path, destination_dir)
+            if not has_space:
+                return web.Response(status=507, body=space_msg)
+
+            # 4. Create QMP client
+            qemu_client = QemuVmClient(execution.vm)
+
+            # 5. Freeze filesystems (with timeout)
+            skip_fsfreeze = request.query.get("skip_fsfreeze") == "true"
+
+            if not skip_fsfreeze:
+                try:
+                    frozen_count = await asyncio.wait_for(
+                        asyncio.to_thread(qemu_client.guest_fsfreeze_freeze), timeout=30
+                    )
+                    fs_frozen = True
+                    logger.info(f"Froze {frozen_count} filesystem(s) for {vm_hash}")
+                except asyncio.TimeoutError:
+                    raise web.HTTPRequestTimeout(
+                        body="Filesystem freeze timeout - guest agent not responding"
+                    ) from None
+                except Exception as e:
+                    logger.warning(f"fsfreeze failed for {vm_hash}: {e}")
+                    return web.Response(
+                        status=409,
+                        body="QEMU guest agent not available. "
+                        "Add ?skip_fsfreeze=true to proceed without consistency guarantee.",
+                    )
+
+            # 6. Create snapshot
+            logger.info(f"Creating snapshot for {vm_hash}")
+            snapshot_path = await create_qemu_disk_snapshot(
+                vm_hash=str(vm_hash), source_disk_path=source_disk_path, destination_dir=destination_dir
+            )
+
+            # 7. Thaw immediately after snapshot
+            if fs_frozen:
+                try:
+                    thawed_count = await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
+                    logger.info(f"Thawed {thawed_count} filesystem(s) for {vm_hash}")
+                    fs_frozen = False
+                except Exception as e:
+                    logger.error(f"Failed to thaw filesystems for {vm_hash}: {e}")
+
+            # 8. Stream snapshot
+            if snapshot_path is None:
+                raise RuntimeError("Snapshot path is None after creation")
+
+            response = web.StreamResponse()
+            response.headers["Transfer-encoding"] = "chunked"
+            response.headers["Content-Type"] = "application/octet-stream"
+            response.headers["Content-Disposition"] = f'attachment; filename="{vm_hash}-snapshot.qcow2"'
+
+            snapshot_size = snapshot_path.stat().st_size
+            response.headers["X-Snapshot-Size"] = str(snapshot_size)
+
+            if execution.is_confidential:
+                response.headers["X-Snapshot-Warning"] = (
+                    "Confidential VM: disk-only snapshot, memory state not included"
+                )
+
+            await response.prepare(request)
+
+            logger.info(f"Streaming snapshot for {vm_hash} ({snapshot_size} bytes)")
+
+            # Stream file in 64KB chunks
+            CHUNK_SIZE = 65536
+            bytes_sent = 0
+
+            with open(snapshot_path, "rb") as snapshot_file:
+                while True:
+                    chunk = snapshot_file.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    await response.write(chunk)
+                    bytes_sent += len(chunk)
+
+            await response.write_eof()
+
+            logger.info(f"Completed streaming snapshot for {vm_hash} ({bytes_sent} bytes)")
+
+            return response
+
+        except web.HTTPException:
+            raise  # Re-raise HTTP exceptions
+        except Exception as e:
+            logger.exception(f"Failed to create snapshot for {vm_hash}")
+            raise web.HTTPInternalServerError(body=f"Snapshot creation failed: {e}") from e
+
+        finally:
+            # ALWAYS cleanup
+            if fs_frozen and qemu_client:
+                try:
+                    await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
+                    logger.info(f"Thawed filesystems for {vm_hash} (cleanup)")
+                except Exception as e:
+                    logger.error(f"Failed to thaw filesystems for {vm_hash} (cleanup): {e}")
+
+            if qemu_client:
+                try:
+                    qemu_client.close()
+                except Exception:
+                    pass
+
+            if snapshot_path and snapshot_path.exists():
+                try:
+                    snapshot_path.unlink()
+                    logger.debug(f"Deleted temporary snapshot {snapshot_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete snapshot {snapshot_path}: {e}")
