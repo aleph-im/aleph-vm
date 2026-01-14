@@ -142,8 +142,8 @@ jobs:
           - alias: "runtime-63fa"  # Latest runtime, using Debian 12 and SDK 0.9.0
             item_hash: "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
             query_params: ""
-          - alias: "runtime-850f"  # New runtime, using Debian 12, pydantic V2 and SDK 2.0.5
-            item_hash: "51bc3b45db8a91f3753f567159c4cf2432e794fb28e7c02204ddee6f62e59cca"
+          - alias: "runtime-d2b7"  # New runtime, using Debian 12, pydantic V2 and SDK 2.0.5
+            item_hash: "d2b74aa29898457bde0560e47f7cdd4e77287e9f1f7a1456161d2fd7d5c855d7"
             query_params: ""
 
     steps:
