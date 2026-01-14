@@ -143,7 +143,7 @@ jobs:
             item_hash: "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
             query_params: ""
           - alias: "runtime-850f"  # New runtime, using Debian 12, pydantic V2 and SDK 2.0.5
-            item_hash: "850fa994dfa991ce4788dc728fef11608e8a77bb0e0b77aabd6678207b47d1b3"
+            item_hash: "51bc3b45db8a91f3753f567159c4cf2432e794fb28e7c02204ddee6f62e59cca"
             query_params: ""
 
     steps:
