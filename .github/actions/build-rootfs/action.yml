@@ -1,5 +1,8 @@
+---
 name: 'Build Aleph Runtime Rootfs'
 description: 'Builds the Aleph runtime rootfs for a specified OS'
+
+
 inputs:
   os:
     description: 'Operating system to build (e.g., debian-12)'
@@ -8,6 +11,8 @@ inputs:
   artifact-name:
     description: 'Name of the artifact to upload'
     required: true
+
+
 outputs:
   artifact-name:
     description: 'Name of the artifact'
@@ -15,6 +20,8 @@ outputs:
   artifact-path:
     description: 'Path to the built rootfs'
     value: runtimes/aleph-${{ inputs.os }}-python/rootfs.squashfs
+
+
 runs:
   using: 'composite'
   steps:
