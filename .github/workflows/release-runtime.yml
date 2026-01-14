@@ -1,5 +1,7 @@
 ---
 name: "Release Runtime"
+
+
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +22,7 @@ on:
         required: false
         default: 'Aleph VM Runtime'
         type: string
+
 
 jobs:
   build_and_release_runtime:
@@ -59,7 +62,7 @@ jobs:
           echo "Description: ${{ inputs.description }}"
 
       - name: Create release summary
-        run: |
+        run: |-
           echo "# Runtime Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **OS**: ${{ inputs.os }}" >> $GITHUB_STEP_SUMMARY
