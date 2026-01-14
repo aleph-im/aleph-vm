@@ -136,8 +136,8 @@ jobs:
 
         # Check compatibility with all supported runtimes.
         check_vm:
-          - alias: "runtime-6770"  # Old runtime, using Debian 11
-            item_hash: "67705389842a0a1b95eaa408b009741027964edc805997475e95c505d642edd8"
+          - alias: "runtime-ad67"  # Old runtime, using Debian 11
+            item_hash: "ad67c6857d6319486794ec2a3d14b584ac7e6c27593f3172148e486dbd1e0e21"
             query_params: "?retro-compatibility=true"
           - alias: "runtime-63fa"  # Latest runtime, using Debian 12 and SDK 0.9.0
             item_hash: "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
