@@ -318,7 +318,7 @@ class Settings(BaseSettings):
         abspath(join(__file__, "../../../../examples/qemu_message_from_aleph.json"))
     )
 
-    CHECK_FASTAPI_VM_ID: str = "51bc3b45db8a91f3753f567159c4cf2432e794fb28e7c02204ddee6f62e59cca"
+    CHECK_FASTAPI_VM_ID: str = "d2b74aa29898457bde0560e47f7cdd4e77287e9f1f7a1456161d2fd7d5c855d7"
     LEGACY_CHECK_FASTAPI_VM_ID: str = "ad67c6857d6319486794ec2a3d14b584ac7e6c27593f3172148e486dbd1e0e21"
 
     # Developer options
