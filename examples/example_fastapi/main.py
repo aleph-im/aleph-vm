@@ -203,9 +203,9 @@ async def connect_ipv4():
     The webserver on that address can return a 404 error, and it is normal, so we accept that response code.
     """
     ipv4_hosts: list[str] = [
+        "https://208.67.222.222",  # OpenDNS service
         "https://9.9.9.9",  # Quad9 VPN service
         "https://94.140.14.14",  # AdGuard DNS service
-        "https://208.67.222.222",  # OpenDNS service
     ]
     timeout_seconds = 5
 
@@ -241,9 +241,9 @@ async def connect_ipv6():
     The webserver on that address can return a 404 error, and it is normal, so we accept that response code.
     """
     ipv6_hosts: list[str] = [
+        "https://[2620:0:ccc::2]",  # OpenDNS service
         "https://[2620:fe::fe]",  # Quad9 DNS service
         "https://[2606:4700:4700::1111]",  # CloudFlare DNS service
-        "https://[2620:0:ccc::2]",  # OpenDNS service
     ]
     timeout_seconds = 5
 
