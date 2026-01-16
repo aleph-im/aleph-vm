@@ -2,13 +2,14 @@ import json
 import logging
 
 import aiohttp
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
+
 from aleph.sdk.chains.common import get_fallback_private_key
 from aleph.sdk.chains.ethereum import ETHAccount
 from aleph.sdk.client import AuthenticatedAlephHttpClient
 from aleph.sdk.types import StorageEnum
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
 
 from .conf import settings
 
