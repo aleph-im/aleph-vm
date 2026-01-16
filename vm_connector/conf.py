@@ -1,7 +1,7 @@
 import logging
 from typing import NewType
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
