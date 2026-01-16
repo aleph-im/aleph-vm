@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post a message</title>
+    <style>
+        body{
+            margin: auto;
+            font-family: 'Lucida Sans', Geneva, Verdana, sans-serif;
+            font-size: 1.75rem;
+        }
+        main{
+            width: 80%;
+            max-width: 1200px;
+            margin: auto;
+        }
+        input[type="text"]{
+            padding: 12px 20px;
+            border-radius: 5px;
+        }
+        input[type="submit"]{
+            background-color: green;
+            color: #FFF;
+            padding: 25px;
+        }
+        label{
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Post a message on Aleph</h1>
+
+        <div>
+            <ul id="request_status"></ul>
+        </div>
+
+        <form id="post_message_form">
+            <div>
+                <label for="message_content">What is the content of your message?</label>
+                <input type="text" id="message_content" size="100" />
+            </div>
+    
+            <input type="submit" />
+        </form>
+    </main>
+    <script>
+        const addToReqStatus = (content) => {
+            const li = document.createElement('li')
+            li.innerHTML = content
+            document.getElementById('request_status').appendChild(li)
+        }
+
+        document.getElementById('post_message_form')
+        .addEventListener('submit', async e => {
+            e.preventDefault();
+
+            addToReqStatus('Sending request...')
+            const _msgContent = document.getElementById('message_content')
+
+            try{
+                const req = await fetch('/http_post', {
+                    method: 'post',
+                    body: JSON.stringify({data: _msgContent.value}),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                _msgContent.value = ''
+                const { data } = await req.json()
+    
+                return addToReqStatus(`"${data}" received!`)
+            }
+            catch(err){
+                addToReqStatus(`<strong style="color:red;">Network error</strong>`)
+            }
+        })
+    </script>
+</body>
+</html>
