@@ -2,13 +2,14 @@ import json
 import logging
 
 import aiohttp
-from aleph_client.asynchronous import create_post
-from aleph_client.chains.common import get_fallback_private_key
-from aleph_client.chains.ethereum import ETHAccount
-from aleph_client.types import StorageEnum
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
+
+from aleph.sdk.chains.common import get_fallback_private_key
+from aleph.sdk.chains.ethereum import ETHAccount
+from aleph.sdk.client import AuthenticatedAlephHttpClient
+from aleph.sdk.types import StorageEnum
 
 from .conf import settings
 
@@ -164,16 +165,16 @@ async def publish_data(body: PostBody):
     content = json.loads(message["item_content"])
     content_content = content["content"]
 
-    result = await create_post(
-        account=account,
-        post_content=content_content,
-        post_type=content["type"],
-        address=content["address"],
-        ref=None,
-        channel=message["channel"],
-        inline=True,
-        storage_engine=StorageEnum.storage,
-    )
+    async with AuthenticatedAlephHttpClient(account=account, api_server=settings.API_SERVER) as client:
+        result = await client.create_post(
+            post_content=content_content,
+            post_type=content["type"],
+            address=content["address"],
+            ref=None,
+            channel=message["channel"],
+            inline=True,
+            storage_engine=StorageEnum.storage,
+        )
     return {"status": "success"}
 
 
