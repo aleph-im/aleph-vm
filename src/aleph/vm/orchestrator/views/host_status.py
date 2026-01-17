@@ -26,8 +26,8 @@ async def check_ip_connectivity(url: str, socket_family: socket.AddressFamily = 
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket_family), timeout=timeout) as session:
         try:
             async with session.get(url) as resp:
-                # We expect the Quad9 endpoints to return a 404 error, but other endpoints may return a 200
-                if resp.status not in (200, 404):
+                # We expect the Quad9 endpoints to return a 404 or 400 error, but other endpoints may return a 200
+                if resp.status not in (200, 400, 404):
                     resp.raise_for_status()
                 return True
         except aiohttp.ClientConnectorError:
