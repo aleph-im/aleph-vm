@@ -206,7 +206,7 @@ jobs:
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
 
-          # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our comands:
+          # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our commands:
           sleep 5
 
           # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
@@ -219,17 +219,14 @@ jobs:
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector ghcr.io/aleph-im/vm-connector:alpha"
 
           # "--force-confold" keeps existing config files during package install/upgrade, avoiding prompts.
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get  -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
-
-          # Allow some time for IPFS Kubo to start
-          sleep 5
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
 
       - name: Test Aleph-VM on the Droplet
         id: test-aleph-vm
         continue-on-error: true
         run: |
-          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
-          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
+          curl -w "Started: $(date)\n" --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
+          curl -w "Started: $(date)\n" --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${{ matrix.check_vm.query_params }}"
 
       - name: Test Aleph-VM on the Droplet again restarting the server first
         if: steps.test-aleph-vm.outcome == 'failure'
