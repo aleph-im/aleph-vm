@@ -5,7 +5,7 @@ Add Nat to the VM in ipv4 and port forwarding for direct access.
 
 import json
 import logging
-from functools import lru_cache
+import subprocess
 from typing import Literal, Optional
 
 from nftables import Nftables
@@ -28,8 +28,13 @@ class NoBaseChainFound(Exception):
         return f"Could not find any base chain for hook '{self.hook}'"
 
 
-@lru_cache
 def get_customized_nftables() -> Nftables:
+    """Create a new Nftables instance configured for JSON output.
+
+    Note: We intentionally don't cache this object because the Nftables
+    library can get into bad states after errors, and reusing a broken
+    instance causes subsequent commands to fail.
+    """
     nft = Nftables()
     nft.set_json_output(True)
     nft.set_stateless_output(True)
@@ -65,7 +70,16 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
     if return_code != 0:
         logger.error("Failed to add nftables rules: %s -- %s", error, json.dumps(commands, indent=4))
 
-    return output
+    # Handle cases where the output is a JSON string instead of a dict
+    # This can happen with some versions of the nftables Python library
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse nftables output as JSON: {output}")
+            return {}
+
+    return output if isinstance(output, dict) else {}
 
 
 def get_existing_nftables_ruleset() -> list[dict]:
@@ -74,6 +88,9 @@ def get_existing_nftables_ruleset() -> list[dict]:
     commands = [{"list": {"ruleset": {"family": "ip"}}}]
 
     nft_ruleset = execute_json_nft_commands(commands)
+    if not nft_ruleset or "nftables" not in nft_ruleset:
+        logger.warning("Failed to retrieve nftables ruleset, returning empty list")
+        return []
     return nft_ruleset["nftables"]
 
 
