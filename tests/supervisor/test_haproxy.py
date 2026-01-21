@@ -221,3 +221,36 @@ def test_update_backend_do_no_remove_fallback(mock_haproxy_server):
         "enable server test_backend/echo.agot.be",
         "add map backend.map echo.agot.be echo.agot.be",
     ]
+
+
+@pytest.mark.asyncio
+def test_update_backend_with_multidigit_octets(mock_haproxy_server):
+    """Test that IP addresses with multi-digit octets ending in .1 are handled correctly.
+
+    This is a regression test for a bug where rstrip(".1") was used instead of
+    removesuffix(".1"), causing IPs like 172.16.11.1 to be incorrectly converted
+    to 172.16.2 instead of 172.16.11.2.
+    """
+    instances = [
+        {
+            "name": "n8n.aleph.im",
+            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
+            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
+            "ipv4": {"public": "46.247.131.211", "local": "172.16.11.1/32"},
+        }
+    ]
+
+    map_file_path = "backend.map"
+
+    haproxy.update_haproxy_backend(
+        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 80, weight=1
+    )
+
+    # Verify the IP address is correctly converted to 172.16.11.2, NOT 172.16.2
+    assert mock_haproxy_server.commands == [
+        "show map backend.map",
+        "show servers state test_backend",
+        "add server test_backend/n8n.aleph.im 172.16.11.2:80 weight 1 maxconn 30",
+        "enable server test_backend/n8n.aleph.im",
+        "add map backend.map n8n.aleph.im n8n.aleph.im",
+    ]
