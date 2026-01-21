@@ -35,7 +35,7 @@ def get_interface_ipv4(interface_name: str) -> str:
         for ipv4_info in addrs[netifaces.AF_INET]:
             ipv4_addr = ipv4_info["addr"]
             addr = ipaddress.IPv4Address(ipv4_addr)
-            if addr.is_global or addr.is_private:
+            if addr.is_global:
                 return ipv4_addr
 
         raise ValueError(f"No IPv4 address with global scope found for interface {interface_name}")
