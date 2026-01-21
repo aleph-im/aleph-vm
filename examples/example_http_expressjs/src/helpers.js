@@ -1,0 +1,1 @@
+export const buildUrl = (req, url) => req.protocol + '://' + req.get('host') + '/' + url
