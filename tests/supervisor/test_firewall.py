@@ -3,7 +3,9 @@ import pytest
 from aleph.vm.network import firewall
 from aleph.vm.network.firewall import (
     add_entity_if_not_present,
+    execute_json_nft_commands,
     get_base_chains_for_hook,
+    get_existing_nftables_ruleset,
     initialize_nftables,
 )
 
@@ -759,3 +761,130 @@ async def test_initialize_nftables_regression(mocker):
             }
         },
     ]
+
+
+"""Tests for handling different nftables output formats.
+
+Depending on the nftables library version, the output can be either:
+- A dict (expected format)
+- A JSON string that needs to be parsed
+- An invalid/unexpected format
+"""
+
+
+def test_execute_json_nft_commands_with_dict_output(mocker):
+    """Test normal case where nftables returns a dict."""
+    mock_nft = mocker.Mock()
+    mock_nft.json_cmd.return_value = (0, {"nftables": [{"metainfo": {}}]}, "")
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([{"list": {"ruleset": {}}}])
+
+    assert result == {"nftables": [{"metainfo": {}}]}
+
+
+def test_execute_json_nft_commands_with_json_string_output(mocker):
+    """Test case where nftables returns a JSON string instead of a dict.
+
+    Some versions of the nftables Python library return output as a JSON-encoded
+    string rather than a Python dict. This test verifies that such strings are
+    properly parsed.
+    """
+    mock_nft = mocker.Mock()
+    # Simulate nftables returning a JSON string instead of a dict
+    json_string_output = '{"nftables": [{"metainfo": {"version": "1.0.9"}}]}'
+    mock_nft.json_cmd.return_value = (0, json_string_output, "")
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([{"list": {"ruleset": {}}}])
+
+    assert result == {"nftables": [{"metainfo": {"version": "1.0.9"}}]}
+
+
+def test_execute_json_nft_commands_with_invalid_json_string(mocker):
+    """Test case where nftables returns an invalid JSON string.
+
+    If the nftables library returns a malformed string that cannot be parsed
+    as JSON, the function should return an empty dict and log an error.
+    """
+    mock_nft = mocker.Mock()
+    # Simulate nftables returning an invalid JSON string
+    mock_nft.json_cmd.return_value = (0, "not valid json {{{", "")
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([{"list": {"ruleset": {}}}])
+
+    assert result == {}
+
+
+def test_execute_json_nft_commands_with_non_dict_non_string_output(mocker):
+    """Test case where nftables returns an unexpected type (not dict or string).
+
+    If nftables returns something that is neither a dict nor a string (e.g., None,
+    list, int), the function should return an empty dict.
+    """
+    mock_nft = mocker.Mock()
+    # Simulate nftables returning None
+    mock_nft.json_cmd.return_value = (0, None, "")
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([{"list": {"ruleset": {}}}])
+
+    assert result == {}
+
+
+def test_execute_json_nft_commands_with_list_output(mocker):
+    """Test case where nftables returns a list instead of dict."""
+    mock_nft = mocker.Mock()
+    # Simulate nftables returning a list
+    mock_nft.json_cmd.return_value = (0, [{"nftables": []}], "")
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([{"list": {"ruleset": {}}}])
+
+    assert result == {}
+
+
+def test_execute_json_nft_commands_with_empty_commands(mocker):
+    """Test that empty command list returns empty dict without calling nftables."""
+    mock_nft = mocker.Mock()
+    mocker.patch("aleph.vm.network.firewall.get_customized_nftables", return_value=mock_nft)
+
+    result = execute_json_nft_commands([])
+
+    assert result == {}
+    mock_nft.json_cmd.assert_not_called()
+
+
+def test_get_existing_nftables_ruleset_with_valid_output(mocker):
+    """Test normal case where execute_json_nft_commands returns valid output."""
+    mock_output = {"nftables": [{"metainfo": {}}, {"table": {"name": "nat"}}]}
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", return_value=mock_output)
+
+    result = get_existing_nftables_ruleset()
+
+    assert result == [{"metainfo": {}}, {"table": {"name": "nat"}}]
+
+
+def test_get_existing_nftables_ruleset_with_empty_output(mocker):
+    """Test case where execute_json_nft_commands returns empty dict.
+
+    This can happen when there's an error parsing nftables output.
+    """
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", return_value={})
+
+    result = get_existing_nftables_ruleset()
+
+    assert result == []
+
+
+def test_get_existing_nftables_ruleset_with_missing_nftables_key(mocker):
+    """Test case where output dict doesn't contain 'nftables' key.
+
+    Some error conditions might result in a dict without the expected key.
+    """
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", return_value={"error": "something"})
+
+    result = get_existing_nftables_ruleset()
+
+    assert result == []
