@@ -436,6 +436,7 @@ def authenticate_api_request(request: web.Request) -> bool:
 
 allocation_lock = None
 network_recreation_lock = None
+proxy_regeneration_lock = None
 
 
 async def update_allocations(request: web.Request):
@@ -679,6 +680,52 @@ async def recreate_network(request: web.Request):
             },
             status=200 if len(failed_vms) == 0 else 207,
         )
+
+
+async def regenerate_proxy(request: web.Request):
+    """Regenerate HAProxy configuration for all running VMs.
+
+    This endpoint forces a refresh of the HAProxy domain mappings and backend
+    configurations for all currently running VMs. It's useful when:
+    - HAProxy rules have become stale or inconsistent
+    - Domain mappings need to be synchronized with the current VM pool state
+    - After manual changes to HAProxy configuration
+
+    The operation uses a lock to prevent concurrent modifications.
+
+    Returns:
+        JSON response with:
+        - success: Boolean indicating if the operation completed successfully
+        - message: Description of the operation result
+    """
+    if not authenticate_api_request(request):
+        return web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    global proxy_regeneration_lock
+    if proxy_regeneration_lock is None:
+        proxy_regeneration_lock = asyncio.Lock()
+
+    pool: VmPool = request.app["vm_pool"]
+
+    async with proxy_regeneration_lock:
+        logger.info("Starting HAProxy configuration regeneration")
+
+        try:
+            await pool.update_domain_mapping(force_update=True)
+            logger.info("HAProxy configuration regeneration complete")
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": "HAProxy configuration regenerated successfully",
+                },
+                status=200,
+            )
+        except Exception as e:
+            logger.error(f"Error regenerating HAProxy configuration: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to regenerate HAProxy configuration: {str(e)}"},
+                status=500,
+            )
 
 
 @cors_allow_all

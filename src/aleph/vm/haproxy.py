@@ -263,7 +263,7 @@ def update_haproxy_backend(socket_path, backend_name, instances, map_file_path, 
         # custom domain name doesn't return the ip addr but the network range
         addr = local_ip.split("/")[0]
         if addr.endswith(".1"):
-            addr = addr.rstrip(".1") + ".2"
+            addr = addr.removesuffix(".1") + ".2"
         processed_servers.add(server_name)
 
         # Check if the server already exists
