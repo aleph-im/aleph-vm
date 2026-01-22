@@ -57,9 +57,9 @@ from .views.operator import (
     operate_erase,
     operate_expire,
     operate_logs_json,
-    operate_snapshot,
     operate_reboot,
     operate_reinstall,
+    operate_snapshot,
     operate_stop,
     stream_logs,
 )
