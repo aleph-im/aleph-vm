@@ -894,3 +894,90 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
     resp = await response.json()
     assert resp == {}
     assert execution.update_port_redirects.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_regenerate_proxy_missing_auth_token(aiohttp_client):
+    """Test that the regenerate_proxy endpoint fails when auth token is not provided."""
+    app = setup_webapp(pool=None)
+    client = await aiohttp_client(app)
+    response: web.Response = await client.post("/control/proxy/regenerate")
+    assert response.status == 401
+    assert await response.json() == {"error": "Authentication token is missing"}
+
+
+@pytest.mark.asyncio
+async def test_regenerate_proxy_invalid_auth_token(aiohttp_client):
+    """Test that the regenerate_proxy endpoint fails when an invalid auth token is provided."""
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    app = setup_webapp(pool=None)
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/proxy/regenerate",
+        headers={"X-Auth-Signature": "notTest"},
+    )
+    assert response.status == 401
+    assert await response.json() == {"error": "Authentication token received is invalid"}
+
+
+@pytest.mark.asyncio
+async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_with_pool):
+    """Test that the regenerate_proxy endpoint succeeds with a valid auth token."""
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    # Mock update_domain_mapping to avoid actual HAProxy operations
+    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=True))
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.post(
+        "/control/proxy/regenerate",
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp = await response.json()
+    assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
+    pool.update_domain_mapping.assert_called_once_with(force_update=True)
+
+
+@pytest.mark.asyncio
+async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_app_with_pool):
+    """Test that regenerate_proxy handles missing HAProxy socket gracefully."""
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    # Mock update_domain_mapping to return False (socket not found)
+    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=False))
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.post(
+        "/control/proxy/regenerate",
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp = await response.json()
+    assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
+
+
+@pytest.mark.asyncio
+async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_pool):
+    """Test that regenerate_proxy handles exceptions gracefully."""
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    # Mock update_domain_mapping to raise an exception
+    mocker.patch.object(
+        pool, "update_domain_mapping", new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed"))
+    )
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.post(
+        "/control/proxy/regenerate",
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 500
+    resp = await response.json()
+    assert resp == {"success": False, "error": "Failed to regenerate HAProxy configuration: HAProxy connection failed"}
