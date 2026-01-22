@@ -262,6 +262,9 @@ def update_haproxy_backend(socket_path, backend_name, instances, map_file_path, 
 
         # custom domain name doesn't return the ip addr but the network range
         addr = local_ip.split("/")[0]
+
+        # Gateway (Host) always ends in .1; Guest VM always ends in .2 (same subnet).
+        # Example: Host 172.16.4.1 <-> VM 172.16.4.2
         if addr.endswith(".1"):
             addr = addr.removesuffix(".1") + ".2"
         processed_servers.add(server_name)
