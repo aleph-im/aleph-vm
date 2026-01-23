@@ -188,9 +188,43 @@ async def about_executions(request: web.Request) -> web.Response:
     )
 
 
+def _get_executions_running_states(pool: VmPool) -> dict[ItemHash, bool]:
+    """Get running state for all executions efficiently using batch systemd query.
+
+    For persistent VMs, this uses a single D-Bus call to get all service states
+    instead of one call per VM, which is much faster when there are many persistent VMs.
+    """
+    # Collect persistent executions that need systemd check
+    persistent_services: dict[str, ItemHash] = {}
+    for item_hash, execution in pool.executions.items():
+        if execution.persistent and execution.systemd_manager:
+            persistent_services[execution.controller_service] = item_hash
+
+    # Batch query systemd for all persistent services at once
+    service_states: dict[str, bool] = {}
+    if persistent_services:
+        service_states = pool.systemd_manager.get_services_active_states(list(persistent_services.keys()))
+
+    # Build running states for all executions
+    running_states: dict[ItemHash, bool] = {}
+    for item_hash, execution in pool.executions.items():
+        if execution.persistent and execution.systemd_manager:
+            # Use batch result for persistent VMs
+            running_states[item_hash] = service_states.get(execution.controller_service, False)
+        else:
+            # Use timestamp check for non-persistent VMs
+            running_states[item_hash] = bool(execution.times.starting_at and not execution.times.stopping_at)
+
+    return running_states
+
+
 @cors_allow_all
 async def list_executions(request: web.Request) -> web.Response:
     pool: VmPool = request.app["vm_pool"]
+
+    # Get running states efficiently using batch systemd query
+    running_states = _get_executions_running_states(pool)
+
     return web.json_response(
         {
             item_hash: {
@@ -200,7 +234,7 @@ async def list_executions(request: web.Request) -> web.Response:
                 },
             }
             for item_hash, execution in pool.executions.items()
-            if execution.is_running
+            if running_states.get(item_hash, False)
         },
         dumps=dumps_for_json,
     )
@@ -210,6 +244,9 @@ async def list_executions(request: web.Request) -> web.Response:
 async def list_executions_v2(request: web.Request) -> web.Response:
     """List all executions. Returning their status and ip"""
     pool: VmPool = request.app["vm_pool"]
+
+    # Get running states efficiently using batch systemd query
+    running_states = _get_executions_running_states(pool)
 
     return web.json_response(
         {
@@ -227,7 +264,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                     else {}
                 ),
                 "status": execution.times,
-                "running": execution.is_running,
+                "running": running_states.get(item_hash, False),
             }
             for item_hash, execution in pool.executions.items()
         },
