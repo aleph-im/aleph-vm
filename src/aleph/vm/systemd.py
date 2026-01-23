@@ -130,6 +130,48 @@ class SystemDManager:
             logger.error(error)
             return False
 
+    def get_services_active_states(self, services: list[str]) -> dict[str, bool]:
+        """Get active state of multiple services in a single D-Bus call.
+
+        This is much more efficient than calling is_service_active() for each service,
+        as it uses ListUnits() which returns all loaded units in one call.
+
+        Args:
+            services: List of service names to check (e.g., ["aleph-vm-controller@hash.service"])
+
+        Returns:
+            Dictionary mapping service name to active state (True if active, False otherwise)
+        """
+        if not services:
+            return {}
+
+        try:
+            manager = self._get_manager()
+            units = manager.ListUnits()
+
+            # Build lookup from ListUnits() result
+            # ListUnits returns: (name, description, load_state, active_state, sub_state,
+            #                     following, unit_path, job_id, job_type, job_path)
+            active_states: dict[str, bool] = {}
+            service_set = set(services)
+
+            for unit in units:
+                name = str(unit[0])
+                if name in service_set:
+                    active_state = str(unit[3])
+                    active_states[name] = active_state == "active"
+
+            # Services not in ListUnits() output are not loaded (treat as inactive)
+            for service in services:
+                if service not in active_states:
+                    active_states[service] = False
+
+            return active_states
+        except DBusException as error:
+            logger.error(f"Failed to get services active states: {error}")
+            # Return all as inactive on error
+            return {service: False for service in services}
+
     async def enable_and_start(self, service: str) -> None:
         if not self.is_service_enabled(service):
             self.enable(service)
