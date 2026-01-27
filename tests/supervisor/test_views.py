@@ -389,6 +389,11 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
     assert await response.json() == {
         "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca": {
             "networking": {},
+            "resources": {
+                "vcpus": 1,
+                "memory": 256,
+                "disk_mib": 1000,
+            },
             "status": {
                 "defined_at": str(execution.times.defined_at),
                 "preparing_at": None,
@@ -463,6 +468,11 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
                 "ipv6_network": "fc00:1:2:3:3:deca:deca:dec0/124",
                 "ipv6_ip": "fc00:1:2:3:3:deca:deca:dec1",
                 "mapped_ports": {},
+            },
+            "resources": {
+                "vcpus": 1,
+                "memory": 256,
+                "disk_mib": 1000,
             },
             "status": {
                 "defined_at": str(execution.times.defined_at),
