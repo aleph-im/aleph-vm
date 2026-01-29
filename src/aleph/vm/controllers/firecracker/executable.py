@@ -309,8 +309,11 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         May be empty."""
         return
 
-    async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+    async def configure(self, incoming_migration_port: int | None = None):
+        """Configure the VM by saving controller service configuration.
+
+        Note: incoming_migration_port is ignored for Firecracker VMs as they don't support live migration.
+        """
         if self.persistent:
             firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
             vm_configuration = VMConfiguration(

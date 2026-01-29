@@ -39,6 +39,7 @@ class QemuVMConfiguration(BaseModel):
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
+    incoming_migration_port: int | None = None  # Port for incoming migration mode
 
 
 class QemuConfidentialVMConfiguration(BaseModel):

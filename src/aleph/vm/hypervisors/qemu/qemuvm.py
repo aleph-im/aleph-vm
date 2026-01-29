@@ -31,6 +31,7 @@ class QemuVM:
     gpus: list[QemuGPU]
     journal_stdout: TextIO | None
     journal_stderr: TextIO | None
+    incoming_migration_port: int | None = None
 
     def __repr__(self) -> str:
         if self.qemu_process:
@@ -57,6 +58,7 @@ class QemuVM:
             for volume in config.host_volumes
         ]
         self.gpus = config.gpus
+        self.incoming_migration_port = config.incoming_migration_port
 
     @property
     def _journal_stdout_name(self) -> str:
@@ -122,6 +124,10 @@ class QemuVM:
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+
+        # Add incoming migration flag if specified (destination mode)
+        if self.incoming_migration_port is not None:
+            args += ["-incoming", f"tcp:0.0.0.0:{self.incoming_migration_port}"]
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()

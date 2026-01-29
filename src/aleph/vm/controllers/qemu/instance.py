@@ -168,10 +168,18 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def setup(self):
         pass
 
-    async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+    async def configure(self, incoming_migration_port: int | None = None):
+        """Configure the VM by saving controller service configuration.
 
-        logger.debug(f"Making  Qemu configuration: {self} ")
+        :param incoming_migration_port: Optional port for incoming migration. When set,
+            the VM configuration will include the -incoming flag to wait for migration
+            data from a source host instead of booting normally.
+        """
+        if incoming_migration_port is not None:
+            logger.debug(f"Configuring {self} for incoming migration on port {incoming_migration_port}")
+        else:
+            logger.debug(f"Making Qemu configuration: {self}")
+
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_hash) + "-monitor.socket")
 
         cloud_init_drive = await self._create_cloud_init_drive()
@@ -204,6 +212,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
                 for volume in self.resources.volumes
             ],
             gpus=[QemuGPU(pci_host=gpu.pci_host, supports_x_vga=gpu.supports_x_vga) for gpu in self.resources.gpus],
+            incoming_migration_port=incoming_migration_port,
         )
 
         configuration = Configuration(
@@ -243,3 +252,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()
+
+    def get_ip(self) -> str | None:
+        """Get the guest IP address."""
+        if self.tap_interface:
+            return str(self.tap_interface.guest_ip)
+        return None
