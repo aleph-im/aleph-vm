@@ -34,7 +34,7 @@ from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
-from .models import ExecutableContent, VmExecution
+from .models import ExecutableContent, MigrationState, VmExecution
 from .network.firewall import setup_nftables_for_vm
 
 logger = logging.getLogger(__name__)
@@ -137,18 +137,45 @@ class VmPool:
         return available_space
 
     async def create_a_vm(
-        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
+        self,
+        vm_hash: ItemHash,
+        message: ExecutableContent,
+        original: ExecutableContent,
+        persistent: bool,
+        incoming_migration_port: int | None = None,
     ) -> VmExecution:
-        """Create a new VM from an Aleph function or instance message."""
+        """Create a new VM from an Aleph function or instance message.
+
+        :param vm_hash: The hash of the VM message
+        :param message: The executable content of the VM
+        :param original: The original executable content
+        :param persistent: Whether the VM should be persistent
+        :param incoming_migration_port: Optional port for incoming migration. When set,
+            the VM is prepared to receive migration data from a source host with QEMU's
+            -incoming flag. The VM will wait for migration data instead of booting normally.
+        :return: The VmExecution object
+        """
+        is_migration = incoming_migration_port is not None
+
         async with self.creation_lock:
-            # Check if an execution is already present for this VM, then return it.
-            # Do not `await` in this section.
-            current_execution = self.get_running_vm(vm_hash)
+            # Check if an execution is already present for this VM
+            current_execution = self.executions.get(vm_hash)
             if current_execution:
-                return current_execution
+                if is_migration:
+                    # For migration, we must not have an existing VM
+                    msg = f"VM {vm_hash} already exists on this host"
+                    raise ValueError(msg)
+                # For normal creation, return existing execution if running
+                if current_execution.is_running and not current_execution.is_stopping:
+                    current_execution.cancel_expiration()
+                    return current_execution
 
             # Check if there are sufficient resources available before creating the VM
             check_sufficient_resources(self.calculate_available_disk(), message)
+
+            # For migration, force persistent=True since migrated VMs are always persistent instances
+            if is_migration:
+                persistent = True
 
             execution = VmExecution(
                 vm_hash=vm_hash,
@@ -158,16 +185,24 @@ class VmPool:
                 systemd_manager=self.systemd_manager,
                 persistent=persistent,
             )
+
+            # Set migration state if this is a migration
+            if is_migration:
+                execution.migration_state = MigrationState.PREPARING
+                execution.migration_port = incoming_migration_port
+
             self.executions[vm_hash] = execution
 
             resources = set()
             try:
+                # GPU handling (not used for migration as it's QEMU instances only)
                 if message.requirements and message.requirements.gpu:
                     # Ensure we have the necessary GPU for the user by reserving them
                     resources = self.find_resources_available_for_user(message, message.address)
                     # First assign Host GPUs from the available
                     execution.prepare_gpus(list(resources))
                     # Prepare VM general Resources and also the GPUs
+
                 await execution.prepare()
 
                 vm_id = self.get_unique_vm_id()
@@ -179,20 +214,30 @@ class VmPool:
                     if self.network.interface_exists(vm_id):
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
-
                 else:
                     tap_interface = None
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
-                await execution.start()
+
+                # Start the VM, passing migration port if this is a migration
+                await execution.start(incoming_migration_port)
+
                 if execution.is_instance:
                     await execution.fetch_port_redirect_config_and_setup()
 
-                # clear the user reservations
+                # Update migration state after successful start
+                if is_migration:
+                    execution.migration_state = MigrationState.WAITING
+                    logger.info(f"VM {vm_hash} prepared for incoming migration on port {incoming_migration_port}")
+
+                # Clear the user reservations
                 for resource in resources:
                     if resource in self.reservations:
                         del self.reservations[resource]
+
             except Exception:
+                if is_migration:
+                    execution.migration_state = MigrationState.FAILED
                 if execution.is_instance:
                     # ensure the VM is removed from the pool on creation error
                     await execution.removed_all_ports_redirection()
