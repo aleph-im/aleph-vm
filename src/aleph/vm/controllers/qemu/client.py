@@ -1,3 +1,4 @@
+import time
 from enum import Enum
 
 import qmp
@@ -253,8 +254,6 @@ netplan apply
         :param timeout_seconds: Maximum time to wait
         :return: True if agent is available, False if timeout
         """
-        import time
-
         start_time = time.monotonic()
         while time.monotonic() - start_time < timeout_seconds:
             try:
