@@ -324,17 +324,20 @@ class VmExecution:
 
     def prepare_gpus(self, available_gpus: list[GpuDevice]) -> None:
         gpus: list[HostGPU] = []
+        assigned_pci_hosts: set[str] = set()
+
         if self.message.requirements and self.message.requirements.gpu:
             for gpu in self.message.requirements.gpu:
                 gpu = GpuProperties.model_validate(gpu)
                 for available_gpu in available_gpus:
-                    if available_gpu.device_id == gpu.device_id:
+                    if available_gpu.device_id == gpu.device_id and available_gpu.pci_host not in assigned_pci_hosts:
                         gpus.append(
                             HostGPU(
                                 pci_host=available_gpu.pci_host,
                                 supports_x_vga=available_gpu.has_x_vga_support,
                             )
                         )
+                        assigned_pci_hosts.add(available_gpu.pci_host)
                         break
         self.gpus = gpus
 
