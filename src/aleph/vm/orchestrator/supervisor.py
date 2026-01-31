@@ -8,6 +8,7 @@ evolve in the future.
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from secrets import token_urlsafe
 
@@ -239,6 +240,7 @@ def run():
                 f"Port {settings.SUPERVISOR_PORT} already in use. "
                 f"Please check that no other instance of Aleph-VM is running."
             )
+            sys.exit(1)
         else:
             raise
     finally:
