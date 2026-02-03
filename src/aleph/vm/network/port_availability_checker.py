@@ -24,12 +24,12 @@ def is_host_port_available(port: int) -> bool:
         # Try TCP
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
             tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            tcp_sock.bind(("0.0.0.0", port))
+            tcp_sock.bind(("127.0.0.1", port))
 
         # Try UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            udp_sock.bind(("0.0.0.0", port))
+            udp_sock.bind(("127.0.0.1", port))
 
         return True
     except OSError:
@@ -54,15 +54,15 @@ def get_available_host_port(start_port: int | None = None) -> int:
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
                 continue
-            # Try both TCP and UDP on all interfaces
+            # Try both TCP and UDP on loopback to check availability
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                tcp_sock.bind(("0.0.0.0", port))
+                tcp_sock.bind(("127.0.0.1", port))
                 tcp_sock.listen(1)
 
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                udp_sock.bind(("0.0.0.0", port))
+                udp_sock.bind(("127.0.0.1", port))
 
             return port
 
