@@ -455,7 +455,11 @@ class VmExecution:
                     await self.wait_for_init()
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
-                else:
+                elif incoming_migration_port is None:
+                    # Only wait for boot on non-migration VMs.
+                    # Migration-receiving VMs are in "inmigrate" state and won't respond to ping
+                    # until migration completes. The migration finalization monitor handles
+                    # waiting for migration completion instead.
                     self.init_task = asyncio.create_task(self.non_blocking_wait_for_boot())
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
