@@ -9,6 +9,7 @@ These endpoints are called by the scheduler to coordinate VM migration:
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 
 import pydantic
@@ -450,8 +451,9 @@ async def _finalize_migration_on_destination(
         # Migration completed, now reconfigure guest network
         await _reconfigure_guest_network(execution)
 
-        # Update migration state
+        # Update migration state and mark as started
         execution.migration_state = MigrationState.COMPLETED
+        execution.times.started_at = datetime.now(tz=timezone.utc)
         logger.info(f"Migration finalization completed for {vm_hash}")
 
     except asyncio.CancelledError:

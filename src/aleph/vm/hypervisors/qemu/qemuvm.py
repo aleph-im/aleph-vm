@@ -120,7 +120,8 @@ class QemuVM:
         ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
+            # use rombar=off to allow live migration between different qemu versions
+            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no,rombar=off"]
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
@@ -130,6 +131,14 @@ class QemuVM:
             args += ["-incoming", f"tcp:0.0.0.0:{self.incoming_migration_port}"]
 
         args += self._get_host_volumes_args()
+
+        # Add CPU configuration for migration compatibility
+        # Use migratable=on to ensure CPU features are compatible across different hosts
+        # Note: GPU mode uses its own -cpu flag in _get_gpu_args() with host-phys-bits-limit
+        # Note: Specify -machine type as less as possible to allow migration between different hosts
+        if not self.gpus:
+            args += ["-machine", "pc-i440fx-7.2", "-cpu", "host,migratable=on"]
+
         args += self._get_gpu_args()
         print(*args)
 
@@ -155,6 +164,9 @@ class QemuVM:
         return args
 
     def _get_gpu_args(self):
+        if not self.gpus:
+            return []
+
         args = [
             # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
             "-cpu",
