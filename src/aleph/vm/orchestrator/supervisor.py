@@ -58,6 +58,7 @@ from .views.operator import (
     operate_expire,
     operate_logs_json,
     operate_reboot,
+    operate_restart,
     operate_stop,
     stream_logs,
 )
@@ -146,6 +147,7 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
+        web.post("/control/machine/{ref}/restart", operate_restart),
         web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
         web.get("/control/machine/{ref}/confidential/measurement", operate_confidential_measurement),
         web.post("/control/machine/{ref}/confidential/inject_secret", operate_confidential_inject_secret),

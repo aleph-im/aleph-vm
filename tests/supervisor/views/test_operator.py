@@ -790,6 +790,108 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
+async def test_operator_restart(aiohttp_client, mocker):
+    """Test that the restart endpoint erases volumes and restarts the VM"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_volume = mocker.Mock()
+    fake_volume.read_only = False
+    fake_volume.path_on_host = mocker.Mock()
+
+    fake_readonly_volume = mocker.Mock()
+    fake_readonly_volume.read_only = True
+
+    fake_resources = mocker.Mock()
+    fake_resources.volumes = [fake_volume, fake_readonly_volume]
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+                resources=fake_resources,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    mock_create_vm = mocker.patch(
+        "aleph.vm.orchestrator.views.operator.create_vm_execution_or_raise_http_error",
+        return_value=mocker.AsyncMock(),
+    )
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/restart",
+    )
+
+    assert response.status == 200
+    assert await response.text() == f"Restarted VM with ref {vm_hash}"
+    # VM was stopped
+    assert fake_vm_pool.stop_vm.call_count == 1
+    # VM was forgotten
+    assert fake_vm_pool.forget_vm.call_count == 1
+    # Non-readonly volume was deleted
+    assert fake_volume.path_on_host.unlink.call_count == 1
+    # Readonly volume was NOT deleted
+    assert (
+        not hasattr(fake_readonly_volume.path_on_host, "unlink")
+        or fake_readonly_volume.path_on_host.unlink.call_count == 0
+    )
+    # VM was started again
+    mock_create_vm.assert_called_once_with(vm_hash=vm_hash, pool=fake_vm_pool)
+
+
+@pytest.mark.asyncio
+async def test_operator_restart_unauthorized(aiohttp_client, mocker):
+    """Test that restart endpoint requires authorization"""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    fake_vm_pool = mocker.AsyncMock(
+        executions={
+            vm_hash: mocker.AsyncMock(
+                vm_hash=vm_hash,
+                message=instance_message.content,
+                is_running=True,
+            ),
+        },
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="unauthorized_address",
+    )
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+
+    app = setup_webapp(pool=fake_vm_pool)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/restart",
+    )
+
+    assert response.status == 403
+    assert await response.text() == "Unauthorized sender"
+
+
+@pytest.mark.asyncio
 async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
     """Test that empty authorizations list denies access"""
     settings.ENABLE_QEMU_SUPPORT = True
