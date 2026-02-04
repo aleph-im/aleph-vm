@@ -120,8 +120,11 @@ class QemuVM:
         ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
-            # use rombar=off to allow live migration between different qemu versions
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no,rombar=off"]
+            # Split network devices in two to be able to use rombar=0 to allow live migration between different hosts
+            args += [
+                "-device", "virtio-net-pci,netdev=net0,rombar=0",
+                "-netdev", f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no"
+            ]
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
@@ -135,9 +138,10 @@ class QemuVM:
         # Add CPU configuration for migration compatibility
         # Use migratable=on to ensure CPU features are compatible across different hosts
         # Note: GPU mode uses its own -cpu flag in _get_gpu_args() with host-phys-bits-limit
-        # Note: Specify -machine type as less as possible to allow migration between different hosts
+        # Note: Specify -machine type pc-i440fx-6.2 (Qemu from Ubuntu 22.04)
+        # as less as possible to allow migration between different hosts
         if not self.gpus:
-            args += ["-machine", "pc-i440fx-7.2", "-cpu", "host,migratable=on"]
+            args += ["-machine", "pc-i440fx-6.2", "-cpu", "host,migratable=on"]
 
         args += self._get_gpu_args()
         print(*args)
