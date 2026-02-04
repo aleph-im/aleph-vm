@@ -122,8 +122,10 @@ class QemuVM:
             # script=no, downscript=no tell qemu not to try to set up the network itself
             # Split network devices in two to be able to use rombar=0 to allow live migration between different hosts
             args += [
-                "-device", "virtio-net-pci,netdev=net0,rombar=0",
-                "-netdev", f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no"
+                "-device",
+                "virtio-net-pci,netdev=net0,rombar=0",
+                "-netdev",
+                f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
             ]
 
         if self.cloud_init_drive_path:
