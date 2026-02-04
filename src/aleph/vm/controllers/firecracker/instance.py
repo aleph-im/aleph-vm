@@ -151,6 +151,9 @@ class AlephFirecrackerInstance(AlephFirecrackerExecutable):
             "ssh_authorized_keys": ssh_authorized_keys,
             # Avoid the resize error because we already do it on the VM disk creation stage
             "resize_rootfs": False,
+            "package_update": True,
+            "packages": ["qemu-guest-agent"],
+            "runcmd": ["systemctl start qemu-guest-agent.service"],
         }
 
         cloud_config_header = "#cloud-config\n"
