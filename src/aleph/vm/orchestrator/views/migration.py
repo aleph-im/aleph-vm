@@ -19,7 +19,12 @@ from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseModel
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.client import QemuVmClient, VmRunStatus
+from aleph.vm.controllers.configuration import (
+    QemuVMConfiguration,
+    load_controller_configuration,
+    save_controller_configuration,
+)
+from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.models import MigrationState, VmExecution
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.pool import VmPool
@@ -35,6 +40,35 @@ migration_lock: asyncio.Lock | None = None
 
 # Track background migration finalization tasks
 _migration_finalization_tasks: dict[ItemHash, asyncio.Task] = {}
+
+
+def _clear_incoming_migration_port(vm_hash: ItemHash) -> None:
+    """
+    Clear the incoming_migration_port from the controller configuration file.
+
+    After a successful migration, the destination VM should no longer have the
+    -incoming flag set. This ensures that if the VM service restarts, it will
+    boot normally instead of waiting for migration data.
+
+    :param vm_hash: The VM hash identifying the configuration file
+    """
+    try:
+        configuration = load_controller_configuration(vm_hash)
+        if configuration is None:
+            logger.warning(f"Controller configuration file not found for {vm_hash}, skipping incoming port cleanup")
+            return
+
+        # Check if this is a QEMU VM configuration with incoming_migration_port
+        vm_config = configuration.vm_configuration
+        if isinstance(vm_config, QemuVMConfiguration) and vm_config.incoming_migration_port is not None:
+            vm_config.incoming_migration_port = None
+            save_controller_configuration(vm_hash, configuration)
+            logger.info(f"Updated controller configuration for {vm_hash}: cleared incoming_migration_port")
+        else:
+            logger.debug(f"No incoming_migration_port found in configuration for {vm_hash}")
+
+    except Exception as e:
+        logger.error(f"Failed to clear incoming_migration_port from configuration for {vm_hash}: {e}")
 
 
 class AllocateMigrationRequest(BaseModel):
@@ -415,8 +449,11 @@ async def _finalize_migration_on_destination(
             await asyncio.sleep(poll_interval)
 
         # Monitor VM status until migration completes
-        vm_running = False
-        while not vm_running:
+        # We need to check both:
+        # 1. VM status is "running" (CPU is executing)
+        # 2. Migration status is "completed" (all data including disk blocks transferred)
+        migration_complete = False
+        while not migration_complete:
             elapsed = time.monotonic() - start_time
             if elapsed > timeout:
                 logger.error(f"Migration finalization timed out for {vm_hash} after {timeout}s")
@@ -429,18 +466,40 @@ async def _finalize_migration_on_destination(
 
                 logger.debug(f"Destination VM {vm_hash} status: {status.status.value}, running: {status.running}")
 
-                if status.is_running:
-                    logger.info(f"Migration completed for {vm_hash}, VM is now running on destination")
-                    vm_client.close()
-                    break
-                elif status.is_migrating or status.status in (VmRunStatus.PAUSED, VmRunStatus.PRELAUNCH):
-                    # Still waiting for migration data
-                    pass
-                elif status.is_error:
+                if status.is_error:
                     logger.error(f"VM {vm_hash} in error state: {status.status.value}")
                     execution.migration_state = MigrationState.FAILED
                     vm_client.close()
                     return
+
+                if status.is_running:
+                    # VM is running, but we also need to verify migration data transfer is complete
+                    # This is important for block migration where disk data may still be transferring
+                    migrate_info = vm_client.query_migrate()
+                    migrate_status = migrate_info.get("status", "unknown")
+
+                    logger.debug(f"Destination VM {vm_hash} migration status: {migrate_status}")
+
+                    if migrate_status == "completed":
+                        logger.info(f"Migration completed for {vm_hash}, VM is running and all data transferred")
+                        vm_client.close()
+                        migration_complete = True
+                        break
+                    elif migrate_status in ("active", "postcopy-active", "pre-switchover"):
+                        # Migration still in progress (disk blocks still transferring)
+                        logger.debug(f"VM {vm_hash} running but migration still active: {migrate_status}")
+                    elif migrate_status in ("failed", "cancelled"):
+                        logger.error(f"Migration failed for {vm_hash}: {migrate_status}")
+                        execution.migration_state = MigrationState.FAILED
+                        vm_client.close()
+                        return
+                    elif migrate_status == "none":
+                        # No migration info available, VM is running normally
+                        # This can happen if the destination doesn't track incoming migration status
+                        logger.info(f"Migration completed for {vm_hash}, VM is running (no migration info)")
+                        vm_client.close()
+                        migration_complete = True
+                        break
 
                 vm_client.close()
             except Exception as e:
@@ -450,6 +509,10 @@ async def _finalize_migration_on_destination(
 
         # Migration completed, now reconfigure guest network
         await _reconfigure_guest_network(execution)
+
+        # Clear the incoming_migration_port from the controller configuration
+        # This ensures the VM will boot normally if the service restarts
+        _clear_incoming_migration_port(vm_hash)
 
         # Update migration state and mark as started
         execution.migration_state = MigrationState.COMPLETED
