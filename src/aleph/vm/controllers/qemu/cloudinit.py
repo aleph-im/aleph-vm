@@ -40,6 +40,9 @@ def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
         "ssh_pwauth": False,
         "ssh_authorized_keys": ssh_authorized_keys,
         "resize_rootfs": True,
+        "package_update": True,
+        "packages": ["qemu-guest-agent"],
+        "runcmd": ["systemctl start qemu-guest-agent.service"],
     }
     cloud_config_header = "#cloud-config\n"
     config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
