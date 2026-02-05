@@ -40,6 +40,9 @@ def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> by
         "ssh_pwauth": False,
         "ssh_authorized_keys": ssh_authorized_keys,
         "resize_rootfs": True,
+        "package_update": True,
+        "packages": ["qemu-guest-agent"],
+        "runcmd": ["systemctl start qemu-guest-agent.service"],
     }
 
     # Add kernel boot parameters for GPU instances to speed up PCI enumeration
