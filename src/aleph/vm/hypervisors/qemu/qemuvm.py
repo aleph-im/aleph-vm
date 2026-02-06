@@ -23,6 +23,7 @@ class QemuVM:
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
@@ -45,6 +46,7 @@ class QemuVM:
         self.image_path = config.image_path
         self.monitor_socket_path = config.monitor_socket_path
         self.qmp_socket_path = config.qmp_socket_path
+        self.qga_socket_path = config.qga_socket_path
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
@@ -91,7 +93,7 @@ class QemuVM:
             "-smp",
             str(self.vcpu_count),
             "-drive",
-            f"file={self.image_path},media=disk,if=virtio",
+            f"file={self.image_path},media=disk,if=virtio,file.locking=off",
             # To debug you can pass gtk or curses instead
             "-display",
             "none",
@@ -100,6 +102,13 @@ class QemuVM:
             # Listen for commands on this socket
             "-monitor",
             f"unix:{self.monitor_socket_path},server,nowait",
+            # Qemu Guest Agent communication channel options
+            "-device",
+            "virtio-serial",
+            "-chardev",
+            f"socket,path={self.qga_socket_path},server=on,wait=off,id=qga0",
+            "-device",
+            "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Listen for commands on this socket (QMP protocol in json). Supervisor use it to send shutdown or start
             # command
             "-qmp",

@@ -132,42 +132,56 @@ class TestVmStatus:
         assert dumped["singlestep"] is False
 
 
+def _make_mock_vm(mocker):
+    """Create a mock VM with both QMP and QGA socket paths."""
+    mock_vm = mocker.Mock()
+    mock_vm.qmp_socket_path = mocker.Mock()
+    mock_vm.qmp_socket_path.exists.return_value = True
+    mock_vm.qga_socket_path = mocker.Mock()
+    mock_vm.qga_socket_path.exists.return_value = True
+    return mock_vm
+
+
 class TestQemuVmClientMocked:
     """Tests for QemuVmClient methods using mocks."""
 
     def test_migrate_builds_correct_uri(self, mocker):
         """Test that migrate method builds the correct destination URI."""
         mock_qmp = mocker.Mock()
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
         client = QemuVmClient(mock_vm)
         client.migrate("tcp:192.168.1.100:4444")
 
-        # Verify migrate was called with correct parameters
+        # Verify migrate was called on QMP client with correct parameters
         mock_qmp.command.assert_any_call("migrate-set-capabilities", capabilities=mocker.ANY)
         mock_qmp.command.assert_any_call("migrate", uri="tcp:192.168.1.100:4444", blk=True, inc=True)
 
     def test_migrate_with_bandwidth_limit(self, mocker):
         """Test that migrate sets bandwidth limit when specified."""
         mock_qmp = mocker.Mock()
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
         client = QemuVmClient(mock_vm)
         client.migrate("tcp:192.168.1.100:4444", bandwidth_limit_mbps=100)
 
-        # Verify bandwidth limit was set (100 MB/s = 100 * 1024 * 1024 bytes/s)
+        # Verify bandwidth limit was set on QMP client (100 MB/s = 100 * 1024 * 1024 bytes/s)
         mock_qmp.command.assert_any_call("migrate_set_speed", value=100 * 1024 * 1024)
 
     def test_query_migrate_returns_dict(self, mocker):
@@ -177,11 +191,13 @@ class TestQemuVmClientMocked:
             "status": "active",
             "ram": {"transferred": 1000000, "total": 5000000},
         }
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -195,11 +211,13 @@ class TestQemuVmClientMocked:
         """Test that query_status returns a VmStatus object."""
         mock_qmp = mocker.Mock()
         mock_qmp.command.return_value = {"status": "running", "running": True, "singlestep": False}
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -213,11 +231,13 @@ class TestQemuVmClientMocked:
     def test_migrate_cancel(self, mocker):
         """Test that migrate_cancel calls the correct QMP command."""
         mock_qmp = mocker.Mock()
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -227,14 +247,16 @@ class TestQemuVmClientMocked:
         mock_qmp.command.assert_called_with("migrate_cancel")
 
     def test_guest_exec(self, mocker):
-        """Test that guest_exec calls the correct QMP command."""
+        """Test that guest_exec calls the correct QGA command."""
         mock_qmp = mocker.Mock()
-        mock_qmp.command.return_value = {"pid": 12345}
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_qga.command.return_value = {"pid": 12345}
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -242,19 +264,23 @@ class TestQemuVmClientMocked:
         result = client.guest_exec("/bin/bash", ["-c", "echo test"])
 
         assert result["pid"] == 12345
-        mock_qmp.command.assert_called_with(
+        # Verify the command was sent through QGA, not QMP
+        mock_qga.command.assert_called_with(
             "guest-exec", path="/bin/bash", arg=["-c", "echo test"], **{"capture-output": True}
         )
+        mock_qmp.command.assert_not_called()
 
     def test_guest_exec_status(self, mocker):
-        """Test that guest_exec_status returns command status."""
+        """Test that guest_exec_status returns command status via QGA."""
         mock_qmp = mocker.Mock()
-        mock_qmp.command.return_value = {"exited": True, "exitcode": 0}
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_qga.command.return_value = {"exited": True, "exitcode": 0}
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -263,17 +289,21 @@ class TestQemuVmClientMocked:
 
         assert result["exited"] is True
         assert result["exitcode"] == 0
-        mock_qmp.command.assert_called_with("guest-exec-status", pid=12345)
+        # Verify the command was sent through QGA, not QMP
+        mock_qga.command.assert_called_with("guest-exec-status", pid=12345)
+        mock_qmp.command.assert_not_called()
 
     def test_reconfigure_guest_network(self, mocker):
-        """Test that reconfigure_guest_network creates correct netplan config."""
+        """Test that reconfigure_guest_network creates correct netplan config via QGA."""
         mock_qmp = mocker.Mock()
-        mock_qmp.command.return_value = {"pid": 12345}
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_qga.command.return_value = {"pid": 12345}
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
 
         from aleph.vm.controllers.qemu.client import QemuVmClient
 
@@ -285,20 +315,23 @@ class TestQemuVmClientMocked:
         )
 
         assert result["pid"] == 12345
-        # Verify guest-exec was called with bash
-        call_args = mock_qmp.command.call_args
+        # Verify guest-exec was called on QGA with bash
+        call_args = mock_qga.command.call_args
         assert call_args[0][0] == "guest-exec"
         assert call_args[1]["path"] == "/bin/bash"
+        mock_qmp.command.assert_not_called()
 
     def test_wait_for_guest_agent_success(self, mocker):
-        """Test wait_for_guest_agent returns True when agent responds."""
+        """Test wait_for_guest_agent returns True when agent responds via QGA."""
         mock_qmp = mocker.Mock()
-        mock_qmp.command.return_value = {}  # guest-ping returns empty dict
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_qga.command.return_value = {}  # guest-ping returns empty dict
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
         mocker.patch("aleph.vm.controllers.qemu.client.time.sleep")
         mocker.patch("aleph.vm.controllers.qemu.client.time.monotonic", side_effect=[0, 1])
 
@@ -308,16 +341,19 @@ class TestQemuVmClientMocked:
         result = client.wait_for_guest_agent(timeout_seconds=10)
 
         assert result is True
+        mock_qga.command.assert_called_with("guest-ping")
 
     def test_wait_for_guest_agent_timeout(self, mocker):
         """Test wait_for_guest_agent returns False on timeout."""
         mock_qmp = mocker.Mock()
-        mock_qmp.command.side_effect = Exception("Guest agent not available")
-        mock_vm = mocker.Mock()
-        mock_vm.qmp_socket_path = mocker.Mock()
-        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_qga = mocker.Mock()
+        mock_qga.command.side_effect = Exception("Guest agent not available")
+        mock_vm = _make_mock_vm(mocker)
 
-        mocker.patch("aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol", return_value=mock_qmp)
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
         mocker.patch("aleph.vm.controllers.qemu.client.time.sleep")
         # Simulate time passing
         mocker.patch("aleph.vm.controllers.qemu.client.time.monotonic", side_effect=[0, 5, 11])
@@ -339,3 +375,42 @@ class TestQemuVmClientMocked:
 
         with pytest.raises(Exception, match="VM is not running"):
             QemuVmClient(mock_vm)
+
+    def test_guest_exec_raises_when_qga_unavailable(self, mocker):
+        """Test that guest_exec raises when QGA socket is not available."""
+        mock_qmp = mocker.Mock()
+        mock_vm = mocker.Mock()
+        mock_vm.qmp_socket_path = mocker.Mock()
+        mock_vm.qmp_socket_path.exists.return_value = True
+        mock_vm.qga_socket_path = mocker.Mock()
+        mock_vm.qga_socket_path.exists.return_value = False
+
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            return_value=mock_qmp,
+        )
+
+        from aleph.vm.controllers.qemu.client import QemuVmClient
+
+        client = QemuVmClient(mock_vm)
+        with pytest.raises(Exception, match="QEMU Guest Agent socket is not available"):
+            client.guest_exec("/bin/bash", ["-c", "echo test"])
+
+    def test_close_closes_both_clients(self, mocker):
+        """Test that close() closes both QMP and QGA connections."""
+        mock_qmp = mocker.Mock()
+        mock_qga = mocker.Mock()
+        mock_vm = _make_mock_vm(mocker)
+
+        mocker.patch(
+            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            side_effect=[mock_qmp, mock_qga],
+        )
+
+        from aleph.vm.controllers.qemu.client import QemuVmClient
+
+        client = QemuVmClient(mock_vm)
+        client.close()
+
+        mock_qmp.close.assert_called_once()
+        mock_qga.close.assert_called_once()
