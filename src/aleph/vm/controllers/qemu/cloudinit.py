@@ -32,7 +32,7 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
     return base64.b32encode(item_hash_binary).decode().strip("=").lower()
 
 
-def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
+def encode_user_data(hostname, ssh_authorized_keys, install_guest_agent: bool = True) -> bytes:
     """Creates user data configuration file for cloud-init tool"""
     config: dict[str, str | bool | list[str]] = {
         "hostname": hostname,
@@ -41,9 +41,11 @@ def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
         "ssh_authorized_keys": ssh_authorized_keys,
         "resize_rootfs": True,
         "package_update": True,
-        "packages": ["qemu-guest-agent"],
-        "runcmd": ["systemctl start qemu-guest-agent.service"],
     }
+    if install_guest_agent:
+        config["packages"] = ["qemu-guest-agent"]
+        config["runcmd"] = ["systemctl start qemu-guest-agent.service"]
+
     cloud_config_header = "#cloud-config\n"
     config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
     content = (cloud_config_header + config_output).encode()
@@ -85,14 +87,23 @@ def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
 
 
 async def create_cloud_init_drive_image(
-    disk_image_path, hostname, vm_id, ip, ipv6, ipv6_gateway, nameservers, route, ssh_authorized_keys
+    disk_image_path,
+    hostname,
+    vm_id,
+    ip,
+    ipv6,
+    ipv6_gateway,
+    nameservers,
+    route,
+    ssh_authorized_keys,
+    install_guest_agent: bool = True,
 ):
     with (
         NamedTemporaryFile() as user_data_config_file,
         NamedTemporaryFile() as network_config_file,
         NamedTemporaryFile() as metadata_config_file,
     ):
-        user_data = encode_user_data(hostname, ssh_authorized_keys)
+        user_data = encode_user_data(hostname, ssh_authorized_keys, install_guest_agent=install_guest_agent)
         user_data_config_file.write(user_data)
         user_data_config_file.flush()
         network_config = create_network_file(ip, ipv6, ipv6_gateway, nameservers, route)
@@ -115,7 +126,7 @@ async def create_cloud_init_drive_image(
 
 
 class CloudInitMixin(AlephVmControllerInterface):
-    async def _create_cloud_init_drive(self) -> Drive:
+    async def _create_cloud_init_drive(self, install_guest_agent: bool = True) -> Drive:
         """Creates the cloud-init volume to configure and set up the VM"""
         ssh_authorized_keys = self.resources.message_content.authorized_keys or []
         if settings.USE_DEVELOPER_SSH_KEYS:
@@ -141,6 +152,7 @@ class CloudInitMixin(AlephVmControllerInterface):
             nameservers,
             route,
             ssh_authorized_keys,
+            install_guest_agent=install_guest_agent,
         )
 
         return Drive(

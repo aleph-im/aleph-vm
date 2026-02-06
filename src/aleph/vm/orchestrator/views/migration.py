@@ -156,6 +156,17 @@ async def allocate_migration(request: web.Request) -> web.Response:
                     status=HTTPStatus.BAD_REQUEST,
                 )
 
+            # Reject confidential VMs - they cannot be live-migrated
+            if message.content.environment.trusted_execution is not None:
+                return web.json_response(
+                    {
+                        "status": "error",
+                        "error": "Live migration is not supported for confidential VMs",
+                        "vm_hash": str(vm_hash),
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+
             # Create VM prepared for incoming migration
             execution = await pool.create_a_vm(
                 vm_hash=vm_hash,
@@ -244,6 +255,17 @@ async def migration_start(request: web.Request) -> web.Response:
     if execution.hypervisor != HypervisorType.qemu:
         return web.json_response(
             {"status": "error", "error": "Live migration only supported for QEMU instances", "vm_hash": str(vm_hash)},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    # Reject confidential VMs - they cannot be live-migrated
+    if execution.is_confidential:
+        return web.json_response(
+            {
+                "status": "error",
+                "error": "Live migration is not supported for confidential VMs",
+                "vm_hash": str(vm_hash),
+            },
             status=HTTPStatus.BAD_REQUEST,
         )
 
