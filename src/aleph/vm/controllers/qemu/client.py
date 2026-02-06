@@ -1,7 +1,9 @@
+import base64
 import time
 from enum import Enum
 
 import qmp
+import yaml
 from pydantic import BaseModel
 
 
@@ -74,11 +76,19 @@ class QemuVmClient:
         if not (vm.qmp_socket_path and vm.qmp_socket_path.exists()):
             msg = "VM is not running"
             raise Exception(msg)
-        client = qmp.QEMUMonitorProtocol(str(vm.qmp_socket_path))
-        client.connect()
 
-        # qmp_client = qmp.QEMUMonitorProtocol(address=("localhost", vm.qmp_port))
-        self.qmp_client = client
+        qmp_client = qmp.QEMUMonitorProtocol(str(vm.qmp_socket_path))
+        qmp_client.connect()
+        self.qmp_client = qmp_client
+
+        # QGA (QEMU Guest Agent) uses a separate communication channel over virtio-serial.
+        # The wire protocol is JSON-based and compatible with the QMP library.
+        if vm.qga_socket_path and vm.qga_socket_path.exists():
+            qga_client = qmp.QEMUMonitorProtocol(str(vm.qga_socket_path))
+            qga_client.connect()
+            self.qga_client = qga_client
+        else:
+            self.qga_client = None
 
     def __enter__(self):
         return self
@@ -88,6 +98,8 @@ class QemuVmClient:
 
     def close(self) -> None:
         self.qmp_client.close()
+        if self.qga_client:
+            self.qga_client.close()
 
     def query_sev_info(self) -> VmSevInfo:
         caps = self.qmp_client.command("query-sev")
@@ -176,6 +188,13 @@ class QemuVmClient:
         """Cancel ongoing migration."""
         self.qmp_client.command("migrate_cancel")
 
+    def _get_qga_client(self) -> qmp.QEMUMonitorProtocol:
+        """Get the QGA client, raising an error if not available."""
+        if not self.qga_client:
+            msg = "QEMU Guest Agent socket is not available"
+            raise Exception(msg)
+        return self.qga_client
+
     def guest_exec(self, command: str, args: list[str] | None = None, capture_output: bool = True) -> dict:
         """
         Execute a command in the guest via qemu-guest-agent.
@@ -185,10 +204,11 @@ class QemuVmClient:
         :param capture_output: Whether to capture stdout/stderr
         :return: Dict with 'pid' key for the started process
         """
+        qga = self._get_qga_client()
         exec_args = {"path": command, "capture-output": capture_output}
         if args:
             exec_args["arg"] = args
-        return self.qmp_client.command("guest-exec", **exec_args)
+        return qga.command("guest-exec", **exec_args)
 
     def guest_exec_status(self, pid: int) -> dict:
         """
@@ -197,14 +217,15 @@ class QemuVmClient:
         :param pid: The PID returned by guest_exec
         :return: Dict with 'exited', 'exitcode', 'out-data', 'err-data' keys
         """
-        return self.qmp_client.command("guest-exec-status", pid=pid)
+        qga = self._get_qga_client()
+        return qga.command("guest-exec-status", pid=pid)
 
     def reconfigure_guest_network(
         self,
         new_ip: str,
         gateway: str,
         nameservers: list[str],
-        interface: str = "ens3",
+        interface: str = "eth0",
     ) -> dict:
         """
         Reconfigure guest network via qemu-guest-agent after migration.
@@ -215,35 +236,31 @@ class QemuVmClient:
         :param new_ip: New IP address with CIDR notation (e.g., "10.0.0.5/24")
         :param gateway: Gateway IP address (e.g., "10.0.0.1")
         :param nameservers: List of DNS server IPs (e.g., ["8.8.8.8", "8.8.4.4"])
-        :param interface: Network interface name (default: "ens3")
+        :param interface: Network interface name (default: "eth0")
         :return: Dict with 'pid' key for the started process
         """
-        # Build nameservers YAML list
-        ns_yaml = "\n".join(f"        - {ns}" for ns in nameservers)
-
-        netplan_config = f"""network:
-  version: 2
-  ethernets:
-    {interface}:
-      addresses: [{new_ip}]
-      routes:
-        - to: default
-          via: {gateway}
-      nameservers:
-        addresses:
-{ns_yaml}
-"""
+        network_config = {
+            "network": {
+                "version": 2,
+                "ethernets": {
+                    interface: {
+                        "addresses": [new_ip],
+                        "routes": [{"to": "default", "via": gateway}],
+                        "nameservers": {"addresses": nameservers},
+                    },
+                },
+            },
+        }
+        netplan_yaml = yaml.safe_dump(network_config, default_flow_style=False, sort_keys=False)
 
         # Create a script that writes the netplan config and applies it
         # Use base64 encoding to avoid escaping issues
-        import base64
-
-        config_b64 = base64.b64encode(netplan_config.encode()).decode()
+        config_b64 = base64.b64encode(netplan_yaml.encode()).decode()
 
         script = f"""
-echo '{config_b64}' | base64 -d > /etc/netplan/50-cloud-init.yaml
-netplan apply
-"""
+        echo '{config_b64}' | base64 -d > /etc/netplan/50-cloud-init.yaml
+        netplan apply
+        """
 
         return self.guest_exec("/bin/bash", ["-c", script])
 
@@ -254,11 +271,12 @@ netplan apply
         :param timeout_seconds: Maximum time to wait
         :return: True if agent is available, False if timeout
         """
+        qga = self._get_qga_client()
         start_time = time.monotonic()
         while time.monotonic() - start_time < timeout_seconds:
             try:
                 # Try to ping the guest agent
-                self.qmp_client.command("guest-ping")
+                qga.command("guest-ping")
                 return True
             except Exception:
                 time.sleep(1)
