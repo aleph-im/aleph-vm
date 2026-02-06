@@ -91,7 +91,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         logger.debug(f"Making Qemu configuration: {self}")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
 
-        cloud_init_drive = await self._create_cloud_init_drive()
+        cloud_init_drive = await self._create_cloud_init_drive(install_guest_agent=False)
 
         image_path = str(self.resources.rootfs_path)
         firmware_path = str(self.resources.firmware_path)
