@@ -34,11 +34,13 @@ class QemuVMConfiguration(BaseModel):
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
+    incoming_migration_port: int | None = None  # Port for incoming migration mode
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
@@ -47,6 +49,7 @@ class QemuConfidentialVMConfiguration(BaseModel):
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str | None = None
@@ -71,9 +74,30 @@ class Configuration(BaseModel):
     hypervisor: HypervisorType = HypervisorType.firecracker
 
 
+def get_controller_configuration_path(vm_hash: str) -> Path:
+    """Get the path to the controller configuration file for a VM."""
+    return Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
+
+
+def load_controller_configuration(vm_hash: str) -> Configuration | None:
+    """Load VM configuration from the controller service configuration file.
+
+    :param vm_hash: The VM hash identifying the configuration file
+    :return: The Configuration object, or None if the file doesn't exist
+    """
+    config_file_path = get_controller_configuration_path(vm_hash)
+
+    if not config_file_path.exists():
+        logger.warning(f"Controller configuration file not found for {vm_hash}")
+        return None
+
+    with config_file_path.open("r") as f:
+        return Configuration.model_validate_json(f.read())
+
+
 def save_controller_configuration(vm_hash: str, configuration: Configuration) -> Path:
     """Save VM configuration to be used by the controller service"""
-    config_file_path = Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-controller.json")
+    config_file_path = get_controller_configuration_path(vm_hash)
     with config_file_path.open("w") as controller_config_file:
         controller_config_file.write(
             configuration.model_dump_json(

@@ -83,13 +83,15 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     async def setup(self):
         pass
 
-    async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+    async def configure(self, incoming_migration_port: int | None = None):
+        """Configure the VM by saving controller service configuration.
 
-        logger.debug(f"Making  Qemu configuration: {self} ")
+        Note: incoming_migration_port is ignored for confidential VMs as they don't support live migration.
+        """
+        logger.debug(f"Making Qemu configuration: {self}")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
 
-        cloud_init_drive = await self._create_cloud_init_drive()
+        cloud_init_drive = await self._create_cloud_init_drive(install_guest_agent=False)
 
         image_path = str(self.resources.rootfs_path)
         firmware_path = str(self.resources.firmware_path)
