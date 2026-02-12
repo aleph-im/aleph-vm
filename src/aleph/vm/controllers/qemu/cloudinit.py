@@ -52,7 +52,7 @@ def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> by
             [
                 "sed",
                 "-i",
-                "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 pci=realloc=off pci=noaer\"/",
+                's/^GRUB_CMDLINE_LINUX_DEFAULT="\\(.*\\)"/GRUB_CMDLINE_LINUX_DEFAULT="\\1 pci=realloc=off pci=noaer"/',
                 "/etc/default/grub",
             ],
             # Update GRUB for Debian/Ubuntu systems
