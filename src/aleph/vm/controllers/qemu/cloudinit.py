@@ -32,15 +32,39 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
     return base64.b32encode(item_hash_binary).decode().strip("=").lower()
 
 
-def encode_user_data(hostname, ssh_authorized_keys) -> bytes:
+def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> bytes:
     """Creates user data configuration file for cloud-init tool"""
-    config: dict[str, str | bool | list[str]] = {
+    config: dict[str, str | bool | list[str] | list[list[str]]] = {
         "hostname": hostname,
         "disable_root": False,
         "ssh_pwauth": False,
         "ssh_authorized_keys": ssh_authorized_keys,
         "resize_rootfs": True,
     }
+
+    # Add kernel boot parameters for GPU instances to speed up PCI enumeration
+    # This significantly reduces boot time when large GPU BARs (Resizable BAR) are present
+    if has_gpu:
+        config["bootcmd"] = [
+            # Update GRUB configuration to add PCI optimization parameters
+            # pci=realloc=off: Skip PCI resource reallocation during boot
+            # pci=noaer: Disable Advanced Error Reporting to reduce probing overhead
+            [
+                "sed",
+                "-i",
+                's/^GRUB_CMDLINE_LINUX_DEFAULT="\\(.*\\)"/GRUB_CMDLINE_LINUX_DEFAULT="\\1 pci=realloc=off pci=noaer"/',
+                "/etc/default/grub",
+            ],
+            # Update GRUB for Debian/Ubuntu systems
+            ["sh", "-c", "command -v update-grub >/dev/null 2>&1 && update-grub || true"],
+            # Update GRUB for RHEL/CentOS systems
+            [
+                "sh",
+                "-c",
+                "command -v grub2-mkconfig >/dev/null 2>&1 && grub2-mkconfig -o /boot/grub2/grub.cfg || true",
+            ],
+        ]
+
     cloud_config_header = "#cloud-config\n"
     config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
     content = (cloud_config_header + config_output).encode()
@@ -82,14 +106,23 @@ def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
 
 
 async def create_cloud_init_drive_image(
-    disk_image_path, hostname, vm_id, ip, ipv6, ipv6_gateway, nameservers, route, ssh_authorized_keys
+    disk_image_path,
+    hostname,
+    vm_id,
+    ip,
+    ipv6,
+    ipv6_gateway,
+    nameservers,
+    route,
+    ssh_authorized_keys,
+    has_gpu: bool = False,
 ):
     with (
         NamedTemporaryFile() as user_data_config_file,
         NamedTemporaryFile() as network_config_file,
         NamedTemporaryFile() as metadata_config_file,
     ):
-        user_data = encode_user_data(hostname, ssh_authorized_keys)
+        user_data = encode_user_data(hostname, ssh_authorized_keys, has_gpu=has_gpu)
         user_data_config_file.write(user_data)
         user_data_config_file.flush()
         network_config = create_network_file(ip, ipv6, ipv6_gateway, nameservers, route)
@@ -128,6 +161,9 @@ class CloudInitMixin(AlephVmControllerInterface):
         disk_image_path: Path = settings.EXECUTION_ROOT / f"cloud-init-{self.vm_hash}.img"
         assert is_command_available("cloud-localds")
 
+        # Check if this VM has GPUs to enable PCI boot optimizations
+        has_gpu = bool(self.resources.gpus) if hasattr(self.resources, "gpus") else False
+
         await create_cloud_init_drive_image(
             disk_image_path,
             hostname,
@@ -138,6 +174,7 @@ class CloudInitMixin(AlephVmControllerInterface):
             nameservers,
             route,
             ssh_authorized_keys,
+            has_gpu=has_gpu,
         )
 
         return Drive(
