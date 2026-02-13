@@ -506,8 +506,8 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
 
 @cors_allow_all
 @require_jwk_authentication
-async def operate_restart(request: web.Request, authenticated_sender: str) -> web.Response:
-    """Reset a virtual machine to its initial state.
+async def operate_reinstall(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Reinstall a virtual machine to its initial state.
 
     Stops the VM, deletes all non-readonly volumes (user data), and starts it fresh.
     The VM will boot as if it was first created.
@@ -520,7 +520,7 @@ async def operate_restart(request: web.Request, authenticated_sender: str) -> we
         if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Restarting (reset to initial state) {execution.vm_hash}")
+        logger.info(f"Reinstalling (reset to initial state) {execution.vm_hash}")
 
         # Stop the VM
         await pool.stop_vm(execution.vm_hash)
@@ -533,4 +533,4 @@ async def operate_restart(request: web.Request, authenticated_sender: str) -> we
         # Start the VM again from scratch
         await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
 
-        return web.Response(status=200, body=f"Restarted VM with ref {vm_hash}")
+        return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")

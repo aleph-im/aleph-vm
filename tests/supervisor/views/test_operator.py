@@ -790,8 +790,8 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
-async def test_operator_restart(aiohttp_client, mocker):
-    """Test that the restart endpoint erases volumes and restarts the VM"""
+async def test_operator_reinstall(aiohttp_client, mocker):
+    """Test that the reinstall endpoint erases volumes and reinstalls the VM"""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.setup()
 
@@ -832,11 +832,11 @@ async def test_operator_restart(aiohttp_client, mocker):
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
-        f"/control/machine/{vm_hash}/restart",
+        f"/control/machine/{vm_hash}/reinstall",
     )
 
     assert response.status == 200
-    assert await response.text() == f"Restarted VM with ref {vm_hash}"
+    assert await response.text() == f"Reinstalled VM with ref {vm_hash}"
     # VM was stopped
     assert fake_vm_pool.stop_vm.call_count == 1
     # VM was forgotten
@@ -844,17 +844,14 @@ async def test_operator_restart(aiohttp_client, mocker):
     # Non-readonly volume was deleted
     assert fake_volume.path_on_host.unlink.call_count == 1
     # Readonly volume was NOT deleted
-    assert (
-        not hasattr(fake_readonly_volume.path_on_host, "unlink")
-        or fake_readonly_volume.path_on_host.unlink.call_count == 0
-    )
+    assert fake_readonly_volume.path_on_host.unlink.call_count == 0
     # VM was started again
     mock_create_vm.assert_called_once_with(vm_hash=vm_hash, pool=fake_vm_pool)
 
 
 @pytest.mark.asyncio
-async def test_operator_restart_unauthorized(aiohttp_client, mocker):
-    """Test that restart endpoint requires authorization"""
+async def test_operator_reinstall_unauthorized(aiohttp_client, mocker):
+    """Test that reinstall endpoint requires authorization"""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.setup()
 
@@ -884,7 +881,7 @@ async def test_operator_restart_unauthorized(aiohttp_client, mocker):
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
-        f"/control/machine/{vm_hash}/restart",
+        f"/control/machine/{vm_hash}/reinstall",
     )
 
     assert response.status == 403
