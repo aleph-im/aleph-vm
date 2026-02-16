@@ -61,14 +61,22 @@ class Interface(str, Enum):
     executable = "executable"
 
     @classmethod
-    def from_entrypoint(cls, entrypoint: str, interface_hint: str | None = None):
+    def from_entrypoint(cls, entrypoint: str, interface_hint: Interface | None = None):
         """Determine the interface type (Python ASGI or executable HTTP service) from the entrypoint of the program.
         
         If an explicit interface_hint is provided (from the message's code.interface field), it takes precedence.
         Otherwise, we use the presence of ':' in the entrypoint to differentiate between Python ASGI and executable.
         """
+        # Map aleph-message interface values to our enum values.
+        # aleph-message uses "binary" while our enum uses "executable".
+        _INTERFACE_MAP = {
+            "binary": cls.executable,
+        }
+
         # If an explicit interface is specified in the message, use it
-        if interface_hint:
+        if interface_hint is not None:
+            if interface_hint in _INTERFACE_MAP:
+                return _INTERFACE_MAP[interface_hint]
             try:
                 return cls(interface_hint)
             except ValueError:
@@ -198,7 +206,7 @@ class AlephProgramResources(AlephFirecrackerResources):
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint
         # Get explicit interface if specified in the message
-        self.code_interface = getattr(message_content.code, 'interface', None)
+        self.code_interface = message_content.code.interface
 
     async def download_code(self) -> None:
         code_ref: str = self.message_content.code.ref
