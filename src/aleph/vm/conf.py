@@ -246,6 +246,23 @@ class Settings(BaseSettings):
         description="Buffer to add to the required payment to prevent floating point errors",
     )
 
+    CACHE_TTL_SECURITY_AGGREGATE: float = Field(
+        default=120.0,
+        description="TTL in seconds for cached security aggregates (delegation checks)",
+    )
+    CACHE_TTL_EXECUTION_PRICE: float = Field(
+        default=300.0,
+        description="TTL in seconds for cached execution prices",
+    )
+    CACHE_TTL_ADDRESS_BALANCE: float = Field(
+        default=30.0,
+        description="TTL in seconds for cached address balances",
+    )
+    CACHE_TTL_MESSAGE_STATUS: float = Field(
+        default=30.0,
+        description="TTL in seconds for cached message statuses",
+    )
+
     SNAPSHOT_FREQUENCY: int = Field(
         default=0,
         description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes. "

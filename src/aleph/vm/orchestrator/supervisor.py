@@ -222,6 +222,10 @@ def run():
             app.on_cleanup.append(stop_balances_monitoring_task)
             app.on_cleanup.append(stop_all_vms)
 
+        from aleph.vm.orchestrator.http import close_session
+
+        app.on_cleanup.append(close_session)
+
         logger.info("Loading existing executions ...")
         asyncio.run(pool.load_persistent_executions())
 

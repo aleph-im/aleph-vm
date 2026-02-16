@@ -58,51 +58,54 @@ async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8)
 
 async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
     logger.debug("subscribe_via_ws()")
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            logger.debug(f"Websocket connected on {url}")
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                    except json.JSONDecodeError:
-                        logger.error(
-                            f"Invalid JSON from websocket subscription {msg.data}",
-                            exc_info=True,
-                        )
+    from aleph.vm.orchestrator.http import get_session
 
-                    # Chain confirmation messages are published in the WS subscription
-                    # but do not contain the fields "item_type" or "content, hence they
-                    # are not valid Messages.
-                    if "item_type" not in data:
-                        assert "content" not in data
-                        assert "confirmation" in data
-                        logger.info(f"Ignoring confirmation message '{data['item_hash']}'")
-                        continue
+    session = get_session()
+    async with session.ws_connect(url) as ws:
+        logger.debug(f"Websocket connected on {url}")
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    logger.error(
+                        f"Invalid JSON from websocket subscription {msg.data}",
+                        exc_info=True,
+                    )
+                    continue
 
-                    try:
-                        yield parse_message(data)
-                    except pydantic.ValidationError as error:
-                        item_hash = data.get("item_hash", "ITEM_HASH_NOT_FOUND")
-                        logger.warning(
-                            f"Invalid Aleph message: {item_hash} \n  {error.errors}",
-                            exc_info=False,
-                        )
-                        continue
-                    except KeyError:
-                        logger.exception(
-                            f"Invalid Aleph message could not be parsed '{data}'",
-                            exc_info=True,
-                        )
-                        continue
-                    except Exception:
-                        logger.exception(
-                            f"Unknown error when parsing Aleph message {data}",
-                            exc_info=True,
-                        )
-                        continue
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    break
+                # Chain confirmation messages are published in the WS subscription
+                # but do not contain the fields "item_type" or "content, hence they
+                # are not valid Messages.
+                if "item_type" not in data:
+                    assert "content" not in data
+                    assert "confirmation" in data
+                    logger.info(f"Ignoring confirmation message '{data['item_hash']}'")
+                    continue
+
+                try:
+                    yield parse_message(data)
+                except pydantic.ValidationError as error:
+                    item_hash = data.get("item_hash", "ITEM_HASH_NOT_FOUND")
+                    logger.warning(
+                        f"Invalid Aleph message: {item_hash} \n  {error.errors}",
+                        exc_info=False,
+                    )
+                    continue
+                except KeyError:
+                    logger.exception(
+                        f"Invalid Aleph message could not be parsed '{data}'",
+                        exc_info=True,
+                    )
+                    continue
+                except Exception:
+                    logger.exception(
+                        f"Unknown error when parsing Aleph message {data}",
+                        exc_info=True,
+                    )
+                    continue
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                break
 
 
 async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
