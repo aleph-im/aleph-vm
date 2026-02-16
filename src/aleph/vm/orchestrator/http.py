@@ -13,7 +13,7 @@ from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
-_session: aiohttp.ClientSession | None = None
+_session: "RetrySession | None" = None
 
 MAX_RETRIES = 3
 
@@ -57,7 +57,8 @@ async def _request_with_retry(
 
         delay = _parse_retry_delay(resp)
         logger.warning(
-            "Rate limited (429) on %s %s, retrying in %.3fs " "(attempt %d/%d)",
+            "Rate limited (429) on %s %s, retrying in %.3fs "
+            "(attempt %d/%d)",
             method,
             url,
             delay,
@@ -67,7 +68,12 @@ async def _request_with_retry(
         resp.release()
         await asyncio.sleep(delay)
 
-    return resp
+    raise aiohttp.ClientResponseError(
+        request_info=resp.request_info,
+        history=resp.history,
+        status=429,
+        message=f"Rate limited after {MAX_RETRIES} retries on {method} {url}",
+    )
 
 
 class RetrySession:
@@ -101,8 +107,8 @@ def get_session() -> RetrySession:
     """
     global _session  # noqa: PLW0603
     if _session is None or _session.closed:
-        _session = aiohttp.ClientSession()
-    return RetrySession(_session)
+        _session = RetrySession(aiohttp.ClientSession())
+    return _session
 
 
 async def close_session(app: web.Application) -> None:
