@@ -57,8 +57,7 @@ async def _request_with_retry(
 
         delay = _parse_retry_delay(resp)
         logger.warning(
-            "Rate limited (429) on %s %s, retrying in %.3fs "
-            "(attempt %d/%d)",
+            "Rate limited (429) on %s %s, retrying in %.3fs " "(attempt %d/%d)",
             method,
             url,
             delay,
