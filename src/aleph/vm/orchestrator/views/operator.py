@@ -17,7 +17,9 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
+from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
+from aleph.vm.orchestrator.http import get_session
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
@@ -32,6 +34,8 @@ from aleph.vm.utils import (
 from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
+
+_security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
 
 
 def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
@@ -56,56 +60,45 @@ def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
 
 
 async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
+    """Check if the authenticated sender has delegation permissions from the message owner.
+
+    Fetches the security aggregate for the message address (cached) and checks
+    if the authenticated_sender is listed in the delegations.
     """
-    Check if the authenticated sender has delegation permissions from the message owner.
+    cache_key = message.address.lower()
+    security_data = _security_aggregate_cache.get(cache_key)
 
-    Fetches the security aggregate for the message address and checks if the authenticated_sender
-    is listed in the delegations.
-
-    Args:
-        authenticated_sender: The address of the authenticated user
-        message: The message containing the owner address
-
-    Returns:
-        True if the authenticated_sender has delegation permissions, False otherwise
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
+    if security_data is None:
+        try:
+            session = get_session()
             url = f"{settings.API_SERVER}/api/v0/aggregates/{message.address}.json?keys=security"
             logger.debug(f"Fetching security aggregate from {url}")
             resp = await session.get(url)
-
-            # Raise an error if the request failed
             resp.raise_for_status()
 
             resp_data = await resp.json()
             security_data = resp_data.get("data", {}).get("security", {})
-
-            # Check if authenticated_sender is in the delegations list
-            delegations = security_data.get("authorizations", [])
-
-            # Check if the authenticated_sender is authorized
-            for delegation in delegations:
-                if not isinstance(delegation, dict):
-                    continue
-
-                delegated_message_types = delegation.get("types", [])
-
-                if len(delegated_message_types) > 0 and MessageType.instance not in delegated_message_types:
-                    continue
-
-                authorized_address = delegation.get("address", "")
-
-                if authorized_address.lower() == authenticated_sender.lower():
-                    logger.debug(f"Found delegation for {authenticated_sender} from {message.address}")
-                    return True
-
-            logger.debug(f"No delegation found for {authenticated_sender} from {message.address}")
+            _security_aggregate_cache.set(cache_key, security_data)
+        except Exception:
+            logger.warning("Failed to fetch security aggregate", exc_info=True)
             return False
 
-    except Exception as error:
-        logger.warning(f"Failed to check owner permissions: {error}")
-        return False
+    delegations = security_data.get("authorizations", [])
+    for delegation in delegations:
+        if not isinstance(delegation, dict):
+            continue
+
+        delegated_message_types = delegation.get("types", [])
+        if len(delegated_message_types) > 0 and MessageType.instance not in delegated_message_types:
+            continue
+
+        authorized_address = delegation.get("address", "")
+        if authorized_address.lower() == authenticated_sender.lower():
+            logger.debug(f"Found delegation for {authenticated_sender} from {message.address}")
+            return True
+
+    logger.debug(f"No delegation found for {authenticated_sender} from {message.address}")
+    return False
 
 
 async def is_sender_authorized(authenticated_sender: str, message: BaseExecutableContent) -> bool:

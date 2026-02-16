@@ -4,7 +4,6 @@ from collections.abc import Iterable
 from decimal import Decimal
 from typing import List
 
-import aiohttp
 from aleph_message.models import ItemHash, PaymentType
 from eth_typing import HexAddress
 from eth_utils import from_wei
@@ -12,40 +11,43 @@ from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.cache import AsyncTTLCache
+from aleph.vm.orchestrator.http import get_session
 from aleph.vm.utils import to_normalized_address
 
 from .chain import ChainInfo, InvalidChainError, get_chain
 
 logger = logging.getLogger(__name__)
 
+_balance_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_ADDRESS_BALANCE)
+_price_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_EXECUTION_PRICE)
+
 
 async def get_address_balance(address: str) -> dict:
+    """Get the balance of the user from the PyAleph API.
+
+    Results are cached for CACHE_TTL_ADDRESS_BALANCE seconds.
     """
-    Get the balance of the user from the PyAleph API.
+    cache_key = address.lower()
+    cached = _balance_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    API Endpoint:
-        GET /api/v0/addresses/{address}/balance
+    session = get_session()
+    url = f"{settings.API_SERVER}/api/v0/addresses/{address}/balance"
+    resp = await session.get(url)
 
-    For more details, see the PyAleph API documentation:
-    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
-    """
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/addresses/{address}/balance"
-        resp = await session.get(url)
-
-        # Consider the balance as null if the address is not found
-        if resp.status == 404:
-            return {}
-
-        # Raise an error if the request failed
+    if resp.status == 404:
+        result: dict = {}
+    else:
         resp.raise_for_status()
-        ret = await resp.json()
-        if not isinstance(ret, dict):
-            msg = f"get_address_blaance: Invalid response received from  {url}, should be dict"
+        result = await resp.json()
+        if not isinstance(result, dict):
+            msg = f"get_address_balance: Invalid response from {url}, should be dict"
             raise Exception(msg)
 
-        return ret
+    _balance_cache.set(cache_key, result)
+    return result
 
 
 async def fetch_balance_of_address(address: str) -> Decimal:
@@ -81,27 +83,34 @@ async def fetch_credit_balance_of_address(address: str) -> Decimal:
 async def fetch_execution_price(
     item_hash: ItemHash, allowed_payments: List[PaymentType], payment_type_required: bool = True
 ) -> Decimal:
-    """Fetch the credit price of an execution from the reference API server."""
-    async with aiohttp.ClientSession() as session:
+    """Fetch the credit price of an execution from the reference API server.
+
+    Results are cached for CACHE_TTL_EXECUTION_PRICE seconds.
+    """
+    cache_key = str(item_hash)
+    cached = _price_cache.get(cache_key)
+    if cached is not None:
+        required_cost, payment_type = cached
+    else:
+        session = get_session()
         url = f"{settings.API_SERVER}/api/v0/price/{item_hash}"
         resp = await session.get(url)
-        # Raise an error if the request failed
         resp.raise_for_status()
 
         resp_data = await resp.json()
-        required_cost: float = resp_data["cost"]
-        payment_type: str | None = resp_data["payment_type"]
+        required_cost = resp_data["cost"]
+        payment_type = resp_data["payment_type"]
+        _price_cache.set(cache_key, (required_cost, payment_type))
 
-        if payment_type_required and payment_type is None:
-            msg = "Payment type must be specified in the message"
-            raise ValueError(msg)
+    if payment_type_required and payment_type is None:
+        msg = "Payment type must be specified in the message"
+        raise ValueError(msg)
 
-        if payment_type:
-            if payment_type not in allowed_payments:
-                msg = f"Payment type {payment_type} is not supported"
-                raise ValueError(msg)
+    if payment_type and payment_type not in allowed_payments:
+        msg = f"Payment type {payment_type} is not supported"
+        raise ValueError(msg)
 
-        return Decimal(required_cost)
+    return Decimal(required_cost)
 
 
 class InvalidAddressError(ValueError):

@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
 from typing import Any, TypedDict
 
-import aiohttp
-
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.cache import AsyncTTLCache
+from aleph.vm.orchestrator.http import get_session
 
 logger = getLogger(__name__)
 
@@ -16,61 +16,41 @@ class AggregateSettingsDict(TypedDict):
     community_wallet_timestamp: int
 
 
-LAST_AGGREGATE_SETTINGS: AggregateSettingsDict | None = None
-LAST_AGGREGATE_SETTINGS_FETCHED_AT: datetime | None = None
-PRICE_PRECISION = 18  # Price precision
+PRICE_PRECISION = 18
+
+_settings_cache = AsyncTTLCache(ttl_seconds=60.0)
 
 
 async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
-    """
-    Get the settings Aggregate dict from the PyAleph API Aggregate.
+    """Fetch the settings aggregate from the PyAleph API."""
+    session = get_session()
+    url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=settings"
+    logger.info(f"Fetching settings aggregate from {url}")
+    resp = await session.get(url)
+    resp.raise_for_status()
 
-    API Endpoint:
-        GET /api/v0/aggregates/{address}.json?keys=settings
-
-    For more details, see the PyAleph API documentation:
-    https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
-    """
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=settings"
-        logger.info(f"Fetching settings aggregate from {url}")
-        resp = await session.get(url)
-
-        # Raise an error if the request failed
-        resp.raise_for_status()
-
-        resp_data = await resp.json()
-        return resp_data["data"]["settings"]
-
-
-async def update_aggregate_settings():
-    global LAST_AGGREGATE_SETTINGS  # noqa: PLW0603
-    global LAST_AGGREGATE_SETTINGS_FETCHED_AT  # noqa: PLW0603
-
-    if (
-        not LAST_AGGREGATE_SETTINGS
-        or LAST_AGGREGATE_SETTINGS_FETCHED_AT
-        and datetime.now(tz=timezone.utc) - LAST_AGGREGATE_SETTINGS_FETCHED_AT > timedelta(minutes=1)
-    ):
-        try:
-            aggregate = await fetch_aggregate_settings()
-            LAST_AGGREGATE_SETTINGS = aggregate
-            LAST_AGGREGATE_SETTINGS_FETCHED_AT = datetime.now(tz=timezone.utc)
-
-        except Exception:
-            logger.exception("Failed to fetch aggregate settings")
+    resp_data = await resp.json()
+    return resp_data["data"]["settings"]
 
 
 async def get_aggregate_settings() -> AggregateSettingsDict | None:
-    """The settings aggregate is a special aggregate  used to share some common settings for VM setup
+    """Return the settings aggregate, fetching and caching as needed."""
+    cached = _settings_cache.get("settings")
+    if cached is not None:
+        return cached
 
-    Ensure the cached version is up to date and return it"""
-    await update_aggregate_settings()
+    try:
+        aggregate = await fetch_aggregate_settings()
+        _settings_cache.set("settings", aggregate)
+        return aggregate
+    except Exception:
+        logger.exception("Failed to fetch aggregate settings")
+        return None
 
-    if not LAST_AGGREGATE_SETTINGS:
-        logger.error("No setting aggregate")
-    return LAST_AGGREGATE_SETTINGS
+
+async def update_aggregate_settings() -> None:
+    """Refresh the settings aggregate cache if stale."""
+    await get_aggregate_settings()
 
 
 async def get_community_wallet_address() -> str | None:
@@ -103,6 +83,8 @@ def format_cost(v: Decimal | str, p: int = PRICE_PRECISION) -> Decimal:
 
 
 def get_compatible_gpus() -> list[Any]:
-    if not LAST_AGGREGATE_SETTINGS:
+    """Return compatible GPUs from the cached settings aggregate."""
+    cached = _settings_cache.get("settings")
+    if not cached:
         return []
-    return LAST_AGGREGATE_SETTINGS["compatible_gpus"]
+    return cached["compatible_gpus"]
