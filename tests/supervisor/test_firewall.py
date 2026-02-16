@@ -950,9 +950,9 @@ def create_mock_execution(mocker, fake_instance_content):
 # Tests for check_port_redirect_exists()
 
 
-def test_check_port_redirect_exists_found(mocker):
+def test_check_port_redirect_exists_found():
     """Test that check_port_redirect_exists returns True when exact rule exists."""
-    mock_ruleset = [
+    ruleset = [
         {
             "rule": {
                 "family": "ip",
@@ -966,15 +966,14 @@ def test_check_port_redirect_exists_found(mocker):
             }
         }
     ]
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
     assert result is True
 
 
-def test_check_port_redirect_exists_not_found(mocker):
+def test_check_port_redirect_exists_not_found():
     """Test that check_port_redirect_exists returns False when rule doesn't exist."""
-    mock_ruleset = [
+    ruleset = [
         {
             "rule": {
                 "family": "ip",
@@ -987,16 +986,15 @@ def test_check_port_redirect_exists_not_found(mocker):
             }
         }
     ]
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
 
     # Different host port
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
     assert result is False
 
 
-def test_check_port_redirect_exists_wrong_vm_ip(mocker):
+def test_check_port_redirect_exists_wrong_vm_ip():
     """Test returns False when host_port matches but VM IP differs."""
-    mock_ruleset = [
+    ruleset = [
         {
             "rule": {
                 "family": "ip",
@@ -1009,15 +1007,14 @@ def test_check_port_redirect_exists_wrong_vm_ip(mocker):
             }
         }
     ]
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
     assert result is False
 
 
-def test_check_port_redirect_exists_wrong_protocol(mocker):
+def test_check_port_redirect_exists_wrong_protocol():
     """Test returns False when port matches but protocol differs."""
-    mock_ruleset = [
+    ruleset = [
         {
             "rule": {
                 "family": "ip",
@@ -1030,23 +1027,20 @@ def test_check_port_redirect_exists_wrong_protocol(mocker):
             }
         }
     ]
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
     assert result is False
 
 
-def test_check_port_redirect_exists_empty_ruleset(mocker):
+def test_check_port_redirect_exists_empty_ruleset():
     """Test returns False when ruleset is empty."""
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=[])
-
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=[])
     assert result is False
 
 
-def test_check_port_redirect_exists_wrong_chain(mocker):
+def test_check_port_redirect_exists_wrong_chain():
     """Test returns False when rule is in a different chain."""
-    mock_ruleset = [
+    ruleset = [
         {
             "rule": {
                 "family": "ip",
@@ -1059,9 +1053,8 @@ def test_check_port_redirect_exists_wrong_chain(mocker):
             }
         }
     ]
-    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
     assert result is False
 
 
@@ -1110,6 +1103,7 @@ async def test_recreate_port_redirect_rules_rule_exists(mocker, fake_instance_co
     execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
 
     # Mock: rule already exists
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=True)
     mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
     mocker.patch.object(execution, "save", new=mocker.AsyncMock())
@@ -1129,6 +1123,7 @@ async def test_recreate_port_redirect_rules_missing_port_available(mocker, fake_
     execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
 
     # Mock: rule doesn't exist, but port is available
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
     mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
@@ -1151,6 +1146,7 @@ async def test_recreate_port_redirect_rules_missing_port_unavailable(mocker, fak
     execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
 
     # Mock: rule doesn't exist AND port is not available
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
@@ -1195,13 +1191,14 @@ async def test_recreate_port_redirect_rules_multiple_ports(mocker, fake_instance
     }
 
     # Mock check_port_redirect_exists to return different values per call
-    def check_exists_side_effect(host_port, vm_ip, vm_port, protocol):
+    def check_exists_side_effect(host_port, vm_ip, vm_port, protocol, ruleset):
         return vm_port == 22  # Only port 22 rule exists
 
     # Mock is_host_port_available to return different values per port
     def port_available_side_effect(port):
         return port == 24001  # Only port 24001 is available
 
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", side_effect=check_exists_side_effect)
     mocker.patch("aleph.vm.models.is_host_port_available", side_effect=port_available_side_effect)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
@@ -1233,6 +1230,7 @@ async def test_recreate_port_redirect_rules_both_protocols(mocker, fake_instance
     execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": True}}
 
     # Mock: no rules exist, port is available
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
     mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
@@ -1257,6 +1255,7 @@ async def test_recreate_port_redirect_rules_both_protocols_port_unavailable(mock
     execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": True}}
 
     # Mock: no rules exist AND port is unavailable
+    mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)

@@ -781,10 +781,16 @@ def check_nftables_redirections(port: int) -> bool:
         return False
 
 
-def check_port_redirect_exists(host_port: int, vm_ip: str, vm_port: int, protocol: str = "tcp") -> bool:
+def check_port_redirect_exists(
+    host_port: int,
+    vm_ip: str,
+    vm_port: int,
+    protocol: str,
+    ruleset: list,
+) -> bool:
     """Check if a specific port redirect rule exists in nftables.
 
-    This function scans the nftables ruleset for a rule that:
+    This function scans the provided nftables ruleset for a rule that:
     - Matches on dport == host_port
     - Has DNAT to vm_ip:vm_port
     - Uses the specified protocol
@@ -794,6 +800,7 @@ def check_port_redirect_exists(host_port: int, vm_ip: str, vm_port: int, protoco
         vm_ip: The VM IP address the traffic should be redirected to
         vm_port: The VM port the traffic should be redirected to
         protocol: The protocol (tcp or udp)
+        ruleset: Pre-fetched nftables ruleset from get_existing_nftables_ruleset().
 
     Returns:
         True if the exact redirect rule exists
@@ -801,7 +808,7 @@ def check_port_redirect_exists(host_port: int, vm_ip: str, vm_port: int, protoco
     try:
         chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
 
-        for item in get_existing_nftables_ruleset():
+        for item in ruleset:
             if not isinstance(item, dict) or "rule" not in item:
                 continue
 

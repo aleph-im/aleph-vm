@@ -33,6 +33,7 @@ from aleph.vm.controllers.qemu_confidential.instance import (
 from aleph.vm.network.firewall import (
     add_port_redirect_rule,
     check_port_redirect_exists,
+    get_existing_nftables_ruleset,
     remove_port_redirect_rule,
 )
 from aleph.vm.network.interfaces import TapInterface
@@ -188,6 +189,7 @@ class VmExecution:
         interface = self.vm.tap_interface
         vm_ip = str(interface.guest_ip.ip)
         port_changed = False
+        ruleset = get_existing_nftables_ruleset()
 
         for vm_port, mapping in list(self.mapped_ports.items()):
             host_port = int(mapping["host"])
@@ -198,7 +200,7 @@ class VmExecution:
                 if not mapping.get(protocol):
                     continue
 
-                if check_port_redirect_exists(host_port, vm_ip, vm_port, protocol):
+                if check_port_redirect_exists(host_port, vm_ip, vm_port, protocol, ruleset):
                     logger.debug(
                         "Port redirect rule already exists for %s:%d -> vm:%d, skipping", protocol, host_port, vm_port
                     )
