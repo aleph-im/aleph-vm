@@ -1,13 +1,17 @@
 import asyncio
 import copy
 
-from aiohttp import ClientConnectorError, ClientResponseError, ClientSession
+from aiohttp import ClientConnectorError, ClientResponseError
 from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph_message.models import ExecutableMessage, ItemHash, MessageType
 from aleph_message.status import MessageStatus
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.cache import AsyncTTLCache
+from aleph.vm.orchestrator.http import get_session
 from aleph.vm.storage import get_latest_amend, get_message
+
+_message_status_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_MESSAGE_STATUS)
 
 
 async def try_get_message(ref: str) -> ExecutableMessage:
@@ -74,16 +78,22 @@ async def load_updated_message(
 
 
 async def get_message_status(item_hash: ItemHash) -> MessageStatus:
-    """
-    Fetch the status of an execution from the reference API server.
-    We use a normal API call to the CCN instead to use the connector because we want to get the updated status of the
-    message and bypass the messages cache.
-    """
-    async with ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/messages/{item_hash}"
-        resp = await session.get(url)
-        # Raise an error if the request failed
-        resp.raise_for_status()
+    """Fetch the status of an execution from the reference API server.
 
-        resp_data = await resp.json()
-        return resp_data["status"]
+    Uses a direct API call to the CCN to bypass the connector's message
+    cache. Results are cached for CACHE_TTL_MESSAGE_STATUS seconds.
+    """
+    cache_key = str(item_hash)
+    cached = _message_status_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    session = get_session()
+    url = f"{settings.API_SERVER}/api/v0/messages/{item_hash}"
+    resp = await session.get(url)
+    resp.raise_for_status()
+
+    resp_data = await resp.json()
+    status = resp_data["status"]
+    _message_status_cache.set(cache_key, status)
+    return status

@@ -246,6 +246,23 @@ class Settings(BaseSettings):
         description="Buffer to add to the required payment to prevent floating point errors",
     )
 
+    CACHE_TTL_SECURITY_AGGREGATE: float = Field(
+        default=120.0,
+        description="TTL in seconds for cached security aggregates (delegation checks)",
+    )
+    CACHE_TTL_EXECUTION_PRICE: float = Field(
+        default=300.0,
+        description="TTL in seconds for cached execution prices",
+    )
+    CACHE_TTL_ADDRESS_BALANCE: float = Field(
+        default=30.0,
+        description="TTL in seconds for cached address balances",
+    )
+    CACHE_TTL_MESSAGE_STATUS: float = Field(
+        default=30.0,
+        description="TTL in seconds for cached message statuses",
+    )
+
     SNAPSHOT_FREQUENCY: int = Field(
         default=0,
         description="Snapshot frequency interval in minutes. It will create a VM snapshot every X minutes. "
@@ -464,17 +481,38 @@ class Settings(BaseSettings):
                 network_interface=self.NETWORK_INTERFACE,
             )
 
-        if not self.DNS_NAMESERVERS_IPV4:
-            self.DNS_NAMESERVERS_IPV4 = []
-        if not self.DNS_NAMESERVERS_IPV6:
-            self.DNS_NAMESERVERS_IPV6 = []
-        if self.DNS_NAMESERVERS:
-            for server in self.DNS_NAMESERVERS:
-                ip_addr = ipaddress.ip_address(server)
-                if isinstance(ip_addr, ipaddress.IPv4Address):
-                    self.DNS_NAMESERVERS_IPV4.append(server)
-                if isinstance(ip_addr, ipaddress.IPv6Address):
-                    self.DNS_NAMESERVERS_IPV6.append(server)
+        # Auto-populate IPv4/IPv6 DNS lists from DNS_NAMESERVERS if not explicitly set,
+        # or validate/filter user-provided lists to ensure correct address types.
+        # This prevents IPv6 addresses from appearing in the IPv4 list and vice versa.
+        if self.DNS_NAMESERVERS_IPV4 is None:
+            # Auto-populate from DNS_NAMESERVERS, filtering IPv4 only
+            self.DNS_NAMESERVERS_IPV4 = [
+                server
+                for server in (self.DNS_NAMESERVERS or [])
+                if isinstance(ipaddress.ip_address(server), ipaddress.IPv4Address)
+            ]
+        else:
+            # Validate user-provided list: filter out any non-IPv4 addresses
+            self.DNS_NAMESERVERS_IPV4 = [
+                server
+                for server in self.DNS_NAMESERVERS_IPV4
+                if isinstance(ipaddress.ip_address(server), ipaddress.IPv4Address)
+            ]
+
+        if self.DNS_NAMESERVERS_IPV6 is None:
+            # Auto-populate from DNS_NAMESERVERS, filtering IPv6 only
+            self.DNS_NAMESERVERS_IPV6 = [
+                server
+                for server in (self.DNS_NAMESERVERS or [])
+                if isinstance(ipaddress.ip_address(server), ipaddress.IPv6Address)
+            ]
+        else:
+            # Validate user-provided list: filter out any non-IPv6 addresses
+            self.DNS_NAMESERVERS_IPV6 = [
+                server
+                for server in self.DNS_NAMESERVERS_IPV6
+                if isinstance(ipaddress.ip_address(server), ipaddress.IPv6Address)
+            ]
 
         if not settings.ENABLE_QEMU_SUPPORT:
             # If QEmu is not supported, ignore the setting and use Firecracker by default

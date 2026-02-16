@@ -14,6 +14,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
 from aleph.vm.storage import get_message
 from aleph.vm.utils.logs import EntryDict
 from aleph.vm.utils.test_helpers import (
@@ -23,6 +24,14 @@ from aleph.vm.utils.test_helpers import (
 
 # Ensure this is not removed by ruff
 assert patch_datetime_now
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    """Clear all API response caches between tests."""
+    _security_aggregate_cache.clear()
+    yield
+    _security_aggregate_cache.clear()
 
 
 @pytest.mark.asyncio
@@ -578,10 +587,7 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -640,10 +646,7 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -704,10 +707,7 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = mocker.Mock()
@@ -773,10 +773,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -821,10 +818,7 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -881,10 +875,7 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -942,10 +933,7 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -988,10 +976,7 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
@@ -1048,10 +1033,7 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mock_session.__aenter__ = mocker.AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = mocker.AsyncMock()
-
-    mocker.patch("aiohttp.ClientSession", return_value=mock_session)
+    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     client: TestClient = await aiohttp_client(app)
