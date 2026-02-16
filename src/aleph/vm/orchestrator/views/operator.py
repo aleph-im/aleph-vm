@@ -44,7 +44,7 @@ def _erase_execution_volumes(execution: VmExecution) -> int:
         for volume in execution.resources.volumes:
             if not volume.read_only:
                 logger.info(f"Deleting volume {volume.path_on_host}")
-                volume.path_on_host.unlink()
+                volume.path_on_host.unlink(missing_ok=True)
                 deleted_count += 1
     return deleted_count
 
