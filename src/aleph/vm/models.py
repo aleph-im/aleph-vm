@@ -136,6 +136,7 @@ class VmExecution:
         redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
         redirect_to_check = set(requested_ports.keys()).intersection(set(self.mapped_ports.keys()))
         interface = self.vm.tap_interface
+        changed = False
 
         for vm_port in redirect_to_remove:
             current = self.mapped_ports[vm_port]
@@ -144,6 +145,7 @@ class VmExecution:
                     host_port = int(current["host"])
                     remove_port_redirect_rule(interface, host_port, vm_port, protocol)
             del self.mapped_ports[int(vm_port)]
+            changed = True
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
             host_port = fast_get_available_host_port()
@@ -152,6 +154,7 @@ class VmExecution:
                 if target[protocol]:
                     add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
+            changed = True
 
         for vm_port in redirect_to_check:
             current = self.mapped_ports[vm_port]
@@ -163,10 +166,12 @@ class VmExecution:
                         add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+                    changed = True
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
-        # Save to DB
-        await self.save()
+        # Save to DB only if something changed
+        if changed:
+            await self.save()
 
     async def recreate_port_redirect_rules(self) -> None:
         """Recreate nftables port redirect rules from saved mapped_ports after restart.
