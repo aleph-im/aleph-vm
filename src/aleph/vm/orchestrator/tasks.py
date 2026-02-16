@@ -72,6 +72,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                         f"Invalid JSON from websocket subscription {msg.data}",
                         exc_info=True,
                     )
+                    continue
 
                 # Chain confirmation messages are published in the WS subscription
                 # but do not contain the fields "item_type" or "content, hence they
