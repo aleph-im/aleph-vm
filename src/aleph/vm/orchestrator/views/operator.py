@@ -38,6 +38,21 @@ logger = logging.getLogger(__name__)
 _security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
 
 
+def _erase_execution_volumes(execution: VmExecution) -> int:
+    """Delete all non-readonly volumes from an execution.
+
+    Returns the number of volumes deleted.
+    """
+    deleted_count = 0
+    if execution.resources is not None:
+        for volume in execution.resources.volumes:
+            if not volume.read_only:
+                logger.info(f"Deleting volume {volume.path_on_host}")
+                volume.path_on_host.unlink(missing_ok=True)
+                deleted_count += 1
+    return deleted_count
+
+
 def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
     try:
         ref = match_info["ref"]
@@ -477,10 +492,38 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
             pool.forget_vm(execution.vm_hash)
 
         # Delete all data
-        if execution.resources is not None:
-            for volume in execution.resources.volumes:
-                if not volume.read_only:
-                    logger.info(f"Deleting volume {volume.path_on_host}")
-                    volume.path_on_host.unlink()
+        _erase_execution_volumes(execution)
 
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_reinstall(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Reinstall a virtual machine to its initial state.
+
+    Stops the VM, deletes all non-readonly volumes (user data), and starts it fresh.
+    The VM will boot as if it was first created.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        logger.info(f"Reinstalling (reset to initial state) {execution.vm_hash}")
+
+        # Stop the VM
+        await pool.stop_vm(execution.vm_hash)
+        if execution.vm_hash in pool.executions:
+            pool.forget_vm(execution.vm_hash)
+
+        # Delete all data
+        _erase_execution_volumes(execution)
+
+        # Start the VM again from scratch
+        await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+
+        return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
