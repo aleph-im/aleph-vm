@@ -6,6 +6,36 @@ MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
 
 
+def is_host_port_available(port: int) -> bool:
+    """Check if a specific host port is available for binding (socket test only).
+
+    This function tests if a port can be bound on both TCP and UDP without
+    checking nftables rules. It's intended for use when recreating port
+    redirect rules after restart, where we only need to verify the port
+    isn't in use by another process.
+
+    Args:
+        port: The port number to check
+
+    Returns:
+        True if the port is available for binding on both TCP and UDP
+    """
+    try:
+        # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
+        # This is a short-lived probe (bind + close), not a listening service.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
+            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
+            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            udp_sock.bind(("0.0.0.0", port))  # noqa: S104
+
+        return True
+    except OSError:
+        return False
+
+
 def get_available_host_port(start_port: int | None = None) -> int:
     """Find an available port on the host system.
 
@@ -24,15 +54,15 @@ def get_available_host_port(start_port: int | None = None) -> int:
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
                 continue
-            # Try both TCP and UDP on all interfaces
+            # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
+            # This is a short-lived probe (bind + close), not a listening service.
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                tcp_sock.bind(("0.0.0.0", port))
-                tcp_sock.listen(1)
+                tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                udp_sock.bind(("0.0.0.0", port))
+                udp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             return port
 
