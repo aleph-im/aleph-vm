@@ -22,8 +22,11 @@ from aleph.vm.controllers.qemu.backup import (
     cleanup_expired_backups,
     create_backup_archive,
     create_qemu_disk_backup,
+    download_volume_by_ref,
     find_existing_backup,
     get_backup_directory,
+    get_qemu_disk_virtual_size,
+    restore_rootfs,
     verify_qemu_disk,
 )
 from aleph.vm.controllers.qemu.client import QemuVmClient
@@ -673,10 +676,13 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
                 for bak_path in individual_backups:
                     await verify_qemu_disk(bak_path)
 
+                source_sizes = {name: src.stat().st_size for name, src in disk_paths.items()}
+
                 tar_path = await create_backup_archive(
                     vm_hash=str(vm_hash),
                     backup_files=backup_files,
                     destination_dir=destination_dir,
+                    source_sizes=source_sizes,
                 )
 
                 for bak_path in individual_backups:
@@ -747,12 +753,20 @@ async def operate_backup_download(
         if sidecar.exists():
             checksum = sidecar.read_text().split()[0]
 
+        meta_file = tar_path.with_suffix(".tar.meta.json")
+        total_source_size = 0
+        if meta_file.exists():
+            stored = json.loads(meta_file.read_text())
+            total_source_size = sum(stored.get("source_sizes", {}).values())
+
         response = web.StreamResponse()
         response.headers["Content-Type"] = "application/x-tar"
         response.headers["Content-Disposition"] = f'attachment; filename="{backup_id}.tar"'
         response.headers["Content-Length"] = str(tar_path.stat().st_size)
         if checksum:
             response.headers["X-Backup-Checksum"] = f"sha256:{checksum}"
+        if total_source_size:
+            response.headers["X-Source-Size"] = str(total_source_size)
 
         await response.prepare(request)
 
@@ -792,8 +806,116 @@ async def operate_backup_delete(
             raise web.HTTPNotFound(body=f"Backup {backup_id} not found")
 
         tar_path.unlink()
-        sidecar = tar_path.with_suffix(".tar.sha256")
-        sidecar.unlink(missing_ok=True)
+        tar_path.with_suffix(".tar.sha256").unlink(missing_ok=True)
+        tar_path.with_suffix(".tar.meta.json").unlink(missing_ok=True)
 
         logger.info("Deleted backup %s for %s", backup_id, vm_hash)
         return web.Response(status=200, body=f"Deleted backup {backup_id}")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_restore(
+    request: web.Request,
+    authenticated_sender: str,
+) -> web.Response:
+    """Restore a VM's rootfs from an uploaded QCOW2 or a volume item hash.
+
+    Accepts either:
+    - Multipart upload with a ``rootfs`` file field (QCOW2).
+    - JSON body with ``{"volume_ref": "<item_hash>"}``.
+
+    Stops the VM, validates the new image, replaces rootfs, restarts.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    temp_file: Path | None = None
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        try:
+            pool: VmPool = request.app["vm_pool"]
+            execution = get_execution_or_404(vm_hash, pool=pool)
+
+            if not await is_sender_authorized(authenticated_sender, execution.message):
+                return web.Response(status=403, body="Unauthorized sender")
+
+            if not isinstance(execution.vm, (AlephQemuInstance, AlephQemuConfidentialInstance)):
+                return web.HTTPBadRequest(body="Restore only supported for QEMU VMs")
+
+            if not execution.vm.resources or not execution.vm.resources.rootfs_path:
+                return web.HTTPBadRequest(body="VM has no rootfs")
+
+            current_rootfs = Path(execution.vm.resources.rootfs_path)
+            backup_dir = get_backup_directory()
+
+            content_type = request.content_type or ""
+            if content_type.startswith("multipart/"):
+                reader = await request.multipart()
+                field = await reader.next()
+                while field is not None:
+                    if field.name == "rootfs":
+                        break
+                    field = await reader.next()
+                if field is None:
+                    return web.HTTPBadRequest(body="Missing 'rootfs' field in multipart upload")
+                temp_file = backup_dir / f"restore-{vm_hash}.qcow2"
+                with open(temp_file, "wb") as f:
+                    while True:
+                        chunk = await field.read_chunk(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            else:
+                try:
+                    data = await request.json()
+                except json.JSONDecodeError:
+                    return web.HTTPBadRequest(body="Expected multipart upload or JSON with volume_ref")
+                volume_ref = data.get("volume_ref", "")
+                if not volume_ref:
+                    return web.HTTPBadRequest(body="Missing volume_ref in JSON body")
+                temp_file = await download_volume_by_ref(
+                    volume_ref,
+                    backup_dir,
+                )
+
+            await verify_qemu_disk(temp_file)
+
+            new_size = await get_qemu_disk_virtual_size(temp_file)
+            current_size = await get_qemu_disk_virtual_size(current_rootfs)
+            if new_size > current_size:
+                return web.HTTPBadRequest(
+                    body=f"New rootfs virtual size ({new_size} bytes) exceeds "
+                    f"current rootfs ({current_size} bytes). "
+                    f"Restore cannot increase disk size.",
+                )
+
+            if execution.is_running:
+                logger.info("Stopping VM %s for restore", vm_hash)
+                await pool.stop_vm(execution.vm_hash)
+
+            old_backup = await restore_rootfs(temp_file, current_rootfs)
+
+            logger.info("Restarting VM %s after restore", vm_hash)
+            if execution.vm_hash in pool.executions:
+                pool.forget_vm(execution.vm_hash)
+            await create_vm_execution_or_raise_http_error(
+                vm_hash=vm_hash,
+                pool=pool,
+            )
+
+            return web.json_response(
+                {
+                    "status": "restored",
+                    "vm_hash": str(vm_hash),
+                    "old_rootfs_backup": str(old_backup),
+                },
+                dumps=dumps_for_json,
+            )
+
+        except web.HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to restore VM %s", vm_hash)
+            raise web.HTTPInternalServerError(body="Restore failed") from None
+        finally:
+            if temp_file and temp_file.exists():
+                temp_file.unlink(missing_ok=True)
