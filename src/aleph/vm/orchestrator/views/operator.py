@@ -17,9 +17,14 @@ from pydantic import BaseModel
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.backup import (
-    check_disk_space_for_backup,
+    backup_metadata,
+    check_disk_space_for_multiple,
+    cleanup_expired_backups,
+    create_backup_archive,
     create_qemu_disk_backup,
+    find_existing_backup,
     get_backup_directory,
+    verify_qemu_disk,
 )
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance
@@ -45,6 +50,9 @@ from aleph.vm.utils import (
 from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
+
+# Per-VM locks to prevent concurrent backups on the same VM.
+_backup_locks: dict[str, asyncio.Lock] = {}
 
 _security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
 
@@ -540,38 +548,37 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 
-async def operate_backup(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
-    """Create a QEMU VM disk backup and stream it to the client.
+async def operate_backup(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Create a QEMU VM disk backup (all disks) and return metadata.
 
-    This endpoint creates a compressed QCOW2 backup of a running QEMU VM's disk.
-    It uses the QEMU guest agent to freeze filesystems during backup creation
-    to ensure consistency.
+    Backs up rootfs + non-read-only persistent volumes into a single tar
+    archive.  Uses the QEMU guest agent to freeze filesystems during the
+    copy, then thaws immediately before running integrity verification.
 
-    The backup is streamed directly to the client via HTTP chunked encoding.
+    If a non-expired backup already exists for the VM it is returned
+    without re-freezing.
 
     Query Parameters:
-        skip_fsfreeze: Set to 'true' to skip filesystem freeze (not recommended).
+        skip_fsfreeze: Set to 'true' to skip filesystem freeze.
 
     Returns:
-        StreamResponse with the compressed QCOW2 backup file.
+        JSON with backup_id, size, checksum, volumes, expires_at.
 
     Raises:
         400: VM not running or not a QEMU VM.
         403: Unauthorized sender.
-        409: Guest agent not available (with option to skip fsfreeze).
+        409: Concurrent backup / guest agent unavailable.
         507: Insufficient disk space.
         500: Backup creation failed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
 
-    # Track resources for cleanup
-    backup_path: Path | None = None
     qemu_client: QemuVmClient | None = None
     fs_frozen = False
+    individual_backups: list[Path] = []
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            # 1. Validate VM
             pool: VmPool = request.app["vm_pool"]
             execution = get_execution_or_404(vm_hash, pool=pool)
 
@@ -581,122 +588,212 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
             if not execution.is_running:
                 return web.HTTPBadRequest(body="VM must be running to create backup")
 
-            # 2. Check VM type is QEMU
             if not isinstance(execution.vm, (AlephQemuInstance, AlephQemuConfidentialInstance)):
                 return web.HTTPBadRequest(body="Backup only supported for QEMU VMs")
 
             if not execution.vm.resources or not execution.vm.resources.rootfs_path:
                 return web.HTTPBadRequest(body="VM has no disk image")
 
-            # 3. Check disk space
-            source_disk_path = Path(execution.vm.resources.rootfs_path)
             destination_dir = get_backup_directory()
+            cleanup_expired_backups(destination_dir)
 
-            has_space, space_msg = check_disk_space_for_backup(source_disk_path, destination_dir)
-            if not has_space:
-                return web.Response(status=507, body=space_msg)
+            existing = find_existing_backup(destination_dir, str(vm_hash))
+            if existing:
+                return web.json_response(
+                    backup_metadata(existing),
+                    dumps=dumps_for_json,
+                )
 
-            # 4. Create QMP client
-            qemu_client = QemuVmClient(execution.vm)
+            lock = _backup_locks.setdefault(str(vm_hash), asyncio.Lock())
+            if lock.locked():
+                return web.Response(
+                    status=409,
+                    body="Backup already in progress for this VM",
+                )
 
-            # 5. Freeze filesystems (with timeout)
-            skip_fsfreeze = request.query.get("skip_fsfreeze") == "true"
+            async with lock:
+                disk_paths: dict[str, Path] = {
+                    "rootfs.qcow2": Path(execution.vm.resources.rootfs_path),
+                }
+                if execution.resources and execution.resources.volumes:
+                    for vol in execution.resources.volumes:
+                        if not vol.read_only:
+                            name = Path(vol.path_on_host).stem + ".qcow2"
+                            disk_paths[name] = vol.path_on_host
 
-            if not skip_fsfreeze:
+                has_space, space_msg = check_disk_space_for_multiple(
+                    list(disk_paths.values()),
+                    destination_dir,
+                )
+                if not has_space:
+                    return web.Response(status=507, body=space_msg)
+
+                qemu_client = QemuVmClient(execution.vm)
+
+                skip_fsfreeze = request.query.get("skip_fsfreeze") == "true"
+                if not skip_fsfreeze:
+                    try:
+                        frozen = await asyncio.wait_for(
+                            asyncio.to_thread(qemu_client.guest_fsfreeze_freeze),
+                            timeout=30,
+                        )
+                        fs_frozen = True
+                        logger.info("Froze %d filesystem(s) for %s", frozen, vm_hash)
+                    except asyncio.TimeoutError:
+                        raise web.HTTPRequestTimeout(
+                            body="Filesystem freeze timeout - guest agent not responding"
+                        ) from None
+                    except Exception as exc:
+                        logger.warning("fsfreeze failed for %s: %s", vm_hash, exc)
+                        return web.Response(
+                            status=409,
+                            body="QEMU guest agent not available. "
+                            "Add ?skip_fsfreeze=true to proceed without consistency guarantee.",
+                        )
+
+                backup_files: dict[str, Path] = {}
                 try:
-                    frozen_count = await asyncio.wait_for(
-                        asyncio.to_thread(qemu_client.guest_fsfreeze_freeze), timeout=30
-                    )
-                    fs_frozen = True
-                    logger.info(f"Froze {frozen_count} filesystem(s) for {vm_hash}")
-                except asyncio.TimeoutError:
-                    raise web.HTTPRequestTimeout(
-                        body="Filesystem freeze timeout - guest agent not responding"
-                    ) from None
-                except Exception as e:
-                    logger.warning(f"fsfreeze failed for {vm_hash}: {e}")
-                    return web.Response(
-                        status=409,
-                        body="QEMU guest agent not available. "
-                        "Add ?skip_fsfreeze=true to proceed without consistency guarantee.",
-                    )
+                    for member_name, src in disk_paths.items():
+                        bak = await create_qemu_disk_backup(
+                            vm_hash=str(vm_hash),
+                            source_disk_path=src,
+                            destination_dir=destination_dir,
+                        )
+                        individual_backups.append(bak)
+                        backup_files[member_name] = bak
+                finally:
+                    if fs_frozen and qemu_client:
+                        try:
+                            thawed = await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
+                            logger.info("Thawed %d filesystem(s) for %s", thawed, vm_hash)
+                            fs_frozen = False
+                        except Exception as exc:
+                            logger.error("Failed to thaw filesystems for %s: %s", vm_hash, exc)
 
-            # 6. Create backup
-            logger.info(f"Creating backup for {vm_hash}")
-            backup_path = await create_qemu_disk_backup(
-                vm_hash=str(vm_hash), source_disk_path=source_disk_path, destination_dir=destination_dir
-            )
+                for bak_path in individual_backups:
+                    await verify_qemu_disk(bak_path)
 
-            # 7. Thaw immediately after backup
-            if fs_frozen:
-                try:
-                    thawed_count = await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
-                    logger.info(f"Thawed {thawed_count} filesystem(s) for {vm_hash}")
-                    fs_frozen = False
-                except Exception as e:
-                    logger.error(f"Failed to thaw filesystems for {vm_hash}: {e}")
+                tar_path = await create_backup_archive(
+                    vm_hash=str(vm_hash),
+                    backup_files=backup_files,
+                    destination_dir=destination_dir,
+                )
 
-            # 8. Stream backup
-            if backup_path is None:
-                raise RuntimeError("Backup path is None after creation")
+                for bak_path in individual_backups:
+                    bak_path.unlink(missing_ok=True)
+                individual_backups.clear()
 
-            response = web.StreamResponse()
-            response.headers["Transfer-encoding"] = "chunked"
-            response.headers["Content-Type"] = "application/octet-stream"
-            response.headers["Content-Disposition"] = f'attachment; filename="{vm_hash}-backup.qcow2"'
-
-            backup_size = backup_path.stat().st_size
-            response.headers["X-Backup-Size"] = str(backup_size)
-
-            if execution.is_confidential:
-                response.headers["X-Backup-Warning"] = "Confidential VM: disk-only backup, memory state not included"
-
-            await response.prepare(request)
-
-            logger.info(f"Streaming backup for {vm_hash} ({backup_size} bytes)")
-
-            # Stream file in 64KB chunks
-            CHUNK_SIZE = 65536
-            bytes_sent = 0
-
-            with open(backup_path, "rb") as backup_file:
-                while True:
-                    chunk = backup_file.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    await response.write(chunk)
-                    bytes_sent += len(chunk)
-
-            await response.write_eof()
-
-            logger.info(f"Completed streaming backup for {vm_hash} ({bytes_sent} bytes)")
-
-            return response
+                return web.json_response(
+                    backup_metadata(tar_path),
+                    dumps=dumps_for_json,
+                )
 
         except web.HTTPException:
-            raise  # Re-raise HTTP exceptions
-        except Exception as e:
-            logger.exception(f"Failed to create backup for {vm_hash}")
-            raise web.HTTPInternalServerError(body="Backup creation failed") from e
+            raise
+        except Exception:
+            logger.exception("Failed to create backup for %s", vm_hash)
+            raise web.HTTPInternalServerError(body="Backup creation failed") from None
 
         finally:
-            # ALWAYS cleanup
             if fs_frozen and qemu_client:
                 try:
                     await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
-                    logger.info(f"Thawed filesystems for {vm_hash} (cleanup)")
-                except Exception as e:
-                    logger.error(f"Failed to thaw filesystems for {vm_hash} (cleanup): {e}")
-
+                    logger.info("Thawed filesystems for %s (cleanup)", vm_hash)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to thaw filesystems for %s (cleanup): %s",
+                        vm_hash,
+                        exc,
+                    )
             if qemu_client:
                 try:
                     qemu_client.close()
                 except Exception:
                     pass
+            for bak_path in individual_backups:
+                bak_path.unlink(missing_ok=True)
 
-            if backup_path and backup_path.exists():
-                try:
-                    backup_path.unlink()
-                    logger.debug(f"Deleted temporary backup {backup_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete backup {backup_path}: {e}")
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_backup_download(
+    request: web.Request,
+    authenticated_sender: str,
+) -> web.StreamResponse:
+    """Download a previously created backup archive.
+
+    Streams the tar file without re-freezing the VM.  The same backup
+    can be downloaded multiple times until it expires.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    backup_id = request.match_info.get("backup_id", "")
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        destination_dir = get_backup_directory()
+        cleanup_expired_backups(destination_dir)
+
+        tar_path = destination_dir / f"{backup_id}.tar"
+        if not tar_path.exists():
+            raise web.HTTPNotFound(body=f"Backup {backup_id} not found")
+
+        sidecar = tar_path.with_suffix(".tar.sha256")
+        checksum = ""
+        if sidecar.exists():
+            checksum = sidecar.read_text().split()[0]
+
+        response = web.StreamResponse()
+        response.headers["Content-Type"] = "application/x-tar"
+        response.headers["Content-Disposition"] = f'attachment; filename="{backup_id}.tar"'
+        response.headers["Content-Length"] = str(tar_path.stat().st_size)
+        if checksum:
+            response.headers["X-Backup-Checksum"] = f"sha256:{checksum}"
+
+        await response.prepare(request)
+
+        chunk_size = 65536
+        with open(tar_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                await response.write(chunk)
+
+        await response.write_eof()
+        return response
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_backup_delete(
+    request: web.Request,
+    authenticated_sender: str,
+) -> web.Response:
+    """Delete a backup archive and its checksum sidecar."""
+    vm_hash = get_itemhash_or_400(request.match_info)
+    backup_id = request.match_info.get("backup_id", "")
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        destination_dir = get_backup_directory()
+        tar_path = destination_dir / f"{backup_id}.tar"
+
+        if not tar_path.exists():
+            raise web.HTTPNotFound(body=f"Backup {backup_id} not found")
+
+        tar_path.unlink()
+        sidecar = tar_path.with_suffix(".tar.sha256")
+        sidecar.unlink(missing_ok=True)
+
+        logger.info("Deleted backup %s for %s", backup_id, vm_hash)
+        return web.Response(status=200, body=f"Deleted backup {backup_id}")
