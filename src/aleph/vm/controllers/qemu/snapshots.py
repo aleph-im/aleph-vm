@@ -30,8 +30,7 @@ def check_disk_space_for_snapshot(
         return True, ""
     return (
         False,
-        f"Insufficient disk space: {free} bytes available, "
-        f"{needed} bytes required",
+        f"Insufficient disk space: {free} bytes available, " f"{needed} bytes required",
     )
 
 
@@ -55,14 +54,18 @@ async def create_qemu_disk_snapshot(
 
     logger.info("Creating snapshot %s from %s", dest, source_disk_path)
 
-    await run_in_subprocess([
-        qemu_img_path,
-        "convert",
-        "-f", "qcow2",
-        "-O", "qcow2",
-        "-c",
-        str(source_disk_path),
-        str(dest),
-    ])
+    await run_in_subprocess(
+        [
+            qemu_img_path,
+            "convert",
+            "-f",
+            "qcow2",
+            "-O",
+            "qcow2",
+            "-c",
+            str(source_disk_path),
+            str(dest),
+        ]
+    )
 
     return dest

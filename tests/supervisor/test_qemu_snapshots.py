@@ -13,9 +13,7 @@ from aleph.vm.controllers.qemu.snapshots import (
 def test_get_snapshots_directory(mocker, tmp_path):
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mocker.patch(
-        "aleph.vm.controllers.qemu.snapshots.settings"
-    ).EXECUTION_ROOT = exec_root
+    mocker.patch("aleph.vm.controllers.qemu.snapshots.settings").EXECUTION_ROOT = exec_root
 
     result = get_snapshots_directory()
 
@@ -27,9 +25,7 @@ def test_get_snapshots_directory_idempotent(mocker, tmp_path):
     """Calling twice doesn't raise even though the dir already exists."""
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mocker.patch(
-        "aleph.vm.controllers.qemu.snapshots.settings"
-    ).EXECUTION_ROOT = exec_root
+    mocker.patch("aleph.vm.controllers.qemu.snapshots.settings").EXECUTION_ROOT = exec_root
 
     first = get_snapshots_directory()
     second = get_snapshots_directory()
@@ -113,9 +109,7 @@ async def test_create_snapshot_qemu_img_missing(mocker, tmp_path):
     )
 
     with pytest.raises(FileNotFoundError, match="qemu-img not found"):
-        await create_qemu_disk_snapshot(
-            "abc123", tmp_path / "disk.qcow2", tmp_path
-        )
+        await create_qemu_disk_snapshot("abc123", tmp_path / "disk.qcow2", tmp_path)
 
 
 @pytest.mark.asyncio
@@ -129,9 +123,7 @@ async def test_create_snapshot_subprocess_failure(mocker, tmp_path):
     )
     mocker.patch(
         "aleph.vm.controllers.qemu.snapshots.run_in_subprocess",
-        AsyncMock(
-            side_effect=subprocess.CalledProcessError(1, "qemu-img", "error")
-        ),
+        AsyncMock(side_effect=subprocess.CalledProcessError(1, "qemu-img", "error")),
     )
 
     with pytest.raises(subprocess.CalledProcessError):
