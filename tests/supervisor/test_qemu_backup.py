@@ -10,10 +10,12 @@ from aleph.vm.controllers.qemu.backup import (
 )
 
 
-def test_get_backup_directory(mocker, tmp_path):
+def test_get_backup_directory_default(mocker, tmp_path):
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mocker.patch("aleph.vm.controllers.qemu.backup.settings").EXECUTION_ROOT = exec_root
+    mock_settings = mocker.patch("aleph.vm.controllers.qemu.backup.settings")
+    mock_settings.BACKUP_DIRECTORY = None
+    mock_settings.EXECUTION_ROOT = exec_root
 
     result = get_backup_directory()
 
@@ -21,11 +23,24 @@ def test_get_backup_directory(mocker, tmp_path):
     assert result.is_dir()
 
 
+def test_get_backup_directory_custom(mocker, tmp_path):
+    custom_dir = tmp_path / "my-backup-volume"
+    mock_settings = mocker.patch("aleph.vm.controllers.qemu.backup.settings")
+    mock_settings.BACKUP_DIRECTORY = custom_dir
+
+    result = get_backup_directory()
+
+    assert result == custom_dir
+    assert result.is_dir()
+
+
 def test_get_backup_directory_idempotent(mocker, tmp_path):
     """Calling twice doesn't raise even though the dir already exists."""
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mocker.patch("aleph.vm.controllers.qemu.backup.settings").EXECUTION_ROOT = exec_root
+    mock_settings = mocker.patch("aleph.vm.controllers.qemu.backup.settings")
+    mock_settings.BACKUP_DIRECTORY = None
+    mock_settings.EXECUTION_ROOT = exec_root
 
     first = get_backup_directory()
     second = get_backup_directory()

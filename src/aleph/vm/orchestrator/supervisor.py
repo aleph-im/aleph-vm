@@ -52,6 +52,7 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
+    operate_backup,
     operate_confidential_initialize,
     operate_confidential_inject_secret,
     operate_confidential_measurement,
@@ -60,7 +61,6 @@ from .views.operator import (
     operate_logs_json,
     operate_reboot,
     operate_reinstall,
-    operate_backup,
     operate_stop,
     stream_logs,
 )
