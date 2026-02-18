@@ -18,10 +18,10 @@ from pydantic import BaseModel
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance
-from aleph.vm.controllers.qemu.snapshots import (
-    check_disk_space_for_snapshot,
-    create_qemu_disk_snapshot,
-    get_snapshots_directory,
+from aleph.vm.controllers.qemu.backup import (
+    check_disk_space_for_backup,
+    create_qemu_disk_backup,
+    get_backup_directory,
 )
 from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
@@ -540,32 +540,32 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 
-async def operate_snapshot(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
-    """Create a QEMU VM snapshot and stream it to the client.
+async def operate_backup(request: web.Request, authenticated_sender: str) -> web.StreamResponse:
+    """Create a QEMU VM disk backup and stream it to the client.
 
-    This endpoint creates a compressed QCOW2 snapshot of a running QEMU VM's disk.
-    It uses the QEMU guest agent to freeze filesystems during snapshot creation
+    This endpoint creates a compressed QCOW2 backup of a running QEMU VM's disk.
+    It uses the QEMU guest agent to freeze filesystems during backup creation
     to ensure consistency.
 
-    The snapshot is streamed directly to the client via HTTP chunked encoding.
+    The backup is streamed directly to the client via HTTP chunked encoding.
 
     Query Parameters:
         skip_fsfreeze: Set to 'true' to skip filesystem freeze (not recommended).
 
     Returns:
-        StreamResponse with the compressed QCOW2 snapshot file.
+        StreamResponse with the compressed QCOW2 backup file.
 
     Raises:
         400: VM not running or not a QEMU VM.
         403: Unauthorized sender.
         409: Guest agent not available (with option to skip fsfreeze).
         507: Insufficient disk space.
-        500: Snapshot creation failed.
+        500: Backup creation failed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
 
     # Track resources for cleanup
-    snapshot_path: Path | None = None
+    backup_path: Path | None = None
     qemu_client: QemuVmClient | None = None
     fs_frozen = False
 
@@ -579,20 +579,20 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
                 return web.Response(status=403, body="Unauthorized sender")
 
             if not execution.is_running:
-                return web.HTTPBadRequest(body="VM must be running to create snapshot")
+                return web.HTTPBadRequest(body="VM must be running to create backup")
 
             # 2. Check VM type is QEMU
             if not isinstance(execution.vm, (AlephQemuInstance, AlephQemuConfidentialInstance)):
-                return web.HTTPBadRequest(body="Snapshot migration only supported for QEMU VMs")
+                return web.HTTPBadRequest(body="Backup only supported for QEMU VMs")
 
             if not execution.vm.resources or not execution.vm.resources.rootfs_path:
                 return web.HTTPBadRequest(body="VM has no disk image")
 
             # 3. Check disk space
             source_disk_path = Path(execution.vm.resources.rootfs_path)
-            destination_dir = get_snapshots_directory()
+            destination_dir = get_backup_directory()
 
-            has_space, space_msg = await check_disk_space_for_snapshot(source_disk_path, destination_dir)
+            has_space, space_msg = check_disk_space_for_backup(source_disk_path, destination_dir)
             if not has_space:
                 return web.Response(status=507, body=space_msg)
 
@@ -621,13 +621,13 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
                         "Add ?skip_fsfreeze=true to proceed without consistency guarantee.",
                     )
 
-            # 6. Create snapshot
-            logger.info(f"Creating snapshot for {vm_hash}")
-            snapshot_path = await create_qemu_disk_snapshot(
+            # 6. Create backup
+            logger.info(f"Creating backup for {vm_hash}")
+            backup_path = await create_qemu_disk_backup(
                 vm_hash=str(vm_hash), source_disk_path=source_disk_path, destination_dir=destination_dir
             )
 
-            # 7. Thaw immediately after snapshot
+            # 7. Thaw immediately after backup
             if fs_frozen:
                 try:
                     thawed_count = await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
@@ -636,34 +636,32 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
                 except Exception as e:
                     logger.error(f"Failed to thaw filesystems for {vm_hash}: {e}")
 
-            # 8. Stream snapshot
-            if snapshot_path is None:
-                raise RuntimeError("Snapshot path is None after creation")
+            # 8. Stream backup
+            if backup_path is None:
+                raise RuntimeError("Backup path is None after creation")
 
             response = web.StreamResponse()
             response.headers["Transfer-encoding"] = "chunked"
             response.headers["Content-Type"] = "application/octet-stream"
-            response.headers["Content-Disposition"] = f'attachment; filename="{vm_hash}-snapshot.qcow2"'
+            response.headers["Content-Disposition"] = f'attachment; filename="{vm_hash}-backup.qcow2"'
 
-            snapshot_size = snapshot_path.stat().st_size
-            response.headers["X-Snapshot-Size"] = str(snapshot_size)
+            backup_size = backup_path.stat().st_size
+            response.headers["X-Backup-Size"] = str(backup_size)
 
             if execution.is_confidential:
-                response.headers["X-Snapshot-Warning"] = (
-                    "Confidential VM: disk-only snapshot, memory state not included"
-                )
+                response.headers["X-Backup-Warning"] = "Confidential VM: disk-only backup, memory state not included"
 
             await response.prepare(request)
 
-            logger.info(f"Streaming snapshot for {vm_hash} ({snapshot_size} bytes)")
+            logger.info(f"Streaming backup for {vm_hash} ({backup_size} bytes)")
 
             # Stream file in 64KB chunks
             CHUNK_SIZE = 65536
             bytes_sent = 0
 
-            with open(snapshot_path, "rb") as snapshot_file:
+            with open(backup_path, "rb") as backup_file:
                 while True:
-                    chunk = snapshot_file.read(CHUNK_SIZE)
+                    chunk = backup_file.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     await response.write(chunk)
@@ -671,15 +669,15 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
 
             await response.write_eof()
 
-            logger.info(f"Completed streaming snapshot for {vm_hash} ({bytes_sent} bytes)")
+            logger.info(f"Completed streaming backup for {vm_hash} ({bytes_sent} bytes)")
 
             return response
 
         except web.HTTPException:
             raise  # Re-raise HTTP exceptions
         except Exception as e:
-            logger.exception(f"Failed to create snapshot for {vm_hash}")
-            raise web.HTTPInternalServerError(body=f"Snapshot creation failed") from e
+            logger.exception(f"Failed to create backup for {vm_hash}")
+            raise web.HTTPInternalServerError(body="Backup creation failed") from e
 
         finally:
             # ALWAYS cleanup
@@ -696,9 +694,9 @@ async def operate_snapshot(request: web.Request, authenticated_sender: str) -> w
                 except Exception:
                     pass
 
-            if snapshot_path and snapshot_path.exists():
+            if backup_path and backup_path.exists():
                 try:
-                    snapshot_path.unlink()
-                    logger.debug(f"Deleted temporary snapshot {snapshot_path}")
+                    backup_path.unlink()
+                    logger.debug(f"Deleted temporary backup {backup_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete snapshot {snapshot_path}: {e}")
+                    logger.warning(f"Failed to delete backup {backup_path}: {e}")
