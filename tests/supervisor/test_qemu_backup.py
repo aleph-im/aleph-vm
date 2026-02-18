@@ -1,13 +1,25 @@
 import subprocess
+import tarfile
+import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from aleph.vm.controllers.qemu.backup import (
+    _sha256_file,
+    backup_metadata,
     check_disk_space_for_backup,
+    check_disk_space_for_multiple,
+    cleanup_expired_backups,
+    create_backup_archive,
     create_qemu_disk_backup,
+    find_existing_backup,
     get_backup_directory,
+    verify_qemu_disk,
 )
+
+# --- get_backup_directory ---
 
 
 def test_get_backup_directory_default(mocker, tmp_path):
@@ -49,6 +61,9 @@ def test_get_backup_directory_idempotent(mocker, tmp_path):
     assert first.is_dir()
 
 
+# --- check_disk_space_for_backup ---
+
+
 def test_check_disk_space_sufficient(tmp_path):
     source = tmp_path / "disk.qcow2"
     source.write_bytes(b"\x00" * 1024)
@@ -81,6 +96,42 @@ def test_check_disk_space_source_missing(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         check_disk_space_for_backup(missing, tmp_path)
+
+
+# --- check_disk_space_for_multiple ---
+
+
+def test_check_disk_space_multiple_sufficient(tmp_path):
+    d1 = tmp_path / "a.qcow2"
+    d2 = tmp_path / "b.qcow2"
+    d1.write_bytes(b"\x00" * 512)
+    d2.write_bytes(b"\x00" * 512)
+
+    ok, msg = check_disk_space_for_multiple([d1, d2], tmp_path)
+
+    assert ok is True
+    assert msg == ""
+
+
+def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
+    d1 = tmp_path / "a.qcow2"
+    d2 = tmp_path / "b.qcow2"
+    d1.write_bytes(b"\x00" * 512)
+    d2.write_bytes(b"\x00" * 512)
+
+    fake_usage = mocker.MagicMock(free=500)
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.disk_usage",
+        return_value=fake_usage,
+    )
+
+    ok, msg = check_disk_space_for_multiple([d1, d2], tmp_path)
+
+    assert ok is False
+    assert "2 disk(s)" in msg
+
+
+# --- create_qemu_disk_backup ---
 
 
 @pytest.mark.asyncio
@@ -143,3 +194,222 @@ async def test_create_backup_subprocess_failure(mocker, tmp_path):
 
     with pytest.raises(subprocess.CalledProcessError):
         await create_qemu_disk_backup("abc123", source, tmp_path)
+
+
+# --- verify_qemu_disk ---
+
+
+@pytest.mark.asyncio
+async def test_verify_qemu_disk_success(mocker, tmp_path):
+    disk = tmp_path / "disk.qcow2"
+    disk.write_bytes(b"\x00" * 64)
+
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.which",
+        return_value="/usr/bin/qemu-img",
+    )
+    mock_run = AsyncMock(return_value=b"No errors were found")
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.run_in_subprocess",
+        mock_run,
+    )
+
+    await verify_qemu_disk(disk)
+
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert cmd == ["/usr/bin/qemu-img", "check", str(disk)]
+
+
+@pytest.mark.asyncio
+async def test_verify_qemu_disk_missing_tool(mocker, tmp_path):
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.which",
+        return_value=None,
+    )
+
+    with pytest.raises(FileNotFoundError, match="qemu-img not found"):
+        await verify_qemu_disk(tmp_path / "disk.qcow2")
+
+
+@pytest.mark.asyncio
+async def test_verify_qemu_disk_failure(mocker, tmp_path):
+    disk = tmp_path / "disk.qcow2"
+    disk.write_bytes(b"\x00" * 64)
+
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.which",
+        return_value="/usr/bin/qemu-img",
+    )
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.run_in_subprocess",
+        AsyncMock(side_effect=subprocess.CalledProcessError(1, "qemu-img", "corrupt")),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        await verify_qemu_disk(disk)
+
+
+# --- create_backup_archive ---
+
+
+@pytest.mark.asyncio
+async def test_create_backup_archive(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f2 = tmp_path / "data.qcow2"
+    f1.write_bytes(b"rootfs-content")
+    f2.write_bytes(b"data-content")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    tar_path = await create_backup_archive(
+        vm_hash="vm123",
+        backup_files={"rootfs.qcow2": f1, "data.qcow2": f2},
+        destination_dir=dest,
+    )
+
+    assert tar_path.exists()
+    assert tar_path.suffix == ".tar"
+    assert tar_path.name.startswith("vm123-")
+
+    sidecar = tar_path.with_suffix(".tar.sha256")
+    assert sidecar.exists()
+    checksum_line = sidecar.read_text()
+    assert tar_path.name in checksum_line
+    assert len(checksum_line.split()[0]) == 64
+
+    with tarfile.open(tar_path, "r") as tar:
+        names = tar.getnames()
+    assert "rootfs.qcow2" in names
+    assert "data.qcow2" in names
+
+
+@pytest.mark.asyncio
+async def test_create_backup_archive_single_file(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"content")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    tar_path = await create_backup_archive(
+        vm_hash="vm456",
+        backup_files={"rootfs.qcow2": f1},
+        destination_dir=dest,
+    )
+
+    with tarfile.open(tar_path, "r") as tar:
+        assert tar.getnames() == ["rootfs.qcow2"]
+
+
+# --- cleanup_expired_backups ---
+
+
+def test_cleanup_expired_backups_removes_old(tmp_path):
+    old_tar = tmp_path / "vm1-20240101T000000Z.tar"
+    old_sidecar = tmp_path / "vm1-20240101T000000Z.tar.sha256"
+    old_tar.write_bytes(b"old")
+    old_sidecar.write_text("abc  vm1-20240101T000000Z.tar\n")
+
+    import os
+
+    old_mtime = time.time() - (25 * 3600)
+    os.utime(old_tar, (old_mtime, old_mtime))
+
+    fresh_tar = tmp_path / "vm2-20240102T000000Z.tar"
+    fresh_tar.write_bytes(b"fresh")
+
+    deleted = cleanup_expired_backups(tmp_path, ttl_hours=24)
+
+    assert deleted == 1
+    assert not old_tar.exists()
+    assert not old_sidecar.exists()
+    assert fresh_tar.exists()
+
+
+def test_cleanup_expired_backups_none_expired(tmp_path):
+    tar = tmp_path / "vm1-20240101T000000Z.tar"
+    tar.write_bytes(b"fresh")
+
+    deleted = cleanup_expired_backups(tmp_path, ttl_hours=24)
+
+    assert deleted == 0
+    assert tar.exists()
+
+
+def test_cleanup_expired_backups_empty_dir(tmp_path):
+    deleted = cleanup_expired_backups(tmp_path)
+    assert deleted == 0
+
+
+# --- find_existing_backup ---
+
+
+def test_find_existing_backup_found(tmp_path):
+    tar = tmp_path / "vm1-20240101T000000Z.tar"
+    tar.write_bytes(b"backup-data")
+
+    result = find_existing_backup(tmp_path, "vm1")
+
+    assert result == tar
+
+
+def test_find_existing_backup_expired(tmp_path):
+    import os
+
+    tar = tmp_path / "vm1-20240101T000000Z.tar"
+    tar.write_bytes(b"old-data")
+    old_mtime = time.time() - (25 * 3600)
+    os.utime(tar, (old_mtime, old_mtime))
+
+    result = find_existing_backup(tmp_path, "vm1")
+
+    assert result is None
+
+
+def test_find_existing_backup_wrong_vm(tmp_path):
+    tar = tmp_path / "vm1-20240101T000000Z.tar"
+    tar.write_bytes(b"data")
+
+    result = find_existing_backup(tmp_path, "vm2")
+
+    assert result is None
+
+
+# --- backup_metadata ---
+
+
+def test_backup_metadata(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"content")
+
+    tar_path = tmp_path / "vm1-20240101T000000Z.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        tar.add(str(f1), arcname="rootfs.qcow2")
+
+    checksum = _sha256_file(tar_path)
+    sidecar = tar_path.with_suffix(".tar.sha256")
+    sidecar.write_text(f"{checksum}  {tar_path.name}\n")
+
+    meta = backup_metadata(tar_path)
+
+    assert meta["backup_id"] == "vm1-20240101T000000Z"
+    assert meta["size"] == tar_path.stat().st_size
+    assert meta["checksum"] == f"sha256:{checksum}"
+    assert meta["volumes"] == ["rootfs.qcow2"]
+    assert "expires_at" in meta
+
+
+def test_backup_metadata_no_sidecar(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"content")
+
+    tar_path = tmp_path / "vm1-20240101T000000Z.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        tar.add(str(f1), arcname="rootfs.qcow2")
+
+    meta = backup_metadata(tar_path)
+
+    assert meta["checksum"] == "sha256:"
+    assert meta["backup_id"] == "vm1-20240101T000000Z"

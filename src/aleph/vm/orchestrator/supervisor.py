@@ -53,6 +53,8 @@ from .views import (
 )
 from .views.operator import (
     operate_backup,
+    operate_backup_delete,
+    operate_backup_download,
     operate_confidential_initialize,
     operate_confidential_inject_secret,
     operate_confidential_measurement,
@@ -151,6 +153,8 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/reboot", operate_reboot),
         web.post("/control/machine/{ref}/reinstall", operate_reinstall),
         web.post("/control/machine/{ref}/backup", operate_backup),
+        web.get("/control/machine/{ref}/backup/{backup_id}", operate_backup_download),
+        web.delete("/control/machine/{ref}/backup/{backup_id}", operate_backup_delete),
         web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
         web.get("/control/machine/{ref}/confidential/measurement", operate_confidential_measurement),
         web.post("/control/machine/{ref}/confidential/inject_secret", operate_confidential_inject_secret),
