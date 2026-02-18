@@ -16,13 +16,13 @@ from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.client import QemuVmClient
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance
 from aleph.vm.controllers.qemu.backup import (
     check_disk_space_for_backup,
     create_qemu_disk_backup,
     get_backup_directory,
 )
+from aleph.vm.controllers.qemu.client import QemuVmClient
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance
 from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
 )

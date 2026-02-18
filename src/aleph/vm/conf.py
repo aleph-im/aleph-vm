@@ -211,6 +211,7 @@ class Settings(BaseSettings):
         None, description="Location of executions log. Default to EXECUTION_ROOT/executions/"
     )
 
+    BACKUP_DIRECTORY: Path | None = Field(None, description="VM backup location. Default to EXECUTION_ROOT/backups/")
     PERSISTENT_VOLUMES_DIR: Path | None = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )
@@ -556,6 +557,8 @@ class Settings(BaseSettings):
             self.CONFIDENTIAL_DIRECTORY = self.CACHE_ROOT / "confidential"
         if not self.JAILER_BASE_DIRECTORY:
             self.JAILER_BASE_DIRECTORY = self.EXECUTION_ROOT / "jailer"
+        if not self.BACKUP_DIRECTORY:
+            self.BACKUP_DIRECTORY = self.EXECUTION_ROOT / "backups"
         if not self.PERSISTENT_VOLUMES_DIR:
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
         if not self.EXECUTION_DATABASE:

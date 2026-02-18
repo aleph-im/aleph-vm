@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def get_backup_directory() -> Path:
     """Return the directory used to store VM disk backups."""
-    path = settings.EXECUTION_ROOT / "backups"
+    path = settings.BACKUP_DIRECTORY or (settings.EXECUTION_ROOT / "backups")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
