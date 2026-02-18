@@ -50,6 +50,7 @@ from .views import (
     status_public_config,
     update_allocations,
 )
+from .views.migration import allocate_migration, migration_start
 from .views.operator import (
     operate_confidential_initialize,
     operate_confidential_inject_secret,
@@ -170,6 +171,9 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/allocations", update_allocations),
         web.post("/control/network/recreate", recreate_network),
         web.post("/control/proxy/regenerate", regenerate_proxy),
+        # Migration endpoints (scheduler-only, uses ALLOCATION_TOKEN_HASH auth)
+        web.post("/control/migrate", allocate_migration),
+        web.post("/control/machine/{ref}/migration/start", migration_start),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", http_not_found),
         web.get("/control/{suffix:.*}", http_not_found),

@@ -460,10 +460,10 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
         vm_client.continue_execution()
 
         status = vm_client.query_status()
-        print(status["status"] != "running")
+        print(status.status != "running")
 
         return web.json_response(
-            data={"status": status},
+            data={"status": status.model_dump()},
             status=200,
             dumps=dumps_for_json,
         )
