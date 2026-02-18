@@ -1,3 +1,5 @@
+import json
+import os
 import subprocess
 import tarfile
 import time
@@ -16,6 +18,8 @@ from aleph.vm.controllers.qemu.backup import (
     create_qemu_disk_backup,
     find_existing_backup,
     get_backup_directory,
+    get_qemu_disk_virtual_size,
+    restore_rootfs,
     verify_qemu_disk,
 )
 
@@ -250,6 +254,42 @@ async def test_verify_qemu_disk_failure(mocker, tmp_path):
         await verify_qemu_disk(disk)
 
 
+# --- get_qemu_disk_virtual_size ---
+
+
+@pytest.mark.asyncio
+async def test_get_qemu_disk_virtual_size(mocker, tmp_path):
+    disk = tmp_path / "disk.qcow2"
+    disk.write_bytes(b"\x00" * 64)
+
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.which",
+        return_value="/usr/bin/qemu-img",
+    )
+    mock_run = AsyncMock(return_value=b'{"virtual-size": 10737418240, "format": "qcow2"}')
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.run_in_subprocess",
+        mock_run,
+    )
+
+    size = await get_qemu_disk_virtual_size(disk)
+
+    assert size == 10737418240
+    cmd = mock_run.call_args[0][0]
+    assert cmd == ["/usr/bin/qemu-img", "info", "--output=json", str(disk)]
+
+
+@pytest.mark.asyncio
+async def test_get_qemu_disk_virtual_size_missing_tool(mocker, tmp_path):
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.which",
+        return_value=None,
+    )
+
+    with pytest.raises(FileNotFoundError, match="qemu-img not found"):
+        await get_qemu_disk_virtual_size(tmp_path / "disk.qcow2")
+
+
 # --- create_backup_archive ---
 
 
@@ -303,16 +343,39 @@ async def test_create_backup_archive_single_file(tmp_path):
         assert tar.getnames() == ["rootfs.qcow2"]
 
 
+@pytest.mark.asyncio
+async def test_create_backup_archive_with_source_sizes(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"rootfs-content")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    sizes = {"rootfs.qcow2": 1073741824}
+    tar_path = await create_backup_archive(
+        vm_hash="vm789",
+        backup_files={"rootfs.qcow2": f1},
+        destination_dir=dest,
+        source_sizes=sizes,
+    )
+
+    meta_file = tar_path.with_suffix(".tar.meta.json")
+    assert meta_file.exists()
+    stored = json.loads(meta_file.read_text())
+    assert stored["source_sizes"] == {"rootfs.qcow2": 1073741824}
+    assert stored["vm_hash"] == "vm789"
+
+
 # --- cleanup_expired_backups ---
 
 
 def test_cleanup_expired_backups_removes_old(tmp_path):
     old_tar = tmp_path / "vm1-20240101T000000Z.tar"
     old_sidecar = tmp_path / "vm1-20240101T000000Z.tar.sha256"
+    old_meta = tmp_path / "vm1-20240101T000000Z.tar.meta.json"
     old_tar.write_bytes(b"old")
     old_sidecar.write_text("abc  vm1-20240101T000000Z.tar\n")
-
-    import os
+    old_meta.write_text('{"vm_hash": "vm1"}')
 
     old_mtime = time.time() - (25 * 3600)
     os.utime(old_tar, (old_mtime, old_mtime))
@@ -325,6 +388,7 @@ def test_cleanup_expired_backups_removes_old(tmp_path):
     assert deleted == 1
     assert not old_tar.exists()
     assert not old_sidecar.exists()
+    assert not old_meta.exists()
     assert fresh_tar.exists()
 
 
@@ -356,8 +420,6 @@ def test_find_existing_backup_found(tmp_path):
 
 
 def test_find_existing_backup_expired(tmp_path):
-    import os
-
     tar = tmp_path / "vm1-20240101T000000Z.tar"
     tar.write_bytes(b"old-data")
     old_mtime = time.time() - (25 * 3600)
@@ -413,3 +475,63 @@ def test_backup_metadata_no_sidecar(tmp_path):
 
     assert meta["checksum"] == "sha256:"
     assert meta["backup_id"] == "vm1-20240101T000000Z"
+
+
+def test_backup_metadata_with_source_sizes(tmp_path):
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"content")
+
+    tar_path = tmp_path / "vm1-20240101T000000Z.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        tar.add(str(f1), arcname="rootfs.qcow2")
+
+    meta_file = tar_path.with_suffix(".tar.meta.json")
+    meta_file.write_text(
+        json.dumps(
+            {
+                "vm_hash": "vm1",
+                "source_sizes": {"rootfs.qcow2": 2048},
+            }
+        )
+    )
+
+    meta = backup_metadata(tar_path)
+
+    assert meta["source_sizes"] == {"rootfs.qcow2": 2048}
+
+
+# --- restore_rootfs ---
+
+
+@pytest.mark.asyncio
+async def test_restore_rootfs(tmp_path):
+    current = tmp_path / "rootfs.qcow2"
+    current.write_bytes(b"old-rootfs")
+
+    new = tmp_path / "new-rootfs.qcow2"
+    new.write_bytes(b"new-rootfs")
+
+    old_backup = await restore_rootfs(new, current)
+
+    assert current.exists()
+    assert current.read_bytes() == b"new-rootfs"
+    assert old_backup.exists()
+    assert old_backup.read_bytes() == b"old-rootfs"
+    assert "pre-restore" in old_backup.name
+
+
+@pytest.mark.asyncio
+async def test_restore_rootfs_preserves_old(tmp_path):
+    """The old rootfs is saved with a unique timestamp name."""
+    current = tmp_path / "rootfs.qcow2"
+    current.write_bytes(b"original")
+
+    new = tmp_path / "replacement.qcow2"
+    new.write_bytes(b"replacement")
+
+    old_backup = await restore_rootfs(new, current)
+
+    assert old_backup.parent == tmp_path
+    assert old_backup.read_bytes() == b"original"
+    pre_restore_files = list(tmp_path.glob("*.pre-restore-*.qcow2"))
+    assert len(pre_restore_files) == 1

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import shutil
 import tarfile
@@ -7,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aleph.vm.conf import settings
+from aleph.vm.storage import download_file
 from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,18 @@ async def verify_qemu_disk(disk_path: Path) -> None:
     await run_in_subprocess([qemu_img_path, "check", str(disk_path)])
 
 
+async def get_qemu_disk_virtual_size(disk_path: Path) -> int:
+    """Return the virtual size in bytes of a QCOW2 disk image."""
+    qemu_img_path = shutil.which("qemu-img")
+    if not qemu_img_path:
+        msg = "qemu-img not found in PATH"
+        raise FileNotFoundError(msg)
+
+    out = await run_in_subprocess([qemu_img_path, "info", "--output=json", str(disk_path)])
+    info = json.loads(out)
+    return info["virtual-size"]
+
+
 def _sha256_file(path: Path) -> str:
     """Compute the SHA256 hex digest of a file."""
     h = hashlib.sha256()
@@ -123,6 +137,7 @@ async def create_backup_archive(
     vm_hash: str,
     backup_files: dict[str, Path],
     destination_dir: Path,
+    source_sizes: dict[str, int] | None = None,
 ) -> Path:
     """Create a tar archive containing all backup QCOW2 files.
 
@@ -130,6 +145,8 @@ async def create_backup_archive(
         vm_hash: The VM identifier.
         backup_files: Mapping of archive member name to file path on disk.
         destination_dir: Where to write the tar and its .sha256 sidecar.
+        source_sizes: Optional mapping of volume name to original disk
+            size in bytes (before backup compression).
 
     Returns:
         Path to the created tar archive.
@@ -145,6 +162,12 @@ async def create_backup_archive(
     checksum = _sha256_file(tar_path)
     sidecar = tar_path.with_suffix(".tar.sha256")
     sidecar.write_text(f"{checksum}  {tar_name}\n")
+
+    meta: dict = {"vm_hash": vm_hash, "created_at": timestamp}
+    if source_sizes:
+        meta["source_sizes"] = source_sizes
+    meta_path = tar_path.with_suffix(".tar.meta.json")
+    meta_path.write_text(json.dumps(meta))
 
     return tar_path
 
@@ -166,8 +189,8 @@ def cleanup_expired_backups(
     for tar_file in backup_dir.glob("*.tar"):
         if tar_file.stat().st_mtime < cutoff:
             tar_file.unlink()
-            sidecar = tar_file.with_suffix(".tar.sha256")
-            sidecar.unlink(missing_ok=True)
+            tar_file.with_suffix(".tar.sha256").unlink(missing_ok=True)
+            tar_file.with_suffix(".tar.meta.json").unlink(missing_ok=True)
             logger.info("Deleted expired backup %s", tar_file.name)
             deleted += 1
 
@@ -204,10 +227,66 @@ def backup_metadata(tar_path: Path) -> dict:
         tz=timezone.utc,
     )
 
-    return {
+    meta: dict = {
         "backup_id": tar_path.stem,
         "size": tar_path.stat().st_size,
         "checksum": f"sha256:{checksum}",
         "volumes": volumes,
         "expires_at": expires_at.isoformat(),
     }
+
+    meta_file = tar_path.with_suffix(".tar.meta.json")
+    if meta_file.exists():
+        stored = json.loads(meta_file.read_text())
+        if "source_sizes" in stored:
+            meta["source_sizes"] = stored["source_sizes"]
+
+    return meta
+
+
+async def download_volume_by_ref(
+    item_hash: str,
+    destination: Path,
+) -> Path:
+    """Download a volume from the aleph network by item hash.
+
+    Args:
+        item_hash: The aleph message item hash of the volume.
+        destination: Directory to save the downloaded file.
+
+    Returns:
+        Path to the downloaded file.
+    """
+    dest_path = destination / f"{item_hash}.qcow2"
+    url = f"{settings.CONNECTOR_URL}download/data/{item_hash}"
+    await download_file(url, dest_path)
+    return dest_path
+
+
+async def restore_rootfs(
+    new_rootfs: Path,
+    current_rootfs: Path,
+) -> Path:
+    """Replace the current rootfs with a verified QCOW2 backup.
+
+    Creates a timestamped backup of the current rootfs before replacing
+    it, so the operation can be manually reversed if needed.
+
+    Args:
+        new_rootfs: Path to the new QCOW2 file (already verified).
+        current_rootfs: Path to the current rootfs to replace.
+
+    Returns:
+        Path to the old rootfs backup.
+    """
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    old_backup = current_rootfs.with_suffix(f".pre-restore-{timestamp}.qcow2")
+    current_rootfs.rename(old_backup)
+    shutil.copy2(str(new_rootfs), str(current_rootfs))
+    logger.info(
+        "Restored rootfs: %s -> %s (old saved as %s)",
+        new_rootfs.name,
+        current_rootfs,
+        old_backup,
+    )
+    return old_backup
