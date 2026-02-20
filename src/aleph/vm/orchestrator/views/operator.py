@@ -857,8 +857,9 @@ async def operate_restore(
                     field = await reader.next()
                 if field is None:
                     return web.HTTPBadRequest(body="Missing 'rootfs' field in multipart upload")
-                temp_file = backup_dir / f"restore-{vm_hash}.qcow2"
-                with open(temp_file, "wb") as f:
+                upload_path = backup_dir / f"restore-{vm_hash}.qcow2"
+                temp_file = upload_path
+                with open(upload_path, "wb") as f:
                     while True:
                         chunk = await field.read_chunk(65536)
                         if not chunk:
