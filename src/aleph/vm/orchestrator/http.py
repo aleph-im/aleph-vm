@@ -6,6 +6,7 @@ rate-limit handling using Retry-After and x-retry-in headers.
 
 import asyncio
 import logging
+import random
 import re
 
 import aiohttp
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 _session: "RetrySession | None" = None
 
 MAX_RETRIES = 3
+MAX_CONCURRENT_REQUESTS = 10
 
 
 def _parse_retry_delay(response: aiohttp.ClientResponse) -> float:
@@ -65,7 +67,10 @@ async def _request_with_retry(
             MAX_RETRIES,
         )
         resp.release()
-        await asyncio.sleep(delay)
+
+        # Randomize the retry time to avoid thundering herd retries
+        jitter = random.uniform(0, delay * 0.5)
+        await asyncio.sleep(delay + jitter)
 
     raise aiohttp.ClientResponseError(
         request_info=resp.request_info,
@@ -80,12 +85,15 @@ class RetrySession:
 
     def __init__(self, session: aiohttp.ClientSession):
         self._session = session
+        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     async def get(self, url: str, **kwargs) -> aiohttp.ClientResponse:
-        return await _request_with_retry("GET", url, self._session, **kwargs)
+        async with self._semaphore:
+            return await _request_with_retry("GET", url, self._session, **kwargs)
 
     async def post(self, url: str, **kwargs) -> aiohttp.ClientResponse:
-        return await _request_with_retry("POST", url, self._session, **kwargs)
+        async with self._semaphore:
+            return await _request_with_retry("POST", url, self._session, **kwargs)
 
     def ws_connect(self, url: str, **kwargs):
         return self._session.ws_connect(url, **kwargs)
