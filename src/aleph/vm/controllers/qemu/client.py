@@ -131,7 +131,8 @@ class QemuVmClient:
         Returns:
             Number of filesystems frozen.
         """
-        return self._get_qga().command("guest-fsfreeze-freeze")
+        result = self._get_qga().command("guest-fsfreeze-freeze")
+        return int(result)
 
     def guest_fsfreeze_thaw(self) -> int:
         """Thaw all frozen guest filesystems via QEMU Guest Agent.
@@ -139,7 +140,8 @@ class QemuVmClient:
         Returns:
             Number of filesystems thawed.
         """
-        return self._get_qga().command("guest-fsfreeze-thaw")
+        result = self._get_qga().command("guest-fsfreeze-thaw")
+        return int(result)
 
     def guest_fsfreeze_status(self) -> str:
         """Check the freeze status of guest filesystems via QEMU Guest Agent.
@@ -147,4 +149,5 @@ class QemuVmClient:
         Returns:
             'thawed' or 'frozen'
         """
-        return self._get_qga().command("guest-fsfreeze-status")
+        result = self._get_qga().command("guest-fsfreeze-status")
+        return str(result)
