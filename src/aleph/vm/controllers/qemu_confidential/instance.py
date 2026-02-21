@@ -18,11 +18,7 @@ from aleph.vm.controllers.configuration import (
     save_controller_configuration,
 )
 from aleph.vm.controllers.qemu import AlephQemuInstance
-from aleph.vm.controllers.qemu.instance import (
-    AlephQemuResources,
-    ConfigurationType,
-    logger,
-)
+from aleph.vm.controllers.qemu.instance import AlephQemuResources, ConfigurationType
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import get_existing_file
 
@@ -112,6 +108,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
             image_path=image_path,
             monitor_socket_path=monitor_socket_path,
             qmp_socket_path=self.qmp_socket_path,
+            qga_socket_path=self.qga_socket_path,
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
