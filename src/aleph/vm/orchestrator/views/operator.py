@@ -1031,7 +1031,9 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
 
         meta = backup_metadata(existing)
         meta["download_url"] = _build_signed_download_url(
-            request, str(vm_hash), meta["backup_id"],
+            request,
+            str(vm_hash),
+            meta["backup_id"],
         )
         return web.json_response(meta, dumps=dumps_for_json)
 
@@ -1163,9 +1165,7 @@ async def _parse_restore_json(
     try:
         data = await request.json()
     except json.JSONDecodeError:
-        raise web.HTTPBadRequest(
-            body="Expected multipart upload or JSON with volume_ref"
-        ) from None
+        raise web.HTTPBadRequest(body="Expected multipart upload or JSON with volume_ref") from None
     volume_ref = data.get("volume_ref", "")
     if not volume_ref:
         raise web.HTTPBadRequest(body="Missing volume_ref in JSON body")
@@ -1212,7 +1212,9 @@ async def operate_restore(
             content_type = request.content_type or ""
             if content_type.startswith("multipart/"):
                 temp_file = await _parse_restore_upload(
-                    request, backup_dir, str(vm_hash),
+                    request,
+                    backup_dir,
+                    str(vm_hash),
                 )
             else:
                 temp_file = await _parse_restore_json(request, backup_dir)
