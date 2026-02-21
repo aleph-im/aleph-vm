@@ -192,6 +192,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             image_path=image_path,
             monitor_socket_path=monitor_socket_path,
             qmp_socket_path=self.qmp_socket_path,
+            qga_socket_path=self.qga_socket_path,
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
@@ -226,6 +227,10 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     @property
     def qmp_socket_path(self) -> Path:
         return settings.EXECUTION_ROOT / f"{self.vm_hash}-qmp.socket"
+
+    @property
+    def qga_socket_path(self) -> Path:
+        return settings.EXECUTION_ROOT / f"{self.vm_hash}-qga.socket"
 
     async def start(self):
         # Start via systemd not here
