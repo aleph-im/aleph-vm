@@ -11,7 +11,6 @@ import pytest
 from aleph.vm.controllers.qemu.backup import (
     _sha256_file,
     backup_metadata,
-    check_disk_space_for_backup,
     check_disk_space_for_multiple,
     cleanup_expired_backups,
     create_backup_archive,
@@ -65,63 +64,38 @@ def test_get_backup_directory_idempotent(mocker, tmp_path):
     assert first.is_dir()
 
 
-# --- check_disk_space_for_backup ---
-
-
-def test_check_disk_space_sufficient(tmp_path):
-    source = tmp_path / "disk.qcow2"
-    source.write_bytes(b"\x00" * 1024)
-
-    ok, msg = check_disk_space_for_backup(source, tmp_path)
-
-    assert ok is True
-    assert msg == ""
-
-
-def test_check_disk_space_insufficient(mocker, tmp_path):
-    source = tmp_path / "disk.qcow2"
-    source.write_bytes(b"\x00" * 1024)
-
-    fake_usage = mocker.MagicMock(free=512)
-    mocker.patch(
-        "aleph.vm.controllers.qemu.backup.shutil.disk_usage",
-        return_value=fake_usage,
-    )
-
-    ok, msg = check_disk_space_for_backup(source, tmp_path)
-
-    assert ok is False
-    assert "512 bytes available" in msg
-    assert "1024 bytes required" in msg
-
-
-def test_check_disk_space_source_missing(tmp_path):
-    missing = tmp_path / "nonexistent.qcow2"
-
-    with pytest.raises(FileNotFoundError):
-        check_disk_space_for_backup(missing, tmp_path)
-
-
 # --- check_disk_space_for_multiple ---
 
 
-def test_check_disk_space_multiple_sufficient(tmp_path):
+@pytest.mark.asyncio
+async def test_check_disk_space_multiple_sufficient(mocker, tmp_path):
     d1 = tmp_path / "a.qcow2"
     d2 = tmp_path / "b.qcow2"
     d1.write_bytes(b"\x00" * 512)
     d2.write_bytes(b"\x00" * 512)
 
-    ok, msg = check_disk_space_for_multiple([d1, d2], tmp_path)
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.get_qemu_disk_virtual_size",
+        AsyncMock(return_value=1024),
+    )
+
+    ok, msg = await check_disk_space_for_multiple([d1, d2], tmp_path)
 
     assert ok is True
     assert msg == ""
 
 
-def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
+@pytest.mark.asyncio
+async def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
     d1 = tmp_path / "a.qcow2"
     d2 = tmp_path / "b.qcow2"
     d1.write_bytes(b"\x00" * 512)
     d2.write_bytes(b"\x00" * 512)
+
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.get_qemu_disk_virtual_size",
+        AsyncMock(return_value=1024),
+    )
 
     fake_usage = mocker.MagicMock(free=500)
     mocker.patch(
@@ -129,7 +103,7 @@ def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
         return_value=fake_usage,
     )
 
-    ok, msg = check_disk_space_for_multiple([d1, d2], tmp_path)
+    ok, msg = await check_disk_space_for_multiple([d1, d2], tmp_path)
 
     assert ok is False
     assert "2 disk(s)" in msg
@@ -166,7 +140,9 @@ async def test_create_backup_success(mocker, tmp_path):
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "/usr/bin/qemu-img"
     assert cmd[1] == "convert"
+    assert "-U" in cmd
     assert "-c" in cmd
+    assert "-f" not in cmd  # auto-detect source format
     assert str(source) in cmd
     assert str(result) in cmd
 
@@ -276,7 +252,13 @@ async def test_get_qemu_disk_virtual_size(mocker, tmp_path):
 
     assert size == 10737418240
     cmd = mock_run.call_args[0][0]
-    assert cmd == ["/usr/bin/qemu-img", "info", "--output=json", str(disk)]
+    assert cmd == [
+        "/usr/bin/qemu-img",
+        "info",
+        "--force-share",
+        "--output=json",
+        str(disk),
+    ]
 
 
 @pytest.mark.asyncio
@@ -518,6 +500,9 @@ async def test_restore_rootfs(tmp_path):
     assert old_backup.exists()
     assert old_backup.read_bytes() == b"old-rootfs"
     assert "pre-restore" in old_backup.name
+    # Staging file should be cleaned up
+    staging_files = list(tmp_path.glob("*.restore-staging.*"))
+    assert len(staging_files) == 0
 
 
 @pytest.mark.asyncio
@@ -535,3 +520,26 @@ async def test_restore_rootfs_preserves_old(tmp_path):
     assert old_backup.read_bytes() == b"original"
     pre_restore_files = list(tmp_path.glob("*.pre-restore-*.qcow2"))
     assert len(pre_restore_files) == 1
+
+
+@pytest.mark.asyncio
+async def test_restore_rootfs_rollback_on_copy_failure(mocker, tmp_path):
+    """If the staging copy fails, the original rootfs is preserved."""
+    current = tmp_path / "rootfs.qcow2"
+    current.write_bytes(b"original-data")
+
+    new = tmp_path / "bad-source.qcow2"
+    new.write_bytes(b"new-data")
+
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.copy2",
+        side_effect=OSError("disk full"),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        await restore_rootfs(new, current)
+
+    assert current.exists()
+    assert current.read_bytes() == b"original-data"
+    staging_files = list(tmp_path.glob("*.restore-staging.*"))
+    assert len(staging_files) == 0

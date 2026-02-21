@@ -212,6 +212,10 @@ class Settings(BaseSettings):
     )
 
     BACKUP_DIRECTORY: Path | None = Field(None, description="VM backup location. Default to EXECUTION_ROOT/backups/")
+    MAX_RESTORE_UPLOAD_BYTES: int = Field(
+        default=100 * 1024 * 1024 * 1024,
+        description="Maximum upload size in bytes for restore endpoint (default 100 GiB)",
+    )
     PERSISTENT_VOLUMES_DIR: Path | None = Field(
         None, description="Persistent volumes location. Default to EXECUTION_ROOT/volumes/persistent/"
     )

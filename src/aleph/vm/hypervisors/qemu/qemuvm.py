@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,8 @@ import qmp
 from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuGPU, QemuVMConfiguration
-from aleph.vm.controllers.qemu.instance import logger
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +46,7 @@ class QemuVM:
         self.image_path = config.image_path
         self.monitor_socket_path = config.monitor_socket_path
         self.qmp_socket_path = config.qmp_socket_path
+        self.qga_socket_path = config.qga_socket_path
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
@@ -102,6 +105,13 @@ class QemuVM:
             # command
             "-qmp",
             f"unix:{self.qmp_socket_path},server,nowait",
+            # QEMU Guest Agent socket for guest-level commands (fsfreeze, etc.)
+            "-chardev",
+            f"socket,path={self.qga_socket_path},server=on,wait=off,id=qga0",
+            "-device",
+            "virtio-serial",
+            "-device",
+            "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Tell to put the output to std fd, so we can include them in the log
             "-serial",
             "stdio",
@@ -125,7 +135,7 @@ class QemuVM:
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()
-        print(*args)
+        logger.debug("QEMU args: %s", args)
 
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
@@ -134,8 +144,12 @@ class QemuVM:
             stderr=self.journal_stderr,
         )
 
-        print(
-            f"Started QemuVm {self}, {proc}. Log available with: journalctl -t  {self._journal_stdout_name} -t {self._journal_stderr_name}"
+        logger.info(
+            "Started QemuVm %s, %s. Log: journalctl -t %s -t %s",
+            self,
+            proc,
+            self._journal_stdout_name,
+            self._journal_stderr_name,
         )
         return proc
 
@@ -144,7 +158,9 @@ class QemuVM:
         for volume in self.host_volumes:
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format=raw,readonly={'on' if volume.read_only else 'off'},media=disk,if=virtio",
+                f"file={volume.path_on_host},format=raw,"
+                f"readonly={'on' if volume.read_only else 'off'},"
+                f"media=disk,if=virtio",
             ]
         return args
 
@@ -175,13 +191,13 @@ class QemuVM:
         return client
 
     def send_shutdown_message(self):
-        print("sending shutdown message to vm")
+        logger.info("Sending shutdown message to VM %s", self.vm_hash)
         client = self._get_qmpclient()
         if client:
             resp = client.command("system_powerdown")
-            if not resp == {}:
-                logger.warning("unexpected answer from VM", resp)
-            print("shutdown message sent")
+            if resp != {}:
+                logger.warning("unexpected answer from VM: %s", resp)
+            logger.info("Shutdown message sent to %s", self.vm_hash)
             client.close()
 
     async def stop(self):

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -16,6 +17,15 @@ logger = logging.getLogger(__name__)
 BACKUP_TTL_HOURS = 24
 
 
+def _require_qemu_img() -> str:
+    """Return the path to ``qemu-img`` or raise ``FileNotFoundError``."""
+    path = shutil.which("qemu-img")
+    if not path:
+        msg = "qemu-img not found in PATH"
+        raise FileNotFoundError(msg)
+    return path
+
+
 def get_backup_directory() -> Path:
     """Return the directory used to store VM disk backups."""
     path = settings.BACKUP_DIRECTORY or (settings.EXECUTION_ROOT / "backups")
@@ -23,33 +33,20 @@ def get_backup_directory() -> Path:
     return path
 
 
-def check_disk_space_for_backup(
-    source_disk_path: Path,
-    destination_dir: Path,
-) -> tuple[bool, str]:
-    """Check whether there is enough free space to back up a disk.
-
-    Returns (True, "") on success, or (False, reason) on failure.
-    """
-    needed = source_disk_path.stat().st_size
-    free = shutil.disk_usage(destination_dir).free
-    if free >= needed:
-        return True, ""
-    return (
-        False,
-        f"Insufficient disk space: {free} bytes available, " f"{needed} bytes required",
-    )
-
-
-def check_disk_space_for_multiple(
+async def check_disk_space_for_multiple(
     disk_paths: list[Path],
     destination_dir: Path,
 ) -> tuple[bool, str]:
     """Check whether there is enough free space to back up multiple disks.
 
+    Uses the virtual size of each QCOW2 image as an upper-bound estimate,
+    since ``qemu-img convert`` may expand thin-provisioned images.
+
     Returns (True, "") on success, or (False, reason) on failure.
     """
-    needed = sum(p.stat().st_size for p in disk_paths)
+    needed = 0
+    for p in disk_paths:
+        needed += await get_qemu_disk_virtual_size(p)
     free = shutil.disk_usage(destination_dir).free
     if free >= needed:
         return True, ""
@@ -69,10 +66,7 @@ async def create_qemu_disk_backup(
     Uses ``qemu-img convert`` to produce a standalone copy with no
     backing-file dependency.
     """
-    qemu_img_path = shutil.which("qemu-img")
-    if not qemu_img_path:
-        msg = "qemu-img not found in PATH"
-        raise FileNotFoundError(msg)
+    qemu_img = _require_qemu_img()
 
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = destination_dir / f"{vm_hash}-{timestamp}.qcow2"
@@ -81,10 +75,9 @@ async def create_qemu_disk_backup(
 
     await run_in_subprocess(
         [
-            qemu_img_path,
+            qemu_img,
             "convert",
-            "-f",
-            "qcow2",
+            "-U",
             "-O",
             "qcow2",
             "-c",
@@ -101,22 +94,14 @@ async def verify_qemu_disk(disk_path: Path) -> None:
 
     Raises ``subprocess.CalledProcessError`` if the check fails.
     """
-    qemu_img_path = shutil.which("qemu-img")
-    if not qemu_img_path:
-        msg = "qemu-img not found in PATH"
-        raise FileNotFoundError(msg)
-
-    await run_in_subprocess([qemu_img_path, "check", str(disk_path)])
+    qemu_img = _require_qemu_img()
+    await run_in_subprocess([qemu_img, "check", str(disk_path)])
 
 
 async def get_qemu_disk_virtual_size(disk_path: Path) -> int:
     """Return the virtual size in bytes of a QCOW2 disk image."""
-    qemu_img_path = shutil.which("qemu-img")
-    if not qemu_img_path:
-        msg = "qemu-img not found in PATH"
-        raise FileNotFoundError(msg)
-
-    out = await run_in_subprocess([qemu_img_path, "info", "--output=json", str(disk_path)])
+    qemu_img = _require_qemu_img()
+    out = await run_in_subprocess([qemu_img, "info", "--force-share", "--output=json", str(disk_path)])
     info = json.loads(out)
     return info["virtual-size"]
 
@@ -131,6 +116,29 @@ def _sha256_file(path: Path) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _create_tar_and_checksum(
+    tar_path: Path,
+    backup_files: dict[str, Path],
+    vm_hash: str,
+    timestamp: str,
+    source_sizes: dict[str, int] | None,
+) -> None:
+    """Synchronous tar + sha256 + metadata creation (run via to_thread)."""
+    with tarfile.open(tar_path, "w") as tar:
+        for member_name, file_path in backup_files.items():
+            tar.add(str(file_path), arcname=member_name)
+
+    checksum = _sha256_file(tar_path)
+    sidecar = tar_path.with_suffix(".tar.sha256")
+    sidecar.write_text(f"{checksum}  {tar_path.name}\n")
+
+    meta: dict = {"vm_hash": vm_hash, "created_at": timestamp}
+    if source_sizes:
+        meta["source_sizes"] = source_sizes
+    meta_path = tar_path.with_suffix(".tar.meta.json")
+    meta_path.write_text(json.dumps(meta))
 
 
 async def create_backup_archive(
@@ -152,22 +160,16 @@ async def create_backup_archive(
         Path to the created tar archive.
     """
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    tar_name = f"{vm_hash}-{timestamp}.tar"
-    tar_path = destination_dir / tar_name
+    tar_path = destination_dir / f"{vm_hash}-{timestamp}.tar"
 
-    with tarfile.open(tar_path, "w") as tar:
-        for member_name, file_path in backup_files.items():
-            tar.add(str(file_path), arcname=member_name)
-
-    checksum = _sha256_file(tar_path)
-    sidecar = tar_path.with_suffix(".tar.sha256")
-    sidecar.write_text(f"{checksum}  {tar_name}\n")
-
-    meta: dict = {"vm_hash": vm_hash, "created_at": timestamp}
-    if source_sizes:
-        meta["source_sizes"] = source_sizes
-    meta_path = tar_path.with_suffix(".tar.meta.json")
-    meta_path.write_text(json.dumps(meta))
+    await asyncio.to_thread(
+        _create_tar_and_checksum,
+        tar_path,
+        backup_files,
+        vm_hash,
+        timestamp,
+        source_sizes,
+    )
 
     return tar_path
 
@@ -263,6 +265,39 @@ async def download_volume_by_ref(
     return dest_path
 
 
+def _restore_rootfs_sync(new_rootfs: Path, current_rootfs: Path) -> Path:
+    """Synchronous rootfs replacement (run via to_thread).
+
+    Copies new image to a temp file first, then atomically renames it
+    over the current rootfs. The old rootfs is preserved as a backup.
+    """
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    old_backup = current_rootfs.with_suffix(f".pre-restore-{timestamp}.qcow2")
+    # Copy to a temp file in the same directory for atomic rename
+    staging = current_rootfs.with_suffix(".restore-staging.qcow2")
+    try:
+        shutil.copy2(str(new_rootfs), str(staging))
+        # Preserve the old rootfs
+        current_rootfs.rename(old_backup)
+        # Atomic rename on the same filesystem
+        staging.rename(current_rootfs)
+    except BaseException:
+        # Rollback: if old rootfs was moved but staging rename failed,
+        # restore from backup
+        if not current_rootfs.exists() and old_backup.exists():
+            old_backup.rename(current_rootfs)
+        staging.unlink(missing_ok=True)
+        raise
+
+    logger.info(
+        "Restored rootfs: %s -> %s (old saved as %s)",
+        new_rootfs.name,
+        current_rootfs,
+        old_backup,
+    )
+    return old_backup
+
+
 async def restore_rootfs(
     new_rootfs: Path,
     current_rootfs: Path,
@@ -272,6 +307,9 @@ async def restore_rootfs(
     Creates a timestamped backup of the current rootfs before replacing
     it, so the operation can be manually reversed if needed.
 
+    The replacement is atomic: the new image is copied to a staging file
+    first, then renamed into place.
+
     Args:
         new_rootfs: Path to the new QCOW2 file (already verified).
         current_rootfs: Path to the current rootfs to replace.
@@ -279,14 +317,4 @@ async def restore_rootfs(
     Returns:
         Path to the old rootfs backup.
     """
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    old_backup = current_rootfs.with_suffix(f".pre-restore-{timestamp}.qcow2")
-    current_rootfs.rename(old_backup)
-    shutil.copy2(str(new_rootfs), str(current_rootfs))
-    logger.info(
-        "Restored rootfs: %s -> %s (old saved as %s)",
-        new_rootfs.name,
-        current_rootfs,
-        old_backup,
-    )
-    return old_backup
+    return await asyncio.to_thread(_restore_rootfs_sync, new_rootfs, current_rootfs)
