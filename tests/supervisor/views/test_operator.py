@@ -811,6 +811,7 @@ async def test_operator_reinstall(aiohttp_client, mocker):
                 vm_hash=vm_hash,
                 message=instance_message.content,
                 is_running=True,
+                persistent=False,
                 resources=fake_resources,
             ),
         },
