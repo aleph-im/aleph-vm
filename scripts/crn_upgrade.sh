@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 REPO="aleph-im/aleph-vm"
 DEB_DIR="/opt"
 RC=false
@@ -77,9 +80,15 @@ run() {
 }
 
 OS=$(detect_os)
+CURRENT=$(dpkg-query -W -f '${Version}' aleph-vm 2>/dev/null || echo "not installed")
 
 if [[ -z "$VERSION" ]]; then
     VERSION=$(fetch_latest_version)
+fi
+
+if [[ "$CURRENT" == "$VERSION" ]]; then
+    echo "aleph-vm ${VERSION} is already installed"
+    exit 0
 fi
 
 DEB_NAME="aleph-vm.${OS}.deb"
@@ -87,7 +96,8 @@ DEB_URL="https://github.com/${REPO}/releases/download/${VERSION}/${DEB_NAME}"
 DEB_PATH="${DEB_DIR}/${DEB_NAME}"
 
 echo "OS:      ${OS}"
-echo "Version: ${VERSION}"
+echo "Current: ${CURRENT}"
+echo "Target:  ${VERSION}"
 echo "Package: ${DEB_URL}"
 echo ""
 
@@ -96,4 +106,4 @@ run wget -q --show-progress -P "$DEB_DIR" "$DEB_URL"
 run apt install -y "$DEB_PATH"
 
 echo ""
-echo "aleph-vm ${VERSION} installed successfully"
+echo "aleph-vm upgraded: ${CURRENT} -> ${VERSION}"
