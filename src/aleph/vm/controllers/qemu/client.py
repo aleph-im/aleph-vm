@@ -1,6 +1,6 @@
+import asyncio
 import json
 import logging
-import socket
 from pathlib import Path
 from typing import cast
 
@@ -28,37 +28,70 @@ class QemuGuestAgentClient:
     """
 
     def __init__(self, socket_path: Path):
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._sock.settimeout(30)
-        self._sock.connect(str(socket_path))
+        self._socket_path = socket_path
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
 
-    def close(self) -> None:
-        self._sock.close()
+    async def connect(self) -> None:
+        self._reader, self._writer = await asyncio.open_unix_connection(
+            str(self._socket_path),
+        )
 
-    def command(self, cmd: str) -> int | str | dict:
+    async def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            await self._writer.wait_closed()
+            self._writer = None
+            self._reader = None
+
+    async def command(self, cmd: str) -> int | str | dict:
         """Send a QGA command and return the result.
 
         Raises RuntimeError on QGA-level errors.
         """
+        if self._writer is None or self._reader is None:
+            msg = "QGA client not connected"
+            raise RuntimeError(msg)
+
         request = json.dumps({"execute": cmd})
-        self._sock.sendall(request.encode() + b"\n")
+        self._writer.write(request.encode() + b"\n")
+        await self._writer.drain()
 
-        buf = b""
-        while True:
-            chunk = self._sock.recv(4096)
-            if not chunk:
-                msg = "QGA socket closed unexpectedly"
-                raise ConnectionError(msg)
-            buf += chunk
-            if b"\n" in buf:
-                break
+        line = await asyncio.wait_for(self._reader.readline(), timeout=30)
+        if not line:
+            msg = "QGA socket closed unexpectedly"
+            raise ConnectionError(msg)
 
-        response = json.loads(buf.split(b"\n", 1)[0])
+        response = json.loads(line)
         if "error" in response:
             err = response["error"]
             msg = f"QGA error: {err.get('desc', err)}"
             raise RuntimeError(msg)
         return response.get("return")
+
+    async def fsfreeze_freeze(self) -> int:
+        """Freeze all freezable guest filesystems.
+
+        Returns:
+            Number of filesystems frozen.
+        """
+        return cast(int, await self.command("guest-fsfreeze-freeze"))
+
+    async def fsfreeze_thaw(self) -> int:
+        """Thaw all frozen guest filesystems.
+
+        Returns:
+            Number of filesystems thawed.
+        """
+        return cast(int, await self.command("guest-fsfreeze-thaw"))
+
+    async def fsfreeze_status(self) -> str:
+        """Check the freeze status of guest filesystems.
+
+        Returns:
+            'thawed' or 'frozen'
+        """
+        return cast(str, await self.command("guest-fsfreeze-status"))
 
 
 class QemuVmClient:
@@ -72,16 +105,21 @@ class QemuVmClient:
         self.qmp_client = client
         self._qga_client: QemuGuestAgentClient | None = None
 
-    def _get_qga(self) -> QemuGuestAgentClient:
-        """Lazily connect to the QGA socket."""
+    async def connect_qga(self) -> QemuGuestAgentClient:
+        """Connect to the QGA socket and return the client."""
         if self._qga_client is not None:
             return self._qga_client
         qga_path: Path | None = getattr(self.vm, "qga_socket_path", None)
         if not qga_path or not qga_path.exists():
-            msg = "QEMU Guest Agent socket not available. " "Ensure qemu-guest-agent is installed in the VM image."
+            msg = (
+                "QEMU Guest Agent socket not available. "
+                "Ensure qemu-guest-agent is installed in the VM image."
+            )
             raise RuntimeError(msg)
-        self._qga_client = QemuGuestAgentClient(qga_path)
-        return self._qga_client
+        client = QemuGuestAgentClient(qga_path)
+        await client.connect()
+        self._qga_client = client
+        return client
 
     def __enter__(self):
         return self
@@ -92,7 +130,12 @@ class QemuVmClient:
     def close(self) -> None:
         self.qmp_client.close()
         if self._qga_client is not None:
-            self._qga_client.close()
+            # Schedule async close if loop is running, otherwise ignore
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._qga_client.close())
+            except RuntimeError:
+                pass
             self._qga_client = None
 
     def query_sev_info(self) -> VmSevInfo:
@@ -112,7 +155,11 @@ class QemuVmClient:
         return measure["data"]
 
     def inject_secret(self, packet_header: str, secret: str) -> None:
-        """Inject the secret in the SEV secret area."""
+        """Inject the secret in the SEV secret area.
+
+        :param packet_header: The packet header, as a base64 string.
+        :param secret: The encoded secret, as a base64 string.
+        """
         self.qmp_client.command(
             "sev-inject-launch-secret",
             **{"packet-header": packet_header, "secret": secret},
@@ -126,26 +173,17 @@ class QemuVmClient:
         """Get running status."""
         return self.qmp_client.command("query-status")
 
-    def guest_fsfreeze_freeze(self) -> int:
-        """Freeze all freezable guest filesystems via QEMU Guest Agent.
+    async def guest_fsfreeze_freeze(self) -> int:
+        """Freeze all freezable guest filesystems via QEMU Guest Agent."""
+        qga = await self.connect_qga()
+        return await qga.fsfreeze_freeze()
 
-        Returns:
-            Number of filesystems frozen.
-        """
-        return cast(int, self._get_qga().command("guest-fsfreeze-freeze"))
+    async def guest_fsfreeze_thaw(self) -> int:
+        """Thaw all frozen guest filesystems via QEMU Guest Agent."""
+        qga = await self.connect_qga()
+        return await qga.fsfreeze_thaw()
 
-    def guest_fsfreeze_thaw(self) -> int:
-        """Thaw all frozen guest filesystems via QEMU Guest Agent.
-
-        Returns:
-            Number of filesystems thawed.
-        """
-        return cast(int, self._get_qga().command("guest-fsfreeze-thaw"))
-
-    def guest_fsfreeze_status(self) -> str:
-        """Check the freeze status of guest filesystems via QEMU Guest Agent.
-
-        Returns:
-            'thawed' or 'frozen'
-        """
-        return cast(str, self._get_qga().command("guest-fsfreeze-status"))
+    async def guest_fsfreeze_status(self) -> str:
+        """Check the freeze status of guest filesystems via QEMU Guest Agent."""
+        qga = await self.connect_qga()
+        return await qga.fsfreeze_status()

@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aleph.vm.conf import settings
-from aleph.vm.storage import download_file
 from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
 BACKUP_TTL_HOURS = 24
+
+
+class InsufficientDiskSpaceError(Exception):
+    """Raised when there is not enough free disk space for a backup."""
 
 
 def _require_qemu_img() -> str:
@@ -36,24 +39,26 @@ def get_backup_directory() -> Path:
 async def check_disk_space_for_multiple(
     disk_paths: list[Path],
     destination_dir: Path,
-) -> tuple[bool, str]:
+) -> None:
     """Check whether there is enough free space to back up multiple disks.
 
     Uses the virtual size of each QCOW2 image as an upper-bound estimate,
     since ``qemu-img convert`` may expand thin-provisioned images.
 
-    Returns (True, "") on success, or (False, reason) on failure.
+    Raises:
+        InsufficientDiskSpaceError: If free space is less than needed.
     """
+    # Best-effort check; concurrent operations may change available space.
     needed = 0
     for p in disk_paths:
         needed += await get_qemu_disk_virtual_size(p)
     free = shutil.disk_usage(destination_dir).free
-    if free >= needed:
-        return True, ""
-    return (
-        False,
-        f"Insufficient disk space: {free} bytes available, " f"{needed} bytes required for {len(disk_paths)} disk(s)",
-    )
+    if free < needed:
+        msg = (
+            f"Insufficient disk space: {free} bytes available, "
+            f"{needed} bytes required for {len(disk_paths)} disk(s)"
+        )
+        raise InsufficientDiskSpaceError(msg)
 
 
 async def create_qemu_disk_backup(
@@ -106,12 +111,12 @@ async def get_qemu_disk_virtual_size(disk_path: Path) -> int:
     return info["virtual-size"]
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(path: Path, chunk_size: int = 65536) -> str:
     """Compute the SHA256 hex digest of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
-            chunk = f.read(65536)
+            chunk = f.read(chunk_size)
             if not chunk:
                 break
             h.update(chunk)
@@ -232,10 +237,12 @@ def backup_metadata(tar_path: Path) -> dict:
     meta: dict = {
         "backup_id": tar_path.stem,
         "size": tar_path.stat().st_size,
-        "checksum": f"sha256:{checksum}",
         "volumes": volumes,
         "expires_at": expires_at.isoformat(),
     }
+
+    if checksum:
+        meta["checksum"] = f"sha256:{checksum}"
 
     meta_file = tar_path.with_suffix(".tar.meta.json")
     if meta_file.exists():
@@ -259,9 +266,19 @@ async def download_volume_by_ref(
     Returns:
         Path to the downloaded file.
     """
+    from aleph.vm.orchestrator.http import get_session
+
     dest_path = destination / f"{item_hash}.qcow2"
     url = f"{settings.CONNECTOR_URL}download/data/{item_hash}"
-    await download_file(url, dest_path)
+
+    session = get_session()
+    resp = await session.get(url)
+    resp.raise_for_status()
+
+    with open(dest_path, "wb") as f:
+        async for chunk in resp.content.iter_chunked(65536):
+            f.write(chunk)
+
     return dest_path
 
 
