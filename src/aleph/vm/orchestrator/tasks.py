@@ -40,6 +40,10 @@ _TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset(
 
 # Track consecutive terminal-status confirmations per VM before stopping.
 # Prevents a single bad API response from killing a running instance.
+# TODO: The CCN API sits behind a load balancer. If one backend is in
+# maintenance or lagging behind on message processing, it may report a
+# stale/different status. Consider querying multiple CCN nodes and
+# requiring a quorum before treating a status as authoritative.
 STOP_AFTER_CONFIRMATIONS = 3
 _terminal_strike_count: dict[str, int] = {}
 
