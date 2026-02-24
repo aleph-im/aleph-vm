@@ -52,6 +52,7 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
+    BackupState,
     operate_backup,
     operate_backup_delete,
     operate_backup_download,
@@ -120,6 +121,7 @@ def setup_webapp(pool: VmPool | None):
     app = web.Application(middlewares=[error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
+    app["backup_state"] = BackupState()
     cors = setup(
         app,
         defaults={

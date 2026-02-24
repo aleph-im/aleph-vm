@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.backup import (
+    InsufficientDiskSpaceError,
     backup_metadata,
     check_disk_space_for_multiple,
     cleanup_expired_backups,
@@ -58,13 +59,30 @@ from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
 
-# Per-VM locks to prevent concurrent backups on the same VM.
-# WeakValueDictionary is not usable with asyncio.Lock, so we use a
-# regular dict and clean up after each backup completes.
-_backup_locks: dict[str, asyncio.Lock] = {}
-_backup_tasks: dict[str, asyncio.Task] = {}
-_backup_results: dict[str, tuple[float, dict | Exception]] = {}
 _BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max
+
+
+class BackupState:
+    """Per-app container for backup-related mutable state.
+
+    Stored on ``app["backup_state"]`` so lifecycle is tied to the app
+    and tests get a fresh instance automatically.
+    """
+
+    def __init__(self) -> None:
+        self.locks: dict[str, asyncio.Lock] = {}
+        self.tasks: dict[str, asyncio.Task] = {}
+        self.results: dict[str, tuple[float, dict | Exception]] = {}
+
+    def evict_stale_results(self) -> None:
+        """Remove results older than the TTL."""
+        now = time.time()
+        stale = [
+            k for k, (ts, _) in self.results.items()
+            if now - ts > _BACKUP_RESULT_TTL
+        ]
+        for k in stale:
+            self.results.pop(k, None)
 
 _security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
 
@@ -699,6 +717,7 @@ class _BackupParams:
     skip_fsfreeze: bool
     secret_token: str
     domain: str
+    state: BackupState
 
 
 async def _run_backup_work(params: _BackupParams) -> dict:
@@ -709,10 +728,11 @@ async def _run_backup_work(params: _BackupParams) -> dict:
     vm_hash = params.vm_hash
     execution = params.execution
     disk_paths = params.disk_paths
+    state = params.state
     qemu_client: QemuVmClient | None = None
     fs_frozen = False
     individual_backups: list[Path] = []
-    lock = _backup_locks.setdefault(vm_hash, asyncio.Lock())
+    lock = state.locks.setdefault(vm_hash, asyncio.Lock())
 
     await lock.acquire()
     try:
@@ -738,7 +758,7 @@ async def _run_backup_work(params: _BackupParams) -> dict:
         if not params.skip_fsfreeze:
             try:
                 frozen = await asyncio.wait_for(
-                    asyncio.to_thread(qemu_client.guest_fsfreeze_freeze),
+                    qemu_client.guest_fsfreeze_freeze(),
                     timeout=30,
                 )
                 fs_frozen = True
@@ -763,9 +783,7 @@ async def _run_backup_work(params: _BackupParams) -> dict:
         finally:
             if fs_frozen and qemu_client:
                 try:
-                    thawed = await asyncio.to_thread(
-                        qemu_client.guest_fsfreeze_thaw,
-                    )
+                    thawed = await qemu_client.guest_fsfreeze_thaw()
                     logger.info("Thawed %d filesystem(s) for %s", thawed, vm_hash)
                     fs_frozen = False
                 except Exception as exc:
@@ -805,10 +823,10 @@ async def _run_backup_work(params: _BackupParams) -> dict:
 
     finally:
         lock.release()
-        _backup_locks.pop(vm_hash, None)
+        state.locks.pop(vm_hash, None)
         if fs_frozen and qemu_client:
             try:
-                await asyncio.to_thread(qemu_client.guest_fsfreeze_thaw)
+                await qemu_client.guest_fsfreeze_thaw()
                 logger.info("Thawed filesystems for %s (cleanup)", vm_hash)
             except Exception as exc:
                 logger.error(
@@ -826,15 +844,16 @@ async def _run_backup_work(params: _BackupParams) -> dict:
 
 
 async def _background_backup_wrapper(params: _BackupParams) -> None:
-    """Wrapper that stores result or exception in _backup_results."""
+    """Wrapper that stores result or exception in backup state."""
+    state = params.state
     try:
         meta = await _run_backup_work(params)
-        _backup_results[params.vm_hash] = (time.time(), meta)
+        state.results[params.vm_hash] = (time.time(), meta)
     except Exception as exc:
         logger.exception("Background backup failed for %s", params.vm_hash)
-        _backup_results[params.vm_hash] = (time.time(), exc)
+        state.results[params.vm_hash] = (time.time(), exc)
     finally:
-        _backup_tasks.pop(params.vm_hash, None)
+        state.tasks.pop(params.vm_hash, None)
 
 
 @cors_allow_all
@@ -892,15 +911,12 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
             destination_dir = get_backup_directory()
             cleanup_expired_backups(destination_dir)
 
-            # Evict stale results older than TTL
-            now = time.time()
-            stale = [k for k, (ts, _) in _backup_results.items() if now - ts > _BACKUP_RESULT_TTL]
-            for k in stale:
-                _backup_results.pop(k, None)
+            state: BackupState = request.app["backup_state"]
+            state.evict_stale_results()
 
             # Check for completed background backup result
-            if vm_hash_str in _backup_results:
-                _, result = _backup_results.pop(vm_hash_str)
+            if vm_hash_str in state.results:
+                _, result = state.results.pop(vm_hash_str)
                 if isinstance(result, Exception):
                     return web.Response(
                         status=500,
@@ -909,14 +925,14 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
                 return web.json_response(result, dumps=dumps_for_json)
 
             # Check for in-progress background task
-            if vm_hash_str in _backup_tasks:
+            if vm_hash_str in state.tasks:
                 return web.json_response(
                     {"status": "in_progress"},
                     status=202,
                     dumps=dumps_for_json,
                 )
 
-            lock = _backup_locks.setdefault(vm_hash_str, asyncio.Lock())
+            lock = state.locks.setdefault(vm_hash_str, asyncio.Lock())
             if lock.locked():
                 return web.json_response(
                     {"status": "in_progress"},
@@ -946,12 +962,13 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
                         name = vol_path.stem + ".qcow2"
                         disk_paths[name] = vol_path
 
-            has_space, space_msg = await check_disk_space_for_multiple(
-                list(disk_paths.values()),
-                destination_dir,
-            )
-            if not has_space:
-                return web.Response(status=507, body=space_msg)
+            try:
+                await check_disk_space_for_multiple(
+                    list(disk_paths.values()),
+                    destination_dir,
+                )
+            except InsufficientDiskSpaceError as exc:
+                return web.Response(status=507, body=str(exc))
 
             params = _BackupParams(
                 vm_hash=vm_hash_str,
@@ -961,12 +978,13 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
                 skip_fsfreeze=request.query.get("skip_fsfreeze") == "true",
                 secret_token=request.app["secret_token"],
                 domain=settings.DOMAIN_NAME,
+                state=state,
             )
 
             task = asyncio.create_task(
                 _background_backup_wrapper(params),
             )
-            _backup_tasks[vm_hash_str] = task
+            state.tasks[vm_hash_str] = task
             return web.json_response(
                 {"status": "in_progress"},
                 status=202,
@@ -996,15 +1014,16 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
             return web.Response(status=403, body="Unauthorized sender")
 
         vm_hash_str = str(vm_hash)
+        state: BackupState = request.app["backup_state"]
 
         # Check for in-progress background task or lock
-        if vm_hash_str in _backup_tasks:
+        if vm_hash_str in state.tasks:
             return web.json_response(
                 {"status": "in_progress"},
                 status=202,
                 dumps=dumps_for_json,
             )
-        lock = _backup_locks.get(vm_hash_str)
+        lock = state.locks.get(vm_hash_str)
         if lock and lock.locked():
             return web.json_response(
                 {"status": "in_progress"},
@@ -1013,8 +1032,8 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
             )
 
         # Check for completed background result
-        if vm_hash_str in _backup_results:
-            _, result = _backup_results.pop(vm_hash_str)
+        if vm_hash_str in state.results:
+            _, result = state.results.pop(vm_hash_str)
             if isinstance(result, Exception):
                 return web.Response(status=500, body=f"Backup failed: {result}")
             return web.json_response(result, dumps=dumps_for_json)
@@ -1127,8 +1146,10 @@ async def _parse_restore_upload(
     request: web.Request,
     backup_dir: Path,
     vm_hash: str,
+    max_bytes: int = 0,
 ) -> Path:
     """Stream a multipart rootfs upload to disk."""
+    limit = max_bytes or settings.MAX_RESTORE_UPLOAD_BYTES
     reader = await request.multipart()
     field = await reader.next()
     while field is not None:
@@ -1145,9 +1166,10 @@ async def _parse_restore_upload(
             if not chunk:
                 break
             bytes_written += len(chunk)
-            if bytes_written > settings.MAX_RESTORE_UPLOAD_BYTES:
+            if bytes_written > limit:
+                upload_path.unlink(missing_ok=True)
                 raise web.HTTPRequestEntityTooLarge(
-                    max_size=settings.MAX_RESTORE_UPLOAD_BYTES,
+                    max_size=limit,
                     actual_size=bytes_written,
                 )
             f.write(chunk)
@@ -1206,12 +1228,20 @@ async def operate_restore(
             current_rootfs = Path(execution.vm.resources.rootfs_path)
             backup_dir = get_backup_directory()
 
+            max_upload = execution.message.rootfs.size_mib * 1024 * 1024
+            if request.content_length and request.content_length > max_upload:
+                return web.HTTPRequestEntityTooLarge(
+                    max_size=max_upload,
+                    actual_size=request.content_length,
+                )
+
             content_type = request.content_type or ""
             if content_type.startswith("multipart/"):
                 temp_file = await _parse_restore_upload(
                     request,
                     backup_dir,
                     str(vm_hash),
+                    max_upload,
                 )
             else:
                 temp_file = await _parse_restore_json(request, backup_dir)
@@ -1219,11 +1249,11 @@ async def operate_restore(
             await verify_qemu_disk(temp_file)
 
             new_size = await get_qemu_disk_virtual_size(temp_file)
-            current_size = await get_qemu_disk_virtual_size(current_rootfs)
-            if new_size > current_size:
+            max_size = execution.message.rootfs.size_mib * 1024 * 1024
+            if new_size > max_size:
                 return web.HTTPBadRequest(
                     body=f"New rootfs virtual size ({new_size} bytes) exceeds "
-                    f"current rootfs ({current_size} bytes). "
+                    f"declared rootfs size ({max_size} bytes). "
                     f"Restore cannot increase disk size.",
                 )
 

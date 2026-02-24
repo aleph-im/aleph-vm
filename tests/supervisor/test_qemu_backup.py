@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from aleph.vm.controllers.qemu.backup import (
+    InsufficientDiskSpaceError,
     _sha256_file,
     backup_metadata,
     check_disk_space_for_multiple,
@@ -78,11 +79,13 @@ async def test_check_disk_space_multiple_sufficient(mocker, tmp_path):
         "aleph.vm.controllers.qemu.backup.get_qemu_disk_virtual_size",
         AsyncMock(return_value=1024),
     )
+    fake_usage = mocker.MagicMock(free=1024 * 1024)
+    mocker.patch(
+        "aleph.vm.controllers.qemu.backup.shutil.disk_usage",
+        return_value=fake_usage,
+    )
 
-    ok, msg = await check_disk_space_for_multiple([d1, d2], tmp_path)
-
-    assert ok is True
-    assert msg == ""
+    await check_disk_space_for_multiple([d1, d2], tmp_path)
 
 
 @pytest.mark.asyncio
@@ -103,10 +106,8 @@ async def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
         return_value=fake_usage,
     )
 
-    ok, msg = await check_disk_space_for_multiple([d1, d2], tmp_path)
-
-    assert ok is False
-    assert "2 disk(s)" in msg
+    with pytest.raises(InsufficientDiskSpaceError, match="2 disk"):
+        await check_disk_space_for_multiple([d1, d2], tmp_path)
 
 
 # --- create_qemu_disk_backup ---
@@ -455,7 +456,7 @@ def test_backup_metadata_no_sidecar(tmp_path):
 
     meta = backup_metadata(tar_path)
 
-    assert meta["checksum"] == "sha256:"
+    assert "checksum" not in meta
     assert meta["backup_id"] == "vm1-20240101T000000Z"
 
 
