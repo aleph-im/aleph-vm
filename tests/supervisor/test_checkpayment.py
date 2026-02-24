@@ -278,7 +278,6 @@ async def test_removed_message_status(mocker, fake_instance_content):
     message = InstanceContent.model_validate(fake_instance_content)
 
     mocker.patch.object(VmExecution, "is_running", new=True)
-    mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
     execution = VmExecution(
         vm_hash=hash,
@@ -295,6 +294,16 @@ async def test_removed_message_status(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    # Consecutive-confirmation counter requires 3 checks before stopping
+    mock_stop_vm = mocker.patch.object(pool, "stop_vm", new=mocker.AsyncMock())
+    mock_forget_vm = mocker.patch.object(pool, "forget_vm")
 
-    execution.stop.assert_called_with()
+    await check_payment(pool=pool)
+    mock_stop_vm.assert_not_called()
+
+    await check_payment(pool=pool)
+    mock_stop_vm.assert_not_called()
+
+    await check_payment(pool=pool)
+    mock_stop_vm.assert_called_once_with(hash)
+    mock_forget_vm.assert_called_once_with(hash)
