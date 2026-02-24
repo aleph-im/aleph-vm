@@ -851,14 +851,16 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     If a non-expired backup already exists for the VM it is returned
     without re-freezing.
 
+    Backups always run asynchronously. Returns 202 immediately; poll
+    ``GET /control/machine/{ref}/backup`` for progress or result.
+
     Query Parameters:
-        async: Set to 'true' to run backup in background (returns 202).
         include_volumes: Set to 'true' to include persistent volumes.
         skip_fsfreeze: Set to 'true' to skip filesystem freeze.
 
     Returns:
         JSON with backup_id, size, checksum, volumes, expires_at.
-        202 with status when async=true and backup is in progress.
+        202 when backup is in progress.
 
     Raises:
         400: VM not running or not a QEMU VM.
@@ -869,7 +871,6 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     vm_hash_str = str(vm_hash)
-    run_async = request.query.get("async") == "true"
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
@@ -962,19 +963,15 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
                 domain=settings.DOMAIN_NAME,
             )
 
-            if run_async:
-                task = asyncio.create_task(
-                    _background_backup_wrapper(params),
-                )
-                _backup_tasks[vm_hash_str] = task
-                return web.json_response(
-                    {"status": "in_progress"},
-                    status=202,
-                    dumps=dumps_for_json,
-                )
-
-            meta = await _run_backup_work(params)
-            return web.json_response(meta, dumps=dumps_for_json)
+            task = asyncio.create_task(
+                _background_backup_wrapper(params),
+            )
+            _backup_tasks[vm_hash_str] = task
+            return web.json_response(
+                {"status": "in_progress"},
+                status=202,
+                dumps=dumps_for_json,
+            )
 
         except web.HTTPException:
             raise
