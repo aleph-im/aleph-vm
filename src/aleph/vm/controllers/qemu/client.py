@@ -111,10 +111,7 @@ class QemuVmClient:
             return self._qga_client
         qga_path: Path | None = getattr(self.vm, "qga_socket_path", None)
         if not qga_path or not qga_path.exists():
-            msg = (
-                "QEMU Guest Agent socket not available. "
-                "Ensure qemu-guest-agent is installed in the VM image."
-            )
+            msg = "QEMU Guest Agent socket not available. " "Ensure qemu-guest-agent is installed in the VM image."
             raise RuntimeError(msg)
         client = QemuGuestAgentClient(qga_path)
         await client.connect()

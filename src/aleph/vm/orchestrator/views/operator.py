@@ -77,12 +77,10 @@ class BackupState:
     def evict_stale_results(self) -> None:
         """Remove results older than the TTL."""
         now = time.time()
-        stale = [
-            k for k, (ts, _) in self.results.items()
-            if now - ts > _BACKUP_RESULT_TTL
-        ]
+        stale = [k for k, (ts, _) in self.results.items() if now - ts > _BACKUP_RESULT_TTL]
         for k in stale:
             self.results.pop(k, None)
+
 
 _security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
 

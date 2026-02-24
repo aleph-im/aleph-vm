@@ -30,11 +30,13 @@ from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.
 # Only these should trigger VM shutdown — never an unexpected or missing value.
-_TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset({
-    MessageStatus.REJECTED,
-    MessageStatus.FORGOTTEN,
-    MessageStatus.REMOVED,
-})
+_TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset(
+    {
+        MessageStatus.REJECTED,
+        MessageStatus.FORGOTTEN,
+        MessageStatus.REMOVED,
+    }
+)
 
 # Track consecutive terminal-status confirmations per VM before stopping.
 # Prevents a single bad API response from killing a running instance.
@@ -211,12 +213,17 @@ async def check_payment(pool: VmPool):
             if strikes < STOP_AFTER_CONFIRMATIONS:
                 logger.info(
                     "VM %s has terminal status %s (%d/%d confirmations)",
-                    vm_hash, message_status, strikes, STOP_AFTER_CONFIRMATIONS,
+                    vm_hash,
+                    message_status,
+                    strikes,
+                    STOP_AFTER_CONFIRMATIONS,
                 )
                 continue
             logger.info(
                 "Stopping %s after %d consecutive %s confirmations",
-                vm_hash, strikes, message_status,
+                vm_hash,
+                strikes,
+                message_status,
             )
             del _terminal_strike_count[key]
             await pool.stop_vm(vm_hash)
