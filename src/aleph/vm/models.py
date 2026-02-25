@@ -167,6 +167,11 @@ class VmExecution:
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
                     changed = True
+                elif target[protocol]:
+                    # Ensure rule exists even if protocol unchanged
+                    # (handles reboot/restart where nftables rules were lost)
+                    add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
         # Save to DB only if something changed
