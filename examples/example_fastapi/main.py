@@ -5,7 +5,7 @@ import os
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from os import listdir
 from pathlib import Path
@@ -65,6 +65,7 @@ class Failure:
     host: str
     reason: str
     error_type: str | None = None
+    result: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -126,7 +127,7 @@ async def try_hosts_first_success(
         else:
             # Result returned but wasn't successful (e.g., empty response)
             reason = result.get("reason", "Unknown failure") if isinstance(result, dict) else "Non-successful response"
-            failures.append(Failure(host=host, reason=reason))
+            failures.append(Failure(host=host, reason=reason, result=result))
 
     return None, failures
 
