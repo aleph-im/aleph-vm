@@ -330,10 +330,10 @@ jobs:
           name: "aleph-vm.debian-12.deb"
           path: packaging/target/
 
-#      - name: Build Debian Package
-#        run: |
-#          cd packaging && make all-podman-debian-12 && cd ..
-#          ls packaging/target
+      #      - name: Build Debian Package
+      #        run: |
+      #          cd packaging && make all-podman-debian-12 && cd ..
+      #          ls packaging/target
 
       - name: Get droplet ip and export it in env
         # the until loop wait till the network is available.
