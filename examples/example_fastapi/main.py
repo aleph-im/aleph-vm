@@ -216,7 +216,7 @@ async def read_aleph_messages() -> dict[str, MessagesResponse]:
     result, failures = await try_hosts_first_success(
         hosts=ALEPH_API_HOSTS,
         task_factory=lambda host: get_aleph_messages(host, message_filter),
-        is_success=lambda r: bool(r.get("messages")),
+        is_success=lambda r: isinstance(r, dict) and bool(r.get("messages")),
     )
 
     if result is not None:
