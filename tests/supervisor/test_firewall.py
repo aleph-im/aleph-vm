@@ -1,13 +1,18 @@
 import pytest
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.instance import InstanceContent
 
+from aleph.vm.models import VmExecution
 from aleph.vm.network import firewall
 from aleph.vm.network.firewall import (
     add_entity_if_not_present,
+    check_port_redirect_exists,
     execute_json_nft_commands,
     get_base_chains_for_hook,
     get_existing_nftables_ruleset,
     initialize_nftables,
 )
+from aleph.vm.network.port_availability_checker import is_host_port_available
 
 mock_sample_base_nftables = [
     {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
@@ -888,3 +893,356 @@ def test_get_existing_nftables_ruleset_with_missing_nftables_key(mocker):
     result = get_existing_nftables_ruleset()
 
     assert result == []
+
+
+# ============================================================
+# Tests for port forwarding persistence fix
+# ============================================================
+
+
+@pytest.fixture()
+def fake_instance_content():
+    """Fixture providing a fake instance content for testing."""
+    return {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {"reproducible": False, "internet": True, "aleph_api": True, "shared_cache": False},
+        "resources": {"vcpus": 1, "memory": 256, "seconds": 30, "published_ports": None},
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": None,
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+
+
+def create_mock_execution(mocker, fake_instance_content):
+    """Create a mock VmExecution with necessary attributes."""
+    execution = VmExecution(
+        vm_hash=ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"),
+        message=InstanceContent.model_validate(fake_instance_content),
+        original=InstanceContent.model_validate(fake_instance_content),
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+
+    # Mock the vm attribute with tap_interface
+    mock_interface = mocker.MagicMock()
+    mock_interface.guest_ip.ip = "172.16.0.2"
+    execution.vm = mocker.MagicMock()
+    execution.vm.vm_id = 1
+    execution.vm.tap_interface = mock_interface
+
+    return execution
+
+
+# Tests for check_port_redirect_exists()
+
+
+def test_check_port_redirect_exists_found(mocker):
+    """Test that check_port_redirect_exists returns True when exact rule exists."""
+    mock_ruleset = [
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                    {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}},
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 24000}},
+                    {"dnat": {"addr": "172.16.0.2", "port": 22}},
+                ],
+            }
+        }
+    ]
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
+
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is True
+
+
+def test_check_port_redirect_exists_not_found(mocker):
+    """Test that check_port_redirect_exists returns False when rule doesn't exist."""
+    mock_ruleset = [
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 24001}},
+                    {"dnat": {"addr": "172.16.0.3", "port": 80}},
+                ],
+            }
+        }
+    ]
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
+
+    # Different host port
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is False
+
+
+def test_check_port_redirect_exists_wrong_vm_ip(mocker):
+    """Test returns False when host_port matches but VM IP differs."""
+    mock_ruleset = [
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 24000}},
+                    {"dnat": {"addr": "172.16.0.99", "port": 22}},  # Different VM IP
+                ],
+            }
+        }
+    ]
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
+
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is False
+
+
+def test_check_port_redirect_exists_wrong_protocol(mocker):
+    """Test returns False when port matches but protocol differs."""
+    mock_ruleset = [
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "udp", "field": "dport"}}, "right": 24000}},
+                    {"dnat": {"addr": "172.16.0.2", "port": 22}},
+                ],
+            }
+        }
+    ]
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
+
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is False
+
+
+def test_check_port_redirect_exists_empty_ruleset(mocker):
+    """Test returns False when ruleset is empty."""
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=[])
+
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is False
+
+
+def test_check_port_redirect_exists_wrong_chain(mocker):
+    """Test returns False when rule is in a different chain."""
+    mock_ruleset = [
+        {
+            "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "some-other-chain",  # Not our chain
+                "expr": [
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 24000}},
+                    {"dnat": {"addr": "172.16.0.2", "port": 22}},
+                ],
+            }
+        }
+    ]
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_ruleset)
+
+    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp")
+    assert result is False
+
+
+# Tests for is_host_port_available()
+
+
+def test_is_host_port_available_free(mocker):
+    """Test returns True when port is available for binding."""
+    mock_tcp_socket = mocker.MagicMock()
+    mock_tcp_socket.__enter__ = mocker.MagicMock(return_value=mock_tcp_socket)
+    mock_tcp_socket.__exit__ = mocker.MagicMock(return_value=False)
+
+    mock_udp_socket = mocker.MagicMock()
+    mock_udp_socket.__enter__ = mocker.MagicMock(return_value=mock_udp_socket)
+    mock_udp_socket.__exit__ = mocker.MagicMock(return_value=False)
+
+    # Return different mock objects for each socket() call
+    mocker.patch("socket.socket", side_effect=[mock_tcp_socket, mock_udp_socket])
+
+    result = is_host_port_available(24000)
+    assert result is True
+    mock_tcp_socket.bind.assert_called_once_with(("0.0.0.0", 24000))
+    mock_udp_socket.bind.assert_called_once_with(("0.0.0.0", 24000))
+
+
+def test_is_host_port_available_in_use(mocker):
+    """Test returns False when port is already bound."""
+    mock_socket = mocker.MagicMock()
+    mock_socket.__enter__ = mocker.MagicMock(return_value=mock_socket)
+    mock_socket.__exit__ = mocker.MagicMock(return_value=False)
+    mock_socket.bind.side_effect = OSError("Address already in use")
+
+    mocker.patch("socket.socket", return_value=mock_socket)
+
+    result = is_host_port_available(24000)
+    assert result is False
+
+
+# Tests for recreate_port_redirect_rules()
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_rule_exists(mocker, fake_instance_content):
+    """Test that existing rules are skipped (software restart scenario)."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
+
+    # Mock: rule already exists
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=True)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should NOT create new rule since it exists
+    mock_add_rule.assert_not_called()
+    # mapped_ports should be unchanged
+    assert execution.mapped_ports[22]["host"] == 24000
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_missing_port_available(mocker, fake_instance_content):
+    """Test that missing rules are recreated with saved port (reboot scenario)."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
+
+    # Mock: rule doesn't exist, but port is available
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
+    mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should create rule with SAME saved port
+    mock_add_rule.assert_called_once()
+    call_args = mock_add_rule.call_args
+    assert call_args[0][2] == 24000  # host_port preserved
+    assert call_args[0][3] == 22  # vm_port
+    assert execution.mapped_ports[22]["host"] == 24000
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_missing_port_unavailable(mocker, fake_instance_content):
+    """Test that new port is assigned when saved port is unavailable."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
+
+    # Mock: rule doesn't exist AND port is not available
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
+    mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
+    mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_save = mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should create rule with NEW port
+    mock_add_rule.assert_called_once()
+    call_args = mock_add_rule.call_args
+    assert call_args[0][2] == 24050  # new host_port
+    assert call_args[0][3] == 22  # vm_port unchanged
+    # mapped_ports should be updated with new port
+    assert execution.mapped_ports[22]["host"] == 24050
+    # Should save to DB since port changed
+    mock_save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_empty(mocker, fake_instance_content):
+    """Test early return when no mapped_ports exist."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {}
+
+    mock_check = mocker.patch("aleph.vm.models.check_port_redirect_exists")
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should not check anything
+    mock_check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_multiple_ports(mocker, fake_instance_content):
+    """Test recreating rules for multiple ports with mixed scenarios."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {
+        22: {"host": 24000, "tcp": True, "udp": False},  # Rule exists
+        80: {"host": 24001, "tcp": True, "udp": False},  # Rule missing, port available
+        443: {"host": 24002, "tcp": True, "udp": False},  # Rule missing, port unavailable
+    }
+
+    # Mock check_port_redirect_exists to return different values per call
+    def check_exists_side_effect(host_port, vm_ip, vm_port, protocol):
+        return vm_port == 22  # Only port 22 rule exists
+
+    # Mock is_host_port_available to return different values per port
+    def port_available_side_effect(port):
+        return port == 24001  # Only port 24001 is available
+
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", side_effect=check_exists_side_effect)
+    mocker.patch("aleph.vm.models.is_host_port_available", side_effect=port_available_side_effect)
+    mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_save = mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should create rules for ports 80 and 443, but not 22 (already exists)
+    assert mock_add_rule.call_count == 2
+
+    # Port 22: skipped (rule exists)
+    assert execution.mapped_ports[22]["host"] == 24000
+
+    # Port 80: recreated with same port (port available)
+    assert execution.mapped_ports[80]["host"] == 24001
+
+    # Port 443: reassigned to new port (port unavailable)
+    assert execution.mapped_ports[443]["host"] == 24050
+
+    # Should save since port 443 changed
+    mock_save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_both_protocols(mocker, fake_instance_content):
+    """Test recreating rules when both TCP and UDP are enabled."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": True}}
+
+    # Mock: no rules exist, port is available
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
+    mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should create rules for both TCP and UDP
+    assert mock_add_rule.call_count == 2
+
+    # Check both protocols were used
+    protocols_used = {call[0][4] for call in mock_add_rule.call_args_list}
+    assert protocols_used == {"tcp", "udp"}

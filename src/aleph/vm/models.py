@@ -30,9 +30,16 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
-from aleph.vm.network.firewall import add_port_redirect_rule, remove_port_redirect_rule
+from aleph.vm.network.firewall import (
+    add_port_redirect_rule,
+    check_port_redirect_exists,
+    remove_port_redirect_rule,
+)
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.network.port_availability_checker import fast_get_available_host_port
+from aleph.vm.network.port_availability_checker import (
+    fast_get_available_host_port,
+    is_host_port_available,
+)
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_record,
@@ -159,6 +166,73 @@ class VmExecution:
 
         # Save to DB
         await self.save()
+
+    async def recreate_port_redirect_rules(self) -> None:
+        """Recreate nftables port redirect rules from saved mapped_ports after restart.
+
+        This method is called during load_persistent_executions() to ensure that
+        port redirect rules are properly restored after a software restart or host reboot.
+
+        For each saved port mapping:
+        1. Check if nftables rule already exists → skip if yes (software restart case)
+        2. If rule doesn't exist:
+           a. Check if saved host port is available
+           b. If available → create rule with saved port (reboot case, port still free)
+           c. If not available → assign new random port, create rule, log warning
+        """
+        if not self.mapped_ports:
+            return
+
+        assert self.vm, "The VM attribute has to be set before calling recreate_port_redirect_rules()"
+
+        interface = self.vm.tap_interface
+        vm_ip = str(interface.guest_ip.ip)
+        port_changed = False
+
+        for vm_port, mapping in list(self.mapped_ports.items()):
+            host_port = int(mapping["host"])
+
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if not mapping.get(protocol):
+                    continue
+
+                # Check if rule already exists (software restart case)
+                if check_port_redirect_exists(host_port, vm_ip, vm_port, protocol):
+                    logger.debug(
+                        "Port redirect rule already exists for %s:%d -> vm:%d, skipping", protocol, host_port, vm_port
+                    )
+                    continue
+
+                # Rule doesn't exist - check if host port is available
+                if is_host_port_available(host_port):
+                    # Create rule with saved port (reboot case, port still free)
+                    add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                    logger.info(
+                        "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
+                        protocol,
+                        host_port,
+                        vm_port,
+                        self.vm_hash,
+                    )
+                else:
+                    # Port taken by something else - need new port
+                    new_host_port = fast_get_available_host_port()
+                    add_port_redirect_rule(self.vm.vm_id, interface, new_host_port, vm_port, protocol)
+                    logger.warning(
+                        "Port %d unavailable, reassigned to %d for vm:%d (%s) protocol %s",
+                        host_port,
+                        new_host_port,
+                        vm_port,
+                        self.vm_hash,
+                        protocol,
+                    )
+                    # Update mapping with new port
+                    mapping["host"] = new_host_port
+                    port_changed = True
+
+        # Save to DB if host port changed
+        if port_changed:
+            await self.save()
 
     async def removed_all_ports_redirection(self):
         if not self.vm:
