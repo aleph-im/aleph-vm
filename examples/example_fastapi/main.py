@@ -276,7 +276,7 @@ async def connect_ipv4():
     result, failures = await try_hosts_first_success(
         hosts=ipv4_hosts,
         task_factory=lambda host: check_url(host, timeout_seconds, socket_family=socket.AF_INET, accept_404=True),
-        is_success=lambda r: r.get("result", False),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
     )
 
     if result is not None:
@@ -299,7 +299,7 @@ async def connect_ipv6():
     result, failures = await try_hosts_first_success(
         hosts=ipv6_hosts,
         task_factory=lambda host: check_url(host, timeout_seconds, socket_family=socket.AF_INET6, accept_404=True),
-        is_success=lambda r: r.get("result", False),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
     )
 
     if result is not None:
@@ -349,7 +349,7 @@ async def read_internet():
     result, failures = await try_hosts_first_success(
         hosts=internet_hosts,
         task_factory=lambda host: check_url(host, timeout_seconds),
-        is_success=lambda r: r.get("result", False),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
     )
 
     if result is not None:
@@ -365,7 +365,7 @@ async def get_a_message():
     result, failures = await try_hosts_first_success(
         hosts=ALEPH_API_HOSTS,
         task_factory=lambda host: get_aleph_message(host, item_hash),
-        is_success=lambda r: bool(r.get("item_hash")),
+        is_success=lambda r: isinstance(r, dict) and bool(r.get("item_hash")),
     )
 
     if result is not None:
