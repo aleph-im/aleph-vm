@@ -103,31 +103,34 @@ async def try_hosts_first_success(
 
     while tasks:
         done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        task = done.pop()
-        host = task_to_host[task]
 
-        try:
-            result = task.result()
-        except Exception as e:
-            logger.warning(f"Task failed for host {host}: {e}", exc_info=True)
-            failures.append(
-                Failure(
-                    host=host,
-                    reason=str(e),
-                    error_type=type(e).__name__,
+        for task in done:
+            host = task_to_host[task]
+
+            try:
+                result = task.result()
+            except Exception as e:
+                logger.warning(f"Task failed for host {host}: {e}", exc_info=True)
+                failures.append(
+                    Failure(
+                        host=host,
+                        reason=str(e),
+                        error_type=type(e).__name__,
+                    )
                 )
-            )
-            continue
+                continue
 
-        if is_success(result):
-            # Cancel remaining tasks
-            for t in tasks:
-                t.cancel()
-            return result, failures
-        else:
-            # Result returned but wasn't successful (e.g., empty response)
-            reason = result.get("reason", "Unknown failure") if isinstance(result, dict) else "Non-successful response"
-            failures.append(Failure(host=host, reason=reason, result=result))
+            if is_success(result):
+                # Cancel remaining tasks
+                for t in tasks:
+                    t.cancel()
+                return result, failures
+            else:
+                # Result returned but wasn't successful (e.g., empty response)
+                reason = (
+                    result.get("reason", "Unknown failure") if isinstance(result, dict) else "Non-successful response"
+                )
+                failures.append(Failure(host=host, reason=reason, result=result))
 
     return None, failures
 
