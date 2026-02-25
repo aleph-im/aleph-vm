@@ -214,7 +214,8 @@ jobs:
           sleep 5
 
       - name: "Test runtime: Debian 11 (retro-compat)"
-        run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "ad67c6857d6319486794ec2a3d14b584ac7e6c27593f3172148e486dbd1e0e21" "?retro-compatibility=true"
+        run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "ad67c6857d6319486794ec2a3d14b584ac7e6c27593f3172148e486dbd1e0e21"
+          "?retro-compatibility=true"
 
       - name: "Test runtime: Debian 12, SDK 0.9.0"
         run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
