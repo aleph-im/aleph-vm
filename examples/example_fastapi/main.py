@@ -5,10 +5,11 @@ import os
 import socket
 import subprocess
 import sys
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from os import listdir
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine, TypeVar
 
 import aiohttp
 from aleph_message.models import (
@@ -55,6 +56,83 @@ ALEPH_API_HOSTS: list[str] = [
     "https://official.aleph.cloud",
     "https://api.aleph.im",
 ]
+
+
+@dataclass
+class Failure:
+    """Represents a failed API call attempt."""
+
+    host: str
+    reason: str
+    error_type: str | None = None
+    result: Any = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+T = TypeVar("T")
+
+
+async def try_hosts_first_success(
+    hosts: list[str],
+    task_factory: Callable[[str], Coroutine[Any, Any, T]],
+    is_success: Callable[[T], bool],
+) -> tuple[T | None, list[Failure]]:
+    """
+    Try multiple hosts in parallel, return the first successful result.
+
+    Args:
+        hosts: List of API hosts to try
+        task_factory: Async function that takes a host and returns a result
+        is_success: Predicate to check if a result is successful
+
+    Returns:
+        Tuple of (successful_result or None, list of failures)
+    """
+    # Map tasks to their hosts for error reporting
+    task_to_host: dict[asyncio.Task, str] = {}
+    tasks: set[asyncio.Task] = set()
+
+    for host in hosts:
+        task = asyncio.create_task(task_factory(host))
+        tasks.add(task)
+        task_to_host[task] = host
+
+    failures: list[Failure] = []
+
+    while tasks:
+        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+        for task in done:
+            host = task_to_host[task]
+
+            try:
+                result = task.result()
+            except Exception as e:
+                logger.warning(f"Task failed for host {host}: {e}", exc_info=True)
+                failures.append(
+                    Failure(
+                        host=host,
+                        reason=str(e),
+                        error_type=type(e).__name__,
+                    )
+                )
+                continue
+
+            if is_success(result):
+                # Cancel remaining tasks
+                for t in tasks:
+                    t.cancel()
+                return result, failures
+            else:
+                # Result returned but wasn't successful (e.g., empty response)
+                reason = (
+                    result.get("reason", "Unknown failure") if isinstance(result, dict) else "Non-successful response"
+                )
+                failures.append(Failure(host=host, reason=reason, result=result))
+
+    return None, failures
 
 
 @app.on_event("startup")
@@ -135,29 +213,15 @@ async def read_aleph_messages() -> dict[str, MessagesResponse]:
     """Read data from Aleph using the Aleph Client library."""
     message_filter = MessageFilter(hashes=["f246f873c3e0f637a15c566e7a465d2ecbb83eaa024d54ccb8fb566b549a929e"])
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(get_aleph_messages(host, message_filter)) for host in ALEPH_API_HOSTS
-    }
+    result, failures = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=lambda host: get_aleph_messages(host, message_filter),
+        is_success=lambda r: isinstance(r, dict) and bool(r.get("messages")),
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result.get("messages", None):
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {"Messages": result}
-        else:
-            failures.append(result)
-            continue
-
-    # No Aleph API Host was reachable
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        return {"Messages": result}
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 @app.get("/dns")
@@ -209,30 +273,15 @@ async def connect_ipv4():
     ]
     timeout_seconds = 5
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET, accept_404=True))
-        for host in ipv4_hosts
-    }
+    result, failures = await try_hosts_first_success(
+        hosts=ipv4_hosts,
+        task_factory=lambda host: check_url(host, timeout_seconds, socket_family=socket.AF_INET, accept_404=True),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result["result"]:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            failures.append(result)
-            continue
-
-    # No IPv6 URL was reachable, return the collected failure reasons
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        return result
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 @app.get("/ip/6")
@@ -247,30 +296,15 @@ async def connect_ipv6():
     ]
     timeout_seconds = 5
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(check_url(host, timeout_seconds, socket_family=socket.AF_INET6, accept_404=True))
-        for host in ipv6_hosts
-    }
+    result, failures = await try_hosts_first_success(
+        hosts=ipv6_hosts,
+        task_factory=lambda host: check_url(host, timeout_seconds, socket_family=socket.AF_INET6, accept_404=True),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result["result"]:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            failures.append(result)
-            continue
-
-    # No IPv6 URL was reachable, return the collected failure reasons
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        return result
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 async def check_url(
@@ -312,54 +346,31 @@ async def read_internet():
     ]
     timeout_seconds = 5
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(check_url(host, timeout_seconds)) for host in internet_hosts}
+    result, failures = await try_hosts_first_success(
+        hosts=internet_hosts,
+        task_factory=lambda host: check_url(host, timeout_seconds),
+        is_success=lambda r: isinstance(r, dict) and r.get("result", False),
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result["result"]:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            failures.append(result)
-            continue
-
-    # No URL was reachable, return the collected failure reasons
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        return result
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 @app.get("/get_a_message")
 async def get_a_message():
     """Get a message from the Aleph.im network"""
     item_hash = "3fc0aa9569da840c43e7bd2033c3c580abb46b007527d6d20f2d4e98e867f7af"
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_message(host, item_hash)) for host in ALEPH_API_HOSTS}
 
-    failures = []
+    result, failures = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=lambda host: get_aleph_message(host, item_hash),
+        is_success=lambda r: isinstance(r, dict) and bool(r.get("item_hash")),
+    )
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        result = done.pop().result()
-
-        if result.get("item_hash", None):
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return result
-        else:
-            failures.append(result)
-            continue
-
-    # No Aleph API Host was reachable
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        return result
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 async def get_aleph_message(api_host: str, item_hash: str):
@@ -379,35 +390,27 @@ async def get_aleph_message(api_host: str, item_hash: str):
 @app.post("/post_a_message")
 async def post_with_remote_account():
     """Post a message on the Aleph.im network using the remote account of the host."""
-    failures = []
     try:
         account = await RemoteAccount.from_crypto_host(host="http://localhost", unix_socket="/tmp/socat-socket")
-
-        # Create a list of tasks to check the URLs in parallel
-        tasks: set[asyncio.Task] = {
-            asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS
-        }
-
-        # While no tasks have completed, keep waiting for the next one to finish
-        while tasks:
-            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            message, status = done.pop().result()
-
-            if status == MessageStatus.PROCESSED:
-                # The task was successful, cancel the remaining tasks and return the result
-                for task in tasks:
-                    task.cancel()
-                return {
-                    "message": message,
-                }
-            else:
-                failures.append(message)
-                continue
     except aiohttp.client_exceptions.UnixClientConnectorError:
-        failures.append({"error": "Could not connect to the remote account"})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "result": False,
+                "failures": [Failure(host="localhost", reason="Could not connect to the remote account").to_dict()],
+            },
+        )
 
-    # No API Host was reachable
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    result, failures = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=lambda host: send_post_aleph_message(host, account),
+        is_success=lambda r: isinstance(r, tuple) and r[1] == MessageStatus.PROCESSED,
+    )
+
+    if result is not None:
+        message, _ = result
+        return {"message": message}
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 @app.post("/post_a_message_local_account")
@@ -417,29 +420,16 @@ async def post_with_local_account():
 
     account = get_fallback_account()
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(send_post_aleph_message(host, account)) for host in ALEPH_API_HOSTS}
+    result, failures = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=lambda host: send_post_aleph_message(host, account),
+        is_success=lambda r: isinstance(r, tuple) and r[1] == MessageStatus.PROCESSED,
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        message, status = done.pop().result()
-
-        if status == MessageStatus.PROCESSED:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {
-                "message": message,
-            }
-        else:
-            failures.append(message)
-            continue
-
-    # No API Host was reachable
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        message, _ = result
+        return {"message": message}
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 async def send_post_aleph_message(api_host: str, account: RemoteAccount | ETHAccount):
@@ -483,31 +473,16 @@ async def post_a_file():
     account = get_fallback_account()
     file_path = Path(__file__).absolute()
 
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {
-        asyncio.create_task(send_store_aleph_message(host, account, file_path)) for host in ALEPH_API_HOSTS
-    }
+    result, failures = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=lambda host: send_store_aleph_message(host, account, file_path),
+        is_success=lambda r: isinstance(r, tuple) and r[1] == MessageStatus.PROCESSED,
+    )
 
-    failures = []
-
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        message, status = done.pop().result()
-
-        if status == MessageStatus.PROCESSED:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {
-                "message": message,
-            }
-        else:
-            failures.append(message)
-            continue
-
-    # No API Host was reachable
-    return JSONResponse(status_code=503, content={"result": False, "failures": failures})
+    if result is not None:
+        message, _ = result
+        return {"message": message}
+    return JSONResponse(status_code=503, content={"result": False, "failures": [f.to_dict() for f in failures]})
 
 
 async def send_store_aleph_message(api_host: str, account: ETHAccount, file_path: Path):
@@ -647,22 +622,14 @@ def platform_pip_freeze() -> list[str]:
 
 @app.event(filters=filters)
 async def aleph_event(event) -> dict[str, str]:
-    # Create a list of tasks to check the URLs in parallel
-    tasks: set[asyncio.Task] = {asyncio.create_task(get_aleph_json(host)) for host in ALEPH_API_HOSTS}
+    result, _ = await try_hosts_first_success(
+        hosts=ALEPH_API_HOSTS,
+        task_factory=get_aleph_json,
+        is_success=lambda r: r is True,
+    )
 
-    # While no tasks have completed, keep waiting for the next one to finish
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        status = done.pop().result()
-
-        if status:
-            # The task was successful, cancel the remaining tasks and return the result
-            for task in tasks:
-                task.cancel()
-            return {"result": "Good"}
-        else:
-            continue
-
+    if result is not None:
+        return {"result": "Good"}
     return {"result": "Bad"}
 
 
