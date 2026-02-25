@@ -21,15 +21,15 @@ def is_host_port_available(port: int) -> bool:
         True if the port is available for binding on both TCP and UDP
     """
     try:
-        # Try TCP
+        # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
+        # This is a short-lived probe (bind + close), not a listening service.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
             tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            tcp_sock.bind(("127.0.0.1", port))
+            tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
-        # Try UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            udp_sock.bind(("127.0.0.1", port))
+            udp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
         return True
     except OSError:
@@ -54,15 +54,15 @@ def get_available_host_port(start_port: int | None = None) -> int:
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
                 continue
-            # Try both TCP and UDP on loopback to check availability
+            # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
+            # This is a short-lived probe (bind + close), not a listening service.
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                tcp_sock.bind(("127.0.0.1", port))
-                tcp_sock.listen(1)
+                tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                udp_sock.bind(("127.0.0.1", port))
+                udp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             return port
 
