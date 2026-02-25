@@ -1243,6 +1243,38 @@ async def test_recreate_port_redirect_rules_both_protocols(mocker, fake_instance
     # Should create rules for both TCP and UDP
     assert mock_add_rule.call_count == 2
 
-    # Check both protocols were used
+    # Check both protocols were used with the SAME host port
     protocols_used = {call[0][4] for call in mock_add_rule.call_args_list}
     assert protocols_used == {"tcp", "udp"}
+    host_ports_used = {call[0][2] for call in mock_add_rule.call_args_list}
+    assert host_ports_used == {24000}, "Both protocols must use the same host port"
+
+
+@pytest.mark.asyncio
+async def test_recreate_port_redirect_rules_both_protocols_port_unavailable(mocker, fake_instance_content):
+    """Test that when both TCP and UDP need reassignment, they get the SAME new host port."""
+    execution = create_mock_execution(mocker, fake_instance_content)
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": True}}
+
+    # Mock: no rules exist AND port is unavailable
+    mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
+    mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
+    mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
+    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_save = mocker.patch.object(execution, "save", new=mocker.AsyncMock())
+
+    await execution.recreate_port_redirect_rules()
+
+    # Should create rules for both TCP and UDP
+    assert mock_add_rule.call_count == 2
+
+    # Both protocols must use the SAME new host port
+    host_ports_used = {call[0][2] for call in mock_add_rule.call_args_list}
+    assert host_ports_used == {24050}, "Both protocols must share the same reassigned host port"
+
+    protocols_used = {call[0][4] for call in mock_add_rule.call_args_list}
+    assert protocols_used == {"tcp", "udp"}
+
+    # Mapping should reflect the single new port
+    assert execution.mapped_ports[22]["host"] == 24050
+    mock_save.assert_called_once()

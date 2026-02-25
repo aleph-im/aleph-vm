@@ -192,43 +192,45 @@ class VmExecution:
         for vm_port, mapping in list(self.mapped_ports.items()):
             host_port = int(mapping["host"])
 
+            # Collect which protocols need rules created (skip those that already exist)
+            protocols_to_create = []
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if not mapping.get(protocol):
                     continue
 
-                # Check if rule already exists (software restart case)
                 if check_port_redirect_exists(host_port, vm_ip, vm_port, protocol):
                     logger.debug(
                         "Port redirect rule already exists for %s:%d -> vm:%d, skipping", protocol, host_port, vm_port
                     )
-                    continue
-
-                # Rule doesn't exist - check if host port is available
-                if is_host_port_available(host_port):
-                    # Create rule with saved port (reboot case, port still free)
-                    add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
-                    logger.info(
-                        "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
-                        protocol,
-                        host_port,
-                        vm_port,
-                        self.vm_hash,
-                    )
                 else:
-                    # Port taken by something else - need new port
-                    new_host_port = fast_get_available_host_port()
-                    add_port_redirect_rule(self.vm.vm_id, interface, new_host_port, vm_port, protocol)
-                    logger.warning(
-                        "Port %d unavailable, reassigned to %d for vm:%d (%s) protocol %s",
-                        host_port,
-                        new_host_port,
-                        vm_port,
-                        self.vm_hash,
-                        protocol,
-                    )
-                    # Update mapping with new port
-                    mapping["host"] = new_host_port
-                    port_changed = True
+                    protocols_to_create.append(protocol)
+
+            if not protocols_to_create:
+                continue
+
+            # Resolve host port once for all protocols that need rules
+            if not is_host_port_available(host_port):
+                new_host_port = fast_get_available_host_port()
+                logger.warning(
+                    "Port %d unavailable, reassigned to %d for vm:%d (%s)",
+                    host_port,
+                    new_host_port,
+                    vm_port,
+                    self.vm_hash,
+                )
+                host_port = new_host_port
+                mapping["host"] = new_host_port
+                port_changed = True
+
+            for protocol in protocols_to_create:
+                add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                logger.info(
+                    "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
+                    protocol,
+                    host_port,
+                    vm_port,
+                    self.vm_hash,
+                )
 
         # Save to DB if host port changed
         if port_changed:
