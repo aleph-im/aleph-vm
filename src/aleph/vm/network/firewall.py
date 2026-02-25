@@ -1,6 +1,6 @@
 """
-IPv4 network setup using NFTABLES.
-Add Nat to the VM in ipv4 and port forwarding for direct access.
+IPv4 and IPv6 network setup using NFTABLES.
+Add NAT to the VM in IPv4, IPv6 forwarding, and port forwarding for direct access.
 """
 
 import json
@@ -83,15 +83,14 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
 
 
 def get_existing_nftables_ruleset() -> list[dict]:
-    """Retrieves the full nftables ruleset and returns it"""
-    # List all NAT rules
-    commands = [{"list": {"ruleset": {"family": "ip"}}}]
-
-    nft_ruleset = execute_json_nft_commands(commands)
-    if not nft_ruleset or "nftables" not in nft_ruleset:
-        logger.warning("Failed to retrieve nftables ruleset, returning empty list")
-        return []
-    return nft_ruleset["nftables"]
+    """Retrieves the nftables ruleset for both ip and ip6 families and returns the merged result."""
+    combined: list[dict] = []
+    for family in ("ip", "ip6"):
+        commands = [{"list": {"ruleset": {"family": family}}}]
+        nft_ruleset = execute_json_nft_commands(commands)
+        if nft_ruleset and "nftables" in nft_ruleset:
+            combined.extend(nft_ruleset["nftables"])
+    return combined
 
 
 def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
@@ -394,6 +393,84 @@ def initialize_nftables() -> None:
 
     execute_json_nft_commands(commands)
 
+    # IPv6 forward rules — needed to coexist with Docker's ip6 filter FORWARD policy drop
+    if not settings.IPV6_FORWARDING_ENABLED:
+        return
+
+    nft_ruleset = get_existing_nftables_ruleset()  # Re-fetch after IPv4 changes
+    ip6_commands: list[dict] = []
+
+    # Discover or create ip6 forward base chain
+    ip6_forward_chains = get_base_chains_for_hook("forward", family="ip6")
+    if not ip6_forward_chains:
+        # Create table ip6 filter + FORWARD base chain
+        ip6_commands += add_entity_if_not_present(
+            nft_ruleset,
+            {"table": {"family": "ip6", "name": "filter"}},
+        )
+        ip6_forward_base_chain = {
+            "family": "ip6",
+            "table": "filter",
+            "name": "FORWARD",
+            "type": "filter",
+            "hook": "forward",
+            "prio": 0,
+        }
+        ip6_commands.append({"add": {"chain": ip6_forward_base_chain}})
+        ip6_forward_chains.append({"chain": ip6_forward_base_chain})
+
+    ip6_forward_chains.sort(key=lambda x: x["chain"].get("prio", 0))
+    ip6_base = ip6_forward_chains[0]["chain"]
+
+    # Create aleph-supervisor-filter chain in ip6
+    ip6_commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "chain": {
+                "family": "ip6",
+                "table": ip6_base["table"],
+                "name": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+            }
+        },
+    )
+
+    # Add jump to aleph-supervisor-filter from the ip6 forward base chain
+    ip6_commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "rule": {
+                "family": "ip6",
+                "table": ip6_base["table"],
+                "chain": ip6_base["name"],
+                "expr": [{"jump": {"target": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter"}}],
+            }
+        },
+    )
+
+    # Add rule to allow established/related connections in ip6
+    ip6_commands += add_entity_if_not_present(
+        nft_ruleset,
+        {
+            "rule": {
+                "family": "ip6",
+                "table": ip6_base["table"],
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "in",
+                            "left": {"ct": {"key": "state"}},
+                            "right": ["established", "related"],
+                        }
+                    },
+                    {"accept": None},
+                ],
+            }
+        },
+    )
+
+    execute_json_nft_commands(ip6_commands)
+
 
 def teardown_nftables() -> None:
     """Removes all of this project's related rules in the nftables ruleset."""
@@ -474,16 +551,16 @@ def add_postrouting_chain(chain_name: str) -> dict:
     )
 
 
-def add_forward_chain(chain_name: str) -> dict:
+def add_forward_chain(chain_name: str, family: str = "ip") -> dict:
     """Adds a chain and creates a rule from the base chain with the forward hook.
     Returns the output from executing the nftables commands"""
-    table = get_table_for_hook("forward")
+    table = get_table_for_hook("forward", family=family)
     return ensure_entities(
         [
             # Chain for VM
             {
                 "chain": {
-                    "family": "ip",
+                    "family": family,
                     "table": table,
                     "name": chain_name,
                 }
@@ -491,7 +568,7 @@ def add_forward_chain(chain_name: str) -> dict:
             # Jump to that chain
             {
                 "rule": {
-                    "family": "ip",
+                    "family": family,
                     "table": table,
                     "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
                     "expr": [{"jump": {"target": chain_name}}],
@@ -535,15 +612,15 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
     )
 
 
-def add_forward_rule_to_external(vm_id: int, interface: TapInterface) -> dict:
+def add_forward_rule_to_external(vm_id: int, interface: TapInterface, family: str = "ip") -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic
     Returns the exit code from executing the nftables commands"""
-    table = get_table_for_hook("forward")
+    table = get_table_for_hook("forward", family=family)
     return ensure_entities(
         [
             {
                 "rule": {
-                    "family": "ip",
+                    "family": family,
                     "table": table,
                     "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
                     "expr": [
@@ -741,6 +818,10 @@ def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
     add_forward_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
     add_masquerading_rule(vm_id, interface)
     add_forward_rule_to_external(vm_id, interface)
+
+    if settings.IPV6_FORWARDING_ENABLED:
+        add_forward_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}", family="ip6")
+        add_forward_rule_to_external(vm_id, interface, family="ip6")
 
 
 def teardown_nftables_for_vm(vm_id: int) -> None:
