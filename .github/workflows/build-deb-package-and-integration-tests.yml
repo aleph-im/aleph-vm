@@ -157,7 +157,7 @@ jobs:
         run: |
           doctl compute droplet create \
           --image ${{ matrix.os_config.os_image }} \
-          --size c-4 \
+          --size s-2vcpu-4gb-amd \
           --region ams3 \
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
@@ -286,7 +286,7 @@ jobs:
         run: |
           doctl compute droplet create \
           --image debian-12-x64 \
-          --size c-4 \
+          --size s-2vcpu-4gb-amd \
           --region ams3 \
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
           --enable-ipv6 \
