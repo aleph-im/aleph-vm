@@ -1083,8 +1083,8 @@ def test_is_host_port_available_free(mocker):
 
     result = is_host_port_available(24000)
     assert result is True
-    mock_tcp_socket.bind.assert_called_once_with(("0.0.0.0", 24000))
-    mock_udp_socket.bind.assert_called_once_with(("0.0.0.0", 24000))
+    mock_tcp_socket.bind.assert_called_once_with(("127.0.0.1", 24000))
+    mock_udp_socket.bind.assert_called_once_with(("127.0.0.1", 24000))
 
 
 def test_is_host_port_available_in_use(mocker):
