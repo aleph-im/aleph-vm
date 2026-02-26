@@ -339,7 +339,11 @@ class VmPool:
                 if vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=execution.vm)
 
-                # Refresh port redirection changes
+                # First recreate/verify saved port redirect rules
+                if execution.mapped_ports:
+                    await execution.recreate_port_redirect_rules()
+
+                # Then refresh from aggregate (handles config changes)
                 await execution.fetch_port_redirect_config_and_setup()
 
                 self.executions[vm_hash] = execution

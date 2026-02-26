@@ -781,6 +781,76 @@ def check_nftables_redirections(port: int) -> bool:
         return False
 
 
+def check_port_redirect_exists(
+    host_port: int,
+    vm_ip: str,
+    vm_port: int,
+    protocol: str,
+    ruleset: list,
+) -> bool:
+    """Check if a specific port redirect rule exists in nftables.
+
+    This function scans the provided nftables ruleset for a rule that:
+    - Matches on dport == host_port
+    - Has DNAT to vm_ip:vm_port
+    - Uses the specified protocol
+
+    Args:
+        host_port: The host port that should be redirected
+        vm_ip: The VM IP address the traffic should be redirected to
+        vm_port: The VM port the traffic should be redirected to
+        protocol: The protocol (tcp or udp)
+        ruleset: Pre-fetched nftables ruleset from get_existing_nftables_ruleset().
+
+    Returns:
+        True if the exact redirect rule exists
+    """
+    try:
+        chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
+
+        for item in ruleset:
+            if not isinstance(item, dict) or "rule" not in item:
+                continue
+
+            rule = item["rule"]
+
+            # Check if this rule is in our prerouting chain
+            if rule.get("chain") != chain_name:
+                continue
+
+            expr = rule.get("expr", [])
+
+            # Look for matching dport and dnat
+            found_dport_match = False
+            found_dnat_match = False
+
+            for e in expr:
+                # Check for destination port match with correct protocol
+                match = e.get("match", {})
+                left = match.get("left", {})
+                payload = left.get("payload", {})
+                if (
+                    payload.get("protocol") == protocol
+                    and payload.get("field") == "dport"
+                    and int(match.get("right", 0)) == int(host_port)
+                ):
+                    found_dport_match = True
+
+                # Check for DNAT with correct destination
+                dnat = e.get("dnat", {})
+                if dnat and str(dnat.get("addr")) == str(vm_ip) and int(dnat.get("port", 0)) == int(vm_port):
+                    found_dnat_match = True
+
+            if found_dport_match and found_dnat_match:
+                return True
+
+        return False
+
+    except Exception as e:
+        logger.warning(f"Error checking port redirect exists: {e}")
+        return False
+
+
 def get_all_aleph_chains() -> list[str]:
     """Query nftables ruleset and return all chains created by aleph software.
 

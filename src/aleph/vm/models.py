@@ -30,9 +30,17 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
-from aleph.vm.network.firewall import add_port_redirect_rule, remove_port_redirect_rule
+from aleph.vm.network.firewall import (
+    add_port_redirect_rule,
+    check_port_redirect_exists,
+    get_existing_nftables_ruleset,
+    remove_port_redirect_rule,
+)
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.network.port_availability_checker import fast_get_available_host_port
+from aleph.vm.network.port_availability_checker import (
+    fast_get_available_host_port,
+    is_host_port_available,
+)
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_record,
@@ -128,6 +136,7 @@ class VmExecution:
         redirect_to_add = set(requested_ports.keys()) - set(self.mapped_ports.keys())
         redirect_to_check = set(requested_ports.keys()).intersection(set(self.mapped_ports.keys()))
         interface = self.vm.tap_interface
+        changed = False
 
         for vm_port in redirect_to_remove:
             current = self.mapped_ports[vm_port]
@@ -136,6 +145,7 @@ class VmExecution:
                     host_port = int(current["host"])
                     remove_port_redirect_rule(interface, host_port, vm_port, protocol)
             del self.mapped_ports[int(vm_port)]
+            changed = True
         for vm_port in redirect_to_add:
             target = requested_ports[vm_port]
             host_port = fast_get_available_host_port()
@@ -144,6 +154,7 @@ class VmExecution:
                 if target[protocol]:
                     add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
+            changed = True
 
         for vm_port in redirect_to_check:
             current = self.mapped_ports[vm_port]
@@ -155,10 +166,82 @@ class VmExecution:
                         add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
+                    changed = True
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
-        # Save to DB
-        await self.save()
+        # Save to DB only if something changed
+        if changed:
+            await self.save()
+
+    async def recreate_port_redirect_rules(self) -> None:
+        """Recreate nftables port redirect rules from saved mapped_ports after restart.
+
+        This method is called during load_persistent_executions() to ensure that
+        port redirect rules are properly restored after a software restart or host reboot.
+
+        For each saved port mapping:
+        1. Check if nftables rule already exists → skip if yes (software restart case)
+        2. If rule doesn't exist:
+           a. Check if saved host port is available
+           b. If available → create rule with saved port (reboot case, port still free)
+           c. If not available → assign new random port, create rule, log warning
+        """
+        if not self.mapped_ports:
+            return
+
+        assert self.vm, "The VM attribute has to be set before calling recreate_port_redirect_rules()"
+
+        interface = self.vm.tap_interface
+        vm_ip = str(interface.guest_ip.ip)
+        port_changed = False
+        ruleset = get_existing_nftables_ruleset()
+
+        for vm_port, mapping in list(self.mapped_ports.items()):
+            host_port = int(mapping["host"])
+
+            # Collect which protocols need rules created (skip those that already exist)
+            protocols_to_create = []
+            for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
+                if not mapping.get(protocol):
+                    continue
+
+                if check_port_redirect_exists(host_port, vm_ip, vm_port, protocol, ruleset):
+                    logger.debug(
+                        "Port redirect rule already exists for %s:%d -> vm:%d, skipping", protocol, host_port, vm_port
+                    )
+                else:
+                    protocols_to_create.append(protocol)
+
+            if not protocols_to_create:
+                continue
+
+            # Resolve host port once for all protocols that need rules
+            if not is_host_port_available(host_port):
+                new_host_port = fast_get_available_host_port()
+                logger.warning(
+                    "Port %d unavailable, reassigned to %d for vm:%d (%s)",
+                    host_port,
+                    new_host_port,
+                    vm_port,
+                    self.vm_hash,
+                )
+                host_port = new_host_port
+                mapping["host"] = new_host_port
+                port_changed = True
+
+            for protocol in protocols_to_create:
+                add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                logger.info(
+                    "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
+                    protocol,
+                    host_port,
+                    vm_port,
+                    self.vm_hash,
+                )
+
+        # Save to DB if host port changed
+        if port_changed:
+            await self.save()
 
     async def removed_all_ports_redirection(self):
         if not self.vm:
