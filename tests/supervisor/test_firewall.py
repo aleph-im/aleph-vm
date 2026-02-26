@@ -967,7 +967,9 @@ def test_check_port_redirect_exists_found():
         }
     ]
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
+    result = check_port_redirect_exists(
+        host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset
+    )
     assert result is True
 
 
@@ -988,7 +990,9 @@ def test_check_port_redirect_exists_not_found():
     ]
 
     # Different host port
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
+    result = check_port_redirect_exists(
+        host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset
+    )
     assert result is False
 
 
@@ -1008,7 +1012,9 @@ def test_check_port_redirect_exists_wrong_vm_ip():
         }
     ]
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
+    result = check_port_redirect_exists(
+        host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset
+    )
     assert result is False
 
 
@@ -1028,7 +1034,9 @@ def test_check_port_redirect_exists_wrong_protocol():
         }
     ]
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
+    result = check_port_redirect_exists(
+        host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset
+    )
     assert result is False
 
 
@@ -1054,7 +1062,9 @@ def test_check_port_redirect_exists_wrong_chain():
         }
     ]
 
-    result = check_port_redirect_exists(host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset)
+    result = check_port_redirect_exists(
+        host_port=24000, vm_ip="172.16.0.2", vm_port=22, protocol="tcp", ruleset=ruleset
+    )
     assert result is False
 
 
