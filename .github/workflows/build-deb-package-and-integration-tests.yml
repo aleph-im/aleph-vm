@@ -186,13 +186,12 @@ jobs:
       - name: Wait for the system to setup and boot
         id: system-booted
         run: |
-          until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
+          until ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts 2>/dev/null; do sleep 5; done
         timeout-minutes: 5
 
       - name: Install Aleph-VM on the Droplet
         run: |
           set -x
-          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
 
           ## Build configuration file and copy it on Droplet
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
@@ -328,16 +327,14 @@ jobs:
         id: system-booted
         timeout-minutes: 3
         run: |
-          until ssh-keyscan -H ${DROPLET_IPV4}; do sleep 1; done
+          until ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts 2>/dev/null; do sleep 5; done
 
       - name: Copy the runtime to the system
         run: |
-          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           scp runtimes/aleph-debian-12-python/rootfs.squashfs root@${DROPLET_IPV4}:/opt
 
       - name: Install Aleph-VM on the Droplet
         run: |
-          ssh-keyscan -H ${DROPLET_IPV4} > ~/.ssh/known_hosts
           ## Build configuration file and copy it on Droplet
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
           echo ALEPH_VM_FAKE_DATA_PROGRAM=/opt/examples/example_fastapi >> supervisor.env
