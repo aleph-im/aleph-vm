@@ -1072,9 +1072,7 @@ async def test_initialize_nftables_with_ipv6_docker(mocker):
 
     # Should NOT create ip6 FORWARD chain (Docker already has it)
     forward_chain_adds = [
-        c
-        for c in ip6_commands
-        if "add" in c and "chain" in c["add"] and c["add"]["chain"].get("name") == "FORWARD"
+        c for c in ip6_commands if "add" in c and "chain" in c["add"] and c["add"]["chain"].get("name") == "FORWARD"
     ]
     assert forward_chain_adds == []
 
