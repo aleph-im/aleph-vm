@@ -63,7 +63,7 @@ class Interface(str, Enum):
     @classmethod
     def from_entrypoint(cls, entrypoint: str, interface_hint: Interface | None = None):
         """Determine the interface type (Python ASGI or executable HTTP service) from the entrypoint of the program.
-        
+
         If an explicit interface_hint is provided (from the message's code.interface field), it takes precedence.
         Otherwise, we use the presence of ':' in the entrypoint to differentiate between Python ASGI and executable.
         """
@@ -81,7 +81,7 @@ class Interface(str, Enum):
                 return cls(interface_hint)
             except ValueError:
                 pass  # Fall back to auto-detection if invalid value
-        
+
         # Only Python ASGI entrypoints contain a colon `:` in their name.
         # We use this to differentiate Python ASGI programs from executable HTTP service mode.
         if ":" in entrypoint:
@@ -198,7 +198,8 @@ class AlephProgramResources(AlephFirecrackerResources):
     code_path: Path
     code_encoding: Encoding
     code_entrypoint: str
-    code_interface: str | None  # Explicit interface type from message (asgi or executable)
+    # Explicit interface type from message (asgi or executable)
+    code_interface: Interface
     data_path: Path | None
 
     def __init__(self, message_content: ExecutableContent, namespace: str):
@@ -206,7 +207,9 @@ class AlephProgramResources(AlephFirecrackerResources):
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint
         # Get explicit interface if specified in the message
-        self.code_interface = message_content.code.interface
+        self.code_interface = Interface.from_entrypoint(
+            entrypoint=message_content.code.entrypoint, interface_hint=message_content.code.interface
+        )
 
     async def download_code(self) -> None:
         code_ref: str = self.message_content.code.ref
@@ -353,10 +356,7 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         volumes: list[Volume]
 
         code, volumes = get_volumes_for_program(resources=self.resources, drives=self.fvm.drives)
-        interface: Interface = Interface.from_entrypoint(
-            self.resources.code_entrypoint,
-            interface_hint=self.resources.code_interface
-        )
+        interface: Interface = self.resources.code_interface
         input_data: bytes | None = read_input_data(self.resources.data_path)
 
         await self._setup_configuration(code=code, input_data=input_data, interface=interface, volumes=volumes)
