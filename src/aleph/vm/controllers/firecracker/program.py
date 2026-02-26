@@ -61,7 +61,7 @@ class Interface(str, Enum):
     executable = "executable"
 
     @classmethod
-    def from_entrypoint(cls, entrypoint: str, interface_hint: Interface | None = None):
+    def from_entrypoint(cls, entrypoint: str, interface_hint: str | None = None):
         """Determine the interface type (Python ASGI or executable HTTP service) from the entrypoint of the program.
 
         If an explicit interface_hint is provided (from the message's code.interface field), it takes precedence.

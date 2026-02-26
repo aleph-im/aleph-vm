@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 
 import aiohttp
-import aioredis
+import redis.asyncio as redis_async
+import redis.exceptions as redis_exceptions
 import sentry_sdk
 from aiohttp import web
 from setproctitle import setproctitle
@@ -19,19 +20,19 @@ ALEPH_VM_CONNECTOR = "http://localhost:4021"
 CACHE_EXPIRES_AFTER = 7 * 24 * 3600  # Seconds
 REDIS_ADDRESS = "redis://localhost"
 
-_redis: aioredis.Redis | None = None
+_redis: redis_async.Redis | None = None
 
 
-async def get_redis(address: str = REDIS_ADDRESS) -> aioredis.Redis:
+async def get_redis(address: str = REDIS_ADDRESS) -> redis_async.Redis:
     global _redis
     # Ensure the redis connection is still up before returning it
     if _redis:
         try:
             await _redis.ping()
-        except aioredis.ConnectionClosedError:
+        except redis_exceptions.ConnectionError:
             _redis = None
     if not _redis:
-        _redis = await aioredis.create_redis(address=address)
+        _redis = redis_async.from_url(address)
 
     return _redis
 
@@ -115,7 +116,7 @@ async def get_from_cache(request: web.Request):
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await get_redis()
+    redis: redis_async.Redis = await get_redis()
     body = await redis.get(f"{prefix}:{key}")
     if body:
         return web.Response(body=body, status=200)
@@ -131,8 +132,8 @@ async def put_in_cache(request: web.Request):
 
     value: bytes = await request.read()
 
-    redis: aioredis.Redis = await get_redis()
-    return web.json_response(await redis.set(f"{prefix}:{key}", value, expire=CACHE_EXPIRES_AFTER))
+    redis: redis_async.Redis = await get_redis()
+    return web.json_response(await redis.set(f"{prefix}:{key}", value, ex=CACHE_EXPIRES_AFTER))
 
 
 async def delete_from_cache(request: web.Request):
@@ -141,7 +142,7 @@ async def delete_from_cache(request: web.Request):
     if not (key and re.match(r"^\w+$", key)):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await get_redis()
+    redis: redis_async.Redis = await get_redis()
     result = await redis.delete(f"{prefix}:{key}")
     return web.json_response(result)
 
@@ -152,7 +153,7 @@ async def list_keys_from_cache(request: web.Request):
     if not re.match(r"^[\w?*^\-]+$", pattern):
         return web.HTTPBadRequest(text="Invalid key")
 
-    redis: aioredis.Redis = await get_redis()
+    redis: redis_async.Redis = await get_redis()
     result = await redis.keys(f"{prefix}:{pattern}")
     keys = [key.decode()[len(prefix) + 1 :] for key in result]
     return web.json_response(keys)
