@@ -1,7 +1,14 @@
 ---
 
 name: "Build Examples"
-on: push
+
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches: [main]
 
 
 jobs:
@@ -25,7 +32,7 @@ jobs:
           sudo chown $(whoami) /opt/packages
 
       - run: |
-          pip3 install hatch
+          pip3 install --upgrade hatch "virtualenv<21"
 
       - run: |
           hatch build

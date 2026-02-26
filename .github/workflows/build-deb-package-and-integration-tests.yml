@@ -1,6 +1,13 @@
 ---
 name: "Build Packages and tests on Droplets"
-on: push
+
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches: [main]
 
 # This action build the package for Ubuntu and Debian
 # Then run e2e integration tests on Digital Ocean droplets (on demand VM)
