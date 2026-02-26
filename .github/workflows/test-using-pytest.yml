@@ -79,7 +79,7 @@ jobs:
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
-          sudo python3 -m pip install --upgrade hatch hatch-vcs coverage "virtualenv<21"
+          sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
           sudo hatch run testing:cov
 
       - name: Output modules used and their version
