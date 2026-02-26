@@ -36,7 +36,7 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install hatch hatch-vcs coverage
+          python3 -m pip install --upgrade hatch hatch-vcs coverage
 
       - name: Test style wth ruff, black and isort
         run: |
