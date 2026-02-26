@@ -1,7 +1,13 @@
 ---
 name: "py.test and linting"
 
-on: push
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches: [main]
 
 
 jobs:
@@ -30,7 +36,8 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install hatch hatch-vcs coverage
+          # virtualenv 21 brings a breaking change that's not supported by hatch 1.16
+          python3 -m pip install --upgrade hatch hatch-vcs coverage "virtualenv<21"
 
       - name: Test style wth ruff, black and isort
         run: |
@@ -73,14 +80,14 @@ jobs:
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
         run: |
-          sudo python3 -m pip install hatch hatch-vcs coverage
+          sudo python3 -m pip install --upgrade hatch hatch-vcs coverage "virtualenv<21"
           sudo hatch run testing:cov
 
       - name: Output modules used and their version
         if: ${{ !cancelled() }}
         run: |
           # re-install hatch in case previous job failed and hatch didn't get installed
-          sudo python3 -m pip install hatch hatch-vcs coverage
+          sudo python3 -m pip install --upgrade hatch hatch-vcs coverage "virtualenv<21"
           sudo hatch -e testing run pip freeze
 
       - name: Upload coverage reports to Codecov
