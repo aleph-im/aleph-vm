@@ -1,5 +1,6 @@
 import pytest
 
+from aleph.vm.conf import settings
 from aleph.vm.network import firewall
 from aleph.vm.network.firewall import (
     add_entity_if_not_present,
@@ -7,6 +8,7 @@ from aleph.vm.network.firewall import (
     get_base_chains_for_hook,
     get_existing_nftables_ruleset,
     initialize_nftables,
+    setup_nftables_for_vm,
 )
 
 mock_sample_base_nftables = [
@@ -134,6 +136,7 @@ async def test_add_entity_if_not_present_full_recursive(mock_full_ruleset):
 async def test_initialize_nftables_fresh(mock_full_ruleset, mocker):
     """Test nftable init with an empty nftable
     it should create every base table/chain/rule."""
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
     mock_empty_nftables = [
         {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
     ]
@@ -240,6 +243,7 @@ async def test_initialize_nftables_fresh(mock_full_ruleset, mocker):
 @pytest.mark.asyncio
 async def test_initialize_nftables_already_setup(mock_full_ruleset, mocker):
     """Test nftable init with a full ruleset from aleph-vm already running so it should not create any new table/chain/rule."""
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
     mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=mock_full_ruleset)
     execute_json_nft_commands = mocker.Mock(return_value=[])
     mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", execute_json_nft_commands)
@@ -704,6 +708,7 @@ _mock_ruleset_regression = {
 @pytest.mark.asyncio
 async def test_initialize_nftables_regression(mocker):
     """test regression from server with docker rule that broke detection"""
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
     mocker.patch(
         "aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=_mock_ruleset_regression["nftables"]
     )
@@ -858,12 +863,20 @@ def test_execute_json_nft_commands_with_empty_commands(mocker):
 
 def test_get_existing_nftables_ruleset_with_valid_output(mocker):
     """Test normal case where execute_json_nft_commands returns valid output."""
-    mock_output = {"nftables": [{"metainfo": {}}, {"table": {"name": "nat"}}]}
-    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", return_value=mock_output)
+    ip_output = {"nftables": [{"metainfo": {}}, {"table": {"family": "ip", "name": "nat"}}]}
+    ip6_output = {"nftables": [{"table": {"family": "ip6", "name": "filter"}}]}
+    mocker.patch(
+        "aleph.vm.network.firewall.execute_json_nft_commands",
+        side_effect=[ip_output, ip6_output],
+    )
 
     result = get_existing_nftables_ruleset()
 
-    assert result == [{"metainfo": {}}, {"table": {"name": "nat"}}]
+    assert result == [
+        {"metainfo": {}},
+        {"table": {"family": "ip", "name": "nat"}},
+        {"table": {"family": "ip6", "name": "filter"}},
+    ]
 
 
 def test_get_existing_nftables_ruleset_with_empty_output(mocker):
@@ -875,7 +888,7 @@ def test_get_existing_nftables_ruleset_with_empty_output(mocker):
 
     result = get_existing_nftables_ruleset()
 
-    assert result == []
+    assert result == []  # Both ip and ip6 queries return empty → combined is empty
 
 
 def test_get_existing_nftables_ruleset_with_missing_nftables_key(mocker):
@@ -887,4 +900,283 @@ def test_get_existing_nftables_ruleset_with_missing_nftables_key(mocker):
 
     result = get_existing_nftables_ruleset()
 
-    assert result == []
+    assert result == []  # Both ip and ip6 queries lack 'nftables' key → combined is empty
+
+
+# --- IPv6 tests ---
+
+
+@pytest.mark.asyncio
+async def test_initialize_nftables_with_ipv6_fresh(mocker):
+    """Test IPv6 initialization on a fresh system with no existing ip6 rules.
+    Should create ip6 filter table, FORWARD chain, supervisor-filter chain, jump rule, and established/related rule.
+    """
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", True)
+    mock_empty_nftables = [
+        {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    ]
+    mocker.patch(
+        "aleph.vm.network.firewall.get_existing_nftables_ruleset",
+        return_value=mock_empty_nftables,
+    )
+    mock_exec = mocker.Mock(return_value=[])
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", mock_exec)
+
+    initialize_nftables()
+
+    # Should be called twice: once for IPv4 commands, once for IPv6 commands
+    assert mock_exec.call_count == 2
+
+    ip6_commands = mock_exec.call_args_list[1][0][0]
+
+    # Should create ip6 filter table
+    assert {"add": {"table": {"family": "ip6", "name": "filter"}}} in ip6_commands
+
+    # Should create ip6 FORWARD base chain
+    assert {
+        "add": {
+            "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "FORWARD",
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0,
+            }
+        }
+    } in ip6_commands
+
+    # Should create aleph-supervisor-filter chain in ip6
+    assert {
+        "add": {
+            "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter",
+            }
+        }
+    } in ip6_commands
+
+    # Should create jump rule from FORWARD to aleph-supervisor-filter
+    assert {
+        "add": {
+            "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [{"jump": {"target": "aleph-supervisor-filter"}}],
+            }
+        }
+    } in ip6_commands
+
+    # Should create established/related accept rule
+    assert {
+        "add": {
+            "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "in",
+                            "left": {"ct": {"key": "state"}},
+                            "right": ["established", "related"],
+                        }
+                    },
+                    {"accept": None},
+                ],
+            }
+        }
+    } in ip6_commands
+
+
+@pytest.mark.asyncio
+async def test_initialize_nftables_with_ipv6_docker(mocker):
+    """Test IPv6 initialization on a system with Docker's ip6 filter FORWARD chain (policy drop).
+    Should discover Docker's existing chain and add a jump to aleph-supervisor-filter.
+    """
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", True)
+    # Simulate a system with Docker's ip6 filter table and FORWARD chain with policy drop
+    mock_ruleset_with_docker_ip6 = [
+        {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+        # IPv4 base chains (needed for IPv4 init to succeed)
+        {"table": {"family": "ip", "name": "nat", "handle": 1}},
+        {
+            "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "POSTROUTING",
+                "handle": 2,
+                "type": "nat",
+                "hook": "postrouting",
+                "prio": 100,
+                "policy": "accept",
+            }
+        },
+        {
+            "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "PREROUTING",
+                "handle": 5,
+                "type": "nat",
+                "hook": "prerouting",
+                "prio": -100,
+                "policy": "accept",
+            }
+        },
+        {"table": {"family": "ip", "name": "filter", "handle": 2}},
+        {
+            "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "FORWARD",
+                "handle": 6,
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0,
+                "policy": "drop",
+            }
+        },
+        # Docker's ip6 filter table with FORWARD chain and policy drop
+        {"table": {"family": "ip6", "name": "filter", "handle": 1}},
+        {
+            "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "FORWARD",
+                "handle": 1,
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0,
+                "policy": "drop",
+            }
+        },
+    ]
+    mocker.patch(
+        "aleph.vm.network.firewall.get_existing_nftables_ruleset",
+        return_value=mock_ruleset_with_docker_ip6,
+    )
+    mock_exec = mocker.Mock(return_value=[])
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", mock_exec)
+
+    initialize_nftables()
+
+    assert mock_exec.call_count == 2
+
+    ip6_commands = mock_exec.call_args_list[1][0][0]
+
+    # Should NOT create ip6 filter table (Docker already has it)
+    assert {"add": {"table": {"family": "ip6", "name": "filter"}}} not in ip6_commands
+
+    # Should NOT create ip6 FORWARD chain (Docker already has it)
+    forward_chain_adds = [
+        c for c in ip6_commands if "add" in c and "chain" in c["add"] and c["add"]["chain"].get("name") == "FORWARD"
+    ]
+    assert forward_chain_adds == []
+
+    # Should create aleph-supervisor-filter chain in Docker's ip6 filter table
+    assert {
+        "add": {
+            "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter",
+            }
+        }
+    } in ip6_commands
+
+    # Should create jump from Docker's FORWARD to aleph-supervisor-filter
+    assert {
+        "add": {
+            "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [{"jump": {"target": "aleph-supervisor-filter"}}],
+            }
+        }
+    } in ip6_commands
+
+
+@pytest.mark.asyncio
+async def test_initialize_nftables_ipv6_disabled(mocker):
+    """Test that no ip6 commands are generated when IPv6 forwarding is disabled."""
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
+    mock_empty_nftables = [
+        {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    ]
+    mocker.patch(
+        "aleph.vm.network.firewall.get_existing_nftables_ruleset",
+        return_value=mock_empty_nftables,
+    )
+    mock_exec = mocker.Mock(return_value=[])
+    mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands", mock_exec)
+
+    initialize_nftables()
+
+    # Only IPv4 commands should be executed (single call)
+    assert mock_exec.call_count == 1
+
+    # Verify no ip6 entities in the IPv4 commands
+    ipv4_commands = mock_exec.call_args_list[0][0][0]
+    for cmd in ipv4_commands:
+        for action in cmd.values():
+            for entity in action.values():
+                if isinstance(entity, dict):
+                    assert entity.get("family") != "ip6", f"Unexpected ip6 entity in IPv4 commands: {cmd}"
+
+
+@pytest.mark.asyncio
+async def test_setup_nftables_for_vm_ipv6(mocker):
+    """Test that setup_nftables_for_vm creates both ip and ip6 forward chains when IPv6 is enabled."""
+    from unittest.mock import MagicMock
+
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", True)
+
+    mock_add_postrouting = mocker.patch("aleph.vm.network.firewall.add_postrouting_chain")
+    mock_add_forward = mocker.patch("aleph.vm.network.firewall.add_forward_chain")
+    mock_add_masq = mocker.patch("aleph.vm.network.firewall.add_masquerading_rule")
+    mock_add_fwd_ext = mocker.patch("aleph.vm.network.firewall.add_forward_rule_to_external")
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap1"
+
+    setup_nftables_for_vm(1, mock_interface)
+
+    # IPv4 calls
+    mock_add_postrouting.assert_called_once_with("aleph-vm-nat-1")
+    mock_add_masq.assert_called_once_with(1, mock_interface)
+
+    # add_forward_chain called twice: once for ip (default), once for ip6
+    assert mock_add_forward.call_count == 2
+    mock_add_forward.assert_any_call("aleph-vm-filter-1")
+    mock_add_forward.assert_any_call("aleph-vm-filter-1", family="ip6")
+
+    # add_forward_rule_to_external called twice: once for ip (default), once for ip6
+    assert mock_add_fwd_ext.call_count == 2
+    mock_add_fwd_ext.assert_any_call(1, mock_interface)
+    mock_add_fwd_ext.assert_any_call(1, mock_interface, family="ip6")
+
+
+@pytest.mark.asyncio
+async def test_setup_nftables_for_vm_ipv6_disabled(mocker):
+    """Test that setup_nftables_for_vm only creates ip chains when IPv6 is disabled."""
+    from unittest.mock import MagicMock
+
+    mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
+
+    mock_add_postrouting = mocker.patch("aleph.vm.network.firewall.add_postrouting_chain")
+    mock_add_forward = mocker.patch("aleph.vm.network.firewall.add_forward_chain")
+    mock_add_masq = mocker.patch("aleph.vm.network.firewall.add_masquerading_rule")
+    mock_add_fwd_ext = mocker.patch("aleph.vm.network.firewall.add_forward_rule_to_external")
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap1"
+
+    setup_nftables_for_vm(1, mock_interface)
+
+    # Only IPv4 calls
+    mock_add_forward.assert_called_once_with("aleph-vm-filter-1")
+    mock_add_fwd_ext.assert_called_once_with(1, mock_interface)
