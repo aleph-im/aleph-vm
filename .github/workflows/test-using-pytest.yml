@@ -36,7 +36,8 @@ jobs:
 
       - name: Install required Python packages
         run: |
-          python3 -m pip install --upgrade hatch hatch-vcs coverage
+          # virtualenv 21 brings a breaking change that's not supported by hatch 1.16
+          python3 -m pip install --upgrade hatch hatch-vcs coverage virtualenv<21
 
       - name: Test style wth ruff, black and isort
         run: |
