@@ -32,7 +32,7 @@ jobs:
           sudo chown $(whoami) /opt/packages
 
       - run: |
-          pip3 install hatch
+          pip3 install --upgrade hatch "virtualenv<21"
 
       - run: |
           hatch build
