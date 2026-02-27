@@ -6,6 +6,8 @@ from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
 
 from aleph_message.models import (
     ExecutableContent,
@@ -59,6 +61,17 @@ SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 logger = logging.getLogger(__name__)
 
 
+class MigrationState(str, Enum):
+    """State of VM migration process."""
+
+    NONE = "none"  # No migration in progress
+    PREPARING = "preparing"  # Destination preparing to receive
+    WAITING = "waiting"  # Destination waiting for data
+    MIGRATING = "migrating"  # Source sending data
+    COMPLETED = "completed"  # Migration completed successfully
+    FAILED = "failed"  # Migration failed
+
+
 @dataclass
 class VmExecutionTimes:
     defined_at: datetime
@@ -107,6 +120,10 @@ class VmExecution:
     persistent: bool = False
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
+
+    # Migration state tracking
+    migration_state: MigrationState = MigrationState.NONE
+    migration_port: int | None = None  # Port used for migration (on destination)
 
     async def fetch_port_redirect_config_and_setup(self):
         if not self.is_instance:
@@ -493,7 +510,7 @@ class VmExecution:
 
         return vm
 
-    async def start(self):
+    async def start(self, incoming_migration_port: int | None = None):
         assert self.vm, "The VM attribute has to be set before calling start()"
 
         self.times.starting_at = datetime.now(tz=timezone.utc)
@@ -504,7 +521,11 @@ class VmExecution:
             # for persistent and instances we will use SystemD manager
             if not self.persistent:
                 await self.vm.start()
-            await self.vm.configure()
+
+            # Configure the VM, passing migration port if specified
+            # When migration port is set, QEMU starts with -incoming flag
+            await self.vm.configure(incoming_migration_port)
+
             await self.vm.start_guest_api()
 
             # Start VM and snapshots automatically
@@ -517,7 +538,11 @@ class VmExecution:
                     await self.wait_for_init()
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
-                else:
+                elif incoming_migration_port is None:
+                    # Only wait for boot on non-migration VMs.
+                    # Migration-receiving VMs are in "inmigrate" state and won't respond to ping
+                    # until migration completes. The migration finalization monitor handles
+                    # waiting for migration completion instead.
                     self.init_task = asyncio.create_task(self.non_blocking_wait_for_boot())
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:

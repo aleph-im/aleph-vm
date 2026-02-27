@@ -72,8 +72,12 @@ class AlephVmControllerInterface(ABC):
         May be empty."""
         pass
 
-    async def configure(self) -> None:
-        """Configuration done after the VM process is started"""
+    async def configure(self, incoming_migration_port: int | None = None) -> None:
+        """Configuration done after the VM process is started.
+
+        :param incoming_migration_port: Optional port for incoming migration (QEMU only).
+            When set, the VM is configured to wait for migration data instead of booting normally.
+        """
         raise NotImplementedError()
 
     async def load_configuration(self) -> None:
