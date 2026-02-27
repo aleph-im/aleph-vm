@@ -275,6 +275,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    mocker.patch("aleph.vm.orchestrator.tasks.delete_port_mappings", new_callable=mocker.AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     mocker.patch.object(VmExecution, "is_running", new=True)
