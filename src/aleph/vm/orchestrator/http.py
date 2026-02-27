@@ -53,6 +53,9 @@ async def _request_with_retry(
 ) -> aiohttp.ClientResponse:
     """Execute an HTTP request with automatic 429 retry."""
     for attempt in range(MAX_RETRIES):
+        if session.closed:
+            msg = f"HTTP session closed, cannot {method} {url}"
+            raise RuntimeError(msg)
         resp = await session.request(method, url, **kwargs)
         if resp.status != 429:
             return resp
@@ -96,6 +99,9 @@ class RetrySession:
             return await _request_with_retry("POST", url, self._session, **kwargs)
 
     def ws_connect(self, url: str, **kwargs):
+        if self._session.closed:
+            msg = f"HTTP session closed, cannot ws_connect {url}"
+            raise RuntimeError(msg)
         return self._session.ws_connect(url, **kwargs)
 
     @property
@@ -116,6 +122,17 @@ def get_session() -> RetrySession:
     if _session is None or _session.closed:
         _session = RetrySession(aiohttp.ClientSession())
     return _session
+
+
+def reset_session() -> None:
+    """Discard the current session so the next get_session() creates a fresh one.
+
+    Must be called after asyncio.run() destroys its loop but before
+    web.run_app() creates the new one, otherwise the stale session
+    holds a reference to the dead loop.
+    """
+    global _session  # noqa: PLW0603
+    _session = None
 
 
 async def close_session(app: web.Application) -> None:
