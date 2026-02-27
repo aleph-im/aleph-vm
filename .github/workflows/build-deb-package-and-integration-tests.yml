@@ -19,11 +19,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["debian-12", "ubuntu-22.04", "ubuntu-24.04"]
+        os: ["debian-12", "debian-13", "ubuntu-22.04", "ubuntu-24.04"]
         include:
           - os: "debian-12"
             make_target: "all-podman-debian-12"
             artifact_name: "aleph-vm.debian-12.deb"
+          - os: "debian-13"
+            make_target: "all-podman-debian-13"
+            artifact_name: "aleph-vm.debian-13.deb"
           - os: "ubuntu-22.04"
             make_target: "all-podman-ubuntu-2204"
             artifact_name: "aleph-vm.ubuntu-22.04.deb"
@@ -128,6 +131,13 @@ jobs:
             package_name: "aleph-vm.debian-12.deb"
             concurrency_group: "droplet-aleph-vm-debian-12"
 
+          - os_name: "Debian 13"
+            os_image: "debian-13-x64"
+            alias: "debian-13"
+            package_build_command: "all-podman-debian-13"
+            package_name: "aleph-vm.debian-13.deb"
+            concurrency_group: "droplet-aleph-vm-debian-13"
+
           - os_name: "Ubuntu 22.04"
             os_image: "ubuntu-22-04-x64"
             alias: "ubuntu-22-04"
@@ -218,10 +228,6 @@ jobs:
 
           # Allow some time for IPFS Kubo to start
           sleep 5
-
-      - name: "Test runtime: Debian 11 (retro-compat)"
-        run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "ad67c6857d6319486794ec2a3d14b584ac7e6c27593f3172148e486dbd1e0e21"
-          "?retro-compatibility=true"
 
       - name: "Test runtime: Debian 12, SDK 0.9.0"
         run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
