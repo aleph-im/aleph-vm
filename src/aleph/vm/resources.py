@@ -182,8 +182,9 @@ def check_sufficient_resources(pool_available_disk: int, message: ExecutableCont
     # Calculate required disk space from volumes if present
     if message.volumes:
         for volume in message.volumes:
-            if volume.size_mib:
-                required_disk_mb += volume.size_mib
+            # TODO: this does not take the size of immutable volumes into account
+            volume_size_mib = getattr(volume, "size_mib", 0)
+            required_disk_mb += volume_size_mib
 
     # Get available resources using the same methods as about_system_usage
     available_vcpus = psutil.cpu_count()
