@@ -1,0 +1,72 @@
+---
+name: "Release Runtime"
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Operating system to build'
+        required: true
+        default: 'debian-12'
+        type: choice
+        options:
+          - debian-12
+      channel:
+        description: 'ALEPH channel to deploy to'
+        required: false
+        default: 'aleph-vm-ci'
+        type: string
+      description:
+        description: 'Description for the runtime release'
+        required: false
+        default: 'Aleph VM Runtime'
+        type: string
+
+
+jobs:
+  build_and_release_runtime:
+    name: "Build and Release Runtime"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build rootfs
+        uses: ./.github/actions/build-rootfs
+        with:
+          os: ${{ inputs.os }}
+          artifact-name: aleph-${{ inputs.os }}-python.squashfs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install aleph-client
+        run: |
+          pip install aleph-client
+
+      - name: Upload runtime to ALEPH network
+        env:
+          PRIVATE_KEY: ${{ secrets.ALEPH_WALLET_PRIVATE_KEY }}
+        run: |
+          # Upload the runtime squashfs to ALEPH
+          echo "Uploading runtime to ALEPH network..."
+
+          aleph file upload runtimes/aleph-${{ inputs.os }}-python/rootfs.squashfs \
+            --private-key $PRIVATE_KEY \
+            --channel ${{ inputs.channel }}
+
+          echo "✅ Runtime uploaded successfully to channel: ${{ inputs.channel }}"
+          echo "Description: ${{ inputs.description }}"
+
+      - name: Create release summary
+        run: |-
+          echo "# Runtime Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **OS**: ${{ inputs.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Channel**: ${{ inputs.channel }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Description**: ${{ inputs.description }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Runtime has been successfully uploaded to the ALEPH network." >> $GITHUB_STEP_SUMMARY

@@ -70,19 +70,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
-        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
-
-      - name: Install dep and build
-        run: |
-          sudo apt update
-          sudo apt install -y debootstrap
-          cd runtimes/aleph-${{ matrix.os }}-python && sudo ./create_disk_image.sh && cd ../..
-
-      - uses: actions/upload-artifact@v4
+      - name: Build rootfs
+        uses: ./.github/actions/build-rootfs
         with:
-          name: ${{ matrix.artifact_name }}
-          path: runtimes/aleph-${{ matrix.os }}-python/rootfs.squashfs
+          os: ${{ matrix.os }}
+          artifact-name: ${{ matrix.artifact_name }}
 
   build_example_venv_volume:
     name: "Build example squashfs volume using Docker"
