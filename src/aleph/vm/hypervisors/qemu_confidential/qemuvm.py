@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import TextIO
@@ -9,6 +10,8 @@ from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
+
+logger = logging.getLogger(__name__)
 
 
 class QemuConfidentialVM(QemuVM):
@@ -29,6 +32,7 @@ class QemuConfidentialVM(QemuVM):
         self.image_path = config.image_path
         self.monitor_socket_path = config.monitor_socket_path
         self.qmp_socket_path = config.qmp_socket_path
+        self.qga_socket_path = config.qga_socket_path
         self.vcpu_count = config.vcpu_count
         self.mem_size_mb = config.mem_size_mb
         self.interface_name = config.interface_name
@@ -86,6 +90,13 @@ class QemuConfidentialVM(QemuVM):
             # command
             "-qmp",
             f"unix:{self.qmp_socket_path},server,nowait",
+            # QEMU Guest Agent socket for guest-level commands (fsfreeze, etc.)
+            "-chardev",
+            f"socket,path={self.qga_socket_path},server=on,wait=off,id=qga0",
+            "-device",
+            "virtio-serial",
+            "-device",
+            "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Tell to put the output to std fd, so we can include them in the log
             "-serial",
             "stdio",
@@ -126,7 +137,7 @@ class QemuConfidentialVM(QemuVM):
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()
-        print(*args)
+        logger.debug("QEMU confidential args: %s", args)
 
         self.qemu_process = proc = await asyncio.create_subprocess_exec(
             *args,
@@ -135,7 +146,11 @@ class QemuConfidentialVM(QemuVM):
             stderr=self.journal_stderr,
         )
 
-        print(
-            f"Started QemuVm {self}, {proc}. Log available with: journalctl -t  {self._journal_stdout_name} -t {self._journal_stderr_name}"
+        logger.info(
+            "Started QemuConfidentialVm %s, %s. Log: journalctl -t %s -t %s",
+            self,
+            proc,
+            self._journal_stdout_name,
+            self._journal_stderr_name,
         )
         return proc

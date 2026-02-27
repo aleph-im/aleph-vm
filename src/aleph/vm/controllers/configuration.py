@@ -34,6 +34,7 @@ class QemuVMConfiguration(BaseModel):
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path | None = None
     vcpu_count: int
     mem_size_mb: int
     interface_name: str | None = None
@@ -47,6 +48,7 @@ class QemuConfidentialVMConfiguration(BaseModel):
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path | None = None
     vcpu_count: int
     mem_size_mb: int
     interface_name: str | None = None

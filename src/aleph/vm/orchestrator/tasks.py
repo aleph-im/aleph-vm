@@ -28,6 +28,25 @@ from aleph.vm.orchestrator.utils import (
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import create_task_log_exceptions
 
+# Terminal statuses that confirm a message is no longer valid.
+# Only these should trigger VM shutdown — never an unexpected or missing value.
+_TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset(
+    {
+        MessageStatus.REJECTED,
+        MessageStatus.FORGOTTEN,
+        MessageStatus.REMOVED,
+    }
+)
+
+# Track consecutive terminal-status confirmations per VM before stopping.
+# Prevents a single bad API response from killing a running instance.
+# TODO: The CCN API sits behind a load balancer. If one backend is in
+# maintenance or lagging behind on message processing, it may report a
+# stale/different status. Consider querying multiple CCN nodes and
+# requiring a quorum before treating a status as authoritative.
+STOP_AFTER_CONFIRMATIONS = 3
+_terminal_strike_count: dict[str, int] = {}
+
 from .messages import get_message_status
 from .payment import (
     compute_required_balance,
@@ -185,11 +204,37 @@ async def check_payment(pool: VmPool):
     for vm_hash in list(pool.executions.keys()):
         if vm_hash == settings.FAKE_INSTANCE_ID:
             continue
-        message_status = await get_message_status(vm_hash)
-        if message_status != MessageStatus.PROCESSED and message_status != MessageStatus.REMOVING:
-            logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
+        try:
+            message_status = await get_message_status(vm_hash)
+        except Exception:
+            logger.warning("Failed to fetch status for %s, skipping", vm_hash)
+            continue
+
+        if message_status in _TERMINAL_STATUSES:
+            key = str(vm_hash)
+            _terminal_strike_count[key] = _terminal_strike_count.get(key, 0) + 1
+            strikes = _terminal_strike_count[key]
+            if strikes < STOP_AFTER_CONFIRMATIONS:
+                logger.info(
+                    "VM %s has terminal status %s (%d/%d confirmations)",
+                    vm_hash,
+                    message_status,
+                    strikes,
+                    STOP_AFTER_CONFIRMATIONS,
+                )
+                continue
+            logger.info(
+                "Stopping %s after %d consecutive %s confirmations",
+                vm_hash,
+                strikes,
+                message_status,
+            )
+            del _terminal_strike_count[key]
             await pool.stop_vm(vm_hash)
             pool.forget_vm(vm_hash)
+        else:
+            # Status is healthy — reset any previous strikes
+            _terminal_strike_count.pop(str(vm_hash), None)
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
     for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.hold).items():

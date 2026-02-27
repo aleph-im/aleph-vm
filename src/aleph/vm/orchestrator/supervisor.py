@@ -52,6 +52,11 @@ from .views import (
     update_allocations,
 )
 from .views.operator import (
+    BackupState,
+    operate_backup,
+    operate_backup_delete,
+    operate_backup_download,
+    operate_backup_status,
     operate_confidential_initialize,
     operate_confidential_inject_secret,
     operate_confidential_measurement,
@@ -60,6 +65,7 @@ from .views.operator import (
     operate_logs_json,
     operate_reboot,
     operate_reinstall,
+    operate_restore,
     operate_stop,
     stream_logs,
 )
@@ -115,6 +121,7 @@ def setup_webapp(pool: VmPool | None):
     app = web.Application(middlewares=[error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
+    app["backup_state"] = BackupState()
     cors = setup(
         app,
         defaults={
@@ -149,6 +156,11 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
         web.post("/control/machine/{ref}/reinstall", operate_reinstall),
+        web.post("/control/machine/{ref}/backup", operate_backup),
+        web.get("/control/machine/{ref}/backup", operate_backup_status),
+        web.get("/control/machine/{ref}/backup/{backup_id}", operate_backup_download),
+        web.delete("/control/machine/{ref}/backup/{backup_id}", operate_backup_delete),
+        web.post("/control/machine/{ref}/restore", operate_restore),
         web.post("/control/machine/{ref}/confidential/initialize", operate_confidential_initialize),
         web.get("/control/machine/{ref}/confidential/measurement", operate_confidential_measurement),
         web.post("/control/machine/{ref}/confidential/inject_secret", operate_confidential_inject_secret),
