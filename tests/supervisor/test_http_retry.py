@@ -53,6 +53,7 @@ class TestParseRetryDelay:
 async def test_request_with_retry_success_on_first_try():
     ok_resp = _make_response(200)
     session = MagicMock()
+    session.closed = False
     session.request = AsyncMock(return_value=ok_resp)
 
     result = await _request_with_retry("GET", "http://example.com", session)
@@ -65,6 +66,7 @@ async def test_request_with_retry_succeeds_after_429():
     rate_limited = _make_response(429, {"Retry-After": "0"})
     ok_resp = _make_response(200)
     session = MagicMock()
+    session.closed = False
     session.request = AsyncMock(side_effect=[rate_limited, ok_resp])
 
     with patch("aleph.vm.orchestrator.http.asyncio.sleep", new_callable=AsyncMock):
@@ -78,6 +80,7 @@ async def test_request_with_retry_succeeds_after_429():
 async def test_request_with_retry_exhausts_retries():
     rate_limited = _make_response(429, {"Retry-After": "0"})
     session = MagicMock()
+    session.closed = False
     session.request = AsyncMock(return_value=rate_limited)
 
     with patch("aleph.vm.orchestrator.http.asyncio.sleep", new_callable=AsyncMock):
@@ -92,6 +95,7 @@ async def test_request_with_retry_exhausts_retries():
 async def test_retry_session_limits_concurrency():
     """Verify the semaphore limits concurrent requests."""
     session = MagicMock(spec=aiohttp.ClientSession)
+    session.closed = False
     active = 0
     max_active = 0
 
