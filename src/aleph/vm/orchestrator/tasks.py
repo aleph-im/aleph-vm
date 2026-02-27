@@ -49,8 +49,14 @@ COMMUNITY_STREAM_RATIO = Decimal(0.2)
 async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
     retry_delay = 0.1
     while True:
-        async for value in generator:
-            yield value
+        try:
+            async for value in generator:
+                yield value
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                logger.debug("retry_generator exiting: event loop closed")
+                return
+            raise
 
         await asyncio.sleep(retry_delay)
         retry_delay = max(retry_delay * 2, max_seconds)
@@ -168,7 +174,9 @@ async def monitor_payments(app: web.Application):
             await check_payment(pool)
             logger.debug("Monitoring balances task ended")
         except Exception as e:
-            # Catch all exceptions as to never stop the task.
+            if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
+                logger.debug("monitor_payments exiting: event loop closed")
+                return
             logger.warning(f"check_payment failed {e}", exc_info=True)
 
 
