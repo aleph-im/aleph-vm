@@ -20,6 +20,7 @@ from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.http import get_session
+from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
@@ -492,6 +493,9 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
             pool.forget_vm(execution.vm_hash)
 
         # Delete all data
+        # Non-persistent VMs already cleaned up by record_usage()
+        if execution.persistent:
+            await delete_port_mappings(execution.vm_hash)
         _erase_execution_volumes(execution)
 
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")

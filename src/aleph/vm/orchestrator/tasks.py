@@ -20,6 +20,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
@@ -189,6 +190,7 @@ async def check_payment(pool: VmPool):
         if message_status != MessageStatus.PROCESSED and message_status != MessageStatus.REMOVING:
             logger.debug(f"Stopping {vm_hash} execution due to {message_status} message status")
             await pool.stop_vm(vm_hash)
+            await delete_port_mappings(vm_hash)
             pool.forget_vm(vm_hash)
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)

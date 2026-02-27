@@ -43,8 +43,11 @@ from aleph.vm.network.port_availability_checker import (
 )
 from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
+    delete_port_mappings,
     delete_record,
+    get_port_mappings,
     save_execution_data,
+    save_port_mappings,
     save_record,
 )
 from aleph.vm.orchestrator.pubsub import PubSub
@@ -111,6 +114,11 @@ class VmExecution:
     async def fetch_port_redirect_config_and_setup(self):
         if not self.is_instance:
             return
+
+        # Load persisted port mappings so existing host ports are reused
+        if not self.mapped_ports:
+            self.mapped_ports = await get_port_mappings(self.vm_hash)
+
         message = self.message
         ports_requests: dict[int, dict] = {}
         try:
@@ -167,11 +175,12 @@ class VmExecution:
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
                     changed = True
+
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
 
-        # Save to DB only if something changed
+        # Persist port mappings to dedicated table if anything changed
         if changed:
-            await self.save()
+            await save_port_mappings(self.vm_hash, self.mapped_ports)
 
     async def recreate_port_redirect_rules(self) -> None:
         """Recreate nftables port redirect rules from saved mapped_ports after restart.
@@ -239,9 +248,9 @@ class VmExecution:
                     self.vm_hash,
                 )
 
-        # Save to DB if host port changed
+        # Persist port mappings if host port changed
         if port_changed:
-            await self.save()
+            await save_port_mappings(self.vm_hash, self.mapped_ports)
 
     async def removed_all_ports_redirection(self):
         if not self.vm:
@@ -713,6 +722,9 @@ class VmExecution:
 
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
+        # Non-persistent VMs won't restart, so clean up their port mappings
+        if not self.persistent:
+            await delete_port_mappings(self.vm_hash)
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
 
