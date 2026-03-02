@@ -22,20 +22,20 @@ QUERY_PARAMS="${3:-}"
 
 wait_for_supervisor() {
     local ip="$1"
-    local max_wait=60
+    local max_wait=90
     local elapsed=0
 
-    echo "==> Waiting for aleph-vm-supervisor to be active..."
+    echo "==> Waiting for aleph-vm-supervisor to be active and listening..."
     while [ $elapsed -lt $max_wait ]; do
-        if ssh root@"${ip}" "systemctl is-active --quiet aleph-vm-supervisor" 2>/dev/null; then
-            echo "==> Supervisor is active (${elapsed}s)"
+        if ssh root@"${ip}" "systemctl is-active --quiet aleph-vm-supervisor && ss -tlnp | grep -q ':4020 '" 2>/dev/null; then
+            echo "==> Supervisor is active and listening on port 4020 (${elapsed}s)"
             return 0
         fi
         sleep 2
         elapsed=$((elapsed + 2))
     done
 
-    echo "==> ERROR: Supervisor failed to start within ${max_wait}s"
+    echo "==> ERROR: Supervisor not ready within ${max_wait}s"
     echo "==> Service status:"
     ssh root@"${ip}" "systemctl status aleph-vm-supervisor --no-pager" || true
     echo "==> Last 50 journal lines:"
@@ -49,15 +49,15 @@ ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
 wait_for_supervisor "${DROPLET_IPV4}"
 
 echo "==> Running health check"
-if ! curl --retry 5 --retry-delay 3 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
+if ! curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
     echo "==> First attempt failed, restarting supervisor and retrying..."
     ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
     wait_for_supervisor "${DROPLET_IPV4}"
-    curl --retry 5 --retry-delay 3 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
+    curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
 fi
 
 echo "==> Scheduling an instance via /control/allocations"
-curl --retry 5 --retry-delay 3 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
+curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail -X POST -H "Content-Type: application/json" \
     -H "X-Auth-Signature: test" \
     -d "{\"persistent_vms\": [], \"instances\": [\"${ITEM_HASH}\"]}" \
     "http://${DROPLET_IPV4}:4020/control/allocations"

@@ -228,9 +228,9 @@ jobs:
 
       - name: Wait for supervisor to be ready
         run: |
-          echo "Waiting for aleph-vm-supervisor to be active..."
-          timeout 60 bash -c 'until ssh root@${DROPLET_IPV4} "systemctl is-active --quiet aleph-vm-supervisor" 2>/dev/null; do sleep 2; done'
-          echo "Supervisor is active"
+          echo "Waiting for aleph-vm-supervisor to listen on port 4020..."
+          timeout 90 bash -c 'until ssh root@${DROPLET_IPV4} "systemctl is-active --quiet aleph-vm-supervisor && ss -tlnp | grep -q :4020\ " 2>/dev/null; do sleep 2; done'
+          echo "Supervisor is active and listening"
 
       - name: Dump supervisor logs on failure
         if: failure()
