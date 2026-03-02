@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -10,10 +11,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    Index,
     Integer,
     String,
     delete,
     select,
+    update,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -129,3 +132,111 @@ async def get_last_record_for_vm(vm_hash) -> ExecutionRecord | None:
             select(ExecutionRecord).where(ExecutionRecord.vm_hash == vm_hash).limit(1)
         )  # Use execute for querying
         return result.scalar()
+
+
+class PortMapping(Base):
+    __tablename__ = "port_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vm_hash = Column(String, nullable=False, index=True)
+    vm_port = Column(Integer, nullable=False)
+    host_port = Column(Integer, nullable=False)
+    tcp = Column(Boolean, default=False, nullable=False)
+    udp = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_port_mappings_host_port_active",
+            host_port,
+            unique=True,
+            sqlite_where=deleted_at.is_(None),
+        ),
+    )
+
+    def __repr__(self):
+        return f"<PortMapping(vm_hash={self.vm_hash}, " f"vm_port={self.vm_port}, host_port={self.host_port})>"
+
+
+async def save_port_mappings(vm_hash: str, mapped_ports: dict[int, dict]) -> None:
+    """Persist port mappings for a VM.
+
+    Only touches rows that actually changed — unchanged mappings are
+    left in place so the audit trail stays meaningful.
+    SQLite serializes writes, so concurrent calls for the same vm_hash
+    are safe.
+    """
+    now = datetime.now(tz=timezone.utc)
+    async with AsyncSessionMaker() as session:
+        result = await session.execute(
+            select(PortMapping).where(
+                PortMapping.vm_hash == vm_hash,
+                PortMapping.deleted_at.is_(None),
+            )
+        )
+        existing = {row.vm_port: row for row in result.scalars().all()}
+
+        for vm_port, details in mapped_ports.items():
+            port = int(vm_port)
+            host_port = int(details["host"])
+            tcp = bool(details.get("tcp", False))
+            udp = bool(details.get("udp", False))
+
+            old = existing.pop(port, None)
+            if old and old.host_port == host_port and old.tcp == tcp and old.udp == udp:
+                continue
+            # Soft-delete the stale row if it existed
+            if old:
+                old.deleted_at = now
+            session.add(
+                PortMapping(
+                    vm_hash=vm_hash,
+                    vm_port=port,
+                    host_port=host_port,
+                    tcp=tcp,
+                    udp=udp,
+                    created_at=now,
+                )
+            )
+
+        # Soft-delete mappings that are no longer present
+        for old in existing.values():
+            old.deleted_at = now
+
+        await session.commit()
+
+
+async def get_port_mappings(vm_hash: str) -> dict[int, dict]:
+    """Load active port mappings for a VM.
+
+    Returns dict mapping vm_port -> {host, tcp, udp}.
+    """
+    async with AsyncSessionMaker() as session:
+        result = await session.execute(
+            select(PortMapping).where(
+                PortMapping.vm_hash == vm_hash,
+                PortMapping.deleted_at.is_(None),
+            )
+        )
+        rows = result.scalars().all()
+        return {
+            row.vm_port: {
+                "host": row.host_port,
+                "tcp": row.tcp,
+                "udp": row.udp,
+            }
+            for row in rows
+        }
+
+
+async def delete_port_mappings(vm_hash: str) -> None:
+    """Soft-delete all active port mappings for a VM."""
+    now = datetime.now(tz=timezone.utc)
+    async with AsyncSessionMaker() as session:
+        await session.execute(
+            update(PortMapping)
+            .where(PortMapping.vm_hash == vm_hash, PortMapping.deleted_at.is_(None))
+            .values(deleted_at=now)
+        )
+        await session.commit()

@@ -36,7 +36,7 @@ from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
     InvalidChainError,
@@ -517,6 +517,7 @@ async def update_allocations(request: web.Request):
                 vm_type = "instance" if execution.is_instance else "persistent program"
                 logger.info("Stopping %s %s", vm_type, execution.vm_hash)
                 await pool.stop_vm(execution.vm_hash)
+                await delete_port_mappings(execution.vm_hash)
                 pool.forget_vm(execution.vm_hash)
                 stopped_vms.append(execution.vm_hash)
 

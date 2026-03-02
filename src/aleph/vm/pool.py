@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.metrics import get_execution_records, get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
     GpuDevice,
@@ -299,8 +299,7 @@ class VmPool:
                     else []
                 )
 
-                mapped_ports = saved_execution.mapped_ports if saved_execution.mapped_ports else {}
-                execution.mapped_ports = {int(key): value for key, value in mapped_ports.items()}
+                execution.mapped_ports = await get_port_mappings(vm_hash)
                 logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
 
                 # Load and instantiate the rest of resources and already assigned GPUs
