@@ -226,8 +226,17 @@ jobs:
           # "--force-confold" keeps existing config files during package install/upgrade, avoiding prompts.
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get  -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1  -o Dpkg::Options::="--force-confold" install -y /opt/${{ matrix.os_config.package_name }}"
 
-          # Allow some time for IPFS Kubo to start
-          sleep 5
+      - name: Wait for supervisor to be ready
+        run: |
+          echo "Waiting for aleph-vm-supervisor to be active..."
+          timeout 60 bash -c 'until ssh root@${DROPLET_IPV4} "systemctl is-active --quiet aleph-vm-supervisor" 2>/dev/null; do sleep 2; done'
+          echo "Supervisor is active"
+
+      - name: Dump supervisor logs on failure
+        if: failure()
+        run: |
+          ssh root@${DROPLET_IPV4} "systemctl status aleph-vm-supervisor --no-pager" || true
+          ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor -n 100 --no-pager" || true
 
       - name: "Test runtime: Debian 12, SDK 0.9.0"
         run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
