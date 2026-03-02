@@ -89,6 +89,11 @@ async def error_middleware(request, handler) -> web.Response:
         message = exc.text or exc.reason
         status = exc.status
         return web.json_response({"error": message}, status=status)
+    except RuntimeError as exc:
+        if "Event loop is closed" in str(exc):
+            logger.debug("Request failed (event loop closed): %s", request.path)
+            return web.json_response({"error": "Server is shutting down"}, status=503)
+        raise
     except Exception as exc:
         logger.exception("Unhandled exception for %s", request.path)
         message = str(exc)
@@ -194,7 +199,6 @@ def run():
     """Run the VM Supervisor."""
     settings.check()
 
-    loop = asyncio.new_event_loop()
     pool = VmPool()
     asyncio.run(pool.setup())
 
@@ -225,12 +229,16 @@ def run():
             app.on_cleanup.append(stop_balances_monitoring_task)
             app.on_cleanup.append(stop_all_vms)
 
-        from aleph.vm.orchestrator.http import close_session
+        from aleph.vm.orchestrator.http import close_session, reset_session
 
         app.on_cleanup.append(close_session)
 
         logger.info("Loading existing executions ...")
         asyncio.run(pool.load_persistent_executions())
+        # Each asyncio.run() creates and destroys its own event loop.
+        # Discard any HTTP session created during setup/loading so it
+        # doesn't hold a reference to the dead loop.
+        reset_session()
 
         logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
         web.run_app(app, host=settings.SUPERVISOR_HOST, port=settings.SUPERVISOR_PORT)
