@@ -812,6 +812,86 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     return execute_json_nft_commands(commands)
 
 
+def remove_orphan_port_redirect_rules(
+    known_good: set[tuple[int, str, int, str]],
+) -> int:
+    """Remove DNAT prerouting rules that have no matching DB entry.
+
+    Args:
+        known_good: Set of (host_port, vm_ip, vm_port, protocol)
+            tuples representing currently active port mappings.
+
+    Returns:
+        Number of orphan rules removed.
+    """
+    nft_ruleset = get_existing_nftables_ruleset()
+    chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
+    prerouting_table = get_table_for_hook("prerouting")
+
+    commands: list[dict] = []
+
+    for entry in nft_ruleset:
+        if not (
+            isinstance(entry, dict)
+            and "rule" in entry
+            and entry["rule"].get("family") == "ip"
+            and entry["rule"].get("table") == prerouting_table
+            and entry["rule"].get("chain") == chain_name
+            and "expr" in entry["rule"]
+        ):
+            continue
+
+        expr = entry["rule"]["expr"]
+        if (
+            len(expr) != 3
+            or "match" not in expr[0]
+            or expr[0]["match"]["left"].get("meta", {}).get("key") != "iifname"
+            or expr[0]["match"]["right"] != settings.NETWORK_INTERFACE
+            or "match" not in expr[1]
+            or "dnat" not in expr[2]
+        ):
+            continue
+
+        protocol = expr[1]["match"]["left"].get("payload", {}).get("protocol", "")
+        if expr[1]["match"]["left"].get("payload", {}).get("field") != "dport":
+            continue
+
+        host_port = int(expr[1]["match"]["right"])
+        vm_ip = str(expr[2]["dnat"].get("addr", ""))
+        vm_port = int(expr[2]["dnat"].get("port", 0))
+
+        rule_tuple = (host_port, vm_ip, vm_port, protocol)
+        if rule_tuple in known_good:
+            continue
+
+        rule_handle = entry["rule"]["handle"]
+        logger.info(
+            "Removing orphan port redirect rule: " "host_port=%d -> %s:%d (%s) handle=%d",
+            host_port,
+            vm_ip,
+            vm_port,
+            protocol,
+            rule_handle,
+        )
+        commands.append(
+            {
+                "delete": {
+                    "rule": {
+                        "family": "ip",
+                        "table": prerouting_table,
+                        "chain": chain_name,
+                        "handle": rule_handle,
+                    }
+                }
+            }
+        )
+
+    if commands:
+        execute_json_nft_commands(commands)
+
+    return len(commands)
+
+
 def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
     """Sets up chains for filter and nat purposes specific to this VM, and makes sure those chains are jumped to"""
     add_postrouting_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
