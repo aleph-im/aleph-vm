@@ -35,7 +35,7 @@ from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
-from .network.firewall import setup_nftables_for_vm
+from .network.firewall import remove_orphan_port_redirect_rules, setup_nftables_for_vm
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +350,22 @@ class VmPool:
             else:
                 execution.uuid = saved_execution.uuid
                 await execution.record_usage()
+        # Clean orphan nft port redirect rules left from previous runs
+        known_good: set[tuple[int, str, int, str]] = set()
+        for execution in self.executions.values():
+            tap = execution.vm.tap_interface if execution.vm else None
+            if not tap or not execution.mapped_ports:
+                continue
+            guest_ip = str(tap.guest_ip.ip)
+            for vm_port, mapping in execution.mapped_ports.items():
+                host_port = int(mapping["host"])
+                for proto in ("tcp", "udp"):
+                    if mapping.get(proto):
+                        known_good.add((host_port, guest_ip, int(vm_port), proto))
+        removed = remove_orphan_port_redirect_rules(known_good)
+        if removed:
+            logger.info("Removed %d orphan port redirect rules", removed)
+
         if self.executions:
             await self.update_domain_mapping(force_update=True)
         logger.info(f"Loaded {len(self.executions)} executions")
