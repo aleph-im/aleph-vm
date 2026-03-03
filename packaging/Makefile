@@ -19,7 +19,7 @@ debian-package-code:
 	python3 -m venv build_venv
 	build_venv/bin/pip install   --progress-bar off --upgrade pip setuptools wheel
 	# Fixing this protobuf dependency version to avoid getting CI errors as version 5.29.0 have this compilation issue
-	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message~=1.0.1' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pydantic-settings==2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2' 'protobuf==5.28.3' 'redis>=4.2.0'
+	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message~=1.0.1' 'eth-account==0.10' 'sentry-sdk==1.31.0' 'qmp==1.1.0' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2.0' 'aiosqlite==0.19.0' 'alembic==1.13.1' 'aiohttp_cors==0.7.0' 'pydantic-settings==2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.0' 'solathon==1.0.2' 'protobuf==5.28.3' 'redis>=4.2.0' 'legacy-cgi>=1.0'
 	build_venv/bin/python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux target/bin/sevctl
@@ -98,6 +98,17 @@ all-podman-ubuntu-2204: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-22.04.deb
 
+all-podman-debian-13: version
+	cd .. && podman build -t localhost/aleph-vm-packaging-debian-13:latest -f ./packaging/debian-13.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging-debian-13:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.debian-13.deb
+
 all-podman-ubuntu-2404: version
 	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2404:latest -f ./packaging/ubuntu-24.04.dockerfile .
 	mkdir -p ./target
@@ -117,6 +128,15 @@ requirements-debian-12: all-podman-debian-12
 		-v ./requirements-debian-12.txt:/mnt/requirements-debian-12.txt \
 		debian:bookworm \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-12.txt"
+
+# extract Python requirements from Debian 13 container
+requirements-debian-13: all-podman-debian-13
+	podman run --rm -ti \
+		-v ./target/aleph-vm.debian-13.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-debian-13.txt:/mnt/requirements-debian-13.txt \
+		debian:trixie \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-debian-13.txt"
 
 # extract Python requirements from Ubuntu 22.04 container
 requirements-ubuntu-22.04: all-podman-ubuntu-2204
@@ -145,10 +165,14 @@ repository-jammy:
 	cd ./repositories/jammy && reprepro -Vb . includedeb jammy ../../target/aleph-vm.ubuntu-22.04.deb && cd ..
 
 # run on host in order to sign with GPG
+repository-trixie:
+	cd ./repositories/trixie && reprepro -Vb . includedeb trixie ../../target/aleph-vm.debian-13.deb && cd ..
+
+# run on host in order to sign with GPG
 repository-noble:
 	cd ./repositories/noble && reprepro -Vb . includedeb noble ../../target/aleph-vm.ubuntu-24.04.deb && cd ..
 
-repositories: repository-bookworm repository-jammy repository-noble
+repositories: repository-bookworm repository-trixie repository-jammy repository-noble
 
-all-podman: all-podman-debian-12 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
+all-podman: all-podman-debian-12 all-podman-debian-13 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
 

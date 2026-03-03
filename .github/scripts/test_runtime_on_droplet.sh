@@ -20,21 +20,44 @@ DROPLET_IPV4="${1:?Usage: $0 <droplet_ip> <item_hash> [query_params]}"
 ITEM_HASH="${2:?Usage: $0 <droplet_ip> <item_hash> [query_params]}"
 QUERY_PARAMS="${3:-}"
 
+wait_for_supervisor() {
+    local ip="$1"
+    local max_wait=90
+    local elapsed=0
+
+    echo "==> Waiting for aleph-vm-supervisor to be active and listening..."
+    while [ $elapsed -lt $max_wait ]; do
+        if ssh root@"${ip}" "systemctl is-active --quiet aleph-vm-supervisor && ss -tlnp | grep -q ':4020 '" 2>/dev/null; then
+            echo "==> Supervisor is active and listening on port 4020 (${elapsed}s)"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    echo "==> ERROR: Supervisor not ready within ${max_wait}s"
+    echo "==> Service status:"
+    ssh root@"${ip}" "systemctl status aleph-vm-supervisor --no-pager" || true
+    echo "==> Last 50 journal lines:"
+    ssh root@"${ip}" "journalctl -u aleph-vm-supervisor -n 50 --no-pager" || true
+    return 1
+}
+
 echo "==> Configuring supervisor for runtime ${ITEM_HASH}"
 ssh root@"${DROPLET_IPV4}" "sed -i '/^ALEPH_VM_CHECK_FASTAPI_VM_ID=/d' /etc/aleph-vm/supervisor.env && echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${ITEM_HASH} >> /etc/aleph-vm/supervisor.env"
 ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
-sleep 5
+wait_for_supervisor "${DROPLET_IPV4}"
 
-echo "==> Running health check"
-if ! curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
+echo "==> Running health check (may take a while to download runtime and program)"
+if ! curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
     echo "==> First attempt failed, restarting supervisor and retrying..."
     ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
-    sleep 5
-    curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
+    wait_for_supervisor "${DROPLET_IPV4}"
+    curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
 fi
 
 echo "==> Scheduling an instance via /control/allocations"
-curl --retry 5 --max-time 10 --fail -X POST -H "Content-Type: application/json" \
+curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail -X POST -H "Content-Type: application/json" \
     -H "X-Auth-Signature: test" \
     -d "{\"persistent_vms\": [], \"instances\": [\"${ITEM_HASH}\"]}" \
     "http://${DROPLET_IPV4}:4020/control/allocations"

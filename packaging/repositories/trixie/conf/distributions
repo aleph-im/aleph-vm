@@ -1,0 +1,9 @@
+Origin: Aleph-IM
+Label: aleph-im
+Suite: stable
+Codename: trixie
+Version: 3.0
+Architectures: amd64 source
+Components: contrib
+Description: Aleph-im packages
+SignWith: yes
