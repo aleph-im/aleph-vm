@@ -129,7 +129,7 @@ class SignedPubKeyHeader(BaseModel):
 
 class SignedOperationPayload(BaseModel):
     time: datetime.datetime
-    method: Literal["POST"] | Literal["GET"]
+    method: Literal["POST"] | Literal["GET"] | Literal["DELETE"]
     domain: str
     path: str
     # body_sha256: str  # disabled since there is no body
