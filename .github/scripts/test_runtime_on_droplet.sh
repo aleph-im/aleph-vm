@@ -48,16 +48,16 @@ ssh root@"${DROPLET_IPV4}" "sed -i '/^ALEPH_VM_CHECK_FASTAPI_VM_ID=/d' /etc/alep
 ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
 wait_for_supervisor "${DROPLET_IPV4}"
 
-echo "==> Running health check"
-if ! curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
+echo "==> Running health check (may take a while to download runtime and program)"
+if ! curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"; then
     echo "==> First attempt failed, restarting supervisor and retrying..."
     ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
     wait_for_supervisor "${DROPLET_IPV4}"
-    curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
+    curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi${QUERY_PARAMS}"
 fi
 
 echo "==> Scheduling an instance via /control/allocations"
-curl --retry 5 --retry-delay 3 --retry-connrefused --max-time 10 --fail -X POST -H "Content-Type: application/json" \
+curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail -X POST -H "Content-Type: application/json" \
     -H "X-Auth-Signature: test" \
     -d "{\"persistent_vms\": [], \"instances\": [\"${ITEM_HASH}\"]}" \
     "http://${DROPLET_IPV4}:4020/control/allocations"

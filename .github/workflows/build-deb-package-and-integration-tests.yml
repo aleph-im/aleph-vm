@@ -370,8 +370,8 @@ jobs:
       - name: Call the runtime and example program on the Droplet
         run: |
           sleep 3
-          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
-          curl --retry 5 --max-time 10 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
+          curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/about/usage/system"
+          curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "http://${DROPLET_IPV4}:4020/status/check/fastapi"
 
       - name: Export aleph logs
         if: ${{ !cancelled() && steps.system-booted.outcome == 'success'}}
