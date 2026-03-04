@@ -73,10 +73,12 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
     # Handle cases where the output is a JSON string instead of a dict
     # This can happen with some versions of the nftables Python library
     if isinstance(output, str):
+        if not output.strip():
+            return {}
         try:
             output = json.loads(output)
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse nftables output as JSON: {output}")
+            logger.error("Failed to parse nftables output as JSON: %s", output)
             return {}
 
     return output if isinstance(output, dict) else {}
