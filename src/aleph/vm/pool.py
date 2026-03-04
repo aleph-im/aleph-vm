@@ -262,6 +262,10 @@ class VmPool:
 
         async def forget_on_stop(stop_event: asyncio.Event):
             await stop_event.wait()
+            # If the execution was re-registered with a new stop_event
+            # (e.g. reinstall/restore), this old task should not remove it.
+            if execution.stop_event is not stop_event:
+                return
             self.forget_vm(execution.vm_hash)
 
         _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))

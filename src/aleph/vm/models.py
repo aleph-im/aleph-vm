@@ -118,6 +118,10 @@ class VmExecution:
         # Load persisted port mappings so existing host ports are reused
         if not self.mapped_ports:
             self.mapped_ports = await get_port_mappings(self.vm_hash)
+            # Ensure nft rules exist for DB-loaded mappings (they may
+            # have been wiped by a prior stop while the DB survived).
+            if self.mapped_ports:
+                await self.recreate_port_redirect_rules()
 
         message = self.message
         ports_requests: dict[int, dict] = {}
