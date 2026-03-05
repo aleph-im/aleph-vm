@@ -44,7 +44,7 @@ from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.http import get_session
-from aleph.vm.orchestrator.metrics import delete_port_mappings
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
@@ -192,21 +192,31 @@ async def _restart_persistent_vm(
     pool: VmPool,
     execution: VmExecution,
 ) -> None:
-    """Re-register a stopped persistent VM and restart it via systemd."""
-    if pool.network and execution.vm:
-        await pool.network.create_tap(
-            execution.vm.vm_id,
-            execution.vm.tap_interface,
-        )
-    # stop_vm fires stop_event which triggers a background task that
-    # removes the execution from the pool.  Reset execution state so
-    # it is tracked again after the systemd restart.
+    """Re-register a stopped persistent VM and restart it via systemd.
+
+    Re-registers the execution in the pool immediately (before any
+    async work) so the periodic allocation loop cannot create a
+    duplicate execution with a new vm_id.
+    """
+    # Re-register synchronously first to close the window where the
+    # allocation loop could see the VM as missing and recreate it.
     execution.times.stopping_at = None
     execution.times.stopped_at = None
     execution.stop_event = asyncio.Event()
     pool.executions[execution.vm_hash] = execution
     pool._schedule_forget_on_stop(execution)
+
+    if pool.network and execution.vm:
+        await pool.network.create_tap(
+            execution.vm.vm_id,
+            execution.vm.tap_interface,
+        )
     pool.systemd_manager.restart(execution.controller_service)
+    # Reload port mappings from DB — stop() clears them in memory
+    # but the DB retains them for persistent VMs.
+    execution.mapped_ports = await get_port_mappings(execution.vm_hash)
+    if execution.mapped_ports:
+        await execution.recreate_port_redirect_rules()
     # Re-save so load_persistent_executions() finds it on restart.
     execution.record = None
     await execution.save()
@@ -685,6 +695,12 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
 
         if execution.persistent:
             await pool.stop_vm(execution.vm_hash)
+            # Invalidate the old forget_on_stop task and keep the
+            # execution in the pool so the allocation loop does not
+            # create a duplicate with a new vm_id while we await
+            # prepare() below.
+            execution.stop_event = asyncio.Event()
+            pool.executions[execution.vm_hash] = execution
             _erase_execution_volumes(
                 execution,
                 include_rootfs=True,
@@ -1262,6 +1278,9 @@ async def operate_restore(
             if execution.is_running:
                 logger.info("Stopping VM %s for restore", vm_hash)
                 await pool.stop_vm(execution.vm_hash)
+                # Invalidate old forget_on_stop and keep in pool
+                execution.stop_event = asyncio.Event()
+                pool.executions[execution.vm_hash] = execution
 
             await restore_rootfs(temp_file, current_rootfs)
             restore_succeeded = True
