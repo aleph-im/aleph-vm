@@ -9,20 +9,15 @@ MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
 
 
-def _is_host_port_in_db(port: int) -> bool:
-    """Check if a host port is already assigned in the port_mappings table."""
+def _get_active_host_ports() -> set[int]:
+    """Fetch all active host ports from the port_mappings table."""
     engine = create_engine(make_sync_db_url())
     with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "SELECT 1 FROM port_mappings "
-                "WHERE host_port = :port AND deleted_at IS NULL "
-                "LIMIT 1"
-            ),
-            {"port": port},
-        ).fetchone()
+        rows = conn.execute(
+            text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")
+        ).fetchall()
     engine.dispose()
-    return row is not None
+    return {row[0] for row in rows}
 
 
 def is_host_port_available(port: int) -> bool:
@@ -68,13 +63,14 @@ def get_available_host_port(start_port: int | None = None) -> int:
         RuntimeError: If no ports are available in the valid range
     """
     start_port = start_port if start_port and start_port >= MIN_DYNAMIC_PORT else MIN_DYNAMIC_PORT
+    active_db_ports = _get_active_host_ports()
     for port in range(start_port, MAX_PORT):
         try:
+            # check if port is already assigned in the DB
+            if port in active_db_ports:
+                continue
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
-                continue
-            # check if port is already assigned in the DB
-            if _is_host_port_in_db(port):
                 continue
             # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
             # This is a short-lived probe (bind + close), not a listening service.
