@@ -190,9 +190,7 @@ async def save_port_mappings(vm_hash: str, mapped_ports: dict[int, dict]) -> Non
             # Soft-delete the stale row if it existed
             if old:
                 old.deleted_at = now
-            new_mappings.append(
-                {"vm_port": port, "host_port": host_port, "tcp": tcp, "udp": udp}
-            )
+            new_mappings.append({"vm_port": port, "host_port": host_port, "tcp": tcp, "udp": udp})
 
         # Soft-delete mappings that are no longer present
         for old in existing.values():

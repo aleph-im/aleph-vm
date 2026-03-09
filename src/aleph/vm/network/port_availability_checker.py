@@ -13,9 +13,7 @@ def _get_active_host_ports() -> set[int]:
     """Fetch all active host ports from the port_mappings table."""
     engine = create_engine(make_sync_db_url())
     with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")
-        ).fetchall()
+        rows = conn.execute(text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")).fetchall()
     engine.dispose()
     return {row[0] for row in rows}
 
