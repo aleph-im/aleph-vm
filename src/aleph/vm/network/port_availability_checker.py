@@ -1,9 +1,13 @@
+import logging
 import socket
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 from aleph.vm.conf import make_sync_db_url
 from aleph.vm.network.firewall import check_nftables_redirections
+
+logger = logging.getLogger(__name__)
 
 MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
@@ -12,10 +16,15 @@ MAX_PORT = 65535
 def _get_active_host_ports() -> set[int]:
     """Fetch all active host ports from the port_mappings table."""
     engine = create_engine(make_sync_db_url())
-    with engine.connect() as conn:
-        rows = conn.execute(text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")).fetchall()
-    engine.dispose()
-    return {row[0] for row in rows}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")).fetchall()
+        return {row[0] for row in rows}
+    except OperationalError:
+        logger.debug("port_mappings table not available yet")
+        return set()
+    finally:
+        engine.dispose()
 
 
 def is_host_port_available(port: int) -> bool:
