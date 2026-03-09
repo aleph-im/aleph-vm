@@ -1,9 +1,28 @@
 import socket
 
+from sqlalchemy import create_engine, text
+
+from aleph.vm.conf import make_sync_db_url
 from aleph.vm.network.firewall import check_nftables_redirections
 
 MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
+
+
+def _is_host_port_in_db(port: int) -> bool:
+    """Check if a host port is already assigned in the port_mappings table."""
+    engine = create_engine(make_sync_db_url())
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM port_mappings "
+                "WHERE host_port = :port AND deleted_at IS NULL "
+                "LIMIT 1"
+            ),
+            {"port": port},
+        ).fetchone()
+    engine.dispose()
+    return row is not None
 
 
 def is_host_port_available(port: int) -> bool:
@@ -53,6 +72,9 @@ def get_available_host_port(start_port: int | None = None) -> int:
         try:
             # check if there is already a redirect to that port
             if check_nftables_redirections(port):
+                continue
+            # check if port is already assigned in the DB
+            if _is_host_port_in_db(port):
                 continue
             # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
             # This is a short-lived probe (bind + close), not a listening service.

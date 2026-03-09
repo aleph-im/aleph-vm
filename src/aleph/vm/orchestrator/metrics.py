@@ -177,6 +177,7 @@ async def save_port_mappings(vm_hash: str, mapped_ports: dict[int, dict]) -> Non
         )
         existing = {row.vm_port: row for row in result.scalars().all()}
 
+        new_mappings: list[dict] = []
         for vm_port, details in mapped_ports.items():
             port = int(vm_port)
             host_port = int(details["host"])
@@ -189,20 +190,30 @@ async def save_port_mappings(vm_hash: str, mapped_ports: dict[int, dict]) -> Non
             # Soft-delete the stale row if it existed
             if old:
                 old.deleted_at = now
-            session.add(
-                PortMapping(
-                    vm_hash=vm_hash,
-                    vm_port=port,
-                    host_port=host_port,
-                    tcp=tcp,
-                    udp=udp,
-                    created_at=now,
-                )
+            new_mappings.append(
+                {"vm_port": port, "host_port": host_port, "tcp": tcp, "udp": udp}
             )
 
         # Soft-delete mappings that are no longer present
         for old in existing.values():
             old.deleted_at = now
+
+        # Flush soft-deletes first so the partial unique index on
+        # host_port (WHERE deleted_at IS NULL) is freed before
+        # inserting new rows that may reuse the same host_port.
+        await session.flush()
+
+        for mapping in new_mappings:
+            session.add(
+                PortMapping(
+                    vm_hash=vm_hash,
+                    vm_port=mapping["vm_port"],
+                    host_port=mapping["host_port"],
+                    tcp=mapping["tcp"],
+                    udp=mapping["udp"],
+                    created_at=now,
+                )
+            )
 
         await session.commit()
 
