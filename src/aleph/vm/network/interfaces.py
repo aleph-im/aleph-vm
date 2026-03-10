@@ -94,10 +94,7 @@ def delete_tap_interface(ipr: IPRoute, device_name: str):
     if not interface_index:
         logger.debug(f"Interface {device_name} does not exist, won't be deleted.")
         return
-    try:
-        ipr.link("del", index=interface_index[0])
-    except (NetlinkError, OSError) as error:
-        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
+    ipr.link("del", index=interface_index[0])
 
 
 def get_orphan_tap_vm_ids(active_vm_ids: set[int]) -> list[tuple[int, str]]:
@@ -211,4 +208,7 @@ class TapInterface:
                 ip_addr: str = attrs["IFA_ADDRESS"]
                 mask: int = addr["prefixlen"]
                 delete_ip_address(ipr, self.device_name, ip_addr, mask)
-            delete_tap_interface(ipr, self.device_name)
+            try:
+                delete_tap_interface(ipr, self.device_name)
+            except (NetlinkError, OSError) as error:
+                logger.warning(f"Interface {self.device_name} cannot be deleted: {error}")

@@ -377,6 +377,7 @@ class VmPool:
                 address_range=tap_interface.host_ipv6.network,
                 update_service=False,
             )
+            logger.debug("Re-added ndp_proxy rule for existing interface %s", tap_interface.device_name)
 
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
@@ -384,7 +385,10 @@ class VmPool:
     async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
         """Record usage for a dead execution and clean up its controller service."""
         execution.uuid = saved_execution.uuid
-        await execution.record_usage()
+        try:
+            await execution.record_usage()
+        except Exception:
+            logger.warning("Failed to record usage for %s", execution.vm_hash, exc_info=True)
         try:
             service = execution.controller_service
             if self.systemd_manager.is_service_active(service) or self.systemd_manager.is_service_enabled(service):
