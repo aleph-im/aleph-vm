@@ -350,7 +350,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
         try:
             first_message = await ws.receive_json()
-        except TypeError as error:
+        except (TypeError, ValueError) as error:
             logger.exception(error)
             await ws.send_json({"status": "failed", "reason": str(error)})
             await ws.close()
