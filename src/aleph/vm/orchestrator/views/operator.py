@@ -387,12 +387,18 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
                 execution.vm.unregister_queue(queue)
                 await ws.close()
                 logger.info(f"connection {ws} closed")
+        elif execution and execution.is_starting:
+            await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
+            await ws.close()
         else:
             stdout_id = f"vm-{vm_hash}-stdout"
             stderr_id = f"vm-{vm_hash}-stderr"
             for entry in get_past_vm_logs(stdout_id, stderr_id):
                 log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_id else "stderr"
-                await ws.send_json({"type": log_type, "message": entry["MESSAGE"]})
+                msg = entry["MESSAGE"]
+                if isinstance(msg, bytes):
+                    msg = msg.decode("utf-8", errors="replace")
+                await ws.send_json({"type": log_type, "message": msg})
             await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
             await ws.close()
             logger.info(f"connection {ws} closed (past logs for stopped VM)")
