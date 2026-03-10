@@ -35,7 +35,11 @@ from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
-from .network.firewall import remove_orphan_port_redirect_rules, setup_nftables_for_vm
+from .network.firewall import (
+    remove_orphan_port_redirect_rules,
+    setup_nftables_for_vm,
+    teardown_nftables_for_vm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +105,14 @@ class VmPool:
             self.gpus = get_gpu_devices()
 
     def teardown(self) -> None:
-        """Stop the VM pool and the network properly."""
-        if self.network:
-            # self.network.teardown()
-            # FIXME Temporary disable tearing down the network
-            # Fix issue of persistent instances running inside systemd controller losing their ipv4 nat access
-            #  upon supervisor restart or upgrade.
-            pass
+        """Stop the VM pool and the network properly.
+
+        Network teardown is intentionally skipped: persistent VMs run
+        inside systemd controllers and retain their tap interfaces
+        across supervisor restarts. Tearing down the shared nftables
+        chains and forwarding rules would break their connectivity.
+        Per-VM cleanup (tap + nft rules) happens in execution.stop().
+        """
 
     def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
@@ -161,6 +166,8 @@ class VmPool:
             self.executions[vm_hash] = execution
 
             resources = set()
+            tap_interface = None
+            vm_id = None
             try:
                 if message.requirements and message.requirements.gpu:
                     # Ensure we have the necessary GPU for the user by reserving them
@@ -194,8 +201,12 @@ class VmPool:
                         del self.reservations[resource]
             except Exception:
                 if execution.is_instance:
-                    # ensure the VM is removed from the pool on creation error
                     await execution.removed_all_ports_redirection()
+                if execution.vm:
+                    await execution.vm.teardown()
+                elif tap_interface and vm_id is not None:
+                    teardown_nftables_for_vm(vm_id)
+                    await tap_interface.delete()
                 self.forget_vm(vm_hash)
 
                 raise
