@@ -351,12 +351,17 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         try:
             first_message = await ws.receive_json()
         except TypeError as error:
-            logging.exception(error)
+            logger.exception(error)
             await ws.send_json({"status": "failed", "reason": str(error)})
             await ws.close()
             return ws
 
-        credentials = first_message["auth"]
+        credentials = first_message.get("auth")
+        if not credentials:
+            await ws.send_json({"status": "failed", "reason": "missing 'auth' key in message"})
+            await ws.close()
+            return ws
+
         try:
             authenticated_sender = await authenticate_websocket_message(credentials)
             if not await is_sender_authorized(authenticated_sender, message):
