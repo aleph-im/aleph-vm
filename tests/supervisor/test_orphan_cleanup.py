@@ -141,9 +141,7 @@ class TestRemoveOrphanTapInterfaces:
 
     @patch("aleph.vm.network.interfaces.IPRoute")
     @patch("aleph.vm.network.interfaces.get_orphan_tap_vm_ids")
-    def test_counts_only_successful_deletions(
-        self, mock_get_orphans, mock_iproute_cls
-    ):
+    def test_counts_only_successful_deletions(self, mock_get_orphans, mock_iproute_cls):
         mock_get_orphans.return_value = [
             (1, "vmtap1"),
             (2, "vmtap2"),
@@ -161,9 +159,7 @@ class TestRemoveOrphanTapInterfaces:
 
     @patch("aleph.vm.network.interfaces.IPRoute")
     @patch("aleph.vm.network.interfaces.get_orphan_tap_vm_ids")
-    def test_returns_zero_when_no_orphans(
-        self, mock_get_orphans, mock_iproute_cls
-    ):
+    def test_returns_zero_when_no_orphans(self, mock_get_orphans, mock_iproute_cls):
         mock_get_orphans.return_value = []
         ipr = MagicMock()
         mock_iproute_cls.return_value.__enter__ = MagicMock(return_value=ipr)

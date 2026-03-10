@@ -17,11 +17,16 @@ from aleph_message.models import (
     PaymentType,
 )
 from pydantic import TypeAdapter
+
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.orchestrator.metrics import ExecutionRecord, get_execution_records, get_port_mappings
+from aleph.vm.orchestrator.metrics import (
+    ExecutionRecord,
+    get_execution_records,
+    get_port_mappings,
+)
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
     GpuDevice,
@@ -327,9 +332,7 @@ class VmPool:
     ) -> None:
         """Rebuild in-memory state for a persistent execution whose controller is active."""
         execution.gpus = (
-            TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus))
-            if saved_execution.gpus
-            else []
+            TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus)) if saved_execution.gpus else []
         )
 
         execution.mapped_ports = await get_port_mappings(vm_hash)
@@ -357,9 +360,7 @@ class VmPool:
         self.executions[vm_hash] = execution
         execution.record = saved_execution
 
-    async def _restore_network(
-        self, execution: VmExecution, vm_id: int, vm_hash: ItemHash
-    ) -> TapInterface | None:
+    async def _restore_network(self, execution: VmExecution, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
@@ -398,11 +399,7 @@ class VmPool:
         Compares host resources against active executions in the pool
         and removes anything that doesn't belong to a running VM.
         """
-        active_vm_ids = {
-            execution.vm_id
-            for execution in self.executions.values()
-            if execution.vm_id is not None
-        }
+        active_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.vm_id is not None}
 
         self._cleanup_orphan_port_redirects()
         self._cleanup_orphan_nft_chains(active_vm_ids)
