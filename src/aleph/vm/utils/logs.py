@@ -84,15 +84,14 @@ def get_past_vm_logs(stdout_identifier, stderr_identifier) -> Generator[EntryDic
     @param stderr_identifier: journald identifier for process stderr
     @return: an iterator of log entry
 
-    Works by creating a journald reader, and using `add_reader` to call a callback when
-    data is available for reading.
-
     For more information refer to the sd-journal(3) manpage
     and systemd.journal module documentation.
     """
     r = journal.Reader()
-    r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
-    r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
-
-    r.seek_head()
-    yield from r
+    try:
+        r.add_match(SYSLOG_IDENTIFIER=stdout_identifier)
+        r.add_match(SYSLOG_IDENTIFIER=stderr_identifier)
+        r.seek_head()
+        yield from r
+    finally:
+        r.close()

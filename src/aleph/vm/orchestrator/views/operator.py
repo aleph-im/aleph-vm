@@ -328,40 +328,82 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
     The authentication method is slightly different because browsers do not
     allow Javascript to set headers in WebSocket requests.
+
+    When the VM is stopped, past logs are sent from journald and the
+    connection is closed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
+        execution = pool.executions.get(vm_hash)
+        if not execution:
+            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
+            if not record:
+                raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
+            message = get_message_executable_content(json.loads(record.message))
+        else:
+            message = execution.message
 
-        if execution.vm is None:
-            raise web.HTTPBadRequest(body=f"VM {vm_hash} is not running")
-        queue = None
+        ws = web.WebSocketResponse()
+        logger.info(f"starting websocket: {request.path}")
+        await ws.prepare(request)
+
         try:
-            ws = web.WebSocketResponse()
-            logger.info(f"starting websocket: {request.path}")
-            await ws.prepare(request)
-            try:
-                await authenticate_websocket_for_vm_or_403(execution, vm_hash, ws)
-                await ws.send_json({"status": "connected"})
+            first_message = await ws.receive_json()
+        except (TypeError, ValueError) as error:
+            logger.exception(error)
+            await ws.send_json({"status": "failed", "reason": str(error)})
+            await ws.close()
+            return ws
 
-                queue = execution.vm.get_log_queue()
+        credentials = first_message.get("auth")
+        if not credentials:
+            await ws.send_json({"status": "failed", "reason": "missing 'auth' key in message"})
+            await ws.close()
+            return ws
 
-                while True:
-                    log_type, message = await queue.get()
-                    assert log_type in ("stdout", "stderr")
-                    logger.debug(message)
-
-                    await ws.send_json({"type": log_type, "message": message})
-                    queue.task_done()
-
-            finally:
+        try:
+            authenticated_sender = await authenticate_websocket_message(credentials)
+            if not await is_sender_authorized(authenticated_sender, message):
+                await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
                 await ws.close()
-                logger.info(f"connection  {ws} closed")
+                return ws
+        except Exception as error:
+            await ws.send_json({"status": "failed", "reason": str(error)})
+            await ws.close()
+            return ws
 
-        finally:
-            if queue:
+        await ws.send_json({"status": "connected"})
+
+        if execution and execution.vm:
+            queue = execution.vm.get_log_queue()
+            try:
+                while True:
+                    log_type, msg = await queue.get()
+                    logger.debug(msg)
+                    await ws.send_json({"type": log_type, "message": msg})
+                    queue.task_done()
+            finally:
                 execution.vm.unregister_queue(queue)
+                await ws.close()
+                logger.info(f"connection {ws} closed")
+        elif execution and execution.is_starting:
+            await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
+            await ws.close()
+        else:
+            stdout_id = f"vm-{vm_hash}-stdout"
+            stderr_id = f"vm-{vm_hash}-stderr"
+            for entry in get_past_vm_logs(stdout_id, stderr_id):
+                log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_id else "stderr"
+                msg = entry["MESSAGE"]
+                if isinstance(msg, bytes):
+                    msg = msg.decode("utf-8", errors="replace")
+                await ws.send_json({"type": log_type, "message": msg})
+            await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
+            await ws.close()
+            logger.info(f"connection {ws} closed (past logs for stopped VM)")
+
+        return ws
 
 
 @cors_allow_all
