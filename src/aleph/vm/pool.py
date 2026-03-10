@@ -20,7 +20,8 @@ from pydantic import TypeAdapter
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-from aleph.vm.orchestrator.metrics import get_execution_records, get_port_mappings
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.orchestrator.metrics import ExecutionRecord, get_execution_records, get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
     GpuDevice,
@@ -321,7 +322,9 @@ class VmPool:
             await self.update_domain_mapping(force_update=True)
         logger.info(f"Loaded {len(self.executions)} executions")
 
-    async def _restore_running_execution(self, execution, saved_execution, vm_id, vm_hash):
+    async def _restore_running_execution(
+        self, execution: VmExecution, saved_execution: ExecutionRecord, vm_id: int, vm_hash: ItemHash
+    ) -> None:
         """Rebuild in-memory state for a persistent execution whose controller is active."""
         execution.gpus = (
             TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus))
@@ -354,7 +357,9 @@ class VmPool:
         self.executions[vm_hash] = execution
         execution.record = saved_execution
 
-    async def _restore_network(self, execution, vm_id, vm_hash):
+    async def _restore_network(
+        self, execution: VmExecution, vm_id: int, vm_hash: ItemHash
+    ) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
@@ -375,7 +380,7 @@ class VmPool:
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
 
-    async def _handle_dead_execution(self, execution, saved_execution):
+    async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
         """Record usage for a dead execution and clean up its controller service."""
         execution.uuid = saved_execution.uuid
         await execution.record_usage()

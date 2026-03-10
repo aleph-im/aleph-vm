@@ -96,9 +96,7 @@ def delete_tap_interface(ipr: IPRoute, device_name: str):
         return
     try:
         ipr.link("del", index=interface_index[0])
-    except NetlinkError as error:
-        logger.warning(f"Interface {device_name} cannot be deleted: {error}")
-    except OSError as error:
+    except (NetlinkError, OSError) as error:
         logger.warning(f"Interface {device_name} cannot be deleted: {error}")
 
 
