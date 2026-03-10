@@ -212,6 +212,15 @@ async def _restart_persistent_vm(
                 execution.vm.vm_id,
                 execution.vm.tap_interface,
             )
+        else:
+            # Interface exists but nftables rules may have been
+            # flushed — always re-apply them (mirrors pool.py logic).
+            from aleph.vm.network.firewall import setup_nftables_for_vm
+
+            setup_nftables_for_vm(
+                execution.vm.vm_id,
+                interface=execution.vm.tap_interface,
+            )
     pool.systemd_manager.restart(execution.controller_service)
     # Reload port mappings from DB — stop() clears them in memory
     # but the DB retains them for persistent VMs.

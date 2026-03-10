@@ -2,6 +2,7 @@ import logging
 import socket
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
 from aleph.vm.conf import make_sync_db_url
@@ -13,18 +14,37 @@ MIN_DYNAMIC_PORT = 24000
 MAX_PORT = 65535
 
 
+class _SyncEngineHolder:
+    """Lazy singleton for the synchronous SQLAlchemy engine."""
+
+    _instance: Engine | None = None
+
+    @classmethod
+    def get(cls) -> Engine:
+        if cls._instance is None:
+            cls._instance = create_engine(make_sync_db_url())
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Dispose and clear the engine (for testing)."""
+        if cls._instance is not None:
+            cls._instance.dispose()
+            cls._instance = None
+
+
 def _get_active_host_ports() -> set[int]:
     """Fetch all active host ports from the port_mappings table."""
-    engine = create_engine(make_sync_db_url())
+    engine = _SyncEngineHolder.get()
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("SELECT host_port FROM port_mappings WHERE deleted_at IS NULL")).fetchall()
         return {row[0] for row in rows}
-    except OperationalError:
-        logger.debug("port_mappings table not available yet")
-        return set()
-    finally:
-        engine.dispose()
+    except OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            logger.debug("port_mappings table not available yet")
+            return set()
+        raise
 
 
 def is_host_port_available(port: int) -> bool:
@@ -70,6 +90,9 @@ def get_available_host_port(start_port: int | None = None) -> int:
         RuntimeError: If no ports are available in the valid range
     """
     start_port = start_port if start_port and start_port >= MIN_DYNAMIC_PORT else MIN_DYNAMIC_PORT
+    # NOTE: TOCTOU — a concurrent caller may reserve a port between
+    # this snapshot and the eventual DB write. The partial unique
+    # index on host_port is the real safety net.
     active_db_ports = _get_active_host_ports()
     for port in range(start_port, MAX_PORT):
         try:
@@ -92,7 +115,7 @@ def get_available_host_port(start_port: int | None = None) -> int:
             return port
 
         except OSError:
-            pass
+            logger.debug("Port %d unavailable (bind failed)", port)
 
     raise RuntimeError(f"No available ports found in range {MIN_DYNAMIC_PORT}-{MAX_PORT}")
 

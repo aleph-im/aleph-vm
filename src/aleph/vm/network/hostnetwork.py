@@ -226,6 +226,6 @@ class Network:
         await interface.create()
         setup_nftables_for_vm(vm_id, interface)
 
-    def interface_exists(self, vm_id: int):
+    def interface_exists(self, vm_id: int) -> bool:
         interface_name = f"vmtap{vm_id}"
         return self.ndb.interfaces.exists(interface_name)
