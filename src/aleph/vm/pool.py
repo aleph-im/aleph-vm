@@ -17,7 +17,6 @@ from aleph_message.models import (
     PaymentType,
 )
 from pydantic import TypeAdapter
-
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
@@ -36,10 +35,12 @@ from aleph.vm.vm_type import VmType
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
 from .network.firewall import (
+    get_orphan_vm_chain_ids,
     remove_orphan_port_redirect_rules,
     setup_nftables_for_vm,
     teardown_nftables_for_vm,
 )
+from .network.interfaces import remove_orphan_tap_interfaces
 
 logger = logging.getLogger(__name__)
 
@@ -282,90 +283,128 @@ class VmPool:
         _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
     async def load_persistent_executions(self):
-        """Load persistent executions from the database."""
+        """Load persistent executions from the database.
+
+        For each saved execution whose systemd controller is still active,
+        rebuild the in-memory state (network, ports, snapshots). For dead
+        executions, record usage and clean up the stale controller service.
+        After loading, remove any orphan host resources (nft rules, chains,
+        tap interfaces) left behind by previous crashes.
+        """
         saved_executions = await get_execution_records()
         for saved_execution in saved_executions:
             vm_hash = ItemHash(saved_execution.vm_hash)
 
             if vm_hash in self.executions or not saved_execution.persistent:
-                # The execution is already loaded or isn't persistent, skip it
                 continue
 
             vm_id = saved_execution.vm_id
             logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
-            message_dict = json.loads(saved_execution.message)
-            original_dict = json.loads(saved_execution.original_message)
 
             execution = VmExecution(
                 vm_hash=vm_hash,
-                message=get_message_executable_content(message_dict),
-                original=get_message_executable_content(original_dict),
+                message=get_message_executable_content(json.loads(saved_execution.message)),
+                original=get_message_executable_content(json.loads(saved_execution.original_message)),
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
                 persistent=saved_execution.persistent,
             )
 
             if execution.is_running:
-                # TODO: Improve the way that we re-create running execution
-                # Load existing GPUs assigned to VMs
-                execution.gpus = (
-                    TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus))
-                    if saved_execution.gpus
-                    else []
-                )
-
-                execution.mapped_ports = await get_port_mappings(vm_hash)
-                logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
-
-                # Load and instantiate the rest of resources and already assigned GPUs
-                await execution.prepare()
-                if self.network:
-                    vm_type = VmType.from_message_content(execution.message)
-                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
-                    if not self.network.interface_exists(vm_id):
-                        # In case of a reboot, the network is not automatically created
-                        await self.network.create_tap(vm_id, tap_interface)
-
-                    # Activate ndp_proxy for existing interfaces if needed
-                    if self.network.ndp_proxy and self.network.interface_exists(vm_id):
-                        ipv6_gateway = tap_interface.host_ipv6
-                        await self.network.ndp_proxy.add_range(
-                            interface=tap_interface.device_name,
-                            address_range=ipv6_gateway.network,
-                            update_service=False,
-                        )
-                        logger.debug(f"Re-added ndp_proxy rule for existing interface {tap_interface.device_name}")
-                    # Ensure the routing table and rule for the VM are present
-                    setup_nftables_for_vm(vm_id, interface=tap_interface)
-                else:
-                    tap_interface = None
-
-                vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
-                await vm.start_guest_api()
-                execution.ready_event.set()
-                execution.times.started_at = datetime.now(tz=timezone.utc)
-                execution.times.starting_at = saved_execution.time_prepared
-                execution.times.prepared_at = saved_execution.time_defined
-
-                self._schedule_forget_on_stop(execution)
-
-                # Start the snapshot manager for the VM
-                if vm.support_snapshot and self.snapshot_manager:
-                    await self.snapshot_manager.start_for(vm=execution.vm)
-
-                # First recreate/verify saved port redirect rules
-                if execution.mapped_ports:
-                    await execution.recreate_port_redirect_rules()
-
-                # Then refresh from aggregate (handles config changes)
-                await execution.fetch_port_redirect_config_and_setup()
-
-                self.executions[vm_hash] = execution
-                execution.record = saved_execution
+                await self._restore_running_execution(execution, saved_execution, vm_id, vm_hash)
             else:
-                execution.uuid = saved_execution.uuid
-                await execution.record_usage()
-        # Clean orphan nft port redirect rules left from previous runs
+                await self._handle_dead_execution(execution, saved_execution)
+
+        self._cleanup_orphan_resources()
+
+        if self.executions:
+            await self.update_domain_mapping(force_update=True)
+        logger.info(f"Loaded {len(self.executions)} executions")
+
+    async def _restore_running_execution(self, execution, saved_execution, vm_id, vm_hash):
+        """Rebuild in-memory state for a persistent execution whose controller is active."""
+        execution.gpus = (
+            TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus))
+            if saved_execution.gpus
+            else []
+        )
+
+        execution.mapped_ports = await get_port_mappings(vm_hash)
+        logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
+
+        await execution.prepare()
+        tap_interface = await self._restore_network(execution, vm_id, vm_hash)
+
+        vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
+        await vm.start_guest_api()
+        execution.ready_event.set()
+        execution.times.started_at = datetime.now(tz=timezone.utc)
+        execution.times.starting_at = saved_execution.time_prepared
+        execution.times.prepared_at = saved_execution.time_defined
+
+        self._schedule_forget_on_stop(execution)
+
+        if vm.support_snapshot and self.snapshot_manager:
+            await self.snapshot_manager.start_for(vm=execution.vm)
+
+        if execution.mapped_ports:
+            await execution.recreate_port_redirect_rules()
+        await execution.fetch_port_redirect_config_and_setup()
+
+        self.executions[vm_hash] = execution
+        execution.record = saved_execution
+
+    async def _restore_network(self, execution, vm_id, vm_hash):
+        """Restore tap interface, NDP proxy, and nftables rules for a VM."""
+        if not self.network:
+            return None
+
+        vm_type = VmType.from_message_content(execution.message)
+        tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+
+        if not self.network.interface_exists(vm_id):
+            await self.network.create_tap(vm_id, tap_interface)
+
+        if self.network.ndp_proxy and self.network.interface_exists(vm_id):
+            await self.network.ndp_proxy.add_range(
+                interface=tap_interface.device_name,
+                address_range=tap_interface.host_ipv6.network,
+                update_service=False,
+            )
+
+        setup_nftables_for_vm(vm_id, interface=tap_interface)
+        return tap_interface
+
+    async def _handle_dead_execution(self, execution, saved_execution):
+        """Record usage for a dead execution and clean up its controller service."""
+        execution.uuid = saved_execution.uuid
+        await execution.record_usage()
+        try:
+            service = execution.controller_service
+            if self.systemd_manager.is_service_active(service) or self.systemd_manager.is_service_enabled(service):
+                self.systemd_manager.stop_and_disable(service)
+                logger.info("Stopped stale controller service %s", service)
+        except Exception:
+            logger.warning("Failed to stop stale controller %s", execution.controller_service, exc_info=True)
+
+    def _cleanup_orphan_resources(self):
+        """Remove orphan nft rules, nft chains, and tap interfaces.
+
+        Compares host resources against active executions in the pool
+        and removes anything that doesn't belong to a running VM.
+        """
+        active_vm_ids = {
+            execution.vm_id
+            for execution in self.executions.values()
+            if execution.vm_id is not None
+        }
+
+        self._cleanup_orphan_port_redirects()
+        self._cleanup_orphan_nft_chains(active_vm_ids)
+        self._cleanup_orphan_tap_interfaces(active_vm_ids)
+
+    def _cleanup_orphan_port_redirects(self):
+        """Remove DNAT prerouting rules with no matching active execution."""
         known_good: set[tuple[int, str, int, str]] = set()
         for execution in self.executions.values():
             tap = execution.vm.tap_interface if execution.vm else None
@@ -381,9 +420,29 @@ class VmPool:
         if removed:
             logger.info("Removed %d orphan port redirect rules", removed)
 
-        if self.executions:
-            await self.update_domain_mapping(force_update=True)
-        logger.info(f"Loaded {len(self.executions)} executions")
+    def _cleanup_orphan_nft_chains(self, active_vm_ids: set[int]):
+        """Remove per-VM nft chains whose vm_id is not in any active execution."""
+        try:
+            orphan_vm_ids = get_orphan_vm_chain_ids(active_vm_ids)
+            for vm_id in orphan_vm_ids:
+                try:
+                    teardown_nftables_for_vm(vm_id)
+                    logger.info("Removed orphan nft chains for vm_id=%d", vm_id)
+                except Exception:
+                    logger.warning("Failed to remove orphan nft chains for vm_id=%d", vm_id, exc_info=True)
+        except Exception:
+            logger.warning("Failed to query nftables for orphan chains", exc_info=True)
+
+    def _cleanup_orphan_tap_interfaces(self, active_vm_ids: set[int]):
+        """Remove vmtap interfaces whose vm_id is not in any active execution."""
+        if not self.network:
+            return
+        try:
+            removed = remove_orphan_tap_interfaces(active_vm_ids)
+            if removed:
+                logger.info("Removed %d orphan tap interfaces", removed)
+        except Exception:
+            logger.warning("Failed to clean orphan tap interfaces", exc_info=True)
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""

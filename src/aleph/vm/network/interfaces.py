@@ -102,6 +102,42 @@ def delete_tap_interface(ipr: IPRoute, device_name: str):
         logger.warning(f"Interface {device_name} cannot be deleted: {error}")
 
 
+def get_orphan_tap_vm_ids(active_vm_ids: set[int]) -> list[tuple[int, str]]:
+    """Return (vm_id, ifname) pairs for vmtap interfaces not in active_vm_ids."""
+    orphans: list[tuple[int, str]] = []
+    with IPRoute() as ipr:
+        for link in ipr.get_links():
+            attrs = dict(link["attrs"])
+            ifname = attrs.get("IFLA_IFNAME", "")
+            if not ifname.startswith("vmtap"):
+                continue
+            try:
+                vm_id = int(ifname[5:])
+            except ValueError:
+                continue
+            if vm_id not in active_vm_ids:
+                orphans.append((vm_id, ifname))
+    return orphans
+
+
+def remove_orphan_tap_interfaces(active_vm_ids: set[int]) -> int:
+    """Remove tap interfaces whose vm_id is not in active_vm_ids.
+
+    Returns the number of interfaces removed.
+    """
+    orphans = get_orphan_tap_vm_ids(active_vm_ids)
+    removed = 0
+    with IPRoute() as ipr:
+        for _vm_id, ifname in orphans:
+            try:
+                delete_tap_interface(ipr, ifname)
+                logger.info("Removed orphan tap interface %s", ifname)
+                removed += 1
+            except Exception:
+                logger.warning("Failed to remove orphan tap interface %s", ifname, exc_info=True)
+    return removed
+
+
 class TapInterface:
     device_name: str
     ip_network: IPv4NetworkWithInterfaces

@@ -912,6 +912,27 @@ def teardown_nftables_for_vm(vm_id: int) -> None:
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
 
 
+def get_orphan_vm_chain_ids(active_vm_ids: set[int]) -> set[int]:
+    """Return vm_ids that have nftables chains but are not in active_vm_ids."""
+    prefix = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-"
+    all_chains = get_all_aleph_chains()
+    orphan_ids: set[int] = set()
+    for chain_name in all_chains:
+        if not chain_name.startswith(prefix):
+            continue
+        # Chain format: aleph-vm-nat-123 or aleph-vm-filter-123
+        parts = chain_name.rsplit("-", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            vm_id = int(parts[1])
+        except ValueError:
+            continue
+        if vm_id not in active_vm_ids:
+            orphan_ids.add(vm_id)
+    return orphan_ids
+
+
 def check_nftables_redirections(port: int) -> bool:
     """Check if there are any NAT rules redirecting to the given port.
 
