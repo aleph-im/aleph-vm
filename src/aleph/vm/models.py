@@ -570,24 +570,34 @@ class VmExecution:
         controller service is active the VM is considered started.
         Guest-side issues (bad config, disabled networking) are the
         user's responsibility and visible via the logs endpoint.
-
-        Note: ``is_service_active()`` returns False for both
-        "activating" and "failed" states, so we cannot fast-fail on
-        a crashed process — we poll until active or timeout.
         """
-        assert self.systemd_manager, "systemd_manager required"
+        assert self.persistent and self.systemd_manager, (
+            "wait_for_controller_ready requires a persistent VM with systemd_manager"
+        )
         max_attempt = 30
-        attempt = 0
-        while True:
-            attempt += 1
-            if attempt > max_attempt:
-                msg = f"{self} controller service did not become active after {max_attempt} attempts"
+        for attempt in range(1, max_attempt + 1):
+            state = self.systemd_manager.get_service_active_state(
+                self.controller_service,
+            )
+            if state == "active":
+                return
+            if state == "failed":
+                msg = (
+                    f"{self} controller service entered 'failed' state"
+                )
                 raise RuntimeError(msg)
 
-            if self.is_controller_running:
-                return
-
+            logger.debug(
+                "%s controller state=%s (attempt %d/%d)",
+                self, state, attempt, max_attempt,
+            )
             await asyncio.sleep(2)
+
+        msg = (
+            f"{self} controller service did not become active "
+            f"after {max_attempt} attempts"
+        )
+        raise RuntimeError(msg)
 
     async def non_blocking_wait_for_boot(self):
         """Wait for the controller process and mark the instance as started.

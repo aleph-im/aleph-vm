@@ -124,6 +124,34 @@ class SystemDManager:
             logger.error(error)
             return False
 
+    def get_service_active_state(self, service: str) -> str:
+        """Return the ActiveState string for a systemd service.
+
+        Possible values: "active", "activating", "deactivating",
+        "inactive", "failed".  Returns "unknown" on D-Bus errors.
+        """
+        try:
+            manager = self._get_manager()
+            bus = self._get_bus()
+            unit_path = manager.GetUnit(service)
+            systemd_service = bus.get_object(
+                "org.freedesktop.systemd1", object_path=unit_path,
+            )
+            unit = dbus.Interface(
+                systemd_service, "org.freedesktop.systemd1.Unit",
+            )
+            unit_properties = dbus.Interface(
+                unit, "org.freedesktop.DBus.Properties",
+            )
+            return str(
+                unit_properties.Get(
+                    "org.freedesktop.systemd1.Unit", "ActiveState",
+                )
+            )
+        except DBusException as error:
+            logger.error("Failed to get active state for %s: %s", service, error)
+            return "unknown"
+
     def is_service_active(self, service: str) -> bool:
         try:
             if not self.is_service_enabled(service):
