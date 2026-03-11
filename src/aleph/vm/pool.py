@@ -70,11 +70,16 @@ class VmPool:
     reservations: dict[Any, Reservation]
     """Resources reserved by an user, before launching (only GPU atm)"""
 
+    _draining: bool
+    _drain_event: asyncio.Event
+
     def __init__(self):
         self.executions = {}
         self.message_cache = {}
         self.reservations = {}
         self.gpus = []
+        self._draining = False
+        self._drain_event = asyncio.Event()
 
         self.creation_lock = asyncio.Lock()
 
@@ -474,6 +479,63 @@ class VmPool:
                 logger.info("Removed %d orphan tap interfaces", removed)
         except Exception:
             logger.warning("Failed to clean orphan tap interfaces", exc_info=True)
+
+    @property
+    def is_draining(self) -> bool:
+        return self._draining
+
+    async def drain(self, timeout: float | None = None) -> None:
+        """Stop accepting new requests and wait for in-flight ones.
+
+        Sets the drain flag so the middleware rejects new VM execution
+        requests with 503. Then waits up to ``timeout`` seconds for all
+        running ephemeral executions to finish their current requests
+        before returning.  Persistent VMs are left untouched — they run
+        via systemd controllers and survive supervisor restarts.
+        """
+        if timeout is None:
+            timeout = settings.DRAIN_TIMEOUT
+
+        self._draining = True
+        logger.info(
+            "Drain started — rejecting new requests, " "waiting up to %.0fs for in-flight requests",
+            timeout,
+        )
+
+        # Collect ephemeral executions that have in-flight requests
+        in_flight = [
+            execution
+            for execution in self.executions.values()
+            if not execution.persistent and execution.concurrent_runs > 0
+        ]
+
+        if not in_flight:
+            logger.info("Drain complete — no in-flight requests")
+            self._drain_event.set()
+            return
+
+        logger.info(
+            "Waiting for %d execution(s) with in-flight requests",
+            len(in_flight),
+        )
+
+        # Wait for each execution's runs to complete, with a timeout
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(ex.runs_done_event.wait() for ex in in_flight)),
+                timeout=timeout,
+            )
+            logger.info("Drain complete — all in-flight requests finished")
+        except TimeoutError:
+            remaining = sum(1 for ex in in_flight if ex.concurrent_runs > 0)
+            logger.warning(
+                "Drain timeout after %.0fs — %d execution(s) still have "
+                "in-flight requests, proceeding with shutdown",
+                timeout,
+                remaining,
+            )
+
+        self._drain_event.set()
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
