@@ -571,9 +571,10 @@ class VmExecution:
         Guest-side issues (bad config, disabled networking) are the
         user's responsibility and visible via the logs endpoint.
         """
-        assert self.persistent and self.systemd_manager, (
-            "wait_for_controller_ready requires a persistent VM with systemd_manager"
-        )
+        if not self.persistent or not self.systemd_manager:
+            msg = "wait_for_controller_ready requires a persistent VM with systemd_manager"
+            raise RuntimeError(msg)
+
         max_attempt = 30
         for attempt in range(1, max_attempt + 1):
             state = self.systemd_manager.get_service_active_state(
@@ -581,22 +582,21 @@ class VmExecution:
             )
             if state == "active":
                 return
-            if state == "failed":
-                msg = (
-                    f"{self} controller service entered 'failed' state"
-                )
+            if state in ("failed", "inactive"):
+                msg = f"{self} controller service entered '{state}' state"
                 raise RuntimeError(msg)
 
             logger.debug(
                 "%s controller state=%s (attempt %d/%d)",
-                self, state, attempt, max_attempt,
+                self,
+                state,
+                attempt,
+                max_attempt,
             )
-            await asyncio.sleep(2)
+            if attempt < max_attempt:
+                await asyncio.sleep(2)
 
-        msg = (
-            f"{self} controller service did not become active "
-            f"after {max_attempt} attempts"
-        )
+        msg = f"{self} controller service did not become active after {max_attempt} attempts"
         raise RuntimeError(msg)
 
     async def non_blocking_wait_for_boot(self):
@@ -607,7 +607,9 @@ class VmExecution:
         applications) is not checked — the user can inspect logs if
         their OS fails to boot.
         """
-        assert self.vm
+        if not self.vm:
+            msg = "non_blocking_wait_for_boot requires a VM to be set"
+            raise RuntimeError(msg)
         try:
             await self.wait_for_controller_ready()
             logger.info("%s controller is running. Marking as started.", self)

@@ -8,10 +8,7 @@ from aleph_message.models import InstanceContent, ItemHash
 
 from aleph.vm.models import VmExecution
 
-
-FAKE_HASH = ItemHash(
-    "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
-)
+FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 
 FAKE_INSTANCE_CONTENT = {
     "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
@@ -114,6 +111,17 @@ class TestWaitForControllerReady:
         mgr.get_service_active_state.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_fast_fails_on_inactive_state(self):
+        mgr = MagicMock()
+        mgr.get_service_active_state.return_value = "inactive"
+        ex = _make_execution(mgr)
+
+        with pytest.raises(RuntimeError, match="inactive"):
+            await ex.wait_for_controller_ready()
+
+        mgr.get_service_active_state.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_fast_fails_on_failed_after_activating(self):
         mgr = MagicMock()
         mgr.get_service_active_state.side_effect = [
@@ -153,7 +161,7 @@ class TestWaitForControllerReady:
             snapshot_manager=None,
             systemd_manager=MagicMock(),
         )
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError, match="requires a persistent VM"):
             await ex_non_persistent.wait_for_controller_ready()
 
         # No systemd_manager
@@ -165,5 +173,32 @@ class TestWaitForControllerReady:
             snapshot_manager=None,
             systemd_manager=None,
         )
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError, match="requires a persistent VM"):
             await ex_no_manager.wait_for_controller_ready()
+
+    @pytest.mark.asyncio
+    async def test_unknown_state_is_retried(self):
+        """D-Bus transient errors return 'unknown' and should be retried."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.side_effect = [
+            "unknown",
+            "unknown",
+            "active",
+        ]
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_ready()
+
+        assert mgr.get_service_active_state.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_unknown_state_times_out(self):
+        """Persistent 'unknown' state should timeout, not fast-fail."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.return_value = "unknown"
+        ex = _make_execution(mgr)
+
+        with pytest.raises(RuntimeError, match="did not become active"):
+            await ex.wait_for_controller_ready()
+
+        assert mgr.get_service_active_state.call_count == 30

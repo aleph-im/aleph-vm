@@ -134,18 +134,18 @@ class SystemDManager:
             manager = self._get_manager()
             bus = self._get_bus()
             unit_path = manager.GetUnit(service)
-            systemd_service = bus.get_object(
-                "org.freedesktop.systemd1", object_path=unit_path,
+            unit_proxy = bus.get_object(
+                "org.freedesktop.systemd1",
+                object_path=unit_path,
             )
-            unit = dbus.Interface(
-                systemd_service, "org.freedesktop.systemd1.Unit",
-            )
-            unit_properties = dbus.Interface(
-                unit, "org.freedesktop.DBus.Properties",
+            properties = dbus.Interface(
+                unit_proxy,
+                "org.freedesktop.DBus.Properties",
             )
             return str(
-                unit_properties.Get(
-                    "org.freedesktop.systemd1.Unit", "ActiveState",
+                properties.Get(
+                    "org.freedesktop.systemd1.Unit",
+                    "ActiveState",
                 )
             )
         except DBusException as error:
