@@ -71,7 +71,6 @@ class VmPool:
     """Resources reserved by an user, before launching (only GPU atm)"""
 
     _draining: bool
-    _drain_event: asyncio.Event
 
     def __init__(self):
         self.executions = {}
@@ -79,7 +78,6 @@ class VmPool:
         self.reservations = {}
         self.gpus = []
         self._draining = False
-        self._drain_event = asyncio.Event()
 
         self.creation_lock = asyncio.Lock()
 
@@ -511,7 +509,6 @@ class VmPool:
 
         if not in_flight:
             logger.info("Drain complete — no in-flight requests")
-            self._drain_event.set()
             return
 
         logger.info(
@@ -534,8 +531,6 @@ class VmPool:
                 timeout,
                 remaining,
             )
-
-        self._drain_event.set()
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""

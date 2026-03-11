@@ -74,7 +74,7 @@ class _DrainablePool:
 
     def __init__(self, draining: bool = False):
         self._draining = draining
-        self.executions = {}
+        self.executions: dict = {}
 
     @property
     def is_draining(self) -> bool:
@@ -171,18 +171,16 @@ class TestVmPoolDrain:
 
         pool = object.__new__(VmPool)
         pool._draining = False
-        pool._drain_event = asyncio.Event()
         pool.executions = {}
         return pool
 
     @pytest.mark.asyncio
-    async def test_drain_sets_flag_and_event(self):
+    async def test_drain_sets_flag(self):
         pool = self._make_pool_for_drain()
 
         await pool.drain(timeout=1.0)
 
         assert pool.is_draining is True
-        assert pool._drain_event.is_set()
 
     @pytest.mark.asyncio
     async def test_drain_completes_immediately_no_in_flight(self):
@@ -193,7 +191,7 @@ class TestVmPoolDrain:
 
         await pool.drain(timeout=1.0)
 
-        assert pool._drain_event.is_set()
+        assert pool.is_draining is True
 
     @pytest.mark.asyncio
     async def test_drain_ignores_persistent_executions(self):
@@ -206,7 +204,7 @@ class TestVmPoolDrain:
         # Should complete immediately — persistent VMs are skipped
         await pool.drain(timeout=0.1)
 
-        assert pool._drain_event.is_set()
+        assert pool.is_draining is True
 
     @pytest.mark.asyncio
     async def test_drain_waits_for_in_flight_then_completes(self):
@@ -221,11 +219,11 @@ class TestVmPoolDrain:
             ex.concurrent_runs = 0
             ex.runs_done_event.set()
 
-        asyncio.get_event_loop().create_task(finish_request())
+        asyncio.create_task(finish_request())
 
         await pool.drain(timeout=2.0)
 
-        assert pool._drain_event.is_set()
+        assert pool.is_draining is True
         assert ex.concurrent_runs == 0
 
     @pytest.mark.asyncio
@@ -240,6 +238,5 @@ class TestVmPoolDrain:
         await pool.drain(timeout=0.1)
 
         assert pool.is_draining is True
-        assert pool._drain_event.is_set()
         # The execution still has an in-flight request
         assert ex.concurrent_runs == 1

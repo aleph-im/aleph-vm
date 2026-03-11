@@ -227,8 +227,9 @@ def setup_webapp(pool: VmPool | None):
 
 async def drain_in_flight_requests(app: web.Application):
     """Drain in-flight requests before stopping VMs."""
-    pool: VmPool = app["vm_pool"]
-    await pool.drain()
+    pool: VmPool | None = app.get("vm_pool")
+    if pool:
+        await pool.drain()
 
 
 async def stop_all_vms(app: web.Application):
@@ -271,7 +272,8 @@ def run():
             app.on_startup.append(start_payment_monitoring_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
             app.on_cleanup.append(stop_balances_monitoring_task)
-            app.on_cleanup.append(stop_all_vms)
+
+        app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.orchestrator.http import close_session, reset_session
 
