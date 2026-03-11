@@ -308,11 +308,11 @@ class VmPool:
             se for se in saved_executions if se.persistent and ItemHash(se.vm_hash) not in self.executions
         ]
 
-        # Batch-fetch systemd service states: 1 D-Bus call instead of 3+ per VM
+        # Batch-fetch active states: 1 D-Bus ListUnits() call for all VMs
         all_services = [f"aleph-vm-controller@{ItemHash(se.vm_hash)}.service" for se in persistent_saved]
         service_active_states = self.systemd_manager.get_services_active_states(all_services)
 
-        # Collect dead services for batch enabled-state check
+        # Fetch enabled states for dead services (per-service GetUnitFileState calls)
         dead_services = [svc for svc in all_services if not service_active_states.get(svc, False)]
         service_enabled_states = self.systemd_manager.get_services_enabled_states(dead_services)
 
@@ -415,10 +415,10 @@ class VmPool:
             logger.warning("Failed to record usage for %s", execution.vm_hash, exc_info=True)
         if is_enabled:
             try:
-                self.systemd_manager.stop_and_disable(execution.controller_service)
-                logger.info("Stopped stale controller service %s", execution.controller_service)
+                self.systemd_manager.disable_service(execution.controller_service)
+                logger.info("Disabled stale controller service %s", execution.controller_service)
             except Exception:
-                logger.warning("Failed to stop stale controller %s", execution.controller_service, exc_info=True)
+                logger.warning("Failed to disable stale controller %s", execution.controller_service, exc_info=True)
 
     def _cleanup_orphan_resources(self):
         """Remove orphan nft rules, nft chains, and tap interfaces.

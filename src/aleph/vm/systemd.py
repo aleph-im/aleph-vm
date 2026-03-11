@@ -79,6 +79,18 @@ class SystemDManager:
         if self.is_service_enabled(service):
             self.disable(service)
 
+    def disable_service(self, service: str) -> None:
+        """Disable a service that is already known to be inactive.
+
+        Skips the active/enabled state checks that stop_and_disable
+        performs, avoiding redundant D-Bus round-trips when the caller
+        has already determined the service state via batch queries.
+        """
+        try:
+            self.disable(service)
+        except DBusException as error:
+            logger.warning("Failed to disable %s: %s", service, error)
+
     def enable(self, service: str) -> None:
         manager = self._get_manager()
         manager.EnableUnitFiles([service], False, True)  # noqa: FBT003

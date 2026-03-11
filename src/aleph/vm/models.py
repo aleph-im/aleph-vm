@@ -212,6 +212,7 @@ class VmExecution:
         forward_table = get_table_for_hook("forward", nft_ruleset=ruleset)
 
         all_entities: list[dict] = []
+        queued_rules: list[tuple[str, int, int]] = []
 
         for vm_port, mapping in list(self.mapped_ports.items()):
             host_port = int(mapping["host"])
@@ -254,6 +255,12 @@ class VmExecution:
                     prerouting_table,
                     forward_table,
                 )
+                queued_rules.append((protocol, host_port, vm_port))
+
+        if all_entities:
+            commands = add_entities_if_not_present(ruleset, all_entities)
+            execute_json_nft_commands(commands)
+            for protocol, host_port, vm_port in queued_rules:
                 logger.info(
                     "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
                     protocol,
@@ -261,10 +268,6 @@ class VmExecution:
                     vm_port,
                     self.vm_hash,
                 )
-
-        if all_entities:
-            commands = add_entities_if_not_present(ruleset, all_entities)
-            execute_json_nft_commands(commands)
 
         if port_changed:
             await save_port_mappings(self.vm_hash, self.mapped_ports)

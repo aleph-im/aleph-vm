@@ -1320,6 +1320,126 @@ async def test_recreate_port_redirect_rules_both_protocols_port_unavailable(mock
     mock_save_ports.assert_called_once()
 
 
+# --- Entity builder tests ---
+
+
+def test_build_postrouting_chain_entities():
+    """Test that build_postrouting_chain_entities returns correct entity structure."""
+    from aleph.vm.network.firewall import build_postrouting_chain_entities
+
+    entities = build_postrouting_chain_entities("nat", "aleph-vm-nat-5")
+
+    assert len(entities) == 2
+    # First entity: chain definition
+    assert entities[0] == {"chain": {"family": "ip", "table": "nat", "name": "aleph-vm-nat-5"}}
+    # Second entity: jump rule
+    rule = entities[1]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "nat"
+    assert rule["expr"] == [{"jump": {"target": "aleph-vm-nat-5"}}]
+
+
+def test_build_forward_chain_entities():
+    """Test that build_forward_chain_entities returns correct entity structure for ip and ip6."""
+    from aleph.vm.network.firewall import build_forward_chain_entities
+
+    entities = build_forward_chain_entities("filter", "aleph-vm-filter-3")
+
+    assert len(entities) == 2
+    assert entities[0] == {"chain": {"family": "ip", "table": "filter", "name": "aleph-vm-filter-3"}}
+    rule = entities[1]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "filter"
+    assert rule["expr"] == [{"jump": {"target": "aleph-vm-filter-3"}}]
+
+    # IPv6 variant
+    entities_v6 = build_forward_chain_entities("filter", "aleph-vm-filter-3", family="ip6")
+    assert entities_v6[0]["chain"]["family"] == "ip6"
+    assert entities_v6[1]["rule"]["family"] == "ip6"
+
+
+def test_build_masquerading_rule_entities(mocker):
+    """Test that build_masquerading_rule_entities returns correct masquerade rule."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_masquerading_rule_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap7"
+
+    entities = build_masquerading_rule_entities("nat", 7, mock_interface)
+
+    assert len(entities) == 1
+    rule = entities[0]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "nat"
+    assert rule["chain"] == "aleph-vm-nat-7"
+    # Check expr contains iifname match, oifname match, and masquerade
+    expr = rule["expr"]
+    assert len(expr) == 3
+    assert expr[0]["match"]["right"] == "vmtap7"
+    assert expr[2] == {"masquerade": None}
+
+
+def test_build_forward_rule_entities(mocker):
+    """Test that build_forward_rule_entities returns correct forward accept rule."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_forward_rule_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap9"
+
+    entities = build_forward_rule_entities("filter", 9, mock_interface)
+
+    assert len(entities) == 1
+    rule = entities[0]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "filter"
+    assert rule["chain"] == "aleph-vm-filter-9"
+    expr = rule["expr"]
+    assert len(expr) == 3
+    assert expr[0]["match"]["right"] == "vmtap9"
+    assert expr[2] == {"accept": None}
+
+    # IPv6 variant
+    entities_v6 = build_forward_rule_entities("filter", 9, mock_interface, family="ip6")
+    assert entities_v6[0]["rule"]["family"] == "ip6"
+
+
+def test_build_port_redirect_entities(mocker):
+    """Test that build_port_redirect_entities returns DNAT + forward accept rules."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_port_redirect_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap2"
+    mock_interface.guest_ip.ip = "172.16.2.2"
+
+    entities = build_port_redirect_entities(2, mock_interface, 24000, 22, "tcp", "nat", "filter")
+
+    assert len(entities) == 2
+    # First: DNAT prerouting rule
+    dnat_rule = entities[0]["rule"]
+    assert dnat_rule["family"] == "ip"
+    assert dnat_rule["table"] == "nat"
+    dnat_expr = dnat_rule["expr"]
+    assert dnat_expr[1]["match"]["left"]["payload"]["protocol"] == "tcp"
+    assert dnat_expr[1]["match"]["right"] == 24000
+    assert dnat_expr[2]["dnat"] == {"addr": "172.16.2.2", "port": 22}
+
+    # Second: forward accept rule
+    fwd_rule = entities[1]["rule"]
+    assert fwd_rule["family"] == "ip"
+    assert fwd_rule["table"] == "filter"
+    assert fwd_rule["chain"] == "aleph-vm-filter-2"
+    fwd_expr = fwd_rule["expr"]
+    assert fwd_expr[1]["match"]["left"]["payload"]["protocol"] == "tcp"
+    assert fwd_expr[1]["match"]["right"] == 22
+    assert fwd_expr[2] == {"accept": None}
+
+
 # --- IPv6 tests ---
 
 

@@ -199,10 +199,10 @@ def add_entity_if_not_present(nft_ruleset, entity: dict[EntityType, dict]) -> li
     return commands
 
 
-def add_entities_if_not_present(nft_ruleset: list[dict], entites: list[dict[EntityType, dict]]) -> list[dict]:
-    """Return the nft command to create the if it doesn't exist within the ruleset"""
+def add_entities_if_not_present(nft_ruleset: list[dict], entities: list[dict[EntityType, dict]]) -> list[dict]:
+    """Return the nft commands to create entities that don't exist within the ruleset."""
     commands = []
-    for entity in entites:
+    for entity in entities:
         commands += add_entity_if_not_present(nft_ruleset, entity)
     return commands
 
