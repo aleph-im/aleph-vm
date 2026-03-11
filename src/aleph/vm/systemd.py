@@ -79,6 +79,18 @@ class SystemDManager:
         if self.is_service_enabled(service):
             self.disable(service)
 
+    def disable_service(self, service: str) -> None:
+        """Disable a service that is already known to be inactive.
+
+        Skips the active/enabled state checks that stop_and_disable
+        performs, avoiding redundant D-Bus round-trips when the caller
+        has already determined the service state via batch queries.
+        """
+        try:
+            self.disable(service)
+        except DBusException as error:
+            logger.warning("Failed to disable %s: %s", service, error)
+
     def enable(self, service: str) -> None:
         manager = self._get_manager()
         manager.EnableUnitFiles([service], False, True)  # noqa: FBT003
@@ -171,6 +183,31 @@ class SystemDManager:
             logger.error(f"Failed to get services active states: {error}")
             # Return all as inactive on error
             return {service: False for service in services}
+
+    def get_services_enabled_states(self, services: list[str]) -> dict[str, bool]:
+        """Get enabled state of multiple services via individual GetUnitFileState calls.
+
+        Args:
+            services: List of service names to check.
+
+        Returns:
+            Dictionary mapping service name to enabled state.
+        """
+        if not services:
+            return {}
+
+        result: dict[str, bool] = {}
+        try:
+            manager = self._get_manager()
+            for service in services:
+                try:
+                    result[service] = str(manager.GetUnitFileState(service)) == "enabled"
+                except DBusException:
+                    result[service] = False
+        except DBusException as error:
+            logger.error(f"Failed to get services enabled states: {error}")
+            return {service: False for service in services}
+        return result
 
     async def enable_and_start(self, service: str) -> None:
         if not self.is_service_enabled(service):

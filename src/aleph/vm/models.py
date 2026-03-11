@@ -31,9 +31,13 @@ from aleph.vm.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialResources,
 )
 from aleph.vm.network.firewall import (
+    add_entities_if_not_present,
     add_port_redirect_rule,
+    build_port_redirect_entities,
     check_port_redirect_exists,
+    execute_json_nft_commands,
     get_existing_nftables_ruleset,
+    get_table_for_hook,
     remove_port_redirect_rule,
 )
 from aleph.vm.network.interfaces import TapInterface
@@ -192,12 +196,8 @@ class VmExecution:
         This method is called during load_persistent_executions() to ensure that
         port redirect rules are properly restored after a software restart or host reboot.
 
-        For each saved port mapping:
-        1. Check if nftables rule already exists → skip if yes (software restart case)
-        2. If rule doesn't exist:
-           a. Check if saved host port is available
-           b. If available → create rule with saved port (reboot case, port still free)
-           c. If not available → assign new random port, create rule, log warning
+        Fetches the nftables ruleset once, builds all missing rules, and submits
+        them in a single batch to minimize subprocess calls.
         """
         if not self.mapped_ports:
             return
@@ -208,11 +208,15 @@ class VmExecution:
         vm_ip = str(interface.guest_ip.ip)
         port_changed = False
         ruleset = get_existing_nftables_ruleset()
+        prerouting_table = get_table_for_hook("prerouting", nft_ruleset=ruleset)
+        forward_table = get_table_for_hook("forward", nft_ruleset=ruleset)
+
+        all_entities: list[dict] = []
+        queued_rules: list[tuple[str, int, int]] = []
 
         for vm_port, mapping in list(self.mapped_ports.items()):
             host_port = int(mapping["host"])
 
-            # Collect which protocols need rules created (skip those that already exist)
             protocols_to_create = []
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if not mapping.get(protocol):
@@ -228,7 +232,6 @@ class VmExecution:
             if not protocols_to_create:
                 continue
 
-            # Resolve host port once for all protocols that need rules
             if not is_host_port_available(host_port):
                 new_host_port = fast_get_available_host_port()
                 logger.warning(
@@ -243,7 +246,21 @@ class VmExecution:
                 port_changed = True
 
             for protocol in protocols_to_create:
-                add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                all_entities += build_port_redirect_entities(
+                    self.vm.vm_id,
+                    interface,
+                    host_port,
+                    vm_port,
+                    protocol,
+                    prerouting_table,
+                    forward_table,
+                )
+                queued_rules.append((protocol, host_port, vm_port))
+
+        if all_entities:
+            commands = add_entities_if_not_present(ruleset, all_entities)
+            execute_json_nft_commands(commands)
+            for protocol, host_port, vm_port in queued_rules:
                 logger.info(
                     "Recreated port redirect rule: %s host:%d -> vm:%d for %s",
                     protocol,
@@ -252,7 +269,6 @@ class VmExecution:
                     self.vm_hash,
                 )
 
-        # Persist port mappings if host port changed
         if port_changed:
             await save_port_mappings(self.vm_hash, self.mapped_ports)
 

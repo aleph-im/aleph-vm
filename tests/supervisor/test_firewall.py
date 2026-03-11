@@ -1127,14 +1127,17 @@ async def test_recreate_port_redirect_rules_rule_exists(mocker, fake_instance_co
 
     # Mock: rule already exists
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=True)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[])
+    mock_exec = mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should NOT create new rule since it exists
-    mock_add_rule.assert_not_called()
+    # Should NOT build entities since rule exists
+    mock_build.assert_not_called()
+    mock_exec.assert_not_called()
     # mapped_ports should be unchanged
     assert execution.mapped_ports[22]["host"] == 24000
 
@@ -1147,16 +1150,19 @@ async def test_recreate_port_redirect_rules_missing_port_available(mocker, fake_
 
     # Mock: rule doesn't exist, but port is available
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.add_entities_if_not_present", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should create rule with SAME saved port
-    mock_add_rule.assert_called_once()
-    call_args = mock_add_rule.call_args
+    # Should build entities with SAME saved port
+    mock_build.assert_called_once()
+    call_args = mock_build.call_args
     assert call_args[0][2] == 24000  # host_port preserved
     assert call_args[0][3] == 22  # vm_port
     assert execution.mapped_ports[22]["host"] == 24000
@@ -1170,17 +1176,20 @@ async def test_recreate_port_redirect_rules_missing_port_unavailable(mocker, fak
 
     # Mock: rule doesn't exist AND port is not available
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.add_entities_if_not_present", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mock_save_ports = mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should create rule with NEW port
-    mock_add_rule.assert_called_once()
-    call_args = mock_add_rule.call_args
+    # Should build entities with NEW port
+    mock_build.assert_called_once()
+    call_args = mock_build.call_args
     assert call_args[0][2] == 24050  # new host_port
     assert call_args[0][3] == 22  # vm_port unchanged
     # mapped_ports should be updated with new port
@@ -1222,16 +1231,19 @@ async def test_recreate_port_redirect_rules_multiple_ports(mocker, fake_instance
         return port == 24001  # Only port 24001 is available
 
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", side_effect=check_exists_side_effect)
     mocker.patch("aleph.vm.models.is_host_port_available", side_effect=port_available_side_effect)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.add_entities_if_not_present", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mock_save_ports = mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should create rules for ports 80 and 443, but not 22 (already exists)
-    assert mock_add_rule.call_count == 2
+    # Should build entities for ports 80 and 443, but not 22 (already exists)
+    assert mock_build.call_count == 2
 
     # Port 22: skipped (rule exists)
     assert execution.mapped_ports[22]["host"] == 24000
@@ -1254,20 +1266,23 @@ async def test_recreate_port_redirect_rules_both_protocols(mocker, fake_instance
 
     # Mock: no rules exist, port is available
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=True)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.add_entities_if_not_present", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should create rules for both TCP and UDP
-    assert mock_add_rule.call_count == 2
+    # Should build entities for both TCP and UDP
+    assert mock_build.call_count == 2
 
     # Check both protocols were used with the SAME host port
-    protocols_used = {call[0][4] for call in mock_add_rule.call_args_list}
+    protocols_used = {call[0][4] for call in mock_build.call_args_list}
     assert protocols_used == {"tcp", "udp"}
-    host_ports_used = {call[0][2] for call in mock_add_rule.call_args_list}
+    host_ports_used = {call[0][2] for call in mock_build.call_args_list}
     assert host_ports_used == {24000}, "Both protocols must use the same host port"
 
 
@@ -1279,27 +1294,150 @@ async def test_recreate_port_redirect_rules_both_protocols_port_unavailable(mock
 
     # Mock: no rules exist AND port is unavailable
     mocker.patch("aleph.vm.models.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.models.get_table_for_hook", return_value="nat")
     mocker.patch("aleph.vm.models.check_port_redirect_exists", return_value=False)
     mocker.patch("aleph.vm.models.is_host_port_available", return_value=False)
     mocker.patch("aleph.vm.models.fast_get_available_host_port", return_value=24050)
-    mock_add_rule = mocker.patch("aleph.vm.models.add_port_redirect_rule")
+    mock_build = mocker.patch("aleph.vm.models.build_port_redirect_entities", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.add_entities_if_not_present", return_value=[{"add": {}}])
+    mocker.patch("aleph.vm.models.execute_json_nft_commands")
     mock_save_ports = mocker.patch("aleph.vm.models.save_port_mappings", new_callable=mocker.AsyncMock)
 
     await execution.recreate_port_redirect_rules()
 
-    # Should create rules for both TCP and UDP
-    assert mock_add_rule.call_count == 2
+    # Should build entities for both TCP and UDP
+    assert mock_build.call_count == 2
 
     # Both protocols must use the SAME new host port
-    host_ports_used = {call[0][2] for call in mock_add_rule.call_args_list}
+    host_ports_used = {call[0][2] for call in mock_build.call_args_list}
     assert host_ports_used == {24050}, "Both protocols must share the same reassigned host port"
 
-    protocols_used = {call[0][4] for call in mock_add_rule.call_args_list}
+    protocols_used = {call[0][4] for call in mock_build.call_args_list}
     assert protocols_used == {"tcp", "udp"}
 
     # Mapping should reflect the single new port
     assert execution.mapped_ports[22]["host"] == 24050
     mock_save_ports.assert_called_once()
+
+
+# --- Entity builder tests ---
+
+
+def test_build_postrouting_chain_entities():
+    """Test that build_postrouting_chain_entities returns correct entity structure."""
+    from aleph.vm.network.firewall import build_postrouting_chain_entities
+
+    entities = build_postrouting_chain_entities("nat", "aleph-vm-nat-5")
+
+    assert len(entities) == 2
+    # First entity: chain definition
+    assert entities[0] == {"chain": {"family": "ip", "table": "nat", "name": "aleph-vm-nat-5"}}
+    # Second entity: jump rule
+    rule = entities[1]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "nat"
+    assert rule["expr"] == [{"jump": {"target": "aleph-vm-nat-5"}}]
+
+
+def test_build_forward_chain_entities():
+    """Test that build_forward_chain_entities returns correct entity structure for ip and ip6."""
+    from aleph.vm.network.firewall import build_forward_chain_entities
+
+    entities = build_forward_chain_entities("filter", "aleph-vm-filter-3")
+
+    assert len(entities) == 2
+    assert entities[0] == {"chain": {"family": "ip", "table": "filter", "name": "aleph-vm-filter-3"}}
+    rule = entities[1]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "filter"
+    assert rule["expr"] == [{"jump": {"target": "aleph-vm-filter-3"}}]
+
+    # IPv6 variant
+    entities_v6 = build_forward_chain_entities("filter", "aleph-vm-filter-3", family="ip6")
+    assert entities_v6[0]["chain"]["family"] == "ip6"
+    assert entities_v6[1]["rule"]["family"] == "ip6"
+
+
+def test_build_masquerading_rule_entities(mocker):
+    """Test that build_masquerading_rule_entities returns correct masquerade rule."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_masquerading_rule_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap7"
+
+    entities = build_masquerading_rule_entities("nat", 7, mock_interface)
+
+    assert len(entities) == 1
+    rule = entities[0]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "nat"
+    assert rule["chain"] == "aleph-vm-nat-7"
+    # Check expr contains iifname match, oifname match, and masquerade
+    expr = rule["expr"]
+    assert len(expr) == 3
+    assert expr[0]["match"]["right"] == "vmtap7"
+    assert expr[2] == {"masquerade": None}
+
+
+def test_build_forward_rule_entities(mocker):
+    """Test that build_forward_rule_entities returns correct forward accept rule."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_forward_rule_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap9"
+
+    entities = build_forward_rule_entities("filter", 9, mock_interface)
+
+    assert len(entities) == 1
+    rule = entities[0]["rule"]
+    assert rule["family"] == "ip"
+    assert rule["table"] == "filter"
+    assert rule["chain"] == "aleph-vm-filter-9"
+    expr = rule["expr"]
+    assert len(expr) == 3
+    assert expr[0]["match"]["right"] == "vmtap9"
+    assert expr[2] == {"accept": None}
+
+    # IPv6 variant
+    entities_v6 = build_forward_rule_entities("filter", 9, mock_interface, family="ip6")
+    assert entities_v6[0]["rule"]["family"] == "ip6"
+
+
+def test_build_port_redirect_entities(mocker):
+    """Test that build_port_redirect_entities returns DNAT + forward accept rules."""
+    from unittest.mock import MagicMock
+
+    from aleph.vm.network.firewall import build_port_redirect_entities
+
+    mock_interface = MagicMock()
+    mock_interface.device_name = "vmtap2"
+    mock_interface.guest_ip.ip = "172.16.2.2"
+
+    entities = build_port_redirect_entities(2, mock_interface, 24000, 22, "tcp", "nat", "filter")
+
+    assert len(entities) == 2
+    # First: DNAT prerouting rule
+    dnat_rule = entities[0]["rule"]
+    assert dnat_rule["family"] == "ip"
+    assert dnat_rule["table"] == "nat"
+    dnat_expr = dnat_rule["expr"]
+    assert dnat_expr[1]["match"]["left"]["payload"]["protocol"] == "tcp"
+    assert dnat_expr[1]["match"]["right"] == 24000
+    assert dnat_expr[2]["dnat"] == {"addr": "172.16.2.2", "port": 22}
+
+    # Second: forward accept rule
+    fwd_rule = entities[1]["rule"]
+    assert fwd_rule["family"] == "ip"
+    assert fwd_rule["table"] == "filter"
+    assert fwd_rule["chain"] == "aleph-vm-filter-2"
+    fwd_expr = fwd_rule["expr"]
+    assert fwd_expr[1]["match"]["left"]["payload"]["protocol"] == "tcp"
+    assert fwd_expr[1]["match"]["right"] == 22
+    assert fwd_expr[2] == {"accept": None}
 
 
 # --- IPv6 tests ---
@@ -1529,53 +1667,84 @@ async def test_initialize_nftables_ipv6_disabled(mocker):
 
 @pytest.mark.asyncio
 async def test_setup_nftables_for_vm_ipv6(mocker):
-    """Test that setup_nftables_for_vm creates both ip and ip6 forward chains when IPv6 is enabled."""
+    """Test that setup_nftables_for_vm creates both ip and ip6 forward entities when IPv6 is enabled."""
     from unittest.mock import MagicMock
 
     mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", True)
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.network.firewall.get_table_for_hook", return_value="nat")
 
-    mock_add_postrouting = mocker.patch("aleph.vm.network.firewall.add_postrouting_chain")
-    mock_add_forward = mocker.patch("aleph.vm.network.firewall.add_forward_chain")
-    mock_add_masq = mocker.patch("aleph.vm.network.firewall.add_masquerading_rule")
-    mock_add_fwd_ext = mocker.patch("aleph.vm.network.firewall.add_forward_rule_to_external")
+    mock_build_post = mocker.patch(
+        "aleph.vm.network.firewall.build_postrouting_chain_entities", return_value=[{"post": True}]
+    )
+    mock_build_fwd = mocker.patch(
+        "aleph.vm.network.firewall.build_forward_chain_entities", return_value=[{"fwd": True}]
+    )
+    mock_build_masq = mocker.patch(
+        "aleph.vm.network.firewall.build_masquerading_rule_entities", return_value=[{"masq": True}]
+    )
+    mock_build_fwd_rule = mocker.patch(
+        "aleph.vm.network.firewall.build_forward_rule_entities", return_value=[{"fwd_rule": True}]
+    )
+    mocker.patch("aleph.vm.network.firewall.add_entities_if_not_present", return_value=[])
+    mock_exec = mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands")
 
     mock_interface = MagicMock()
     mock_interface.device_name = "vmtap1"
 
     setup_nftables_for_vm(1, mock_interface)
 
-    # IPv4 calls
-    mock_add_postrouting.assert_called_once_with("aleph-vm-nat-1")
-    mock_add_masq.assert_called_once_with(1, mock_interface)
+    # IPv4 postrouting chain
+    mock_build_post.assert_called_once()
 
-    # add_forward_chain called twice: once for ip (default), once for ip6
-    assert mock_add_forward.call_count == 2
-    mock_add_forward.assert_any_call("aleph-vm-filter-1")
-    mock_add_forward.assert_any_call("aleph-vm-filter-1", family="ip6")
+    # IPv4 masquerading rule
+    mock_build_masq.assert_called_once()
 
-    # add_forward_rule_to_external called twice: once for ip (default), once for ip6
-    assert mock_add_fwd_ext.call_count == 2
-    mock_add_fwd_ext.assert_any_call(1, mock_interface)
-    mock_add_fwd_ext.assert_any_call(1, mock_interface, family="ip6")
+    # build_forward_chain_entities called twice: once for ip, once for ip6
+    assert mock_build_fwd.call_count == 2
+
+    # build_forward_rule_entities called twice: once for ip, once for ip6
+    assert mock_build_fwd_rule.call_count == 2
+
+    # Verify ip6 calls were made
+    fwd_families = [call.kwargs.get("family", "ip") for call in mock_build_fwd.call_args_list]
+    assert "ip6" in fwd_families
+    fwd_rule_families = [call.kwargs.get("family", "ip") for call in mock_build_fwd_rule.call_args_list]
+    assert "ip6" in fwd_rule_families
+
+    mock_exec.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_setup_nftables_for_vm_ipv6_disabled(mocker):
-    """Test that setup_nftables_for_vm only creates ip chains when IPv6 is disabled."""
+    """Test that setup_nftables_for_vm only creates ip entities when IPv6 is disabled."""
     from unittest.mock import MagicMock
 
     mocker.patch.object(settings, "IPV6_FORWARDING_ENABLED", False)
+    mocker.patch("aleph.vm.network.firewall.get_existing_nftables_ruleset", return_value=[])
+    mocker.patch("aleph.vm.network.firewall.get_table_for_hook", return_value="nat")
 
-    mock_add_postrouting = mocker.patch("aleph.vm.network.firewall.add_postrouting_chain")
-    mock_add_forward = mocker.patch("aleph.vm.network.firewall.add_forward_chain")
-    mock_add_masq = mocker.patch("aleph.vm.network.firewall.add_masquerading_rule")
-    mock_add_fwd_ext = mocker.patch("aleph.vm.network.firewall.add_forward_rule_to_external")
+    mock_build_post = mocker.patch(
+        "aleph.vm.network.firewall.build_postrouting_chain_entities", return_value=[{"post": True}]
+    )
+    mock_build_fwd = mocker.patch(
+        "aleph.vm.network.firewall.build_forward_chain_entities", return_value=[{"fwd": True}]
+    )
+    mock_build_masq = mocker.patch(
+        "aleph.vm.network.firewall.build_masquerading_rule_entities", return_value=[{"masq": True}]
+    )
+    mock_build_fwd_rule = mocker.patch(
+        "aleph.vm.network.firewall.build_forward_rule_entities", return_value=[{"fwd_rule": True}]
+    )
+    mocker.patch("aleph.vm.network.firewall.add_entities_if_not_present", return_value=[])
+    mock_exec = mocker.patch("aleph.vm.network.firewall.execute_json_nft_commands")
 
     mock_interface = MagicMock()
     mock_interface.device_name = "vmtap1"
 
     setup_nftables_for_vm(1, mock_interface)
 
-    # Only IPv4 calls
-    mock_add_forward.assert_called_once_with("aleph-vm-filter-1")
-    mock_add_fwd_ext.assert_called_once_with(1, mock_interface)
+    # Only IPv4 calls - no ip6
+    mock_build_fwd.assert_called_once()
+    mock_build_fwd_rule.assert_called_once()
+    mock_exec.assert_called_once()
