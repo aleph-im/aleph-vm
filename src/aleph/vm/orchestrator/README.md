@@ -64,7 +64,7 @@ useradd jailman
 from the [Firecracker project releases](https://github.com/firecracker-microvm/firecracker/releases):
 ```shell
 mkdir /opt/firecracker
-curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.3.3/firecracker-v1.3.3-x86_64.tgz | tar -xz --no-same-owner --directory /opt/firecracker
+curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.0/firecracker-v1.15.0-x86_64.tgz | tar -xz --no-same-owner --directory /opt/firecracker
 
 # Link binaries on version-agnostic paths:
 ln /opt/firecracker/release-*/firecracker-v* /opt/firecracker/firecracker
