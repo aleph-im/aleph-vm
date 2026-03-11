@@ -74,6 +74,29 @@ logger = logging.getLogger(__name__)
 
 
 @web.middleware
+async def drain_middleware(request, handler) -> web.Response:
+    """Reject new VM execution requests while the pool is draining.
+
+    Only blocks the paths that trigger on-demand VM creation
+    (/vm/* and hostname-based routing). Status, control, and about
+    endpoints remain accessible for monitoring and operations.
+    """
+    pool: VmPool | None = request.app.get("vm_pool")
+    if pool and getattr(pool, "is_draining", False):
+        path = request.path
+        is_vm_request = path.startswith("/vm/") or (
+            not path.startswith(("/about/", "/control/", "/status/", "/static/", "/debug/"))
+            and request.host.split(":")[0] != settings.DOMAIN_NAME.split(":")[0]
+        )
+        if is_vm_request:
+            return web.json_response(
+                {"error": "Server is draining, try another node"},
+                status=503,
+            )
+    return await handler(request)
+
+
+@web.middleware
 async def error_middleware(request, handler) -> web.Response:
     "Ensure we always return a JSON response for errors."
     try:
@@ -123,7 +146,7 @@ def setup_webapp(pool: VmPool | None):
 
     Only case where VmPool is None is in some tests that won't use it.
     """
-    app = web.Application(middlewares=[error_middleware])
+    app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
     app["backup_state"] = BackupState()
@@ -202,6 +225,13 @@ def setup_webapp(pool: VmPool | None):
     return app
 
 
+async def drain_in_flight_requests(app: web.Application):
+    """Drain in-flight requests before stopping VMs."""
+    pool: VmPool | None = app.get("vm_pool")
+    if pool:
+        await pool.drain()
+
+
 async def stop_all_vms(app: web.Application):
     pool: VmPool = app["vm_pool"]
     await pool.stop()
@@ -234,12 +264,18 @@ def run():
     logger.info(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     try:
+        # on_shutdown fires while the server still accepts keep-alive requests,
+        # so the drain middleware can reject new ones with 503.
+        # on_cleanup fires after the server is already closed — too late.
+        app.on_shutdown.append(drain_in_flight_requests)
+
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
             app.on_startup.append(start_payment_monitoring_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
             app.on_cleanup.append(stop_balances_monitoring_task)
-            app.on_cleanup.append(stop_all_vms)
+
+        app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.orchestrator.http import close_session, reset_session
 
