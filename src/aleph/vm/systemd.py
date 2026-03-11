@@ -172,6 +172,31 @@ class SystemDManager:
             # Return all as inactive on error
             return {service: False for service in services}
 
+    def get_services_enabled_states(self, services: list[str]) -> dict[str, bool]:
+        """Get enabled state of multiple services via individual GetUnitFileState calls.
+
+        Args:
+            services: List of service names to check.
+
+        Returns:
+            Dictionary mapping service name to enabled state.
+        """
+        if not services:
+            return {}
+
+        result: dict[str, bool] = {}
+        try:
+            manager = self._get_manager()
+            for service in services:
+                try:
+                    result[service] = str(manager.GetUnitFileState(service)) == "enabled"
+                except DBusException:
+                    result[service] = False
+        except DBusException as error:
+            logger.error(f"Failed to get services enabled states: {error}")
+            return {service: False for service in services}
+        return result
+
     async def enable_and_start(self, service: str) -> None:
         if not self.is_service_enabled(service):
             self.enable(service)

@@ -41,6 +41,7 @@ from aleph.vm.vm_type import VmType
 from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
 from .network.firewall import (
+    get_existing_nftables_ruleset,
     get_orphan_vm_chain_ids,
     remove_orphan_port_redirect_rules,
     setup_nftables_for_vm,
@@ -296,14 +297,27 @@ class VmPool:
         executions, record usage and clean up the stale controller service.
         After loading, remove any orphan host resources (nft rules, chains,
         tap interfaces) left behind by previous crashes.
+
+        Uses batch D-Bus calls to check service states (1 call for all VMs
+        instead of 3+ per VM).
         """
         saved_executions = await get_execution_records()
-        for saved_execution in saved_executions:
+
+        # Filter to persistent executions not already loaded
+        persistent_saved = [
+            se for se in saved_executions if se.persistent and ItemHash(se.vm_hash) not in self.executions
+        ]
+
+        # Batch-fetch systemd service states: 1 D-Bus call instead of 3+ per VM
+        all_services = [f"aleph-vm-controller@{ItemHash(se.vm_hash)}.service" for se in persistent_saved]
+        service_active_states = self.systemd_manager.get_services_active_states(all_services)
+
+        # Collect dead services for batch enabled-state check
+        dead_services = [svc for svc in all_services if not service_active_states.get(svc, False)]
+        service_enabled_states = self.systemd_manager.get_services_enabled_states(dead_services)
+
+        for saved_execution in persistent_saved:
             vm_hash = ItemHash(saved_execution.vm_hash)
-
-            if vm_hash in self.executions or not saved_execution.persistent:
-                continue
-
             vm_id = saved_execution.vm_id
             logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
 
@@ -316,10 +330,14 @@ class VmPool:
                 persistent=saved_execution.persistent,
             )
 
-            if execution.is_running:
+            service_name = execution.controller_service
+            is_active = service_active_states.get(service_name, False)
+
+            if is_active:
                 await self._restore_running_execution(execution, saved_execution, vm_id, vm_hash)
             else:
-                await self._handle_dead_execution(execution, saved_execution)
+                is_enabled = service_enabled_states.get(service_name, False)
+                await self._handle_dead_execution(execution, saved_execution, is_enabled=is_enabled)
 
         self._cleanup_orphan_resources()
 
@@ -382,34 +400,41 @@ class VmPool:
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
 
-    async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
-        """Record usage for a dead execution and clean up its controller service."""
+    async def _handle_dead_execution(
+        self, execution: VmExecution, saved_execution: ExecutionRecord, is_enabled: bool
+    ) -> None:
+        """Record usage for a dead execution and clean up its controller service.
+
+        Args:
+            is_enabled: Pre-computed enabled state from batch D-Bus check.
+        """
         execution.uuid = saved_execution.uuid
         try:
             await execution.record_usage()
         except Exception:
             logger.warning("Failed to record usage for %s", execution.vm_hash, exc_info=True)
-        try:
-            service = execution.controller_service
-            if self.systemd_manager.is_service_active(service) or self.systemd_manager.is_service_enabled(service):
-                self.systemd_manager.stop_and_disable(service)
-                logger.info("Stopped stale controller service %s", service)
-        except Exception:
-            logger.warning("Failed to stop stale controller %s", execution.controller_service, exc_info=True)
+        if is_enabled:
+            try:
+                self.systemd_manager.stop_and_disable(execution.controller_service)
+                logger.info("Stopped stale controller service %s", execution.controller_service)
+            except Exception:
+                logger.warning("Failed to stop stale controller %s", execution.controller_service, exc_info=True)
 
     def _cleanup_orphan_resources(self):
         """Remove orphan nft rules, nft chains, and tap interfaces.
 
         Compares host resources against active executions in the pool
         and removes anything that doesn't belong to a running VM.
+        Fetches the nftables ruleset once and passes it to both nft cleanup methods.
         """
         active_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.vm_id is not None}
 
-        self._cleanup_orphan_port_redirects()
-        self._cleanup_orphan_nft_chains(active_vm_ids)
+        nft_ruleset = get_existing_nftables_ruleset()
+        self._cleanup_orphan_port_redirects(nft_ruleset)
+        self._cleanup_orphan_nft_chains(active_vm_ids, nft_ruleset)
         self._cleanup_orphan_tap_interfaces(active_vm_ids)
 
-    def _cleanup_orphan_port_redirects(self):
+    def _cleanup_orphan_port_redirects(self, nft_ruleset: list[dict]):
         """Remove DNAT prerouting rules with no matching active execution."""
         known_good: set[tuple[int, str, int, str]] = set()
         for execution in self.executions.values():
@@ -422,14 +447,14 @@ class VmPool:
                 for proto in ("tcp", "udp"):
                     if mapping.get(proto):
                         known_good.add((host_port, guest_ip, int(vm_port), proto))
-        removed = remove_orphan_port_redirect_rules(known_good)
+        removed = remove_orphan_port_redirect_rules(known_good, nft_ruleset=nft_ruleset)
         if removed:
             logger.info("Removed %d orphan port redirect rules", removed)
 
-    def _cleanup_orphan_nft_chains(self, active_vm_ids: set[int]):
+    def _cleanup_orphan_nft_chains(self, active_vm_ids: set[int], nft_ruleset: list[dict]):
         """Remove per-VM nft chains whose vm_id is not in any active execution."""
         try:
-            orphan_vm_ids = get_orphan_vm_chain_ids(active_vm_ids)
+            orphan_vm_ids = get_orphan_vm_chain_ids(active_vm_ids, nft_ruleset=nft_ruleset)
             for vm_id in orphan_vm_ids:
                 try:
                     teardown_nftables_for_vm(vm_id)

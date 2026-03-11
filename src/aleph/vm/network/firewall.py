@@ -95,10 +95,11 @@ def get_existing_nftables_ruleset() -> list[dict]:
     return combined
 
 
-def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
+def get_base_chains_for_hook(hook: str, family: str = "ip", nft_ruleset: list[dict] | None = None) -> list:
     """Looks through the nftables ruleset and creates a list of
     all chains that are base chains for the specified hook"""
-    nft_ruleset = get_existing_nftables_ruleset()
+    if nft_ruleset is None:
+        nft_ruleset = get_existing_nftables_ruleset()
     chains = []
 
     for entry in nft_ruleset:
@@ -118,8 +119,8 @@ def get_base_chains_for_hook(hook: str, family: str = "ip") -> list:
     return chains
 
 
-def get_table_for_hook(hook: str, family: str = "ip") -> str:
-    chains = get_base_chains_for_hook(hook, family)
+def get_table_for_hook(hook: str, family: str = "ip", nft_ruleset: list[dict] | None = None) -> str:
+    chains = get_base_chains_for_hook(hook, family, nft_ruleset=nft_ruleset)
     if not chains:
         raise NoBaseChainFound(hook=hook)
 
@@ -816,19 +817,22 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
 
 def remove_orphan_port_redirect_rules(
     known_good: set[tuple[int, str, int, str]],
+    nft_ruleset: list[dict] | None = None,
 ) -> int:
     """Remove DNAT prerouting rules that have no matching DB entry.
 
     Args:
         known_good: Set of (host_port, vm_ip, vm_port, protocol)
             tuples representing currently active port mappings.
+        nft_ruleset: Optional pre-fetched ruleset to avoid extra subprocess calls.
 
     Returns:
         Number of orphan rules removed.
     """
-    nft_ruleset = get_existing_nftables_ruleset()
+    if nft_ruleset is None:
+        nft_ruleset = get_existing_nftables_ruleset()
     chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
-    prerouting_table = get_table_for_hook("prerouting")
+    prerouting_table = get_table_for_hook("prerouting", nft_ruleset=nft_ruleset)
 
     commands: list[dict] = []
 
@@ -894,16 +898,188 @@ def remove_orphan_port_redirect_rules(
     return len(commands)
 
 
+def build_postrouting_chain_entities(table: str, chain_name: str) -> list[dict]:
+    """Return entities for a postrouting chain and its jump rule."""
+    return [
+        {"chain": {"family": "ip", "table": table, "name": chain_name}},
+        {
+            "rule": {
+                "family": "ip",
+                "table": table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-nat",
+                "expr": [{"jump": {"target": chain_name}}],
+            }
+        },
+    ]
+
+
+def build_forward_chain_entities(table: str, chain_name: str, family: str = "ip") -> list[dict]:
+    """Return entities for a forward chain and its jump rule."""
+    return [
+        {"chain": {"family": family, "table": table, "name": chain_name}},
+        {
+            "rule": {
+                "family": family,
+                "table": table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-filter",
+                "expr": [{"jump": {"target": chain_name}}],
+            }
+        },
+    ]
+
+
+def build_masquerading_rule_entities(table: str, vm_id: int, interface: TapInterface) -> list[dict]:
+    """Return entities for a masquerading (NAT) rule."""
+    return [
+        {
+            "rule": {
+                "family": "ip",
+                "table": table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "iifname"}},
+                            "right": interface.device_name,
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "oifname"}},
+                            "right": settings.NETWORK_INTERFACE,
+                        }
+                    },
+                    {"masquerade": None},
+                ],
+            }
+        }
+    ]
+
+
+def build_forward_rule_entities(table: str, vm_id: int, interface: TapInterface, family: str = "ip") -> list[dict]:
+    """Return entities for a forward-to-external rule."""
+    return [
+        {
+            "rule": {
+                "family": family,
+                "table": table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "iifname"}},
+                            "right": interface.device_name,
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "oifname"}},
+                            "right": settings.NETWORK_INTERFACE,
+                        }
+                    },
+                    {"accept": None},
+                ],
+            }
+        }
+    ]
+
+
+def build_port_redirect_entities(
+    vm_id: int,
+    interface: TapInterface,
+    host_port: int,
+    vm_port: int,
+    protocol: str,
+    prerouting_table: str,
+    forward_table: str,
+) -> list[dict]:
+    """Return entities for a port redirect (DNAT + forward accept) rule."""
+    chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
+    return [
+        {
+            "rule": {
+                "family": "ip",
+                "table": prerouting_table,
+                "chain": chain_name,
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "iifname"}},
+                            "right": settings.NETWORK_INTERFACE,
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": protocol, "field": "dport"}},
+                            "right": int(host_port),
+                        }
+                    },
+                    {
+                        "dnat": {"addr": str(interface.guest_ip.ip), "port": int(vm_port)},
+                    },
+                ],
+            }
+        },
+        {
+            "rule": {
+                "family": "ip",
+                "table": forward_table,
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                "expr": [
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"meta": {"key": "iifname"}},
+                            "right": settings.NETWORK_INTERFACE,
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {"payload": {"protocol": protocol, "field": "dport"}},
+                            "right": int(vm_port),
+                        }
+                    },
+                    {"accept": None},
+                ],
+            }
+        },
+    ]
+
+
 def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
-    """Sets up chains for filter and nat purposes specific to this VM, and makes sure those chains are jumped to"""
-    add_postrouting_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
-    add_forward_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
-    add_masquerading_rule(vm_id, interface)
-    add_forward_rule_to_external(vm_id, interface)
+    """Sets up chains for filter and nat purposes specific to this VM.
+
+    Fetches the nftables ruleset once, builds all needed entities,
+    and submits them in a single batch to minimize subprocess calls.
+    """
+    nft_ruleset = get_existing_nftables_ruleset()
+
+    post_table = get_table_for_hook("postrouting", nft_ruleset=nft_ruleset)
+    fwd_table = get_table_for_hook("forward", nft_ruleset=nft_ruleset)
+
+    nat_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}"
+    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}"
+
+    entities: list[dict] = []
+    entities += build_postrouting_chain_entities(post_table, nat_chain)
+    entities += build_forward_chain_entities(fwd_table, filter_chain)
+    entities += build_masquerading_rule_entities(post_table, vm_id, interface)
+    entities += build_forward_rule_entities(fwd_table, vm_id, interface)
 
     if settings.IPV6_FORWARDING_ENABLED:
-        add_forward_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}", family="ip6")
-        add_forward_rule_to_external(vm_id, interface, family="ip6")
+        ip6_fwd_table = get_table_for_hook("forward", family="ip6", nft_ruleset=nft_ruleset)
+        entities += build_forward_chain_entities(ip6_fwd_table, filter_chain, family="ip6")
+        entities += build_forward_rule_entities(ip6_fwd_table, vm_id, interface, family="ip6")
+
+    commands = add_entities_if_not_present(nft_ruleset, entities)
+    execute_json_nft_commands(commands)
 
 
 def teardown_nftables_for_vm(vm_id: int) -> None:
@@ -912,10 +1088,10 @@ def teardown_nftables_for_vm(vm_id: int) -> None:
     remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
 
 
-def get_orphan_vm_chain_ids(active_vm_ids: set[int]) -> set[int]:
+def get_orphan_vm_chain_ids(active_vm_ids: set[int], nft_ruleset: list[dict] | None = None) -> set[int]:
     """Return vm_ids that have nftables chains but are not in active_vm_ids."""
     prefix = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-"
-    all_chains = get_all_aleph_chains()
+    all_chains = get_all_aleph_chains(nft_ruleset=nft_ruleset)
     orphan_ids: set[int] = set()
     for chain_name in all_chains:
         if not chain_name.startswith(prefix):
@@ -1035,7 +1211,7 @@ def check_port_redirect_exists(
         return False
 
 
-def get_all_aleph_chains() -> list[str]:
+def get_all_aleph_chains(nft_ruleset: list[dict] | None = None) -> list[str]:
     """Query nftables ruleset and return all chains created by aleph software.
 
     This function scans the entire nftables ruleset and identifies all chains
@@ -1044,6 +1220,9 @@ def get_all_aleph_chains() -> list[str]:
     aleph-supervisor-prerouting) and VM-specific chains (e.g., aleph-vm-nat-123,
     aleph-vm-filter-123).
 
+    Args:
+        nft_ruleset: Optional pre-fetched ruleset to avoid extra subprocess calls.
+
     Returns:
         A list of chain names that belong to aleph software
 
@@ -1051,7 +1230,8 @@ def get_all_aleph_chains() -> list[str]:
         Exception: If the nftables query fails
     """
     logger.debug("Querying nftables for all aleph-related chains")
-    nft_ruleset = get_existing_nftables_ruleset()
+    if nft_ruleset is None:
+        nft_ruleset = get_existing_nftables_ruleset()
     aleph_chains = []
 
     for entry in nft_ruleset:
