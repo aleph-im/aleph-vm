@@ -128,7 +128,11 @@ class SystemDManager:
         """Return the ActiveState string for a systemd service.
 
         Possible values: "active", "activating", "deactivating",
-        "inactive", "failed".  Returns "unknown" on D-Bus errors.
+        "inactive", "failed".  Returns "unknown" on D-Bus errors,
+        including when the unit has never been loaded (GetUnit raises
+        NoSuchUnit, e.g. right after EnableUnitFiles but before
+        StartUnit is processed).  Callers should retry on "unknown"
+        rather than treating it as terminal.
         """
         try:
             manager = self._get_manager()

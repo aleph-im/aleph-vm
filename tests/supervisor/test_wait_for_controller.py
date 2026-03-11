@@ -1,7 +1,7 @@
 """Tests for VmExecution.wait_for_controller_ready polling logic."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from aleph_message.models import InstanceContent, ItemHash
@@ -111,15 +111,31 @@ class TestWaitForControllerReady:
         mgr.get_service_active_state.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_fast_fails_on_inactive_state(self):
+    async def test_inactive_is_retried_not_fast_failed(self):
+        """inactive is legitimate between StartUnit and activating."""
         mgr = MagicMock()
         mgr.get_service_active_state.return_value = "inactive"
         ex = _make_execution(mgr)
 
-        with pytest.raises(RuntimeError, match="inactive"):
+        with pytest.raises(RuntimeError, match="did not become active"):
             await ex.wait_for_controller_ready()
 
-        mgr.get_service_active_state.assert_called_once()
+        assert mgr.get_service_active_state.call_count == 30
+
+    @pytest.mark.asyncio
+    async def test_inactive_then_active(self):
+        """Service starts inactive (pre-StartUnit window), then becomes active."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.side_effect = [
+            "inactive",
+            "activating",
+            "active",
+        ]
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_ready()
+
+        assert mgr.get_service_active_state.call_count == 3
 
     @pytest.mark.asyncio
     async def test_fast_fails_on_failed_after_activating(self):

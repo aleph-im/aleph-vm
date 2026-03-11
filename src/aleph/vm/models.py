@@ -582,9 +582,14 @@ class VmExecution:
             )
             if state == "active":
                 return
-            if state in ("failed", "inactive"):
-                msg = f"{self} controller service entered '{state}' state"
+            if state == "failed":
+                msg = f"{self} controller service entered 'failed' state"
                 raise RuntimeError(msg)
+            # "inactive" and "deactivating" are retried: the service is
+            # legitimately inactive between StartUnit and systemd
+            # transitioning to "activating", and "deactivating" may
+            # appear if a conflicting job briefly stops the unit.
+            # Both are covered by the timeout path below.
 
             logger.debug(
                 "%s controller state=%s (attempt %d/%d)",
