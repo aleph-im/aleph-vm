@@ -37,6 +37,9 @@ class MockSystemDManager(SystemDManager):
     def is_service_active(self, service: str):
         return self.process is not None
 
+    def get_service_active_state(self, service: str) -> str:
+        return "active" if self.process is not None else "inactive"
+
     async def stop_and_disable(self, service: str):
         if self.execution:
             await self.execution.shutdown()

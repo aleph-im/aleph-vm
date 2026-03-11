@@ -39,6 +39,11 @@ class MockSystemDManager(SystemDManager):
     def is_service_active(self, service: str):
         return self.process is not None and not self.process.returncode
 
+    def get_service_active_state(self, service: str) -> str:
+        if self.process is not None and not self.process.returncode:
+            return "active"
+        return "inactive"
+
     async def stop_and_disable(self, vm_hash: str):
         if self.process:
             self.process.kill()

@@ -124,6 +124,38 @@ class SystemDManager:
             logger.error(error)
             return False
 
+    def get_service_active_state(self, service: str) -> str:
+        """Return the ActiveState string for a systemd service.
+
+        Possible values: "active", "activating", "deactivating",
+        "inactive", "failed".  Returns "unknown" on D-Bus errors,
+        including when the unit has never been loaded (GetUnit raises
+        NoSuchUnit, e.g. right after EnableUnitFiles but before
+        StartUnit is processed).  Callers should retry on "unknown"
+        rather than treating it as terminal.
+        """
+        try:
+            manager = self._get_manager()
+            bus = self._get_bus()
+            unit_path = manager.GetUnit(service)
+            unit_proxy = bus.get_object(
+                "org.freedesktop.systemd1",
+                object_path=unit_path,
+            )
+            properties = dbus.Interface(
+                unit_proxy,
+                "org.freedesktop.DBus.Properties",
+            )
+            return str(
+                properties.Get(
+                    "org.freedesktop.systemd1.Unit",
+                    "ActiveState",
+                )
+            )
+        except DBusException as error:
+            logger.error("Failed to get active state for %s: %s", service, error)
+            return "unknown"
+
     def is_service_active(self, service: str) -> bool:
         try:
             if not self.is_service_enabled(service):

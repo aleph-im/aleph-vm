@@ -58,7 +58,7 @@ from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils import create_task_log_exceptions, dumps_for_json, is_pinging
+from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
 from aleph.vm.utils.aggregate import get_user_settings
 
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
@@ -561,45 +561,67 @@ class VmExecution:
             await self.vm.stop_guest_api()
             raise
 
-    async def wait_for_persistent_boot(self):
-        """Determine if VM has booted by responding to ping and check if the process is still running"""
-        assert self.vm
-        assert self.vm.enable_networking and self.vm.tap_interface, f"Network not enabled for VM {self.vm.vm_id}"
-        ip = self.vm.get_ip()
-        if not ip:
-            msg = "Host IP not available"
-            raise ValueError(msg)
+    async def wait_for_controller_ready(self):
+        """Wait until the systemd controller service is confirmed active.
 
-        ip = ip.split("/", 1)[0]
+        Unlike the previous ping-based check, this does not depend on
+        ICMP being enabled inside the guest.  The controller service
+        state is the only reliable indicator we control — if the
+        controller service is active the VM is considered started.
+        Guest-side issues (bad config, disabled networking) are the
+        user's responsibility and visible via the logs endpoint.
+        """
+        if not self.persistent or not self.systemd_manager:
+            msg = "wait_for_controller_ready requires a persistent VM with systemd_manager"
+            raise RuntimeError(msg)
+
         max_attempt = 30
-        timeout_seconds = 2
-        attempt = 0
-        while True:
-            attempt += 1
-            if attempt > max_attempt:
-                logging.error("%s has not responded to ping after %s attempt", self, attempt)
-                raise Exception("Max attempt")
+        for attempt in range(1, max_attempt + 1):
+            state = self.systemd_manager.get_service_active_state(
+                self.controller_service,
+            )
+            if state == "active":
+                return
+            if state == "failed":
+                msg = f"{self} controller service entered 'failed' state"
+                raise RuntimeError(msg)
+            # "inactive" and "deactivating" are retried: the service is
+            # legitimately inactive between StartUnit and systemd
+            # transitioning to "activating", and "deactivating" may
+            # appear if a conflicting job briefly stops the unit.
+            # Both are covered by the timeout path below.
 
-            if not self.is_controller_running:
-                logging.error("%s process stopped running while waiting for boot", self)
-                raise Exception("Process is not running")
-            if await is_pinging(ip, packets=1, timeout=timeout_seconds):
-                break
+            logger.debug(
+                "%s controller state=%s (attempt %d/%d)",
+                self,
+                state,
+                attempt,
+                max_attempt,
+            )
+            if attempt < max_attempt:
+                await asyncio.sleep(2)
+
+        msg = f"{self} controller service did not become active after {max_attempt} attempts"
+        raise RuntimeError(msg)
 
     async def non_blocking_wait_for_boot(self):
-        """Wait till the VM respond to ping and mark it as booted or not and clean up ressource if it fail
+        """Wait for the controller process and mark the instance as started.
 
-        Used for instances"""
-        assert self.vm
+        If the controller service never becomes active the instance is
+        stopped and cleaned up.  Guest-level readiness (network, user
+        applications) is not checked — the user can inspect logs if
+        their OS fails to boot.
+        """
+        if not self.vm:
+            msg = "non_blocking_wait_for_boot requires a VM to be set"
+            raise RuntimeError(msg)
         try:
-            await self.wait_for_persistent_boot()
-            logger.info("%s responded to ping. Marking it as started.", self)
+            await self.wait_for_controller_ready()
+            logger.info("%s controller is running. Marking as started.", self)
             self.times.started_at = datetime.now(tz=timezone.utc)
             return True
-            # await self.save()
         except Exception as e:
-            logger.warning("%s failed to responded to ping or is not running, stopping it.: %s ", self, e)
-            assert self.vm
+            logger.warning("%s controller not running, stopping: %s", self, e)
             try:
                 await self.stop()
             except Exception as f:
