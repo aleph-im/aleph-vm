@@ -86,7 +86,7 @@ async def drain_middleware(request, handler) -> web.Response:
         path = request.path
         is_vm_request = path.startswith("/vm/") or (
             not path.startswith(("/about/", "/control/", "/status/", "/static/", "/debug/"))
-            and request.host.split(":")[0] != settings.DOMAIN_NAME
+            and request.host.split(":")[0] != settings.DOMAIN_NAME.split(":")[0]
         )
         if is_vm_request:
             return web.json_response(
@@ -264,8 +264,10 @@ def run():
     logger.info(f"Login to /about pages {protocol}://{hostname}/about/login?token={secret_token}")
 
     try:
-        # Drain runs first on shutdown: reject new requests, wait for in-flight
-        app.on_cleanup.append(drain_in_flight_requests)
+        # on_shutdown fires while the server still accepts keep-alive requests,
+        # so the drain middleware can reject new ones with 503.
+        # on_cleanup fires after the server is already closed — too late.
+        app.on_shutdown.append(drain_in_flight_requests)
 
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
