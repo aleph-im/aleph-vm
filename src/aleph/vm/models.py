@@ -562,22 +562,26 @@ class VmExecution:
             raise
 
     async def wait_for_controller_ready(self):
-        """Wait until the systemd controller process is confirmed running.
+        """Wait until the systemd controller service is confirmed active.
 
         Unlike the previous ping-based check, this does not depend on
         ICMP being enabled inside the guest.  The controller service
-        state is the only reliable indicator we control — if the QEMU
-        process is alive the VM is considered started.  Guest-side
-        issues (bad config, disabled networking) are the user's
-        responsibility and visible via the logs endpoint.
+        state is the only reliable indicator we control — if the
+        controller service is active the VM is considered started.
+        Guest-side issues (bad config, disabled networking) are the
+        user's responsibility and visible via the logs endpoint.
+
+        Note: ``is_service_active()`` returns False for both
+        "activating" and "failed" states, so we cannot fast-fail on
+        a crashed process — we poll until active or timeout.
         """
-        assert self.vm
+        assert self.systemd_manager, "systemd_manager required"
         max_attempt = 30
         attempt = 0
         while True:
             attempt += 1
             if attempt > max_attempt:
-                msg = f"{self} controller service did not become active " f"after {max_attempt} attempts"
+                msg = f"{self} controller service did not become active after {max_attempt} attempts"
                 raise RuntimeError(msg)
 
             if self.is_controller_running:
