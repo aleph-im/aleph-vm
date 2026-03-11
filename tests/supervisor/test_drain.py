@@ -139,8 +139,9 @@ class TestDrainMiddleware:
         app = setup_webapp(pool=_DrainablePool(draining=True))
         client = await aiohttp_client(app)
 
-        response = await client.get("/", headers={"Host": "somevmhash.example.com"})
-        assert response.status == 503
+        with patch.object(settings, "DOMAIN_NAME", "supervisor.local"):
+            response = await client.get("/", headers={"Host": "somevmhash.example.com"})
+            assert response.status == 503
 
     @pytest.mark.asyncio
     async def test_root_on_supervisor_domain_allowed(self, aiohttp_client):

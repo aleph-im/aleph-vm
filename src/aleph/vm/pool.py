@@ -496,11 +496,14 @@ class VmPool:
 
         self._draining = True
         logger.info(
-            "Drain started — rejecting new requests, " "waiting up to %.0fs for in-flight requests",
+            "Drain started — rejecting new requests, waiting up to %.0fs for in-flight requests",
             timeout,
         )
 
-        # Collect ephemeral executions that have in-flight requests
+        # A request that passed the middleware before _draining was set can
+        # still increment concurrent_runs after this snapshot.  That is a
+        # single event-loop turn window and is covered by the double safety
+        # net: stop() calls all_runs_complete() on each execution anyway.
         in_flight = [
             execution
             for execution in self.executions.values()

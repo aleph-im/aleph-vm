@@ -82,7 +82,7 @@ async def drain_middleware(request, handler) -> web.Response:
     endpoints remain accessible for monitoring and operations.
     """
     pool: VmPool | None = request.app.get("vm_pool")
-    if pool and pool.is_draining:
+    if pool and getattr(pool, "is_draining", False):
         path = request.path
         is_vm_request = path.startswith("/vm/") or (
             not path.startswith(("/about/", "/control/", "/status/", "/static/", "/debug/"))
