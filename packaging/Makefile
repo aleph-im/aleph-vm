@@ -28,8 +28,6 @@ debian-package-resources: firecracker-bins vmlinux target/bin/sevctl
 	cp -pr ./target/vmlinux.bin ./aleph-vm/opt/firecracker/
 	cp -pr ./target/firecracker ./aleph-vm/opt/firecracker/
 	cp -pr ./target/jailer ./aleph-vm/opt/firecracker/
-	# Disable Kubo installation for now
-	# cp -pr ./target/kubo/kubo ./aleph-vm/opt/kubo
 	cp -pr ./target/bin/sevctl ./aleph-vm/opt/sevctl
 
 firecracker-bins: target-dir build-dir
@@ -43,13 +41,7 @@ firecracker-bins: target-dir build-dir
 	chmod +x ./target/jailer
 
 vmlinux:
-	#curl -fsSL -o ./target/vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
-	curl -fsSL -o ./target/vmlinux.bin https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g573jiulzacvkyw4zzav7dwbo5qbeiohoduopwxs2c6vvy
-	#cp ../kernels/vmlinux.bin ./target/vmlinux.bin
-
-download-ipfs-kubo: target-dir build-dir
-	mkdir -p ./target/kubo
-	curl -fsSL https://github.com/ipfs/kubo/releases/download/v0.33.2/kubo_v0.33.2_linux-amd64.tar.gz | tar -xz --directory ./target/kubo
+	curl -fsSL -o ./target/vmlinux.bin https://ipfs.aleph.cloud/ipfs/QmQvQnZg9rB2fhmuminFSYgtGGzEhfbiTMobppUXVfGBmD
 
 target/bin/sevctl:
 	cargo install --locked --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target
@@ -70,7 +62,6 @@ clean:
 	rm -fr ./build/*
 	rm -fr ./aleph-vm/opt/aleph-vm/
 	rm -fr ./aleph-vm/opt/firecracker/
-	rm -fr ./aleph-vm/opt/kubo/
 	rm -fr ./aleph-vm/opt/aleph-vm/
 	rm -fr ./sevctl/target/
 

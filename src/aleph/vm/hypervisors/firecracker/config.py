@@ -8,7 +8,7 @@ VSOCK_PATH = "/tmp/v.sock"
 class BootSource(BaseModel):
     kernel_image_path: Path = Path("vmlinux.bin")
     boot_args: str = (
-        "console=ttyS0 reboot=k panic=1 pci=off ro noapic acpi=off nomodule"
+        "console=ttyS0 reboot=k panic=1 pci=off ro nomodule"
         " swiotlb=noforce random.trust_cpu=on"
         " i8042.noaux i8042.nomux i8042.dumbkbd"
     )
@@ -16,7 +16,7 @@ class BootSource(BaseModel):
     @staticmethod
     def args(enable_console: bool = True, writable: bool = False):
         default = (
-            "reboot=k panic=1 pci=off noapic acpi=off nomodule"
+            "reboot=k panic=1 pci=off nomodule"
             " swiotlb=noforce random.trust_cpu=on"
             " i8042.noaux i8042.nomux i8042.dumbkbd"
         )
