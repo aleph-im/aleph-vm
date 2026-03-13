@@ -25,6 +25,7 @@ class QemuVM:
     image_path: str
     monitor_socket_path: Path
     qmp_socket_path: Path
+    qga_socket_path: Path
     vcpu_count: int
     mem_size_mb: int
     interface_name: str
@@ -92,7 +93,7 @@ class QemuVM:
             "-smp",
             str(self.vcpu_count),
             "-drive",
-            f"file={self.image_path},media=disk,if=virtio",
+            f"file={self.image_path},media=disk,if=virtio,file.locking=off",
             # To debug you can pass gtk or curses instead
             "-display",
             "none",
@@ -101,6 +102,13 @@ class QemuVM:
             # Listen for commands on this socket
             "-monitor",
             f"unix:{self.monitor_socket_path},server,nowait",
+            # Qemu Guest Agent communication channel options
+            "-device",
+            "virtio-serial",
+            "-chardev",
+            f"socket,path={self.qga_socket_path},server=on,wait=off,id=qga0",
+            "-device",
+            "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Listen for commands on this socket (QMP protocol in json). Supervisor use it to send shutdown or start
             # command
             "-qmp",
@@ -128,12 +136,27 @@ class QemuVM:
         ]
         if self.interface_name:
             # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
+            # Split network devices in two to be able to use rombar=0 to allow live migration between different hosts
+            args += [
+                "-device",
+                "virtio-net-pci,netdev=net0,rombar=0",
+                "-netdev",
+                f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
+            ]
 
         if self.cloud_init_drive_path:
             args += ["-cdrom", f"{self.cloud_init_drive_path}"]
 
         args += self._get_host_volumes_args()
+
+        # Add CPU configuration for migration compatibility
+        # Use migratable=on to ensure CPU features are compatible across different hosts
+        # Note: GPU mode uses its own -cpu flag in _get_gpu_args() with host-phys-bits-limit
+        # Note: Specify -machine type pc-i440fx-6.2 (Qemu from Ubuntu 22.04)
+        # as less as possible to allow migration between different hosts
+        if not self.gpus:
+            args += ["-machine", "pc-i440fx-6.2", "-cpu", "host,migratable=on"]
+
         args += self._get_gpu_args()
         logger.debug("QEMU args: %s", args)
 
@@ -165,6 +188,9 @@ class QemuVM:
         return args
 
     def _get_gpu_args(self):
+        if not self.gpus:
+            return []
+
         args = [
             # Use host-phys-bits-limit argument for GPU support. TODO: Investigate how to get the correct bits size
             "-cpu",
