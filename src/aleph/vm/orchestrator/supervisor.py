@@ -21,6 +21,11 @@ from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
 
+from .node_identity import (
+    NodeIdentity,
+    start_node_hash_discovery,
+    stop_node_hash_discovery,
+)
 from .resources import about_capability, about_certificates, about_system_usage
 from .tasks import (
     start_payment_monitoring_task,
@@ -254,6 +259,15 @@ def run():
     app = setup_webapp(pool=pool)
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
+
+    app["node_identity"] = NodeIdentity(
+        node_hash=settings.NODE_HASH,
+        owner_address=settings.OWNER_ADDRESS,
+        domain_name=settings.DOMAIN_NAME,
+        cache_dir=settings.EXECUTION_ROOT,
+    )
+    app.on_startup.append(start_node_hash_discovery)
+    app.on_cleanup.append(stop_node_hash_discovery)
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
