@@ -122,6 +122,16 @@ class Settings(BaseSettings):
         description="Default public domain name",
     )
 
+    NODE_HASH: str | None = Field(
+        default=None,
+        description="Node hash (item_hash of the create-resource-node message). " "Skips auto-discovery if set.",
+    )
+
+    OWNER_ADDRESS: str = Field(
+        default="",
+        description="Operator's ETH address used to register the CRN. " "Used for auto-discovery of node hash.",
+    )
+
     START_ID_INDEX: int = 4
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
@@ -229,9 +239,9 @@ class Settings(BaseSettings):
         default=60.0,
         description="Interval in seconds between payment checks",
     )
-    PAYMENT_RECEIVER_ADDRESS: str = Field(
-        default="",
-        description="Address of the account receiving payments",
+    PAYMENT_RECEIVER_ADDRESS: str | None = Field(
+        default=None,
+        description="Address of the account receiving payments. " "Defaults to OWNER_ADDRESS if not set.",
     )
     # This address is the ALEPH SuperToken on SuperFluid Testnet
     PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
@@ -574,6 +584,9 @@ class Settings(BaseSettings):
             self.JAILER_BASE_DIR = self.EXECUTION_ROOT / "jailer"
         if not self.CONFIDENTIAL_SESSION_DIRECTORY:
             self.CONFIDENTIAL_SESSION_DIRECTORY = self.EXECUTION_ROOT / "sessions"
+
+        if not self.PAYMENT_RECEIVER_ADDRESS:
+            self.PAYMENT_RECEIVER_ADDRESS = self.OWNER_ADDRESS
 
     model_config = SettingsConfigDict(env_prefix="ALEPH_VM_", case_sensitive=False, env_file=".env")
 

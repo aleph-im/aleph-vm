@@ -37,6 +37,7 @@ from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
+from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
     InvalidChainError,
@@ -412,6 +413,9 @@ async def status_check_version(request: web.Request):
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
 
+    node_identity: NodeIdentity | None = request.app.get("node_identity")
+    node_hash = node_identity.get_node_hash() if node_identity else None
+
     available_payments = {
         str(chain_name): chain_info for chain_name, chain_info in STREAM_CHAINS.items() if chain_info.active
     }
@@ -419,6 +423,7 @@ async def status_public_config(request: web.Request):
     return web.json_response(
         {
             "DOMAIN_NAME": settings.DOMAIN_NAME,
+            "node_hash": node_hash,
             "version": __version__,
             "references": {
                 "API_SERVER": settings.API_SERVER,
@@ -778,13 +783,27 @@ async def notify_allocation(request: web.Request):
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
-    pubsub: PubSub = request.app["pubsub"]
-    pool: VmPool = request.app["vm_pool"]
-
     item_hash: ItemHash = vm_notification.instance
     message = await try_get_message(item_hash)
     if message.type != MessageType.instance:
         return web.HTTPBadRequest(reason="Message is not an instance")
+
+    # Validate node hash if the allocation targets a specific node
+    required_node_hash = (
+        message.content.requirements
+        and message.content.requirements.node
+        and message.content.requirements.node.node_hash
+    )
+    if required_node_hash:
+        node_identity: NodeIdentity | None = request.app.get("node_identity")
+        node_hash = node_identity.get_node_hash() if node_identity else None
+        if not node_hash:
+            return web.HTTPServiceUnavailable(reason="Node hash not yet discovered, cannot accept targeted allocations")
+        if str(required_node_hash) != node_hash:
+            return web.HTTPBadRequest(reason="Instance is allocated to a different node")
+
+    pubsub: PubSub = request.app["pubsub"]
+    pool: VmPool = request.app["vm_pool"]
 
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
