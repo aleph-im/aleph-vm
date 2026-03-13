@@ -21,7 +21,6 @@ import traceback
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from enum import Enum
-from os import system
 from shutil import make_archive
 from typing import Any, Literal, NewType, cast
 
@@ -102,7 +101,7 @@ logger.debug("init1.py is launching")
 
 def setup_hostname(hostname: str):
     os.environ["ALEPH_ADDRESS_TO_USE"] = hostname
-    system(f"hostname {hostname}")
+    subprocess.run(["hostname", hostname], check=True)
 
 
 def setup_variables(variables: dict[str, str] | None):
@@ -126,9 +125,9 @@ def setup_network(
         return
 
     # Configure loopback networking
-    system("ip addr add 127.0.0.1/8 dev lo brd + scope host")
-    system("ip addr add ::1/128 dev lo")
-    system("ip link set lo up")
+    subprocess.run(["ip", "addr", "add", "127.0.0.1/8", "dev", "lo", "brd", "+", "scope", "host"], check=True)
+    subprocess.run(["ip", "addr", "add", "::1/128", "dev", "lo"], check=True)
+    subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
 
     # Forward compatibility with future supervisors that pass the mask with the IP.
     if ipv4 and ("/" not in ipv4):
@@ -139,16 +138,16 @@ def setup_network(
     gateways = [gateway for gateway in [ipv4_gateway, ipv6_gateway] if gateway]
 
     for address in addresses:
-        system(f"ip addr add {address} dev eth0")
+        subprocess.run(["ip", "addr", "add", address, "dev", "eth0"], check=True)
 
     # Interface must be up before a route can use it
     if addresses:
-        system("ip link set eth0 up")
+        subprocess.run(["ip", "link", "set", "eth0", "up"], check=True)
     else:
         logger.debug("No ip address provided")
 
     for gateway in gateways:
-        system(f"ip route add default via {gateway} dev eth0")
+        subprocess.run(["ip", "route", "add", "default", "via", gateway, "dev", "eth0"], check=True)
 
     if not gateways:
         logger.debug("No ip gateway provided")
@@ -163,9 +162,9 @@ def setup_input_data(input_data: bytes):
     if input_data:
         # Unzip in /data
         if not os.path.exists("/opt/input.zip"):
-            open("/opt/input.zip", "wb").write(input_data)
+            Path("/opt/input.zip").write_bytes(input_data)
             os.makedirs("/data", exist_ok=True)
-            os.system("unzip -q /opt/input.zip -d /data")
+            subprocess.run(["unzip", "-q", "/opt/input.zip", "-d", "/data"], check=False)
 
 
 def setup_authorized_keys(authorized_keys: list[str]) -> None:
@@ -179,11 +178,17 @@ def setup_volumes(volumes: list[Volume]):
         logger.debug(f"Mounting /dev/{volume.device} on {volume.mount}")
         os.makedirs(volume.mount, exist_ok=True)
         if volume.read_only:
-            system(f"mount -t squashfs -o ro /dev/{volume.device} {volume.mount}")
+            subprocess.run(
+                ["mount", "-t", "squashfs", "-o", "ro", f"/dev/{volume.device}", volume.mount],
+                check=True,
+            )
         else:
-            system(f"mount -o rw /dev/{volume.device} {volume.mount}")
+            subprocess.run(
+                ["mount", "-o", "rw", f"/dev/{volume.device}", volume.mount],
+                check=True,
+            )
 
-    system("mount")
+    subprocess.run(["mount"], check=False)
 
 
 async def wait_for_lifespan_event_completion(application: ASGIApplication, event: Literal["startup", "shutdown"]):
@@ -217,6 +222,15 @@ async def wait_for_lifespan_event_completion(application: ASGIApplication, event
         )
 
 
+def _import_entrypoint(entrypoint: str):
+    """Import and return the object specified by an 'module.path:attr' entrypoint."""
+    module_name, app_name = entrypoint.split(":", 1)
+    module = __import__(module_name)
+    for level in module_name.split(".")[1:]:
+        module = getattr(module, level)
+    return getattr(module, app_name)
+
+
 async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> ASGIApplication:
     # Allow importing packages from /opt/packages, give it priority
     sys.path.insert(0, "/opt/packages")
@@ -225,26 +239,18 @@ async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> A
     app: ASGIApplication
     if encoding == Encoding.squashfs:
         sys.path.insert(0, "/opt/code")
-        module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
-        module = __import__(module_name)
-        for level in module_name.split(".")[1:]:
-            module = getattr(module, level)
-        app = getattr(module, app_name)
+        app = _import_entrypoint(entrypoint)
     elif encoding == Encoding.zip:
         # Unzip in /opt and import the entrypoint from there
         if not os.path.exists("/opt/archive.zip"):
-            open("/opt/archive.zip", "wb").write(code)
+            Path("/opt/archive.zip").write_bytes(code)
             logger.debug("Run unzip")
-            os.system("unzip -q /opt/archive.zip -d /opt")
+            subprocess.run(["unzip", "-q", "/opt/archive.zip", "-d", "/opt"], check=False)
         sys.path.insert(0, "/opt")
-        module_name, app_name = entrypoint.split(":", 1)
         logger.debug("import module")
-        module = __import__(module_name)
-        for level in module_name.split(".")[1:]:
-            module = getattr(module, level)
+        app = _import_entrypoint(entrypoint)
         logger.debug("import done")
-        app = getattr(module, app_name)
     elif encoding == Encoding.plain:
         # Execute the code and extract the entrypoint
         locals: dict[str, Any] = {}
@@ -252,7 +258,14 @@ async def setup_code_asgi(code: bytes, encoding: Encoding, entrypoint: str) -> A
         app = locals[entrypoint]
     else:
         raise ValueError(f"Unknown encoding '{encoding}'")
-    await wait_for_lifespan_event_completion(application=app, event="startup")
+    try:
+        await asyncio.wait_for(
+            wait_for_lifespan_event_completion(application=app, event="startup"),
+            timeout=30,
+        )
+    except TimeoutError:
+        logger.error("ASGI application startup did not complete within 30s")
+        raise
     return ASGIApplication(app)
 
 
@@ -261,24 +274,24 @@ def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> s
     if encoding == Encoding.squashfs:
         path = f"/opt/code/{entrypoint}"
         if not os.path.isfile(path):
-            os.system("find /opt/code/")
+            subprocess.run(["find", "/opt/code/"], check=False)
             raise FileNotFoundError(f"No such file: {path}")
-        os.system(f"chmod +x {path}")
+        subprocess.run(["chmod", "+x", path], check=True)
     elif encoding == Encoding.zip:
-        open("/opt/archive.zip", "wb").write(code)
+        Path("/opt/archive.zip").write_bytes(code)
         logger.debug("Run unzip")
         os.makedirs("/opt/code", exist_ok=True)
-        os.system("unzip /opt/archive.zip -d /opt/code")
+        subprocess.run(["unzip", "-q", "/opt/archive.zip", "-d", "/opt/code"], check=False)
         path = f"/opt/code/{entrypoint}"
         if not os.path.isfile(path):
-            os.system("find /opt/code")
+            subprocess.run(["find", "/opt/code"], check=False)
             raise FileNotFoundError(f"No such file: {path}")
-        os.system(f"chmod +x {path}")
+        subprocess.run(["chmod", "+x", path], check=True)
     elif encoding == Encoding.plain:
         os.makedirs("/opt/code", exist_ok=True)
-        path = f"/opt/code/executable {entrypoint}"
-        open(path, "wb").write(code)
-        os.system(f"chmod +x {path}")
+        path = f"/opt/code/{entrypoint}"
+        Path(path).write_bytes(code)
+        subprocess.run(["chmod", "+x", path], check=True)
     else:
         raise ValueError(f"Unknown encoding '{encoding}'. This should never happen.")
 
@@ -385,25 +398,29 @@ def show_loading():
 async def run_executable_http(scope: dict) -> tuple[dict, dict, str, bytes | None]:
     logger.debug("Calling localhost")
 
-    tries = 0
-    headers = None
-    body = None
-
+    max_retries = 60
     timeout = aiohttp.ClientTimeout(total=5)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        while not body:
+        for attempt in range(1, max_retries + 1):
             try:
-                tries += 1
                 headers, body = await make_request(session, scope)
-            except aiohttp.ClientConnectorError:
-                if tries > 15:
+                output = ""
+                output_data = None
+                logger.debug("Returning result")
+                return headers, body, output, output_data
+            except aiohttp.ClientError:
+                if attempt == max_retries:
+                    logger.warning(
+                        "Executable HTTP server not reachable after %d attempts",
+                        max_retries,
+                    )
                     headers, body = show_loading()
-                await asyncio.sleep(tries * 0.05)
+                    return headers, body, "", None
+                await asyncio.sleep(attempt * 0.05)
 
-    output = ""  # Process stdout is not captured per request
-    output_data = None
-    logger.debug("Returning result")
-    return headers, body, output, output_data
+    # Unreachable: loop always returns on success or max_retries
+    headers, body = show_loading()
+    return headers, body, "", None
 
 
 async def process_instruction(
@@ -413,14 +430,20 @@ async def process_instruction(
 ) -> AsyncIterable[bytes]:
     if instruction == b"halt":
         logger.info("Received halt command")
-        system("sync")
+        subprocess.run(["sync"], check=False)
         logger.debug("Filesystems synced")
         if isinstance(application, subprocess.Popen):
             application.terminate()
             logger.debug("Application terminated")
             # application.communicate()
         else:
-            await wait_for_lifespan_event_completion(application=application, event="shutdown")
+            try:
+                await asyncio.wait_for(
+                    wait_for_lifespan_event_completion(application=application, event="shutdown"),
+                    timeout=10,
+                )
+            except TimeoutError:
+                logger.error("ASGI application shutdown did not complete within 10s")
         yield b"STOP\n"
         logger.debug("Supervisor informed of halt")
         raise ShutdownException
@@ -477,16 +500,20 @@ def receive_data_length(client) -> int:
     buffer = b""
     for _ in range(9):
         byte = client.recv(1)
+        if byte == b"":
+            raise ConnectionError("VSOCK connection closed while reading data length")
         if byte == b"\n":
             break
-        else:
-            buffer += byte
-    return int(buffer)
+        buffer += byte
+    try:
+        return int(buffer)
+    except ValueError as error:
+        raise ConnectionError(f"Invalid data length received: {buffer!r}") from error
 
 
 def load_configuration(data: bytes) -> ConfigurationPayload:
     msg_ = msgpack.loads(data, raw=False)
-    msg_["volumes"] = [Volume(**volume_dict) for volume_dict in msg_.get("volumes")]
+    msg_["volumes"] = [Volume(**volume_dict) for volume_dict in msg_.get("volumes", [])]
     return ConfigurationPayload(**msg_)
 
 
@@ -522,10 +549,10 @@ def setup_system(config: ConfigurationPayload):
 
 def umount_volumes(volumes: list[Volume]):
     "Umount user related filesystems"
-    system("sync")
+    subprocess.run(["sync"], check=False)
     for volume in volumes:
         logger.debug(f"Umounting /dev/{volume.device} on {volume.mount}")
-        system(f"umount {volume.mount}")
+        subprocess.run(["umount", volume.mount], check=False)
 
 
 async def main() -> None:
@@ -561,7 +588,7 @@ async def main() -> None:
     server_reference = ServerReference()
 
     async def handle_instruction(reader, writer):
-        data = await reader.read(1000_1000)  # Max 1 Mo
+        data = await reader.read(10_000_000)  # Max 10 MB
 
         logger.debug("Init received msg")
         if logger.level <= logging.DEBUG:
@@ -608,9 +635,9 @@ if __name__ == "__main__":
     asyncio.run(main())
 
     logger.info("Unmounting system filesystems")
-    system("umount /dev/shm")
-    system("umount /dev/pts")
-    system("umount -a")
+    subprocess.run(["umount", "/dev/shm"], check=False)
+    subprocess.run(["umount", "/dev/pts"], check=False)
+    subprocess.run(["umount", "-a"], check=False)
 
     logger.info("Sending reboot syscall")
     # Send reboot syscall, see man page
