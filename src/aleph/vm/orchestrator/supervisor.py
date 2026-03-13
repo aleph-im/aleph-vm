@@ -56,6 +56,12 @@ from .views import (
     status_public_config,
     update_allocations,
 )
+from .views.migration import (
+    migration_cleanup,
+    migration_disk_download,
+    migration_export,
+    migration_import,
+)
 from .views.operator import (
     BackupState,
     operate_backup,
@@ -216,6 +222,11 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/allocations", update_allocations),
         web.post("/control/network/recreate", recreate_network),
         web.post("/control/proxy/regenerate", regenerate_proxy),
+        # Migration endpoints (scheduler-only, uses ALLOCATION_TOKEN_HASH auth)
+        web.post("/control/machine/{ref}/migration/export", migration_export),
+        web.get("/control/machine/{ref}/migration/disk/{filename}", migration_disk_download),
+        web.post("/control/migrate", migration_import),
+        web.post("/control/machine/{ref}/migration/cleanup", migration_cleanup),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", http_not_found),
         web.get("/control/{suffix:.*}", http_not_found),

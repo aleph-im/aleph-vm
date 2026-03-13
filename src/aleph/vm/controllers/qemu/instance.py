@@ -169,9 +169,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         pass
 
     async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+        """Configure the VM by saving controller service configuration."""
+        logger.debug(f"Making Qemu configuration: {self}")
 
-        logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_hash) + "-monitor.socket")
 
         cloud_init_drive = await self._create_cloud_init_drive()
@@ -248,3 +248,9 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()
+
+    def get_ip(self) -> str | None:
+        """Get the guest IP address."""
+        if self.tap_interface:
+            return str(self.tap_interface.guest_ip)
+        return None

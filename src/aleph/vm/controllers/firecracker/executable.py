@@ -310,7 +310,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         return
 
     async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+        """Configure the VM by saving controller service configuration."""
         if self.persistent:
             firecracker_config_path = await self.fvm.save_configuration_file(self._firecracker_config)
             vm_configuration = VMConfiguration(

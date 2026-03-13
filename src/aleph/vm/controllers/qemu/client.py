@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from enum import Enum
 from pathlib import Path
 from typing import cast
 
@@ -8,6 +9,59 @@ import qmp
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+class VmRunStatus(str, Enum):
+    """QEMU VM run status values."""
+
+    DEBUG = "debug"
+    FINISH_MIGRATE = "finish-migrate"
+    INMIGRATE = "inmigrate"
+    INTERNAL_ERROR = "internal-error"
+    IO_ERROR = "io-error"
+    PAUSED = "paused"
+    POSTMIGRATE = "postmigrate"
+    PRELAUNCH = "prelaunch"
+    RESTORE_VM = "restore-vm"
+    RUNNING = "running"
+    SAVE_VM = "save-vm"
+    SHUTDOWN = "shutdown"
+    SUSPENDED = "suspended"
+    WATCHDOG = "watchdog"
+    GUEST_PANICKED = "guest-panicked"
+    COLO = "colo"
+
+
+class VmStatus(BaseModel):
+    """Response from QEMU query-status command."""
+
+    status: VmRunStatus
+    running: bool
+    singlestep: bool = False
+
+    @property
+    def is_running(self) -> bool:
+        """Check if VM is actively running."""
+        return self.running and self.status == VmRunStatus.RUNNING
+
+    @property
+    def is_migrating(self) -> bool:
+        """Check if VM is in migration-related state."""
+        return self.status in (
+            VmRunStatus.INMIGRATE,
+            VmRunStatus.POSTMIGRATE,
+            VmRunStatus.FINISH_MIGRATE,
+        )
+
+    @property
+    def is_error(self) -> bool:
+        """Check if VM is in an error state."""
+        return self.status in (
+            VmRunStatus.INTERNAL_ERROR,
+            VmRunStatus.IO_ERROR,
+            VmRunStatus.GUEST_PANICKED,
+            VmRunStatus.SHUTDOWN,
+        )
 
 
 class VmSevInfo(BaseModel):
@@ -169,6 +223,13 @@ class QemuVmClient:
     def query_status(self):
         """Get running status."""
         return self.qmp_client.command("query-status")
+
+    def system_powerdown(self) -> None:
+        """Send ACPI shutdown signal to the guest.
+
+        This triggers a clean guest shutdown (equivalent to pressing the power button).
+        """
+        self.qmp_client.command("system_powerdown")
 
     async def guest_fsfreeze_freeze(self) -> int:
         """Freeze all freezable guest filesystems via QEMU Guest Agent."""
