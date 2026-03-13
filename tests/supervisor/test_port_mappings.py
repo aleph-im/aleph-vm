@@ -1,13 +1,14 @@
 """Tests for port mapping DB logic and port availability checker."""
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from aleph.vm.orchestrator.metrics import Base, PortMapping, save_port_mappings
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_session():
     """Create an in-memory SQLite DB with the port_mappings table."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -18,8 +19,8 @@ async def async_session():
     await engine.dispose()
 
 
-@pytest.fixture
-def _patch_session_maker(async_session, monkeypatch):
+@pytest_asyncio.fixture
+async def _patch_session_maker(async_session, monkeypatch):
     """Redirect AsyncSessionMaker in metrics module to the in-memory DB."""
     import aleph.vm.orchestrator.metrics as metrics_mod
 
@@ -78,7 +79,7 @@ async def test_save_port_mappings_soft_deletes_removed(async_session):
         deleted = (await session.execute(text("SELECT * FROM port_mappings WHERE deleted_at IS NOT NULL"))).fetchall()
         assert len(active) == 1
         assert active[0].vm_port == 80
-        assert len(deleted) >= 1
+        assert len(deleted) == 1
 
 
 @pytest.mark.asyncio
@@ -98,6 +99,29 @@ async def test_save_port_mappings_unchanged_not_duplicated(async_session):
         rows_after = (await session.execute(text("SELECT id FROM port_mappings WHERE deleted_at IS NULL"))).fetchall()
         assert len(rows_after) == 1
         assert rows_after[0].id == rows_before[0].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_patch_session_maker")
+async def test_save_port_mappings_protocol_change(async_session):
+    """Changing TCP/UDP flags triggers soft-delete + re-insert."""
+    vm_hash = "jkl012"
+    await save_port_mappings(vm_hash, {80: {"host": 30000, "tcp": True, "udp": False}})
+
+    async with async_session() as session:
+        rows_before = (await session.execute(text("SELECT id FROM port_mappings WHERE deleted_at IS NULL"))).fetchall()
+        assert len(rows_before) == 1
+
+    # Same port and host, but enable UDP
+    await save_port_mappings(vm_hash, {80: {"host": 30000, "tcp": True, "udp": True}})
+
+    async with async_session() as session:
+        active = (await session.execute(text("SELECT * FROM port_mappings WHERE deleted_at IS NULL"))).fetchall()
+        deleted = (await session.execute(text("SELECT * FROM port_mappings WHERE deleted_at IS NOT NULL"))).fetchall()
+        assert len(active) == 1
+        assert active[0].udp == 1
+        assert active[0].id != rows_before[0].id
+        assert len(deleted) == 1
 
 
 def test_get_active_host_ports_missing_table(tmp_path):
