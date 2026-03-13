@@ -281,7 +281,7 @@ def setup_code_executable(code: bytes, encoding: Encoding, entrypoint: str) -> s
         Path("/opt/archive.zip").write_bytes(code)
         logger.debug("Run unzip")
         os.makedirs("/opt/code", exist_ok=True)
-        subprocess.run(["unzip", "/opt/archive.zip", "-d", "/opt/code"], check=False)
+        subprocess.run(["unzip", "-q", "/opt/archive.zip", "-d", "/opt/code"], check=False)
         path = f"/opt/code/{entrypoint}"
         if not os.path.isfile(path):
             subprocess.run(["find", "/opt/code"], check=False)
@@ -417,6 +417,10 @@ async def run_executable_http(scope: dict) -> tuple[dict, dict, str, bytes | Non
                     headers, body = show_loading()
                     return headers, body, "", None
                 await asyncio.sleep(attempt * 0.05)
+
+    # Unreachable: loop always returns on success or max_retries
+    headers, body = show_loading()
+    return headers, body, "", None
 
 
 async def process_instruction(
