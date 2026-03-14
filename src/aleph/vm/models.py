@@ -6,6 +6,8 @@ from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
 
 from aleph_message.models import (
     ExecutableContent,
@@ -66,6 +68,17 @@ SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 logger = logging.getLogger(__name__)
 
 
+class MigrationState(str, Enum):
+    """State of VM migration process."""
+
+    NONE = "none"
+    EXPORTING = "exporting"
+    EXPORTED = "exported"
+    IMPORTING = "importing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 @dataclass
 class VmExecutionTimes:
     defined_at: datetime
@@ -114,6 +127,10 @@ class VmExecution:
     persistent: bool = False
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
+
+    # Migration state tracking
+    migration_state: MigrationState = MigrationState.NONE
+    export_token: str | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
         if not self.is_instance:
@@ -533,7 +550,9 @@ class VmExecution:
             # for persistent and instances we will use SystemD manager
             if not self.persistent:
                 await self.vm.start()
+
             await self.vm.configure()
+
             await self.vm.start_guest_api()
 
             # Start VM and snapshots automatically
