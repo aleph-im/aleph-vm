@@ -279,6 +279,8 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
             if execution.vm:
                 await execution.stop()
             else:
+                if execution._forget_task:
+                    execution._forget_task.cancel()
                 pool.forget_vm(vm_hash)
             execution = None
 
