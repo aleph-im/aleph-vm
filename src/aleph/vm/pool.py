@@ -153,15 +153,27 @@ class VmPool:
         return available_space
 
     async def create_a_vm(
-        self, vm_hash: ItemHash, message: ExecutableContent, original: ExecutableContent, persistent: bool
+        self,
+        vm_hash: ItemHash,
+        message: ExecutableContent,
+        original: ExecutableContent,
+        persistent: bool,
     ) -> VmExecution:
-        """Create a new VM from an Aleph function or instance message."""
+        """Create a new VM from an Aleph function or instance message.
+
+        :param vm_hash: The hash of the VM message
+        :param message: The executable content of the VM
+        :param original: The original executable content
+        :param persistent: Whether the VM should be persistent
+        :return: The VmExecution object
+        """
         async with self.creation_lock:
-            # Check if an execution is already present for this VM, then return it.
-            # Do not `await` in this section.
-            current_execution = self.get_running_vm(vm_hash)
+            # Check if an execution is already present for this VM
+            current_execution = self.executions.get(vm_hash)
             if current_execution:
-                return current_execution
+                if current_execution.is_running and not current_execution.is_stopping:
+                    current_execution.cancel_expiration()
+                    return current_execution
 
             # Check if there are sufficient resources available before creating the VM
             check_sufficient_resources(self.calculate_available_disk(), message)
@@ -174,18 +186,21 @@ class VmPool:
                 systemd_manager=self.systemd_manager,
                 persistent=persistent,
             )
+
             self.executions[vm_hash] = execution
 
             resources = set()
             tap_interface = None
             vm_id = None
             try:
+                # GPU handling (not used for migration as it's QEMU instances only)
                 if message.requirements and message.requirements.gpu:
                     # Ensure we have the necessary GPU for the user by reserving them
                     resources = self.find_resources_available_for_user(message, message.address)
                     # First assign Host GPUs from the available
                     execution.prepare_gpus(list(resources))
                     # Prepare VM general Resources and also the GPUs
+
                 await execution.prepare()
 
                 vm_id = self.get_unique_vm_id()
@@ -197,19 +212,21 @@ class VmPool:
                     if self.network.interface_exists(vm_id):
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
-
                 else:
                     tap_interface = None
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
+
                 await execution.start()
+
                 if execution.is_instance:
                     await execution.fetch_port_redirect_config_and_setup()
 
-                # clear the user reservations
+                # Clear the user reservations
                 for resource in resources:
                     if resource in self.reservations:
                         del self.reservations[resource]
+
             except Exception:
                 if execution.is_instance:
                     await execution.removed_all_ports_redirection()
