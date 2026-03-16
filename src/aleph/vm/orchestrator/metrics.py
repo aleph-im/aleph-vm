@@ -98,9 +98,9 @@ async def save_execution_data(execution_uuid: UUID, execution_data: str):
 
 async def save_record(record: ExecutionRecord):
     """Record the resource usage in database"""
-    async with AsyncSessionMaker() as session:  # Use AsyncSession in a context manager
-        session.add(record)
-        await session.commit()  # Use await for commit
+    async with AsyncSessionMaker() as session:
+        await session.merge(record)
+        await session.commit()
 
 
 async def delete_record(execution_uuid: str):
