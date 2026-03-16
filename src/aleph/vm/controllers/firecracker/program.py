@@ -373,62 +373,66 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
         logger.debug("Sending configuration")
         reader, writer = await asyncio.open_unix_connection(path=self.fvm.vsock_path)
 
-        ip = self.get_ip()
-        if ip:
-            # The ip and route should not contain the network mask in order to maintain
-            # compatibility with the existing runtimes.
-            ip = ip.split("/", 1)[0]
-        route = self.get_ip_route()
-        ipv6 = self.get_ipv6()
-        ipv6_gateway = self.get_ipv6_gateway()
+        try:
+            ip = self.get_ip()
+            if ip:
+                # The ip and route should not contain the network mask in order to maintain
+                # compatibility with the existing runtimes.
+                ip = ip.split("/", 1)[0]
+            route = self.get_ip_route()
+            ipv6 = self.get_ipv6()
+            ipv6_gateway = self.get_ipv6_gateway()
 
-        if settings.ALLOW_VM_NETWORKING and not settings.DNS_NAMESERVERS:
-            msg = "Invalid configuration: DNS nameservers missing"
-            raise ValueError(msg)
+            if settings.ALLOW_VM_NETWORKING and not settings.DNS_NAMESERVERS:
+                msg = "Invalid configuration: DNS nameservers missing"
+                raise ValueError(msg)
 
-        runtime_config = self.fvm.runtime_config
-        assert runtime_config
+            runtime_config = self.fvm.runtime_config
+            assert runtime_config
 
-        authorized_keys: list[str] | None
-        if settings.USE_DEVELOPER_SSH_KEYS:
-            authorized_keys = settings.DEVELOPER_SSH_KEYS
-        else:
-            authorized_keys = self.resources.message_content.authorized_keys
-        nameservers_ip = []
-        if ip:
-            nameservers_ip = settings.DNS_NAMESERVERS_IPV4
-        if ipv6:
-            nameservers_ip += settings.DNS_NAMESERVERS_IPV6
+            authorized_keys: list[str] | None
+            if settings.USE_DEVELOPER_SSH_KEYS:
+                authorized_keys = settings.DEVELOPER_SSH_KEYS
+            else:
+                authorized_keys = self.resources.message_content.authorized_keys
+            nameservers_ip = []
+            if ip:
+                nameservers_ip = settings.DNS_NAMESERVERS_IPV4
+            if ipv6:
+                nameservers_ip += settings.DNS_NAMESERVERS_IPV6
 
-        program_config = ProgramConfiguration(
-            ip=ip,
-            ipv6=ipv6,
-            route=route,
-            ipv6_gateway=ipv6_gateway,
-            dns_servers=nameservers_ip,
-            code=code,
-            encoding=self.resources.code_encoding,
-            entrypoint=self.resources.code_entrypoint,
-            input_data=input_data,
-            interface=interface,
-            vm_hash=self.vm_hash,
-            volumes=volumes,
-            variables=self.resources.message_content.variables,
-            authorized_keys=authorized_keys,
-        )
-        # Convert the configuration in a format compatible with the runtime
-        versioned_config = program_config.to_runtime_format(runtime_config)
-        payload = versioned_config.as_msgpack()
-        length = f"{len(payload)}\n".encode()
-        writer.write(b"CONNECT 52\n" + length + payload)
-        await writer.drain()
+            program_config = ProgramConfiguration(
+                ip=ip,
+                ipv6=ipv6,
+                route=route,
+                ipv6_gateway=ipv6_gateway,
+                dns_servers=nameservers_ip,
+                code=code,
+                encoding=self.resources.code_encoding,
+                entrypoint=self.resources.code_entrypoint,
+                input_data=input_data,
+                interface=interface,
+                vm_hash=self.vm_hash,
+                volumes=volumes,
+                variables=self.resources.message_content.variables,
+                authorized_keys=authorized_keys,
+            )
+            # Convert the configuration in a format compatible with the runtime
+            versioned_config = program_config.to_runtime_format(runtime_config)
+            payload = versioned_config.as_msgpack()
+            length = f"{len(payload)}\n".encode()
+            writer.write(b"CONNECT 52\n" + length + payload)
+            await writer.drain()
 
-        await reader.readline()  # Ignore the acknowledgement from the socket
-        response_raw = await reader.read(1000_000)
-        response = ConfigurationResponse(**msgpack.loads(response_raw, raw=False))
-        if response.success is False:
-            logger.exception(response.traceback)
-            raise VmSetupError(response.error)
+            await reader.readline()  # Ignore the acknowledgement from the socket
+            response_raw = await reader.read(1000_000)
+            response = ConfigurationResponse(**msgpack.loads(response_raw, raw=False))
+            if response.success is False:
+                logger.exception(response.traceback)
+                raise VmSetupError(response.error)
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def run_code(
         self,
