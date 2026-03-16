@@ -101,6 +101,28 @@ echo "Target:  ${VERSION}"
 echo "Package: ${DEB_URL}"
 echo ""
 
+# Ensure NODE_HASH is configured before upgrade (required since 1.10.1)
+ENV_FILE="/etc/aleph-vm/supervisor.env"
+NODE_HASH_REQUIRED_SINCE="1.10.1"
+if [[ "$(printf '%s\n' "$NODE_HASH_REQUIRED_SINCE" "$VERSION" | sort -V | head -1)" == "$NODE_HASH_REQUIRED_SINCE" ]] \
+    && [[ -f "$ENV_FILE" ]] && ! grep -q "^ALEPH_VM_NODE_HASH=" "$ENV_FILE"; then
+    echo ""
+    echo "============================================================"
+    echo "  IMPORTANT: ALEPH_VM_NODE_HASH is not set."
+    echo "  This is required since version 1.10.1."
+    echo "  This is the item_hash of your create-resource-node message."
+    echo "============================================================"
+    echo ""
+    read -rp "Enter your node hash (or press Enter to skip): " NODE_HASH
+    if [[ -n "$NODE_HASH" ]]; then
+        echo "ALEPH_VM_NODE_HASH=${NODE_HASH}" | run tee -a "$ENV_FILE" > /dev/null
+        echo "ALEPH_VM_NODE_HASH written to ${ENV_FILE}"
+    else
+        echo "WARNING: Skipped. Targeted allocations will be rejected until ALEPH_VM_NODE_HASH is set."
+    fi
+    echo ""
+fi
+
 run rm -f "$DEB_PATH"
 run wget -q --show-progress -P "$DEB_DIR" "$DEB_URL"
 run apt install -y "$DEB_PATH"
