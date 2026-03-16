@@ -217,8 +217,8 @@ async def test_create_qemu_instance_online(mocker):
     qemu_execution = mock_systemd_manager.execution
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
-    await execution.init_task
-    assert execution.init_task.result() is True, "VM failed to start"
+    # Boot is now awaited inside start(), so init_task is no longer used.
+    assert execution.times.started_at is not None, "VM failed to start"
     qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
     await execution.stop()
     assert qemu_execution is None

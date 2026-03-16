@@ -95,7 +95,7 @@ class VmExecution:
         AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
-    gpus: list[HostGPU] = []
+    gpus: list[HostGPU]
 
     times: VmExecutionTimes
 
@@ -107,6 +107,7 @@ class VmExecution:
     expire_task: asyncio.Task | None = None
     update_task: asyncio.Task | None = None
     init_task: asyncio.Task | None
+    _forget_task: asyncio.Task | None = None
 
     snapshot_manager: SnapshotManager | None
     systemd_manager: SystemDManager | None
@@ -381,6 +382,7 @@ class VmExecution:
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
         self.runs_done_event = asyncio.Event()
+        self.runs_done_event.set()  # 0 runs = all done
         self.stop_event = asyncio.Event()  # triggered when the VM is stopped
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
@@ -388,6 +390,7 @@ class VmExecution:
         self.systemd_manager = systemd_manager
         self.persistent = persistent
         self.mapped_ports = {}
+        self.gpus = []
 
     def to_dict(self) -> dict:
         return {
@@ -547,7 +550,12 @@ class VmExecution:
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
                 else:
-                    self.init_task = asyncio.create_task(self.non_blocking_wait_for_boot())
+                    # Wait for the controller to become active before
+                    # marking ready — avoids a race where ready_event
+                    # is set but the VM never actually started.
+                    if not await self.non_blocking_wait_for_boot():
+                        msg = f"{self} controller failed to start"
+                        raise RuntimeError(msg)
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
@@ -557,8 +565,9 @@ class VmExecution:
             await self.save()
         except Exception:
             logger.exception("%s error during start, tearing down", self)
-            await self.vm.teardown()
-            await self.vm.stop_guest_api()
+            if self.vm and not self.times.stopped_at:
+                await self.vm.teardown()
+                await self.vm.stop_guest_api()
             raise
 
     async def wait_for_controller_ready(self):
@@ -760,6 +769,13 @@ class VmExecution:
                 self.record.io_write_count = pid_info["process"]["io_counters"][1]
                 self.record.io_read_bytes = pid_info["process"]["io_counters"][2]
                 self.record.io_write_bytes = pid_info["process"]["io_counters"][3]
+        else:
+            # Update mutable fields on existing record
+            self.record.time_prepared = self.times.prepared_at
+            self.record.time_started = self.times.started_at
+            self.record.time_stopping = self.times.stopping_at
+            self.record.persistent = self.persistent
+            self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
 
     async def record_usage(self):

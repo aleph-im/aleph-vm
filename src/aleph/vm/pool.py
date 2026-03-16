@@ -290,7 +290,7 @@ class VmPool:
                 return
             self.forget_vm(execution.vm_hash)
 
-        _ = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
+        execution._forget_task = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
     async def load_persistent_executions(self):
         """Load persistent executions from the database.

@@ -114,8 +114,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     # Prevent execution issues if the execution resources are empty
-    # TODO: Improve expiration process to avoid that kind of issues.
     if execution and not execution.has_resources:
+        logger.warning("VM %s has no resources, stopping and removing", vm_hash)
+        await pool.stop_vm(execution.vm_hash)
         pool.forget_vm(execution.vm_hash)
         execution = None
 
@@ -275,7 +276,12 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
             execution = None
         else:
             logger.info(f"{vm_hash} unknown execution state, stopping the vm")
-            await execution.stop()
+            if execution.vm:
+                await execution.stop()
+            else:
+                if execution._forget_task:
+                    execution._forget_task.cancel()
+                pool.forget_vm(vm_hash)
             execution = None
 
     if not execution:

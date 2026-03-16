@@ -507,8 +507,8 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
             return web.Response(status=403, body="Unauthorized sender")
 
         logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
-        await execution.expire(timeout=timeout)
         execution.persistent = False
+        execution.stop_after_timeout(timeout=timeout)
 
         return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
 

@@ -132,8 +132,8 @@ async def test_create_firecracker_instance(mocker):
     assert isinstance(firecracker_execution, MicroVM)
     assert firecracker_execution.proc is not None
 
-    await execution.init_task
-    assert execution.init_task.result() is True, "VM failed to start"
+    # Boot is now awaited inside start(), so init_task is no longer used.
+    assert execution.times.started_at is not None, "VM failed to start"
 
     # This sleep is to leave the instance to boo
     # up and prevent disk corruption
