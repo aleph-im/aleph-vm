@@ -83,8 +83,14 @@ class QemuVM:
         self.journal_stderr: BinaryIO = journal.stream(self._journal_stderr_name)
         # hardware_resources.published ports -> not implemented at the moment
         # hardware_resources.seconds -> only for microvm
+        # Use Q35 machine type when GPUs are attached — i440FX can't
+        # expose PCIe device config space correctly, causing the kernel
+        # to see header type 0x7F and ignore the device.
+        machine_type = "q35" if self.gpus else "pc"
         args = [
             self.qemu_bin_path,
+            "-machine",
+            machine_type,
             "-enable-kvm",
             "-nodefaults",
             "-m",
@@ -171,9 +177,8 @@ class QemuVM:
             "host,host-phys-bits-limit=0x28",
         ]
         for gpu in self.gpus:
-            device_args = f"vfio-pci,host={gpu.pci_host},multifunction=on,rombar=0"
+            device_args = f"vfio-pci,host={gpu.pci_host},rombar=0"
 
-            # Only add x-vga=on parameter if the GPU supports it
             if gpu.supports_x_vga:
                 device_args += ",x-vga=on"
 
