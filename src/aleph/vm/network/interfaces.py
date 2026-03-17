@@ -35,12 +35,12 @@ def create_tap_interface(ipr: IPRoute, device_name: str):
         elif error.code == 16:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
-            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
+            raise
     except OSError as error:
         if error.errno == errno.EBUSY:
             logger.warning(f"Interface {device_name} is busy - is there another process using it ?")
         else:
-            logger.error(f"Unknown exception while creating interface {device_name}: {error}")
+            raise
 
 
 def add_ip_address(ipr: IPRoute, device_name: str, ip: IPv4Interface | IPv6Interface):
@@ -202,6 +202,9 @@ class TapInterface:
             await self.ndp_proxy.delete_range(self.device_name)
         with IPRoute() as ipr:
             interface_index: list[int] = ipr.link_lookup(ifname=self.device_name)
+            if not interface_index:
+                logger.warning("Interface %s already removed, skipping delete", self.device_name)
+                return
             for addr in ipr.get_addr(index=interface_index):
                 # The order of attributes in the attrs field comes from the Netlink protocol
                 attrs = dict(addr["attrs"])

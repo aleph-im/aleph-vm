@@ -10,6 +10,7 @@ To achieve this, we use ndppd. Each time an update is required, we overwrite /et
 and restart the service.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from ipaddress import IPv6Network
@@ -30,6 +31,7 @@ class NdpProxy:
     def __init__(self, host_network_interface: str):
         self.host_network_interface = host_network_interface
         self.interface_address_range_mapping: dict[str, IPv6Network] = {}
+        self._lock = asyncio.Lock()
 
     @staticmethod
     async def _restart_ndppd():
@@ -38,7 +40,6 @@ class NdpProxy:
             await run_in_subprocess(["systemctl", "restart", "ndppd"])
         except CalledProcessError as error:
             logger.error("Failed to restart ndppd: %s", error)
-            # We do not raise the error here, since this should not crash the entire system
 
     async def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"
@@ -49,17 +50,19 @@ class NdpProxy:
         await self._restart_ndppd()
 
     async def add_range(self, interface: str, address_range: IPv6Network, update_service: bool = True):
-        logger.debug("Proxying range %s -> %s", address_range, interface)
-        self.interface_address_range_mapping[interface] = address_range
-        if update_service:
-            await self._update_ndppd_conf()
+        async with self._lock:
+            logger.debug("Proxying range %s -> %s", address_range, interface)
+            self.interface_address_range_mapping[interface] = address_range
+            if update_service:
+                await self._update_ndppd_conf()
 
     async def delete_range(self, interface: str, update_service: bool = True):
-        try:
-            address_range = self.interface_address_range_mapping.pop(interface)
-            logger.debug("Deactivated proxying for %s (%s)", interface, address_range)
-        except KeyError:
-            return
+        async with self._lock:
+            try:
+                address_range = self.interface_address_range_mapping.pop(interface)
+                logger.debug("Deactivated proxying for %s (%s)", interface, address_range)
+            except KeyError:
+                return
 
-        if update_service:
-            await self._update_ndppd_conf()
+            if update_service:
+                await self._update_ndppd_conf()

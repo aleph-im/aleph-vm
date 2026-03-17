@@ -65,11 +65,9 @@ def is_host_port_available(port: int) -> bool:
         # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
         # This is a short-lived probe (bind + close), not a listening service.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
-            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
-            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             udp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
         return True
@@ -105,11 +103,9 @@ def get_available_host_port(start_port: int | None = None) -> int:
             # Bind to 0.0.0.0 to detect services on any interface (public IP, loopback, etc.).
             # This is a short-lived probe (bind + close), not a listening service.
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 tcp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
-                udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp_sock.bind(("0.0.0.0", port))  # noqa: S104
 
             return port
@@ -138,7 +134,7 @@ def fast_get_available_host_port() -> int:
     """
     global LAST_ASSIGNED_HOST_PORT  # noqa: PLW0603
     host_port = get_available_host_port(start_port=LAST_ASSIGNED_HOST_PORT)
-    LAST_ASSIGNED_HOST_PORT = host_port
-    if LAST_ASSIGNED_HOST_PORT > MAX_PORT:
+    LAST_ASSIGNED_HOST_PORT = host_port + 1
+    if LAST_ASSIGNED_HOST_PORT >= MAX_PORT:
         LAST_ASSIGNED_HOST_PORT = MIN_DYNAMIC_PORT
     return int(host_port)

@@ -179,7 +179,7 @@ async def test_initialize_nftables_fresh(mock_full_ruleset, mocker):
                     "name": "POSTROUTING",
                     "prio": 100,
                     "table": "nat",
-                    "type": "filter",
+                    "type": "nat",
                 }
             }
         },

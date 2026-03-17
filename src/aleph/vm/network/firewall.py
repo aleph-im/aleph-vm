@@ -55,7 +55,8 @@ def execute_json_nft_commands(commands: list[dict]) -> dict:
         logger.debug("Validating nftables rules")
         nft.json_validate(commands_dict)
     except Exception as e:
-        logger.error(f"Failed to verify nftables rules: {e}")
+        logger.error(f"Failed to validate nftables rules: {e}")
+        return {}
 
     def _format_command_for_debug():
         l = []
@@ -239,7 +240,7 @@ def initialize_nftables() -> None:
                 "family": "ip",
                 "table": "nat",
                 "name": "POSTROUTING",
-                "type": "filter",
+                "type": "nat",
                 "hook": "postrouting",
                 "prio": 100,
             }
@@ -759,6 +760,9 @@ def add_port_redirect_rule(
 def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: int, protocol: str = "tcp") -> dict:
     """Removes a rule that redirects traffic from a host port to a VM port.
 
+    Removes both the DNAT prerouting rule and the corresponding
+    forward-accept rule in the per-VM filter chain.
+
     Args:
         interface: The TapInterface instance for the VM
         host_port: The port number on the host that is listened on
@@ -771,46 +775,78 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     nft_ruleset = get_existing_nftables_ruleset()
     chain_name = f"{settings.NFTABLES_CHAIN_PREFIX}-supervisor-prerouting"
     prerouting_table = get_table_for_hook("prerouting")
+    forward_table = get_table_for_hook("forward")
+
+    # Extract vm_id from device_name (e.g. "vmtap4" -> 4)
+    vm_id = interface.device_name.removeprefix("vmtap")
+    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}"
 
     commands = []
 
     for entry in nft_ruleset:
+        if not (isinstance(entry, dict) and "rule" in entry and "expr" in entry["rule"]):
+            continue
+
+        rule = entry["rule"]
+        expr = rule["expr"]
+
+        # Match the DNAT prerouting rule
         if (
-            isinstance(entry, dict)
-            and "rule" in entry
-            and entry["rule"].get("family") == "ip"
-            and entry["rule"].get("table") == prerouting_table
-            and entry["rule"].get("chain") == chain_name
-            and "expr" in entry["rule"]
+            rule.get("family") == "ip"
+            and rule.get("table") == prerouting_table
+            and rule.get("chain") == chain_name
+            and len(expr) == 3
+            and "match" in expr[0]
+            and expr[0]["match"]["left"].get("meta", {}).get("key") == "iifname"
+            and expr[0]["match"]["right"] == settings.NETWORK_INTERFACE
+            and "match" in expr[1]
+            and expr[1]["match"]["left"].get("payload", {}).get("protocol") == protocol
+            and expr[1]["match"]["left"]["payload"].get("field") == "dport"
+            and int(expr[1]["match"]["right"]) == int(host_port)
+            and "dnat" in expr[2]
+            and expr[2]["dnat"].get("addr") == str(interface.guest_ip.ip)
+            and int(expr[2]["dnat"].get("port")) == int(vm_port)
         ):
-            expr = entry["rule"]["expr"]
-            # Check if this is our redirect rule by matching all conditions
-            if (
-                len(expr) == 3
-                and "match" in expr[0]
-                and expr[0]["match"]["left"].get("meta", {}).get("key") == "iifname"
-                and expr[0]["match"]["right"] == settings.NETWORK_INTERFACE
-                and "match" in expr[1]
-                and expr[1]["match"]["left"].get("payload", {}).get("protocol") == protocol
-                and expr[1]["match"]["left"]["payload"].get("field") == "dport"
-                and int(expr[1]["match"]["right"]) == int(host_port)
-                and "dnat" in expr[2]
-                and expr[2]["dnat"].get("addr") == str(interface.guest_ip.ip)
-                and int(expr[2]["dnat"].get("port")) == int(vm_port)
-            ):
-                rule_handle = entry["rule"]["handle"]
-                commands.append(
-                    {
-                        "delete": {
-                            "rule": {
-                                "family": "ip",
-                                "table": prerouting_table,
-                                "chain": chain_name,
-                                "handle": rule_handle,
-                            }
+            commands.append(
+                {
+                    "delete": {
+                        "rule": {
+                            "family": "ip",
+                            "table": prerouting_table,
+                            "chain": chain_name,
+                            "handle": rule["handle"],
                         }
                     }
-                )
+                }
+            )
+
+        # Match the corresponding forward-accept rule
+        if (
+            rule.get("family") == "ip"
+            and rule.get("table") == forward_table
+            and rule.get("chain") == filter_chain
+            and len(expr) == 3
+            and "match" in expr[0]
+            and expr[0]["match"]["left"].get("meta", {}).get("key") == "iifname"
+            and expr[0]["match"]["right"] == settings.NETWORK_INTERFACE
+            and "match" in expr[1]
+            and expr[1]["match"]["left"].get("payload", {}).get("protocol") == protocol
+            and expr[1]["match"]["left"]["payload"].get("field") == "dport"
+            and int(expr[1]["match"]["right"]) == int(vm_port)
+            and "accept" in expr[2]
+        ):
+            commands.append(
+                {
+                    "delete": {
+                        "rule": {
+                            "family": "ip",
+                            "table": forward_table,
+                            "chain": filter_chain,
+                            "handle": rule["handle"],
+                        }
+                    }
+                }
+            )
 
     return execute_json_nft_commands(commands)
 
@@ -1138,7 +1174,8 @@ def check_nftables_redirections(port: int) -> bool:
 
     except Exception as e:
         logger.warning(f"Error checking NAT redirections: {e}")
-        return False
+        # Assume port is in use when we can't verify — prevents conflicts
+        return True
 
 
 def check_port_redirect_exists(
