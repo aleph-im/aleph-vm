@@ -53,9 +53,12 @@ async def chown_to_jailman(path: Path) -> None:
 
 async def file_downloaded_by_another_task(final_path: Path) -> None:
     """Wait for a file to be downloaded by another task in parallel."""
-
-    # Wait for the file to be created
+    part_path = Path(f"{final_path}.part")
     while not final_path.is_file():
+        # If the .part file is gone and the final file still doesn't
+        # exist, the other task failed — stop waiting so we can retry.
+        if not part_path.exists():
+            return
         await asyncio.sleep(0.1)
 
 
@@ -93,9 +96,11 @@ async def download_file(url: str, local_path: Path) -> None:
     download_attempts = 10
     for attempt in range(download_attempts):
         logger.debug(f"Download attempt {attempt + 1}/{download_attempts}...")
+        owns_tmp = False
         try:
             # Ensure the file is not being downloaded by another task in parallel.
             tmp_path.touch(exist_ok=False)
+            owns_tmp = True
 
             await download_file_in_chunks(url, tmp_path)
             tmp_path.rename(local_path)
@@ -103,10 +108,11 @@ async def download_file(url: str, local_path: Path) -> None:
             return
         except FileExistsError as file_exists_error:
             # Another task is already downloading the file.
-            # Use `asyncio.timeout` manager after dropping support for Python 3.10
             logger.debug(f"File already being downloaded by another task: {local_path}")
             try:
                 await asyncio.wait_for(file_downloaded_by_another_task(local_path), timeout=30)
+                if local_path.is_file():
+                    return
             except TimeoutError as error:
                 if attempt < (download_attempts - 1):
                     logger.warning(
@@ -114,7 +120,7 @@ async def download_file(url: str, local_path: Path) -> None:
                     )
                     continue
                 else:
-                    logger.warning(f"Download of {url} failed  (waiting for another task), aborting...")
+                    logger.warning(f"Download of {url} failed (waiting for another task), aborting...")
                     raise error from file_exists_error
         except (
             aiohttp.ClientConnectionError,
@@ -123,13 +129,13 @@ async def download_file(url: str, local_path: Path) -> None:
         ) as error:
             if attempt < (download_attempts - 1):
                 logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
-                # continue  #  continue inside try/finally block is unimplemented in `mypyc`
             else:
-                logger.warning(f"Download of {url} failed  (aborting...")
+                logger.warning(f"Download of {url} failed, aborting...")
                 raise error
         finally:
-            # Ensure no partial file is left behind
-            tmp_path.unlink(missing_ok=True)
+            # Only clean up the .part file if this task created it
+            if owns_tmp:
+                tmp_path.unlink(missing_ok=True)
 
 
 async def _fetch_aleph_message(ref: str) -> dict | None:
