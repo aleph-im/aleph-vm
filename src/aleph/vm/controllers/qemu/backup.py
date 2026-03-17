@@ -266,19 +266,11 @@ async def download_volume_by_ref(
     Returns:
         Path to the downloaded file.
     """
-    from aleph.vm.orchestrator.http import get_session
+    from aleph.vm.storage import _get_content_url, download_file
 
     dest_path = destination / f"{item_hash}.qcow2"
-    url = f"{settings.CONNECTOR_URL}download/data/{item_hash}"
-
-    session = get_session()
-    resp = await session.get(url)
-    resp.raise_for_status()
-
-    with open(dest_path, "wb") as f:
-        async for chunk in resp.content.iter_chunked(65536):
-            f.write(chunk)
-
+    url = await _get_content_url(item_hash)
+    await download_file(url, dest_path)
     return dest_path
 
 

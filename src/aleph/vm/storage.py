@@ -110,7 +110,7 @@ async def download_file(url: str, local_path: Path) -> None:
             except TimeoutError as error:
                 if attempt < (download_attempts - 1):
                     logger.warning(
-                        f"Download failed (waiting for another taks), retrying attempt {attempt + 1}/{download_attempts}..."
+                        f"Download failed (waiting for another task), retrying attempt {attempt + 1}/{download_attempts}..."
                     )
                     continue
                 else:
@@ -132,17 +132,51 @@ async def download_file(url: str, local_path: Path) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+async def _fetch_aleph_message(ref: str) -> dict | None:
+    """Fetch a message from the Aleph API by item_hash."""
+    url = f"{settings.API_SERVER}/api/v0/messages.json?hashes={ref}"
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(url)
+        resp.raise_for_status()
+        data = await resp.json()
+        messages = data.get("messages", [])
+        return messages[0] if messages else None
+
+
+async def _get_content_url(ref: str) -> str:
+    """Resolve a STORE message ref to its raw content download URL."""
+    msg = await _fetch_aleph_message(ref)
+    if not msg:
+        raise FileNotFoundError(f"Aleph message not found: {ref}")
+    content = msg.get("content")
+    if not content or "item_hash" not in content:
+        raise ValueError(f"Malformed Aleph message {ref}: missing content.item_hash")
+    data_hash = content["item_hash"]
+    if content.get("item_type") == "ipfs":
+        return f"{settings.IPFS_GATEWAY}/{data_hash}"
+    return f"{settings.API_SERVER}/api/v0/storage/raw/{data_hash}"
+
+
 async def get_latest_amend(item_hash: str) -> str:
     if settings.FAKE_DATA_PROGRAM:
         return item_hash
-    else:
-        url = f"{settings.CONNECTOR_URL}compute/latest_amend/{item_hash}"
-        async with aiohttp.ClientSession() as session:
-            resp = await session.get(url)
-            resp.raise_for_status()
-            result: str = await resp.json()
-            assert isinstance(result, str)
-            return result or item_hash
+
+    msg = await _fetch_aleph_message(item_hash)
+    if not msg:
+        return item_hash
+    sender = msg["sender"]
+    url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={item_hash}&addresses={sender}"
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(url)
+        resp.raise_for_status()
+        data = await resp.json()
+        messages = data.get("messages", [])
+        if messages:
+            latest = messages[0]
+            latest_content = latest.get("content", {})
+            if latest.get("sender") == sender and latest_content.get("ref") == item_hash:
+                return latest["item_hash"]
+    return item_hash
 
 
 async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
@@ -154,8 +188,14 @@ async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
         logger.debug("Using the fake data message")
     else:
         cache_path = (Path(settings.MESSAGE_CACHE) / ref).with_suffix(".json")
-        url = f"{settings.CONNECTOR_URL}download/message/{ref}"
-        await download_file(url, cache_path)
+        if not cache_path.is_file():
+            msg_data = await _fetch_aleph_message(ref)
+            if not msg_data:
+                raise FileNotFoundError(f"Aleph message not found: {ref}")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = cache_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(msg_data))
+            tmp_path.rename(cache_path)
 
     with open(cache_path) as cache_file:
         msg = json.load(cache_file)
@@ -190,7 +230,7 @@ async def get_code_path(ref: str) -> Path:
             raise ValueError(msg)
 
     cache_path = Path(settings.CODE_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}download/code/{ref}"
+    url = await _get_content_url(ref)
     await download_file(url, cache_path)
     return cache_path
 
@@ -202,7 +242,7 @@ async def get_data_path(ref: str) -> Path:
         return Path(f"{data_dir}.zip")
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}download/data/{ref}"
+    url = await _get_content_url(ref)
     await download_file(url, cache_path)
     return cache_path
 
@@ -223,10 +263,9 @@ async def get_runtime_path(ref: str) -> Path:
         return Path(settings.FAKE_DATA_RUNTIME)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}download/runtime/{ref}"
 
     if not cache_path.is_file():
-        # File does not exist, download it
+        url = await _get_content_url(ref)
         await download_file(url, cache_path)
 
     await check_squashfs_integrity(cache_path)
@@ -241,8 +280,9 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}download/runtime/{ref}"
-    await download_file(url, cache_path)
+    if not cache_path.is_file():
+        url = await _get_content_url(ref)
+        await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
 
@@ -363,7 +403,7 @@ async def get_existing_file(ref: str) -> Path:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = f"{settings.CONNECTOR_URL}download/data/{ref}"
+    url = await _get_content_url(ref)
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
