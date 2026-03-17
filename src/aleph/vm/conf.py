@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     WATCH_FOR_UPDATES: bool = True
 
     API_SERVER: str = "https://official.aleph.cloud"
+    IPFS_GATEWAY: str = "https://ipfs.aleph.im/ipfs"
     # Connect to the Quad9 VPN provider using their IPv4 and IPv6 addresses.
     CONNECTIVITY_IPV4_URL: str = "https://9.9.9.9/"
     CONNECTIVITY_IPV6_URL: str = "https://[2620:fe::fe]/"
