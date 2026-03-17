@@ -68,189 +68,153 @@ def mock_sample_domain_instance_list(mocker):
 
 @pytest.mark.asyncio
 async def test_fetch_list(mock_sample_domain_instance_list):
-    istance_list = await haproxy.fetch_list()
-    assert len(istance_list) == 9
+    instance_list = await haproxy.fetch_list()
+    assert len(instance_list) == 9
 
 
-@pytest.fixture
-def mock_small_domain_list(mocker):
-    small_list = [
+def test_resolve_vm_ip():
+    assert haproxy._resolve_vm_ip("172.16.4.1/32") == "172.16.4.2"
+    assert haproxy._resolve_vm_ip("172.16.11.1/32") == "172.16.11.2"
+    assert haproxy._resolve_vm_ip("172.16.4.2") == "172.16.4.2"
+    assert haproxy._resolve_vm_ip(None) is None
+
+
+def test_build_map_entries():
+    instances = [
         {
             "name": "echo.agot.be",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
-        }
+            "ipv4": {"local": "172.16.4.1/32"},
+        },
+        {
+            "name": "skip.example.com",
+            "ipv4": {"local": None},
+        },
     ]
-    mocker.patch("aleph.vm.haproxy.fetch_list", mocker.AsyncMock(return_value=small_list))
+    entries = haproxy._build_map_entries(instances)
+    assert entries == {"echo.agot.be": "172.16.4.2"}
 
 
-@pytest.mark.asyncio
-async def test_update_map_file(mock_small_domain_list, tmp_path):
-    map_file_path = tmp_path / "backend.map"
-    instance_list = await haproxy.fetch_list()
-    assert instance_list
+def test_update_mapfile(tmp_path):
+    map_file = tmp_path / "test.map"
+    entries = {"echo.agot.be": "172.16.4.2", "api.example.com": "172.16.5.2"}
 
-    haproxy.update_mapfile(instance_list, str(map_file_path))
-    content = map_file_path.read_text()
-    assert content == "echo.agot.be echo.agot.be\n"
+    # First write — should update
+    assert haproxy.update_mapfile(entries, str(map_file)) is True
+    content = map_file.read_text()
+    assert "api.example.com 172.16.5.2\n" in content
+    assert "echo.agot.be 172.16.4.2\n" in content
+
+    # Second write — same content, no update
+    assert haproxy.update_mapfile(entries, str(map_file)) is False
 
 
 @pytest.fixture
-def mock_haproxy_server(mocker):
-    """Mock a haproxy proxy server by patching haproxy.send_socket_command
-
-    Update the backend server response via:
-        mock_socket_command.existing_servers = [
-        "8 test_backend 1 existing_bk 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
-    ]
-    Idem existing mappings
-    """
+def mock_haproxy_socket(mocker):
+    """Mock HAProxy socket commands, tracking all sent commands."""
     commands = []
-
-    existing_servers: list[str] = []
-    existing_mappings: list[str] = []
+    runtime_mappings: dict[str, str] = {}
 
     def mock_response(socket_path, command):  # noqa: ARG001
         commands.append(command)
-        if "show servers state" in command:
-            return "1\n# be_id be_name srv_id srv_name srv_addr srv_op_state\n" + "\n".join(mock.existing_servers)
         if "show map" in command:
-            return "\n" + "\n".join(mock.existing_mappings)
-        elif "disable server" in command:
+            lines = [f"0x{i:012x} {k} {v}" for i, (k, v) in enumerate(runtime_mappings.items())]
+            return "\n".join(lines) + "\n" if lines else ""
+        if "clear map" in command:
+            runtime_mappings.clear()
             return ""
-        elif "set server" in command:
-            return ""
-        elif "enable server" in command:
+        if "add map" in command:
+            parts = command.split()
+            if len(parts) >= 5:
+                runtime_mappings[parts[3]] = parts[4]
             return ""
         return ""
 
     mock = mocker.patch("aleph.vm.haproxy.send_socket_command", mock_response)
-    mock.existing_servers = existing_servers
-    mock.existing_mappings = existing_mappings
-    mock.socket_path = "/fakepath/to/haproxy.sock"
     mock.commands = commands
+    mock.runtime_mappings = runtime_mappings
+    mock.socket_path = "/fakepath/to/haproxy.sock"
     return mock
 
 
-@pytest.mark.asyncio
-async def test_update_backend_add_server(mock_haproxy_server):
+def test_sync_runtime_map(mock_haproxy_socket):
+    entries = {"echo.agot.be": "172.16.4.2", "api.example.com": "172.16.5.2"}
+    haproxy.sync_runtime_map(mock_haproxy_socket.socket_path, "/etc/haproxy/test.map", entries)
+
+    assert "clear map /etc/haproxy/test.map" in mock_haproxy_socket.commands
+    assert "add map /etc/haproxy/test.map echo.agot.be 172.16.4.2" in mock_haproxy_socket.commands
+    assert "add map /etc/haproxy/test.map api.example.com 172.16.5.2" in mock_haproxy_socket.commands
+
+
+def test_update_backends_syncs_when_runtime_empty(mock_haproxy_socket, tmp_path):
+    """After HAProxy restart, map file is correct but runtime is empty."""
+    map_file = tmp_path / "test.map"
+    # Pre-populate file so file_updated=False
+    map_file.write_text("echo.agot.be 172.16.4.2\n")
+
     instances = [
         {
             "name": "echo.agot.be",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+            "item_hash": "deca" * 16,
+            "ipv4": {"local": "172.16.4.1/32"},
         }
     ]
-    map_file_path = "fakyfake"
 
-    # Run test
-    haproxy.update_haproxy_backend(
-        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 22, weight=1
+    haproxy.update_backends(
+        map_file_path=str(map_file),
+        socket_path=mock_haproxy_socket.socket_path,
+        instances=instances,
     )
 
-    # Verify commands
-    assert mock_haproxy_server.commands == [
-        "show map fakyfake",
-        "show servers state test_backend",
-        "add server test_backend/echo.agot.be 172.16.4.2:22 weight 1 maxconn 30",
-        "enable server test_backend/echo.agot.be",
-        "add map fakyfake echo.agot.be echo.agot.be",
-    ]
+    # Runtime was empty, so sync should have happened
+    assert "clear map" in " ".join(mock_haproxy_socket.commands)
+    assert "add map" in " ".join(mock_haproxy_socket.commands)
 
 
-@pytest.mark.asyncio
-def test_update_backend_add_server_remove_server(mock_haproxy_server):
+def test_update_backends_skips_when_in_sync(mock_haproxy_socket, tmp_path):
+    """When file and runtime match, no update needed."""
+    map_file = tmp_path / "test.map"
+    map_file.write_text("echo.agot.be 172.16.4.2\n")
+
+    # Pre-populate runtime
+    mock_haproxy_socket.runtime_mappings["echo.agot.be"] = "172.16.4.2"
+
     instances = [
         {
             "name": "echo.agot.be",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
+            "item_hash": "deca" * 16,
+            "ipv4": {"local": "172.16.4.1/32"},
         }
     ]
 
-    map_file_path = "backend.map"
-
-    mock_haproxy_server.existing_servers = [
-        "8 test_backend 1 toremove.agot.be 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
-    ]
-    mock_haproxy_server.existing_mappings = ["0x563a8ebca6b0 toremove.agot.be toremove.agot.be"]
-    haproxy.update_haproxy_backend(
-        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 22, weight=1
+    haproxy.update_backends(
+        map_file_path=str(map_file),
+        socket_path=mock_haproxy_socket.socket_path,
+        instances=instances,
     )
 
-    # Verify commands
-    assert mock_haproxy_server.commands == [
-        "show map backend.map",
-        "show servers state test_backend",
-        "add server test_backend/echo.agot.be 172.16.4.2:22 weight 1 maxconn 30",
-        "enable server test_backend/echo.agot.be",
-        "add map backend.map echo.agot.be echo.agot.be",
-        "set  server test_backend/toremove.agot.be state maint",
-        "del server test_backend/toremove.agot.be",
-    ]
+    # Only show map for checking, no clear/add
+    assert "clear map" not in " ".join(mock_haproxy_socket.commands)
 
 
-@pytest.mark.asyncio
-def test_update_backend_do_no_remove_fallback(mock_haproxy_server):
-    instances = [
-        {
-            "name": "echo.agot.be",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.4.1/32"},
-        }
-    ]
+def test_update_backends_with_multidigit_octets(mock_haproxy_socket, tmp_path):
+    """Regression: IP 172.16.11.1 should become 172.16.11.2, not 172.16.2."""
+    map_file = tmp_path / "test.map"
 
-    map_file_path = "backend.map"
-
-    mock_haproxy_server.existing_servers = [
-        "8 test_backend 1 fallback_local 127.0.0.1 2 0 1 1 683294 1 0 2 0 0 0 0 - 4020 - 0 0 - - 0"
-    ]
-    haproxy.update_haproxy_backend(
-        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 80, weight=1
-    )
-
-    # Verify commands
-    assert mock_haproxy_server.commands == [
-        "show map backend.map",
-        "show servers state test_backend",
-        "add server test_backend/echo.agot.be 172.16.4.2:80 weight 1 maxconn 30",
-        "enable server test_backend/echo.agot.be",
-        "add map backend.map echo.agot.be echo.agot.be",
-    ]
-
-
-@pytest.mark.asyncio
-def test_update_backend_with_multidigit_octets(mock_haproxy_server):
-    """Test that IP addresses with multi-digit octets ending in .1 are handled correctly.
-
-    This is a regression test for a bug where rstrip(".1") was used instead of
-    removesuffix(".1"), causing IPs like 172.16.11.1 to be incorrectly converted
-    to 172.16.2 instead of 172.16.11.2.
-    """
     instances = [
         {
             "name": "n8n.aleph.im",
-            "item_hash": "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca",
-            "ipv6": "2a01:240:ad00:2502:3:747b:52c7:12e1",
-            "ipv4": {"public": "46.247.131.211", "local": "172.16.11.1/32"},
+            "item_hash": "deca" * 16,
+            "ipv4": {"local": "172.16.11.1/32"},
         }
     ]
 
-    map_file_path = "backend.map"
-
-    haproxy.update_haproxy_backend(
-        mock_haproxy_server.socket_path, "test_backend", instances, map_file_path, 80, weight=1
+    haproxy.update_backends(
+        map_file_path=str(map_file),
+        socket_path=mock_haproxy_socket.socket_path,
+        instances=instances,
     )
 
-    # Verify the IP address is correctly converted to 172.16.11.2, NOT 172.16.2
-    assert mock_haproxy_server.commands == [
-        "show map backend.map",
-        "show servers state test_backend",
-        "add server test_backend/n8n.aleph.im 172.16.11.2:80 weight 1 maxconn 30",
-        "enable server test_backend/n8n.aleph.im",
-        "add map backend.map n8n.aleph.im n8n.aleph.im",
-    ]
+    content = map_file.read_text()
+    assert "n8n.aleph.im 172.16.11.2\n" in content
+    assert "add map" in " ".join(mock_haproxy_socket.commands)
+    assert "172.16.11.2" in " ".join(mock_haproxy_socket.commands)
