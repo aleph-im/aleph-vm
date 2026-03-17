@@ -1,6 +1,8 @@
 [Unit]
 Description=Aleph.im VM execution engine
 After=network.target
+After=docker.service
+Wants=docker.service
 
 [Service]
 User=0
