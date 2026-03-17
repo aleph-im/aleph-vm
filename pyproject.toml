@@ -45,7 +45,7 @@ dependencies = [
   "nftables @ git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
   "packaging>=23.2",
   # Fixing this protobuf dependency version to avoid getting CI errors as version 5.29.0 have this compilation issue
-  "protobuf==5.28.3",
+  "protobuf==5.29.6",
   "psutil==5.9.5",
   "py-cpuinfo==9",
   "pydantic>=2,<3",
