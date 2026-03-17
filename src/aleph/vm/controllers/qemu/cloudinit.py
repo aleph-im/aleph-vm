@@ -32,7 +32,7 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
     return base64.b32encode(item_hash_binary).decode().strip("=").lower()
 
 
-def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> bytes:
+def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False, is_confidential: bool = False) -> bytes:
     """Creates user data configuration file for cloud-init tool"""
     config: dict[str, str | bool | list[str] | list[list[str]]] = {
         "hostname": hostname,
@@ -42,10 +42,21 @@ def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> by
         "resize_rootfs": True,
     }
 
+    bootcmd: list[list[str]] = []
+
+    # Confidential instances use LUKS encryption. Cloud-init's growpart
+    # expands the partition but can't resize the LUKS container (no keyfile).
+    # Run growpart + cryptsetup resize + resize2fs ourselves in bootcmd,
+    # which runs before cloud-init's cc_growpart/cc_resizefs modules.
+    if is_confidential:
+        bootcmd.append(["sh", "-c", "growpart /dev/vda 2 || true"])
+        bootcmd.append(["sh", "-c", "cryptsetup resize cr_root || true"])
+        bootcmd.append(["sh", "-c", "resize2fs /dev/mapper/cr_root || true"])
+
     # Add kernel boot parameters for GPU instances to speed up PCI enumeration
     # This significantly reduces boot time when large GPU BARs (Resizable BAR) are present
     if has_gpu:
-        config["bootcmd"] = [
+        bootcmd += [
             # Update GRUB configuration to add PCI optimization parameters
             # pci=realloc=off: Skip PCI resource reallocation during boot
             # pci=noaer: Disable Advanced Error Reporting to reduce probing overhead
@@ -64,6 +75,9 @@ def encode_user_data(hostname, ssh_authorized_keys, has_gpu: bool = False) -> by
                 "command -v grub2-mkconfig >/dev/null 2>&1 && grub2-mkconfig -o /boot/grub2/grub.cfg || true",
             ],
         ]
+
+    if bootcmd:
+        config["bootcmd"] = bootcmd
 
     cloud_config_header = "#cloud-config\n"
     config_output = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
@@ -116,13 +130,14 @@ async def create_cloud_init_drive_image(
     route,
     ssh_authorized_keys,
     has_gpu: bool = False,
+    is_confidential: bool = False,
 ):
     with (
         NamedTemporaryFile() as user_data_config_file,
         NamedTemporaryFile() as network_config_file,
         NamedTemporaryFile() as metadata_config_file,
     ):
-        user_data = encode_user_data(hostname, ssh_authorized_keys, has_gpu=has_gpu)
+        user_data = encode_user_data(hostname, ssh_authorized_keys, has_gpu=has_gpu, is_confidential=is_confidential)
         user_data_config_file.write(user_data)
         user_data_config_file.flush()
         network_config = create_network_file(ip, ipv6, ipv6_gateway, nameservers, route)
@@ -163,6 +178,11 @@ class CloudInitMixin(AlephVmControllerInterface):
 
         # Check if this VM has GPUs to enable PCI boot optimizations
         has_gpu = bool(self.resources.gpus) if hasattr(self.resources, "gpus") else False
+        is_confidential = (
+            self.resources.message_content.environment.trusted_execution is not None
+            if hasattr(self.resources, "message_content")
+            else False
+        )
 
         await create_cloud_init_drive_image(
             disk_image_path,
@@ -175,6 +195,7 @@ class CloudInitMixin(AlephVmControllerInterface):
             route,
             ssh_authorized_keys,
             has_gpu=has_gpu,
+            is_confidential=is_confidential,
         )
 
         return Drive(
