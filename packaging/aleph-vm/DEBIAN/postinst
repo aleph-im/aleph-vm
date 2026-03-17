@@ -27,6 +27,25 @@ if [ -d "/var/lib/ipfs" ]; then
   rm -rf /var/lib/ipfs
 fi
 
+# Update HAProxy config if it exists and hasn't been customized,
+# or if it still uses the old dynamic server approach (use-server %[).
+HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
+HAPROXY_TEMPLATE="/etc/haproxy/haproxy-aleph.cfg"
+if [ -f "$HAPROXY_TEMPLATE" ] && [ -f "$HAPROXY_CFG" ]; then
+  if grep -q 'use-server %\[' "$HAPROXY_CFG" 2>/dev/null; then
+    echo "Updating HAProxy config to set-dst approach..."
+    cp "$HAPROXY_CFG" "${HAPROXY_CFG}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$HAPROXY_TEMPLATE" "$HAPROXY_CFG"
+    # Clear old-format map files — supervisor will rewrite them
+    : > /etc/haproxy/http_domains.map
+    : > /etc/haproxy/https_domains.map
+    : > /etc/haproxy/ssh_domains.map
+    if ! [[ -v container ]] && systemctl is-active --quiet haproxy.service; then
+      systemctl restart haproxy.service
+    fi
+  fi
+fi
+
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
   systemctl daemon-reload
