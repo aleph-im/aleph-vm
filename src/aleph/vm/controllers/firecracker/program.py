@@ -424,8 +424,8 @@ class AlephFirecrackerProgram(AlephFirecrackerExecutable[ProgramVmConfiguration]
             writer.write(b"CONNECT 52\n" + length + payload)
             await writer.drain()
 
-            await reader.readline()  # Ignore the acknowledgement from the socket
-            response_raw = await reader.read(1000_000)
+            await asyncio.wait_for(reader.readline(), timeout=60)
+            response_raw = await asyncio.wait_for(reader.read(1000_000), timeout=60)
             response = ConfigurationResponse(**msgpack.loads(response_raw, raw=False))
             if response.success is False:
                 logger.exception(response.traceback)
