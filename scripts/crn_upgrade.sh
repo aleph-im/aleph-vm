@@ -113,7 +113,7 @@ if [[ "$(printf '%s\n' "$NODE_HASH_REQUIRED_SINCE" "$VERSION" | sort -V | head -
     echo "  This is the item_hash of your create-resource-node message."
     echo "============================================================"
     echo ""
-    read -rp "Enter your node hash (or press Enter to skip): " NODE_HASH
+    read -rp "Enter your node hash (or press Enter to skip): " NODE_HASH < /dev/tty
     if [[ -n "$NODE_HASH" ]]; then
         echo "ALEPH_VM_NODE_HASH=${NODE_HASH}" | run tee -a "$ENV_FILE" > /dev/null
         echo "ALEPH_VM_NODE_HASH written to ${ENV_FILE}"
