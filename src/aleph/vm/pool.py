@@ -319,10 +319,37 @@ class VmPool:
         dead_services = [svc for svc in all_services if not service_active_states.get(svc, False)]
         service_enabled_states = self.systemd_manager.get_services_enabled_states(dead_services)
 
+        # Track claimed vm_ids to detect duplicates in the DB.
+        # Multiple records can share a vm_id (stale records from old
+        # executions). Only the first active one should be restored —
+        # others are treated as dead to avoid tap interface conflicts.
+        claimed_vm_ids: set[int] = set()
+
         for saved_execution in persistent_saved:
             vm_hash = ItemHash(saved_execution.vm_hash)
             vm_id = saved_execution.vm_id
             logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
+
+            # Skip if another execution already claimed this vm_id.
+            # This prevents two instances from sharing the same tap
+            # interface, which causes network loss when one is cleaned up.
+            if vm_id in claimed_vm_ids:
+                logger.warning(
+                    "Skipping execution %s: vm_id %d already claimed by another execution",
+                    vm_hash,
+                    vm_id,
+                )
+                # Clean up the stale DB record
+                execution = VmExecution(
+                    vm_hash=vm_hash,
+                    message=get_message_executable_content(json.loads(saved_execution.message)),
+                    original=get_message_executable_content(json.loads(saved_execution.original_message)),
+                    snapshot_manager=self.snapshot_manager,
+                    systemd_manager=self.systemd_manager,
+                    persistent=saved_execution.persistent,
+                )
+                await self._handle_dead_execution(execution, saved_execution, is_enabled=False)
+                continue
 
             execution = VmExecution(
                 vm_hash=vm_hash,
@@ -337,6 +364,7 @@ class VmPool:
             is_active = service_active_states.get(service_name, False)
 
             if is_active:
+                claimed_vm_ids.add(vm_id)
                 await self._restore_running_execution(execution, saved_execution, vm_id, vm_hash)
             else:
                 is_enabled = service_enabled_states.get(service_name, False)
