@@ -40,10 +40,12 @@ if [ -f "$HAPROXY_TEMPLATE" ] && [ -f "$HAPROXY_CFG" ]; then
     : > /etc/haproxy/http_domains.map
     : > /etc/haproxy/https_domains.map
     : > /etc/haproxy/ssh_domains.map
-    if ! [[ -v container ]] && systemctl is-active --quiet haproxy.service; then
-      systemctl restart haproxy.service
-    fi
   fi
+fi
+
+# Always reload HAProxy to pick up any config or map file changes
+if ! [[ -v container ]] && systemctl is-active --quiet haproxy.service; then
+  systemctl reload haproxy.service
 fi
 
 # Systemd is absent from containers
