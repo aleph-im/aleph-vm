@@ -11,6 +11,7 @@ import aiohttp
 import pydantic
 from aiohttp import web
 from aleph_message.models import (
+    AggregateMessage,
     AlephMessage,
     PaymentType,
     ProgramMessage,
@@ -134,7 +135,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                 break
 
 
-async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
+async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
@@ -150,6 +151,40 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor):
             if message.content.on.message:
                 reactor.register(message)
         await reactor.trigger(message=message)
+
+        # Handle port-forwarding aggregate updates in real-time
+        if isinstance(message, AggregateMessage):
+            key = message.content.key
+            if isinstance(key, str) and key == "port-forwarding":
+                await _handle_port_forwarding_aggregate(message, pool)
+
+
+async def _handle_port_forwarding_aggregate(message: AggregateMessage, pool: VmPool):
+    """Update port redirects for VMs affected by a port-forwarding aggregate change."""
+    # Use content.address (the target account), not message.sender,
+    # because a sender can publish aggregates on behalf of another address.
+    address = message.content.address
+    affected = [
+        execution
+        for execution in pool.executions.values()
+        if execution.is_instance and execution.vm and execution.message.address == address
+    ]
+    if not affected:
+        return
+
+    logger.info(
+        "Port-forwarding aggregate for %s, updating %d VM(s)",
+        address,
+        len(affected),
+    )
+    for execution in affected:
+        try:
+            await execution.fetch_port_redirect_config_and_setup()
+        except Exception:
+            logger.exception(
+                "Failed to update port redirects for %s",
+                execution.vm_hash,
+            )
 
 
 async def start_watch_for_messages_task(app: web.Application):
@@ -169,7 +204,7 @@ async def start_watch_for_messages_task(app: web.Application):
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
-    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor))
+    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor, pool))
 
 
 async def stop_watch_for_messages_task(app: web.Application):
