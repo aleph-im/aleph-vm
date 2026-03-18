@@ -925,6 +925,7 @@ async def notify_allocation(request: web.Request):
         logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
         await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
+        await pool.update_domain_mapping()
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error
