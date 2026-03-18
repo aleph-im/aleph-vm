@@ -101,9 +101,9 @@ echo "Target:  ${VERSION}"
 echo "Package: ${DEB_URL}"
 echo ""
 
-# Ensure NODE_HASH is configured before upgrade (required since 1.10.1)
+# Ensure NODE_HASH is configured before upgrade (required since 1.11.0)
 ENV_FILE="/etc/aleph-vm/supervisor.env"
-NODE_HASH_REQUIRED_SINCE="1.10.1"
+NODE_HASH_REQUIRED_SINCE="1.11.0"
 if [[ "$(printf '%s\n' "$NODE_HASH_REQUIRED_SINCE" "$VERSION" | sort -V | head -1)" == "$NODE_HASH_REQUIRED_SINCE" ]] \
     && [[ -f "$ENV_FILE" ]] && ! grep -q "^ALEPH_VM_NODE_HASH=" "$ENV_FILE"; then
     echo ""
