@@ -152,11 +152,14 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool)
                 reactor.register(message)
         await reactor.trigger(message=message)
 
-        # Handle port-forwarding aggregate updates in real-time
+        # Handle aggregate updates in real-time
         if isinstance(message, AggregateMessage):
             key = message.content.key
-            if isinstance(key, str) and key == "port-forwarding":
-                await _handle_port_forwarding_aggregate(message, pool)
+            if isinstance(key, str):
+                if key == "port-forwarding":
+                    await _handle_port_forwarding_aggregate(message, pool)
+                elif key == "domains":
+                    await _handle_domains_aggregate(message, pool)
 
 
 async def _handle_port_forwarding_aggregate(message: AggregateMessage, pool: VmPool):
@@ -185,6 +188,33 @@ async def _handle_port_forwarding_aggregate(message: AggregateMessage, pool: VmP
                 "Failed to update port redirects for %s",
                 execution.vm_hash,
             )
+
+
+async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
+    """Update HAProxy domain mapping when a domains aggregate changes.
+
+    The aggregate content maps domain names to instance configs:
+    {"testd.example.com": {"message_id": "<item_hash>", "type": "instance"}}
+
+    Only trigger if any referenced message_id matches a locally running instance.
+    """
+    address = message.content.address
+
+    # Trigger if the address owns any running instance on this node.
+    # This covers both additions (new domain pointing to local instance)
+    # and deletions (domain removed — need to clean up the map).
+    has_local_instance = any(
+        execution.is_instance and execution.vm and execution.message.address == address
+        for execution in pool.executions.values()
+    )
+    if not has_local_instance:
+        return
+
+    logger.info("Domains aggregate for %s, updating HAProxy domain mapping", address)
+    try:
+        await pool.update_domain_mapping()
+    except Exception:
+        logger.exception("Failed to update domain mapping for %s", address)
 
 
 async def start_watch_for_messages_task(app: web.Application):
