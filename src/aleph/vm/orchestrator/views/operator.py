@@ -1278,6 +1278,27 @@ async def operate_restore(
     Stops the VM, validates the new image, replaces rootfs, restarts.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
+
+    # Serialize restore requests per VM — prevents concurrent
+    # restores from racing on the staging file and stop/restart.
+    # Shares locks with backup so they don't run concurrently either.
+    state: BackupState = request.app["backup_state"]
+    lock = state.locks.setdefault(str(vm_hash), asyncio.Lock())
+    if lock.locked():
+        return web.HTTPConflict(body="A backup or restore is already in progress for this VM")
+
+    try:
+        async with lock:
+            return await _do_restore(request, vm_hash, authenticated_sender)
+    finally:
+        state.locks.pop(str(vm_hash), None)
+
+
+async def _do_restore(
+    request: web.Request,
+    vm_hash: ItemHash,
+    authenticated_sender: str,
+) -> web.Response:
     temp_file: Path | None = None
     restore_succeeded = False
 
