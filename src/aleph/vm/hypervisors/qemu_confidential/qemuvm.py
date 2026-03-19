@@ -129,11 +129,16 @@ class QemuConfidentialVM(QemuVM):
             # "-snapshot",  # Do not save anything to disk
         ]
         if self.interface_name:
-            # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
+            args += [
+                "-device", "virtio-net-pci,netdev=net0",
+                "-netdev", f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
+            ]
 
         if self.cloud_init_drive_path:
-            args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+            args += [
+                "-drive",
+                f"file={self.cloud_init_drive_path},media=cdrom,readonly=on,if=virtio",
+            ]
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()
