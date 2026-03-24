@@ -115,7 +115,7 @@ class QemuConfidentialVM(QemuVM):
             f"reduced-phys-bits={sev_info.phys_addr_reduction},"
             f"dh-cert-file={godh},session-file={launch_blob}",
             "-machine",
-            "confidential-guest-support=sev0",
+            "q35,confidential-guest-support=sev0",
             # Linux kernel 6.9 added a control on the RDRAND function to ensure that the random numbers generation
             # works well, on Qemu emulation for confidential computing the CPU model us faked and this makes control
             # raise an error and prevent boot. Passing the argument --cpu host instruct the VM to use the same CPU
@@ -129,11 +129,18 @@ class QemuConfidentialVM(QemuVM):
             # "-snapshot",  # Do not save anything to disk
         ]
         if self.interface_name:
-            # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
+            args += [
+                "-device",
+                "virtio-net-pci,netdev=net0",
+                "-netdev",
+                f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
+            ]
 
         if self.cloud_init_drive_path:
-            args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+            args += [
+                "-drive",
+                f"file={self.cloud_init_drive_path},media=cdrom,readonly=on,if=virtio",
+            ]
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()

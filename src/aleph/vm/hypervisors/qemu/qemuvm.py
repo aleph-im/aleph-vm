@@ -133,11 +133,24 @@ class QemuVM:
             # "-snapshot",  # Do not save anything to disk
         ]
         if self.interface_name:
-            # script=no, downscript=no tell qemu not to try to set up the network itself
-            args += ["-net", "nic,model=virtio", "-net", f"tap,ifname={self.interface_name},script=no,downscript=no"]
+            # Use explicit device + netdev syntax for Q35 compatibility.
+            # The legacy -net syntax causes NIC renaming (eth0 -> enp0s1)
+            # on Q35 which breaks cloud-init network config.
+            args += [
+                "-device",
+                "virtio-net-pci,netdev=net0",
+                "-netdev",
+                f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
+            ]
 
         if self.cloud_init_drive_path:
-            args += ["-cdrom", f"{self.cloud_init_drive_path}"]
+            # Use explicit drive syntax instead of -cdrom for Q35
+            # compatibility. On Q35, -cdrom creates an unattached IDE
+            # device that the guest can't see.
+            args += [
+                "-drive",
+                f"file={self.cloud_init_drive_path},media=cdrom,readonly=on,if=virtio",
+            ]
 
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()
