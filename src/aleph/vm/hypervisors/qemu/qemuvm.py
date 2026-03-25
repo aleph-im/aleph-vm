@@ -12,6 +12,11 @@ from aleph.vm.controllers.configuration import QemuGPU, QemuVMConfiguration
 
 logger = logging.getLogger(__name__)
 
+# Seconds to wait for guest ACPI shutdown before escalating to QMP quit.
+# Must be shorter than systemd TimeoutStopSec (60s) to leave time for
+# QEMU to flush disk caches via "quit" before the SIGKILL deadline.
+GRACEFUL_SHUTDOWN_TIMEOUT = 50
+
 
 @dataclass
 class HostVolume:
@@ -218,11 +223,48 @@ class QemuVM:
             logger.info("Shutdown message sent to %s", self.vm_hash)
             client.close()
 
-    async def stop(self):
-        """Stop the VM."""
-        self.send_shutdown_message()
+    def _send_qmp_quit(self):
+        """Tell QEMU to exit cleanly, flushing disk caches before terminating."""
+        client = self._get_qmpclient()
+        if client:
+            try:
+                client.command("quit")
+                logger.info("Sent QMP quit to VM %s", self.vm_hash)
+            except Exception:
+                logger.warning("QMP quit failed for VM %s", self.vm_hash, exc_info=True)
+            finally:
+                client.close()
 
+    def _close_journals(self):
         if self.journal_stdout and self.journal_stdout != asyncio.subprocess.DEVNULL:
             self.journal_stdout.close()
         if self.journal_stderr and self.journal_stderr != asyncio.subprocess.DEVNULL:
             self.journal_stderr.close()
+
+    async def stop(self):
+        """Stop the VM with graceful shutdown escalation.
+
+        Sends an ACPI powerdown and waits for the guest to shut down cleanly.
+        If the guest does not stop in time, sends QMP "quit" which makes QEMU
+        flush its disk caches and exit — avoiding the qcow2 corruption that
+        a SIGKILL would cause.
+        """
+        self.send_shutdown_message()
+
+        if self.qemu_process:
+            try:
+                await asyncio.wait_for(self.qemu_process.wait(), timeout=GRACEFUL_SHUTDOWN_TIMEOUT)
+                logger.info("VM %s shut down gracefully after ACPI powerdown", self.vm_hash)
+                self._close_journals()
+                return
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "VM %s did not shut down within %ds, sending QMP quit",
+                    self.vm_hash,
+                    GRACEFUL_SHUTDOWN_TIMEOUT,
+                )
+
+        # Guest didn't respond to ACPI — tell QEMU to exit cleanly.
+        # Unlike SIGKILL, "quit" flushes block device caches first.
+        self._send_qmp_quit()
+        self._close_journals()
