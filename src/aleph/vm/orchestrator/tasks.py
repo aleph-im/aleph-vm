@@ -67,20 +67,25 @@ Value = TypeVar("Value")
 COMMUNITY_STREAM_RATIO = Decimal(0.2)
 
 
-async def retry_generator(generator: AsyncIterable[Value], max_seconds: int = 8) -> AsyncIterable[Value]:
+async def retry_generator(generator: AsyncIterable[Value], max_seconds: float = 8.0) -> AsyncIterable[Value]:
     retry_delay = 0.1
     while True:
         try:
             async for value in generator:
+                # Reset delay on successful message
+                retry_delay = 0.1
                 yield value
         except RuntimeError as e:
             if "Event loop is closed" in str(e):
                 logger.debug("retry_generator exiting: event loop closed")
                 return
             raise
+        except Exception:
+            logger.exception("WebSocket generator error, reconnecting")
 
+        logger.warning("WebSocket disconnected, reconnecting in %.1fs", retry_delay)
         await asyncio.sleep(retry_delay)
-        retry_delay = max(retry_delay * 2, max_seconds)
+        retry_delay = min(retry_delay * 2, max_seconds)
 
 
 async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
@@ -88,8 +93,12 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
     from aleph.vm.orchestrator.http import get_session
 
     session = get_session()
-    async with session.ws_connect(url) as ws:
-        logger.debug(f"Websocket connected on {url}")
+    async with session.ws_connect(
+        url,
+        heartbeat=30,
+        timeout=aiohttp.ClientWSTimeout(ws_close=10),
+    ) as ws:
+        logger.info("WebSocket connected on %s", url)
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
@@ -102,12 +111,13 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                     continue
 
                 # Chain confirmation messages are published in the WS subscription
-                # but do not contain the fields "item_type" or "content, hence they
+                # but do not contain the fields "item_type" or "content", hence they
                 # are not valid Messages.
                 if "item_type" not in data:
-                    assert "content" not in data
-                    assert "confirmation" in data
-                    logger.info(f"Ignoring confirmation message '{data['item_hash']}'")
+                    if "confirmation" in data:
+                        logger.debug("Ignoring confirmation message '%s'", data.get("item_hash"))
+                    else:
+                        logger.warning("Unexpected message without item_type: %s", data)
                     continue
 
                 try:
@@ -132,6 +142,10 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                     )
                     continue
             elif msg.type == aiohttp.WSMsgType.ERROR:
+                logger.error("WebSocket error: %s", ws.exception() or "unknown")
+                break
+            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
+                logger.warning("WebSocket closed by server")
                 break
 
 
