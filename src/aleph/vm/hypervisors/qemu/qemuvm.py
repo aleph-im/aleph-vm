@@ -152,6 +152,17 @@ class QemuVM:
                 f"file={self.cloud_init_drive_path},media=cdrom,readonly=on,if=virtio",
             ]
 
+        # Memory ballooning with free-page-reporting: the guest kernel
+        # proactively tells the host which pages are unused so the host
+        # can reclaim them via MADV_DONTNEED. Invisible to the guest
+        # (MemTotal stays the same). Skipped when GPUs are passed through
+        # because vfio-pci pins guest memory, which conflicts with reclaim.
+        if not self.gpus:
+            args += [
+                "-device",
+                "virtio-balloon-pci,free-page-reporting=on",
+            ]
+
         args += self._get_host_volumes_args()
         args += self._get_gpu_args()
         logger.debug("QEMU args: %s", args)
