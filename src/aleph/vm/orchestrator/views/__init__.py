@@ -804,6 +804,16 @@ async def notify_allocation(request: web.Request):
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
 
+    # Capacity admission control: refuse the allocation early (before payment
+    # validation) if accepting it would push the host above its memory, vCPU,
+    # or disk caps. This is the advisory gate; the authoritative gate runs
+    # inside create_a_vm under the creation lock.
+    try:
+        pool.check_admission(message.content, current_vm_hash=item_hash)
+    except InsufficientResourcesError as error:
+        logger.warning("Refusing allocation %s: %s", item_hash, error)
+        return web.HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error))
+
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
     is_confidential = message.content.environment.trusted_execution is not None
@@ -964,6 +974,15 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
         return web.HTTPBadRequest(text="Body is not valid JSON")
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
+
+    # Capacity admission check before holding any resource. Keeps the
+    # dry-run honest: refusing here prevents a client from paying and then
+    # being rejected by notify_allocation for memory/CPU/disk reasons.
+    try:
+        pool.check_admission(message)
+    except InsufficientResourcesError as error:
+        logger.warning("Refusing resource reservation: %s", error)
+        return web.HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error))
 
     # TODO When creating a new VM check if all reservation are for user
     try:

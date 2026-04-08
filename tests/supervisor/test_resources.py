@@ -1,13 +1,9 @@
 from unittest import mock
 
 import pytest
-from aleph_message.models import InstanceContent, InstanceMessage
+from aleph_message.models import InstanceContent
 
-from aleph.vm.resources import (
-    InsufficientResourcesError,
-    check_sufficient_resources,
-    get_gpu_devices,
-)
+from aleph.vm.resources import InsufficientResourcesError, get_gpu_devices
 
 
 @pytest.fixture()
@@ -70,38 +66,129 @@ def test_get_gpu_devices():
             assert expected_gpu_devices[0].device_id == "10de:27b0"
 
 
-def test_check_sufficient_resources(mocker, mock_instance_content):
-    required = {"vcpus": 4, "memory_mb": 2048, "disk_mb": 10240}
+def _make_pool(mocker, *, physical_memory_mib: int, physical_cores: int, available_disk_mib: int):
+    """Build a VmPool stub with just enough state for check_admission."""
+    from aleph.vm.pool import VmPool  # local import to keep module-level import light
 
-    mocker.patch("aleph.vm.orchestrator.resources.psutil.cpu_count", return_value=required["vcpus"])
-    mocker.patch(
-        "aleph.vm.orchestrator.resources.psutil.virtual_memory",
-        return_value=mocker.MagicMock(available=(required["memory_mb"] * 1000 * 1024)),
+    pool = VmPool.__new__(VmPool)
+    pool.executions = {}
+    mocker.patch.object(
+        pool,
+        "calculate_available_disk",
+        return_value=available_disk_mib * 1024 * 1024,
     )
+    mocker.patch(
+        "aleph.vm.pool.psutil.virtual_memory",
+        return_value=mocker.MagicMock(total=physical_memory_mib * 1024 * 1024),
+    )
+    mocker.patch("aleph.vm.pool.psutil.cpu_count", return_value=physical_cores)
+    return pool
+
+
+def test_check_admission_passes_with_ample_capacity(mocker, mock_instance_content):
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=8192,
+        physical_cores=8,
+        available_disk_mib=20480,
+    )
+    content = InstanceContent.model_validate(mock_instance_content)
+    pool.check_admission(content)
+
+
+def test_check_admission_refuses_insufficient_memory(mocker, mock_instance_content):
+    # Instance requests 2048 MiB; host has 1024 MiB x 1.1 overcommit = 1126 MiB cap.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=1024,
+        physical_cores=8,
+        available_disk_mib=20480,
+    )
+    content = InstanceContent.model_validate(mock_instance_content)
+    with pytest.raises(InsufficientResourcesError, match="Memory"):
+        pool.check_admission(content)
+
+
+def test_check_admission_refuses_insufficient_vcpus(mocker, mock_instance_content):
+    # Instance requests 4 vCPUs; host has 1 core x 4.0 overcommit = 4 cap,
+    # and an already-committed instance takes 1 vCPU, leaving 3.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=8192,
+        physical_cores=1,
+        available_disk_mib=20480,
+    )
+    existing = mock.MagicMock()
+    existing.is_instance = True
+    existing.vm_hash = "existing"
+    existing.message.resources.memory = 128
+    existing.message.resources.vcpus = 1
+    pool.executions["existing"] = existing
+    content = InstanceContent.model_validate(mock_instance_content)
+    with pytest.raises(InsufficientResourcesError, match="vCPUs"):
+        pool.check_admission(content)
+
+
+def test_check_admission_refuses_insufficient_disk(mocker, mock_instance_content):
+    # Instance requests 10240 MiB of rootfs; only 5120 MiB available.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=8192,
+        physical_cores=8,
+        available_disk_mib=5120,
+    )
+    content = InstanceContent.model_validate(mock_instance_content)
+    with pytest.raises(InsufficientResourcesError, match="Disk"):
+        pool.check_admission(content)
+
+
+def test_check_admission_skips_renotify_of_running_instance(mocker, mock_instance_content):
+    # Even if capacity is exhausted, a re-notify for an already-running VM
+    # must pass — the instance is already accounted for.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=512,
+        physical_cores=1,
+        available_disk_mib=100,
+    )
+    pool.executions["abc"] = mock.MagicMock()
+    content = InstanceContent.model_validate(mock_instance_content)
+    pool.check_admission(content, current_vm_hash="abc")
+
+
+def test_check_admission_counts_running_programs(mocker, mock_instance_content):
+    # A running program's memory and vCPUs must count toward the committed
+    # totals: admission decisions cannot ignore non-instance executions.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=4096,
+        physical_cores=4,
+        available_disk_mib=20480,
+    )
+    # Cap: 4096 * 1.1 = 4505 MiB memory, 4 * 4.0 = 16 vCPUs.
+    # One running program already consumes 3500 MiB. A new instance asking
+    # for 2048 MiB would exceed the memory cap (3500 + 2048 = 5548 > 4505).
+    program = mock.MagicMock()
+    program.is_instance = False
+    program.vm_hash = "program-hash"
+    program.message.resources.memory = 3500
+    program.message.resources.vcpus = 1
+    pool.executions["program-hash"] = program
 
     content = InstanceContent.model_validate(mock_instance_content)
+    with pytest.raises(InsufficientResourcesError, match="Memory"):
+        pool.check_admission(content)
 
-    check_sufficient_resources((required["disk_mb"] * 1000 * 1024), content)
 
-
-def test_check_sufficient_resources_not_enough(mocker, mock_instance_content):
-    required = {"vcpus": 4, "memory_mb": 2048, "disk_mb": 10240}
-    available = {"vcpus": 2, "memory_mb": 1024, "disk_mb": 5120}
-    error = InsufficientResourcesError(
-        "Insufficient resources to create VM. vCPUs: required 4, available 2; "
-        "Memory: required 2048 MB, available 1024.00 MB; "
-        "Disk: required 10240 MB, available 5120.00 MB",
-        required=required,
-        available=available,
+def test_check_admission_excludes_current_hash_from_committed(mocker, mock_instance_content):
+    # An instance being re-evaluated (e.g. restart) must not count against
+    # itself when it is not yet in the pool but its hash is supplied.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=4096,
+        physical_cores=8,
+        available_disk_mib=20480,
     )
-
-    mocker.patch("aleph.vm.orchestrator.resources.psutil.cpu_count", return_value=available["vcpus"])
-    mocker.patch(
-        "aleph.vm.orchestrator.resources.psutil.virtual_memory",
-        return_value=mocker.MagicMock(available=(available["memory_mb"] * 1000 * 1024)),
-    )
-
+    # Cap: 4096 * 1.1 = 4505 MiB. Instance requests 2048. OK.
     content = InstanceContent.model_validate(mock_instance_content)
-
-    with pytest.raises(InsufficientResourcesError, match=str(error)):
-        check_sufficient_resources((available["disk_mb"] * 1000 * 1024), content)
+    pool.check_admission(content, current_vm_hash="not-in-pool")

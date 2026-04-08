@@ -236,6 +236,25 @@ class Settings(BaseSettings):
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
 
+    MEMORY_OVERCOMMIT_FACTOR: float = Field(
+        default=1.1,
+        description=(
+            "Maximum ratio of total committed VM memory to physical host memory. "
+            "Allocations are refused when accepting a new instance would push the "
+            "sum of running instance memory above physical_ram * this factor. "
+            "1.0 = no overcommit; 1.1 = allow committing 10% more than physical RAM."
+        ),
+    )
+    VCPU_OVERCOMMIT_FACTOR: float = Field(
+        default=4.0,
+        description=(
+            "Maximum ratio of total committed vCPUs to physical CPU cores. "
+            "CPU is time-sliced so overcommit is much safer than memory; this "
+            "cap exists only to refuse pathological over-subscription that would "
+            "cause guest scheduling thrash. 4.0 means up to 4 vCPUs per core."
+        ),
+    )
+
     PAYMENT_MONITOR_INTERVAL: float = Field(
         default=60.0,
         description="Interval in seconds between payment checks",

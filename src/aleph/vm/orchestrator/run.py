@@ -9,6 +9,7 @@ from aiohttp.web_exceptions import (
     HTTPBadGateway,
     HTTPBadRequest,
     HTTPInternalServerError,
+    HTTPServiceUnavailable,
 )
 from aleph_message.models import ItemHash
 from msgpack import UnpackValueError
@@ -77,9 +78,9 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     except InsufficientResourcesError as error:
-        logger.exception(error)
+        logger.warning("Refusing %s: %s", vm_hash, error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPBadRequest(reason=str(error)) from error
+        raise HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error)) from error
     except FileTooLargeError as error:
         raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:

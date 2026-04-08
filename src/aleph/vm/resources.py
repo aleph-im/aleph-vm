@@ -1,9 +1,7 @@
-import math
 import subprocess
 from enum import Enum
 
-import psutil
-from aleph_message.models import ExecutableContent, HashableModel, InstanceContent
+from aleph_message.models import HashableModel
 from pydantic import BaseModel, ConfigDict, Field
 
 from aleph.vm.orchestrator.utils import get_compatible_gpus
@@ -161,62 +159,3 @@ def get_gpu_devices() -> list[GpuDevice]:
         {device for line in output.split("\n") if line and (device := parse_gpu_device_info(line)) is not None}
     )
     return gpu_devices if gpu_devices else []
-
-
-def check_sufficient_resources(pool_available_disk: int, message: ExecutableContent) -> None:
-    """Check if there are sufficient resources to create a VM.
-
-    Raises InsufficientResourcesError if resources are insufficient.
-    """
-    if not message.resources:
-        # No resource requirements specified, skip check
-        return
-
-    required_vcpus = message.resources.vcpus
-    required_memory_mb = message.resources.memory  # Memory in MB
-    required_disk_mb = 0
-
-    if isinstance(message, InstanceContent) and message.rootfs:
-        required_disk_mb = message.rootfs.size_mib
-
-    # Calculate required disk space from volumes if present
-    if message.volumes:
-        for volume in message.volumes:
-            # TODO: this does not take the size of immutable volumes into account
-            volume_size_mib = getattr(volume, "size_mib", 0)
-            required_disk_mb += volume_size_mib
-
-    # Get available resources using the same methods as about_system_usage
-    available_vcpus = psutil.cpu_count()
-    available_memory_kb = math.floor(psutil.virtual_memory().available / 1000)
-    available_memory_mb = available_memory_kb / 1024
-    available_disk_kb = pool_available_disk // 1000
-    available_disk_mb = available_disk_kb / 1024
-
-    # Check each resource
-    insufficient_resources = []
-
-    if required_vcpus > available_vcpus:
-        insufficient_resources.append(f"vCPUs: required {required_vcpus}, available {available_vcpus}")
-
-    if required_memory_mb > available_memory_mb:
-        insufficient_resources.append(
-            f"Memory: required {required_memory_mb} MB, available {available_memory_mb:.2f} MB"
-        )
-
-    if required_disk_mb > 0 and required_disk_mb > available_disk_mb:
-        insufficient_resources.append(f"Disk: required {required_disk_mb} MB, available {available_disk_mb:.2f} MB")
-
-    if insufficient_resources:
-        error_message = "Insufficient resources to create VM. " + "; ".join(insufficient_resources)
-        required = {
-            "vcpus": required_vcpus,
-            "memory_mb": required_memory_mb,
-            "disk_mb": required_disk_mb,
-        }
-        available = {
-            "vcpus": available_vcpus,
-            "memory_mb": available_memory_mb,
-            "disk_mb": available_disk_mb,
-        }
-        raise InsufficientResourcesError(error_message, required=required, available=available)
