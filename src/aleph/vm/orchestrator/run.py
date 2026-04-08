@@ -80,7 +80,10 @@ async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPoo
     except InsufficientResourcesError as error:
         logger.warning("Refusing %s: %s", vm_hash, error)
         pool.forget_vm(vm_hash=vm_hash)
-        raise HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error)) from error
+        raise HTTPServiceUnavailable(
+            reason="Insufficient capacity",
+            text="This CRN cannot host the requested workload at this time.",
+        ) from error
     except FileTooLargeError as error:
         raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:

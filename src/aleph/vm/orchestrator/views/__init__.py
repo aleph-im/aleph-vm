@@ -812,7 +812,10 @@ async def notify_allocation(request: web.Request):
         pool.check_admission(message.content, current_vm_hash=item_hash)
     except InsufficientResourcesError as error:
         logger.warning("Refusing allocation %s: %s", item_hash, error)
-        return web.HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error))
+        return web.HTTPServiceUnavailable(
+            reason="Insufficient capacity",
+            text="This CRN cannot host the requested instance at this time.",
+        )
 
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
@@ -982,7 +985,10 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
         pool.check_admission(message)
     except InsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
-        return web.HTTPServiceUnavailable(reason="Insufficient capacity", text=str(error))
+        return web.HTTPServiceUnavailable(
+            reason="Insufficient capacity",
+            text="This CRN cannot reserve the requested resources at this time.",
+        )
 
     # TODO When creating a new VM check if all reservation are for user
     try:
