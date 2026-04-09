@@ -134,17 +134,26 @@ class VmPool:
     ) -> None:
         """Refuse to host ``message`` when doing so would exceed host capacity.
 
-        Checks three resource dimensions against the current pool state:
+        Memory is accounted in two separate buckets with strict floors:
 
-        - Memory: committed + new <= physical_ram * ``MEMORY_OVERCOMMIT_FACTOR``
-        - vCPU:   committed + new <= physical_cores * ``VCPU_OVERCOMMIT_FACTOR``
-        - Disk:   required <= :meth:`calculate_available_disk` (strict, no overcommit)
+        - **Instance bucket**: ``physical_ram - HOST_MEMORY_RESERVED_MIB -
+          PROGRAM_MEMORY_RESERVED_MIB``. No overcommit. Instance allocations
+          are admitted only up to this ceiling.
+        - **Program bucket**: ``PROGRAM_MEMORY_RESERVED_MIB``. Ephemeral
+          programs (Firecracker microVMs) are admitted against this bucket
+          so there is always headroom for a program trigger regardless of
+          how full the instance pool is.
 
-        Memory and CPU allow overcommit because guest usage is bursty and
-        time-sliced; disk does not because once a qcow2 grows the bytes are
-        real. All running executions — instances and programs — count
-        toward the committed totals so that the comparison reflects the
-        true host load regardless of VM type.
+        The ``HOST_MEMORY_RESERVED_MIB`` slice is reserved for the host
+        kernel, supervisor, HAProxy and system services, and is never
+        visible to any VM bucket.
+
+        vCPU accounting uses ``VCPU_OVERCOMMIT_FACTOR`` across all running
+        executions because CPU is time-sliced and safe to overcommit.
+
+        Disk is strict: the required rootfs and volume sizes must fit
+        within :meth:`calculate_available_disk`, which is already
+        reservation-aware.
 
         The check is advisory when called from the HTTP layer and
         authoritative when called from :meth:`create_a_vm` (which holds
@@ -152,7 +161,7 @@ class VmPool:
         locking because this method does not ``await``.
 
         Args:
-            message: The instance content being evaluated for admission.
+            message: The executable content being evaluated for admission.
             current_vm_hash: When a caller re-evaluates an already-known VM
                 (re-notification of an existing instance), passing its hash
                 makes the check idempotent: the existing VM is excluded
@@ -163,7 +172,7 @@ class VmPool:
             InsufficientResourcesError: One or more resources would be
                 exceeded. The exception carries structured ``required`` and
                 ``available`` dicts so callers can surface a detailed error
-                to clients.
+                to server logs.
         """
         if not message.resources:
             return
@@ -179,7 +188,10 @@ class VmPool:
             for volume in message.volumes:
                 required_disk_mib += getattr(volume, "size_mib", 0) or 0
 
-        committed_memory_mib = 0
+        is_instance_request = isinstance(message, InstanceContent)
+
+        committed_instance_memory_mib = 0
+        committed_program_memory_mib = 0
         committed_vcpus = 0
         for execution in tuple(self.executions.values()):
             if current_vm_hash is not None and execution.vm_hash == current_vm_hash:
@@ -187,13 +199,30 @@ class VmPool:
             resources = execution.message.resources
             if not resources:
                 continue
-            committed_memory_mib += resources.memory
+            if execution.is_instance:
+                committed_instance_memory_mib += resources.memory
+            else:
+                committed_program_memory_mib += resources.memory
             committed_vcpus += resources.vcpus
 
         physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
         physical_cores = psutil.cpu_count() or 1
-        memory_cap_mib = int(physical_memory_mib * settings.MEMORY_OVERCOMMIT_FACTOR)
+        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
+        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+
+        instance_memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        program_memory_cap_mib = program_reserved_mib
         vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
+
+        if is_instance_request:
+            bucket_name = "instance"
+            committed_memory_mib = committed_instance_memory_mib
+            memory_cap_mib = instance_memory_cap_mib
+        else:
+            bucket_name = "program"
+            committed_memory_mib = committed_program_memory_mib
+            memory_cap_mib = program_memory_cap_mib
+
         available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
         available_vcpus = max(vcpu_cap - committed_vcpus, 0)
         available_disk_mib = self.calculate_available_disk() // (1024 * 1024)
@@ -201,11 +230,13 @@ class VmPool:
         errors: list[str] = []
         if required_memory_mib > available_memory_mib:
             errors.append(
-                f"Memory: required {required_memory_mib} MiB, "
+                f"Memory ({bucket_name} bucket): "
+                f"required {required_memory_mib} MiB, "
                 f"available {available_memory_mib} MiB "
                 f"(committed {committed_memory_mib} MiB of {memory_cap_mib} MiB cap, "
-                f"physical {physical_memory_mib} MiB "
-                f"x factor {settings.MEMORY_OVERCOMMIT_FACTOR})"
+                f"physical {physical_memory_mib} MiB, "
+                f"host_reserved {host_reserved_mib} MiB, "
+                f"program_reserved {program_reserved_mib} MiB)"
             )
         if required_vcpus > available_vcpus:
             errors.append(

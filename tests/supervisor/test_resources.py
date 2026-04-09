@@ -66,9 +66,22 @@ def test_get_gpu_devices():
             assert expected_gpu_devices[0].device_id == "10de:27b0"
 
 
-def _make_pool(mocker, *, physical_memory_mib: int, physical_cores: int, available_disk_mib: int):
-    """Build a VmPool stub with just enough state for check_admission."""
-    from aleph.vm.pool import VmPool  # local import to keep module-level import light
+def _make_pool(
+    mocker,
+    *,
+    physical_memory_mib: int,
+    physical_cores: int,
+    available_disk_mib: int,
+    host_reserved_mib: int = 0,
+    program_reserved_mib: int = 0,
+):
+    """Build a VmPool stub with just enough state for check_admission.
+
+    Tests pass explicit reservation values so the bucket math is clear
+    in each scenario, rather than depending on the production defaults.
+    """
+    from aleph.vm.conf import settings
+    from aleph.vm.pool import VmPool  # local import keeps module-level import light
 
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
@@ -82,30 +95,61 @@ def _make_pool(mocker, *, physical_memory_mib: int, physical_cores: int, availab
         return_value=mocker.MagicMock(total=physical_memory_mib * 1024 * 1024),
     )
     mocker.patch("aleph.vm.pool.psutil.cpu_count", return_value=physical_cores)
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", host_reserved_mib)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", program_reserved_mib)
     return pool
 
 
+def _make_program_execution(hash_: str, memory_mib: int, vcpus: int):
+    """Build a mock execution object for a running program."""
+    execution = mock.MagicMock()
+    execution.is_instance = False
+    execution.vm_hash = hash_
+    execution.message.resources.memory = memory_mib
+    execution.message.resources.vcpus = vcpus
+    return execution
+
+
+def _make_instance_execution(hash_: str, memory_mib: int, vcpus: int):
+    """Build a mock execution object for a running instance."""
+    execution = mock.MagicMock()
+    execution.is_instance = True
+    execution.vm_hash = hash_
+    execution.message.resources.memory = memory_mib
+    execution.message.resources.vcpus = vcpus
+    return execution
+
+
 def test_check_admission_passes_with_ample_capacity(mocker, mock_instance_content):
+    # 16 GiB physical, 4 GiB host reserved, 4 GiB program reserved
+    # → instance cap = 8 GiB. Instance requests 2 GiB. Plenty of room.
     pool = _make_pool(
         mocker,
-        physical_memory_mib=8192,
+        physical_memory_mib=16384,
         physical_cores=8,
         available_disk_mib=20480,
+        host_reserved_mib=4096,
+        program_reserved_mib=4096,
     )
     content = InstanceContent.model_validate(mock_instance_content)
     pool.check_admission(content)
 
 
-def test_check_admission_refuses_insufficient_memory(mocker, mock_instance_content):
-    # Instance requests 2048 MiB; host has 1024 MiB x 1.1 overcommit = 1126 MiB cap.
+def test_check_admission_refuses_insufficient_instance_memory(mocker, mock_instance_content):
+    # 4 GiB physical, 1 GiB host reserved, 1 GiB program reserved
+    # → instance cap = 2 GiB. Instance requests 2048 MiB, an existing
+    # instance already consumes 1 GiB, leaving 1 GiB. Refused.
     pool = _make_pool(
         mocker,
-        physical_memory_mib=1024,
+        physical_memory_mib=4096,
         physical_cores=8,
         available_disk_mib=20480,
+        host_reserved_mib=1024,
+        program_reserved_mib=1024,
     )
+    pool.executions["existing"] = _make_instance_execution(hash_="existing", memory_mib=1024, vcpus=1)
     content = InstanceContent.model_validate(mock_instance_content)
-    with pytest.raises(InsufficientResourcesError, match="Memory"):
+    with pytest.raises(InsufficientResourcesError, match="instance bucket"):
         pool.check_admission(content)
 
 
@@ -114,16 +158,13 @@ def test_check_admission_refuses_insufficient_vcpus(mocker, mock_instance_conten
     # and an already-committed instance takes 1 vCPU, leaving 3.
     pool = _make_pool(
         mocker,
-        physical_memory_mib=8192,
+        physical_memory_mib=16384,
         physical_cores=1,
         available_disk_mib=20480,
+        host_reserved_mib=0,
+        program_reserved_mib=0,
     )
-    existing = mock.MagicMock()
-    existing.is_instance = True
-    existing.vm_hash = "existing"
-    existing.message.resources.memory = 128
-    existing.message.resources.vcpus = 1
-    pool.executions["existing"] = existing
+    pool.executions["existing"] = _make_instance_execution(hash_="existing", memory_mib=128, vcpus=1)
     content = InstanceContent.model_validate(mock_instance_content)
     with pytest.raises(InsufficientResourcesError, match="vCPUs"):
         pool.check_admission(content)
@@ -133,9 +174,11 @@ def test_check_admission_refuses_insufficient_disk(mocker, mock_instance_content
     # Instance requests 10240 MiB of rootfs; only 5120 MiB available.
     pool = _make_pool(
         mocker,
-        physical_memory_mib=8192,
+        physical_memory_mib=16384,
         physical_cores=8,
         available_disk_mib=5120,
+        host_reserved_mib=0,
+        program_reserved_mib=0,
     )
     content = InstanceContent.model_validate(mock_instance_content)
     with pytest.raises(InsufficientResourcesError, match="Disk"):
@@ -156,39 +199,92 @@ def test_check_admission_skips_renotify_of_running_instance(mocker, mock_instanc
     pool.check_admission(content, current_vm_hash="abc")
 
 
-def test_check_admission_counts_running_programs(mocker, mock_instance_content):
-    # A running program's memory and vCPUs must count toward the committed
-    # totals: admission decisions cannot ignore non-instance executions.
-    pool = _make_pool(
-        mocker,
-        physical_memory_mib=4096,
-        physical_cores=4,
-        available_disk_mib=20480,
-    )
-    # Cap: 4096 * 1.1 = 4505 MiB memory, 4 * 4.0 = 16 vCPUs.
-    # One running program already consumes 3500 MiB. A new instance asking
-    # for 2048 MiB would exceed the memory cap (3500 + 2048 = 5548 > 4505).
-    program = mock.MagicMock()
-    program.is_instance = False
-    program.vm_hash = "program-hash"
-    program.message.resources.memory = 3500
-    program.message.resources.vcpus = 1
-    pool.executions["program-hash"] = program
-
-    content = InstanceContent.model_validate(mock_instance_content)
-    with pytest.raises(InsufficientResourcesError, match="Memory"):
-        pool.check_admission(content)
-
-
 def test_check_admission_excludes_current_hash_from_committed(mocker, mock_instance_content):
     # An instance being re-evaluated (e.g. restart) must not count against
     # itself when it is not yet in the pool but its hash is supplied.
     pool = _make_pool(
         mocker,
-        physical_memory_mib=4096,
+        physical_memory_mib=16384,
         physical_cores=8,
         available_disk_mib=20480,
+        host_reserved_mib=0,
+        program_reserved_mib=0,
     )
-    # Cap: 4096 * 1.1 = 4505 MiB. Instance requests 2048. OK.
     content = InstanceContent.model_validate(mock_instance_content)
     pool.check_admission(content, current_vm_hash="not-in-pool")
+
+
+def test_check_admission_instance_cannot_eat_program_reservation(mocker, mock_instance_content):
+    # 6 GiB physical, 0 host reserved, 4 GiB program reserved.
+    # Instance cap = 6 - 0 - 4 = 2 GiB. A 2048 MiB instance request with
+    # no committed state must still be refused because 2 GiB is the
+    # absolute ceiling for instances and the fixture requests exactly
+    # that. We commit 1 MiB first to push the request just over.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=6144,
+        physical_cores=8,
+        available_disk_mib=20480,
+        host_reserved_mib=0,
+        program_reserved_mib=4096,
+    )
+    pool.executions["tiny"] = _make_instance_execution(hash_="tiny", memory_mib=1, vcpus=0)
+    content = InstanceContent.model_validate(mock_instance_content)
+    with pytest.raises(InsufficientResourcesError, match="instance bucket"):
+        pool.check_admission(content)
+
+
+def test_check_admission_program_gets_reserved_space_when_instances_full(mocker):
+    # Physical 8 GiB, 0 host reserved, 2 GiB program reserved.
+    # Instance cap = 6 GiB. Fill instance bucket entirely.
+    # A program requesting 512 MiB must still be admitted because the
+    # program bucket has its own budget untouched by instances.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=8192,
+        physical_cores=8,
+        available_disk_mib=20480,
+        host_reserved_mib=0,
+        program_reserved_mib=2048,
+    )
+    pool.executions["huge-instance"] = _make_instance_execution(hash_="huge-instance", memory_mib=6144, vcpus=2)
+    program_content = _fake_program_content(memory_mib=512, vcpus=1)
+    pool.check_admission(program_content)
+
+
+def test_check_admission_refuses_program_exceeding_program_bucket(mocker):
+    # Physical 8 GiB, 0 host reserved, 1 GiB program reserved.
+    # A program asking for 2 GiB cannot fit in the 1 GiB bucket even
+    # though the instance bucket has tons of room.
+    pool = _make_pool(
+        mocker,
+        physical_memory_mib=8192,
+        physical_cores=8,
+        available_disk_mib=20480,
+        host_reserved_mib=0,
+        program_reserved_mib=1024,
+    )
+    program_content = _fake_program_content(memory_mib=2048, vcpus=1)
+    with pytest.raises(InsufficientResourcesError, match="program bucket"):
+        pool.check_admission(program_content)
+
+
+class _FakeProgramContent:
+    """Minimal non-InstanceContent stub that satisfies check_admission.
+
+    check_admission only reads ``message.resources`` and
+    ``message.volumes`` and tests ``isinstance(message, InstanceContent)``.
+    A plain class avoids constructing a full ProgramContent, which would
+    require a realistic code reference and runtime hash.
+    """
+
+    def __init__(self, *, memory_mib: int, vcpus: int):
+        resources = mock.MagicMock()
+        resources.memory = memory_mib
+        resources.vcpus = vcpus
+        self.resources = resources
+        self.volumes = None
+
+
+def _fake_program_content(*, memory_mib: int, vcpus: int) -> _FakeProgramContent:
+    return _FakeProgramContent(memory_mib=memory_mib, vcpus=vcpus)
