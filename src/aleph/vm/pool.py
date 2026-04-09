@@ -185,6 +185,13 @@ class VmPool:
         if isinstance(message, InstanceContent) and message.rootfs:
             required_disk_mib += message.rootfs.size_mib
         if message.volumes:
+            # Immutable volumes reference a file on Aleph storage via
+            # ``ref`` and do not carry a ``size_mib`` field, so they are
+            # not counted here and the admission estimate is best-effort
+            # for messages that include them. The authoritative disk
+            # check happens later via ``calculate_available_disk`` /
+            # ``get_disk_usage_delta``, which measures the real on-disk
+            # size of each downloaded file.
             for volume in message.volumes:
                 required_disk_mib += getattr(volume, "size_mib", 0) or 0
 
@@ -212,6 +219,11 @@ class VmPool:
 
         instance_memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
         program_memory_cap_mib = program_reserved_mib
+
+        # vCPU overcommit: CPU time is safe to oversubscribe because the
+        # kernel scheduler time-slices it, so the cap is the physical core
+        # count multiplied by the configured factor (e.g. 4 vCPUs per core
+        # with VCPU_OVERCOMMIT_FACTOR=4.0).
         vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
 
         if is_instance_request:
@@ -223,32 +235,36 @@ class VmPool:
             committed_memory_mib = committed_program_memory_mib
             memory_cap_mib = program_memory_cap_mib
 
-        available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
-        available_vcpus = max(vcpu_cap - committed_vcpus, 0)
         available_disk_mib = self.calculate_available_disk() // (1024 * 1024)
 
         errors: list[str] = []
-        if required_memory_mib > available_memory_mib:
+
+        if committed_memory_mib + required_memory_mib > memory_cap_mib:
             errors.append(
                 f"Memory ({bucket_name} bucket): "
                 f"required {required_memory_mib} MiB, "
-                f"available {available_memory_mib} MiB "
-                f"(committed {committed_memory_mib} MiB of {memory_cap_mib} MiB cap, "
-                f"physical {physical_memory_mib} MiB, "
+                f"committed {committed_memory_mib} MiB, "
+                f"cap {memory_cap_mib} MiB "
+                f"(physical {physical_memory_mib} MiB, "
                 f"host_reserved {host_reserved_mib} MiB, "
                 f"program_reserved {program_reserved_mib} MiB)"
             )
-        if required_vcpus > available_vcpus:
+
+        if committed_vcpus + required_vcpus > vcpu_cap:
             errors.append(
-                f"vCPUs: required {required_vcpus}, available {available_vcpus} "
-                f"(committed {committed_vcpus} of {vcpu_cap} cap, "
-                f"physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
+                f"vCPUs: required {required_vcpus}, "
+                f"committed {committed_vcpus}, "
+                f"cap {vcpu_cap} "
+                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
             )
+
         if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
             errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
 
         if errors:
             detail = "Insufficient capacity to create VM. " + "; ".join(errors)
+            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
+            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
             raise InsufficientResourcesError(
                 detail,
                 required={
