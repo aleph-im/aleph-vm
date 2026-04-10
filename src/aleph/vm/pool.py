@@ -9,9 +9,11 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import psutil
 from aleph_message.models import (
     Chain,
     ExecutableMessage,
+    InstanceContent,
     ItemHash,
     Payment,
     PaymentType,
@@ -31,7 +33,7 @@ from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
     GpuDevice,
     HostGPU,
-    check_sufficient_resources,
+    InsufficientResourcesError,
     get_gpu_devices,
 )
 from aleph.vm.systemd import SystemDManager
@@ -125,6 +127,158 @@ class VmPool:
         Per-VM cleanup (tap + nft rules) happens in execution.stop().
         """
 
+    def check_admission(
+        self,
+        message: ExecutableContent,
+        current_vm_hash: ItemHash | None = None,
+    ) -> None:
+        """Refuse to host ``message`` when doing so would exceed host capacity.
+
+        Memory is accounted in two separate buckets with strict floors:
+
+        - **Instance bucket**: ``physical_ram - HOST_MEMORY_RESERVED_MIB -
+          PROGRAM_MEMORY_RESERVED_MIB``. No overcommit. Instance allocations
+          are admitted only up to this ceiling.
+        - **Program bucket**: ``PROGRAM_MEMORY_RESERVED_MIB``. Ephemeral
+          programs (Firecracker microVMs) are admitted against this bucket
+          so there is always headroom for a program trigger regardless of
+          how full the instance pool is.
+
+        The ``HOST_MEMORY_RESERVED_MIB`` slice is reserved for the host
+        kernel, supervisor, HAProxy and system services, and is never
+        visible to any VM bucket.
+
+        vCPU accounting uses ``VCPU_OVERCOMMIT_FACTOR`` across all running
+        executions because CPU is time-sliced and safe to overcommit.
+
+        Disk is strict: the required rootfs and volume sizes must fit
+        within :meth:`calculate_available_disk`, which is already
+        reservation-aware.
+
+        The check is advisory when called from the HTTP layer and
+        authoritative when called from :meth:`create_a_vm` (which holds
+        ``creation_lock``). Reading ``self.executions`` is safe without
+        locking because this method does not ``await``.
+
+        Args:
+            message: The executable content being evaluated for admission.
+            current_vm_hash: When a caller re-evaluates an already-known VM
+                (re-notification of an existing instance), passing its hash
+                makes the check idempotent: the existing VM is excluded
+                from the committed sum, and if it is already running the
+                check is skipped entirely.
+
+        Raises:
+            InsufficientResourcesError: One or more resources would be
+                exceeded. The exception carries structured ``required`` and
+                ``available`` dicts so callers can surface a detailed error
+                to server logs.
+        """
+        if not message.resources:
+            return
+        if current_vm_hash is not None and current_vm_hash in self.executions:
+            return
+
+        required_memory_mib = message.resources.memory
+        required_vcpus = message.resources.vcpus
+        required_disk_mib = 0
+        if isinstance(message, InstanceContent) and message.rootfs:
+            required_disk_mib += message.rootfs.size_mib
+        if message.volumes:
+            # Immutable volumes reference a file on Aleph storage via
+            # ``ref`` and do not carry a ``size_mib`` field, so they are
+            # not counted here and the admission estimate is best-effort
+            # for messages that include them. The authoritative disk
+            # check happens later via ``calculate_available_disk`` /
+            # ``get_disk_usage_delta``, which measures the real on-disk
+            # size of each downloaded file.
+            for volume in message.volumes:
+                required_disk_mib += getattr(volume, "size_mib", 0) or 0
+
+        is_instance_request = isinstance(message, InstanceContent)
+
+        committed_instance_memory_mib = 0
+        committed_program_memory_mib = 0
+        committed_vcpus = 0
+        for execution in tuple(self.executions.values()):
+            if current_vm_hash is not None and execution.vm_hash == current_vm_hash:
+                continue
+            resources = execution.message.resources
+            if not resources:
+                continue
+            if execution.is_instance:
+                committed_instance_memory_mib += resources.memory
+            else:
+                committed_program_memory_mib += resources.memory
+            committed_vcpus += resources.vcpus
+
+        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
+        physical_cores = psutil.cpu_count() or 1
+        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
+        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+
+        instance_memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        program_memory_cap_mib = program_reserved_mib
+
+        # vCPU overcommit: CPU time is safe to oversubscribe because the
+        # kernel scheduler time-slices it, so the cap is the physical core
+        # count multiplied by the configured factor (e.g. 4 vCPUs per core
+        # with VCPU_OVERCOMMIT_FACTOR=4.0).
+        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
+
+        if is_instance_request:
+            bucket_name = "instance"
+            committed_memory_mib = committed_instance_memory_mib
+            memory_cap_mib = instance_memory_cap_mib
+        else:
+            bucket_name = "program"
+            committed_memory_mib = committed_program_memory_mib
+            memory_cap_mib = program_memory_cap_mib
+
+        available_disk_mib = self.calculate_available_disk() // (1024 * 1024)
+
+        errors: list[str] = []
+
+        if committed_memory_mib + required_memory_mib > memory_cap_mib:
+            errors.append(
+                f"Memory ({bucket_name} bucket): "
+                f"required {required_memory_mib} MiB, "
+                f"committed {committed_memory_mib} MiB, "
+                f"cap {memory_cap_mib} MiB "
+                f"(physical {physical_memory_mib} MiB, "
+                f"host_reserved {host_reserved_mib} MiB, "
+                f"program_reserved {program_reserved_mib} MiB)"
+            )
+
+        if committed_vcpus + required_vcpus > vcpu_cap:
+            errors.append(
+                f"vCPUs: required {required_vcpus}, "
+                f"committed {committed_vcpus}, "
+                f"cap {vcpu_cap} "
+                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
+            )
+
+        if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
+            errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
+
+        if errors:
+            detail = "Insufficient capacity to create VM. " + "; ".join(errors)
+            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
+            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
+            raise InsufficientResourcesError(
+                detail,
+                required={
+                    "vcpus": required_vcpus,
+                    "memory_mib": required_memory_mib,
+                    "disk_mib": required_disk_mib,
+                },
+                available={
+                    "vcpus": available_vcpus,
+                    "memory_mib": available_memory_mib,
+                    "disk_mib": available_disk_mib,
+                },
+            )
+
     def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
 
@@ -164,7 +318,7 @@ class VmPool:
                 return current_execution
 
             # Check if there are sufficient resources available before creating the VM
-            check_sufficient_resources(self.calculate_available_disk(), message)
+            self.check_admission(message, current_vm_hash=vm_hash)
 
             execution = VmExecution(
                 vm_hash=vm_hash,

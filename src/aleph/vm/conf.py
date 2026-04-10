@@ -236,6 +236,37 @@ class Settings(BaseSettings):
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
 
+    HOST_MEMORY_RESERVED_MIB: int = Field(
+        default=2048,
+        description=(
+            "Physical memory (MiB) reserved for the host itself: kernel, "
+            "supervisor, HAProxy, systemd, journal, page cache, network "
+            "buffers, and per-VM qemu process overhead. This amount is "
+            "subtracted from the physical RAM before any VM admission "
+            "budget is computed, so VMs can never starve the host. "
+            "Raise on dense CRNs running many concurrent VMs (30+) or "
+            "hosting additional services; lower on small test hosts."
+        ),
+    )
+    PROGRAM_MEMORY_RESERVED_MIB: int = Field(
+        default=8192,
+        description=(
+            "Physical memory (MiB) reserved exclusively for ephemeral "
+            "programs (Firecracker microVMs). Instances cannot commit into "
+            "this reservation, so there is always headroom for a program "
+            "trigger regardless of how full the instance pool is."
+        ),
+    )
+    VCPU_OVERCOMMIT_FACTOR: float = Field(
+        default=4.0,
+        description=(
+            "Maximum ratio of total committed vCPUs to physical CPU cores. "
+            "CPU is time-sliced so overcommit is much safer than memory; this "
+            "cap exists only to refuse pathological over-subscription that would "
+            "cause guest scheduling thrash. 4.0 means up to 4 vCPUs per core."
+        ),
+    )
+
     PAYMENT_MONITOR_INTERVAL: float = Field(
         default=60.0,
         description="Interval in seconds between payment checks",
