@@ -278,4 +278,20 @@ class QemuVM:
         # Guest didn't respond to ACPI — tell QEMU to exit cleanly.
         # Unlike SIGKILL, "quit" flushes block device caches first.
         self._send_qmp_quit()
+
+        # Wait for QEMU to finish flushing and exit before returning,
+        # so callers that tear down network/tap/nftables after stop()
+        # don't race with a still-running qemu process.
+        if self.qemu_process:
+            remaining = 60 - GRACEFUL_SHUTDOWN_TIMEOUT
+            try:
+                await asyncio.wait_for(self.qemu_process.wait(), timeout=remaining)
+                logger.info("VM %s exited after QMP quit", self.vm_hash)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "VM %s still running %ds after QMP quit, " "systemd SIGKILL will handle it",
+                    self.vm_hash,
+                    remaining,
+                )
+
         self._close_journals()
