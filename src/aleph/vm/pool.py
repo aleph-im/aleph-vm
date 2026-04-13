@@ -469,10 +469,6 @@ class VmPool:
         all_services = [f"aleph-vm-controller@{ItemHash(se.vm_hash)}.service" for se in persistent_saved]
         service_active_states = self.systemd_manager.get_services_active_states(all_services)
 
-        # Fetch enabled states for dead services (per-service GetUnitFileState calls)
-        dead_services = [svc for svc in all_services if not service_active_states.get(svc, False)]
-        service_enabled_states = self.systemd_manager.get_services_enabled_states(dead_services)
-
         # Track claimed vm_ids to detect duplicates in the DB.
         # Multiple records can share a vm_id (stale records from old
         # executions). Only the first active one should be restored —
@@ -502,7 +498,7 @@ class VmPool:
                     systemd_manager=self.systemd_manager,
                     persistent=saved_execution.persistent,
                 )
-                await self._handle_dead_execution(execution, saved_execution, is_enabled=False)
+                await self._handle_dead_execution(execution, saved_execution)
                 continue
 
             execution = VmExecution(
@@ -521,8 +517,7 @@ class VmPool:
                 claimed_vm_ids.add(vm_id)
                 await self._restore_running_execution(execution, saved_execution, vm_id, vm_hash)
             else:
-                is_enabled = service_enabled_states.get(service_name, False)
-                await self._handle_dead_execution(execution, saved_execution, is_enabled=is_enabled)
+                await self._handle_dead_execution(execution, saved_execution)
 
         self._cleanup_orphan_resources()
 
@@ -585,25 +580,18 @@ class VmPool:
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
 
-    async def _handle_dead_execution(
-        self, execution: VmExecution, saved_execution: ExecutionRecord, is_enabled: bool
-    ) -> None:
-        """Record usage for a dead execution and clean up its controller service.
-
-        Args:
-            is_enabled: Pre-computed enabled state from batch D-Bus check.
-        """
+    async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
+        """Record usage for a dead execution and stop its controller service."""
         execution.uuid = saved_execution.uuid
         try:
             await execution.record_usage()
         except Exception:
             logger.warning("Failed to record usage for %s", execution.vm_hash, exc_info=True)
-        if is_enabled:
-            try:
-                self.systemd_manager.disable_service(execution.controller_service)
-                logger.info("Disabled stale controller service %s", execution.controller_service)
-            except Exception:
-                logger.warning("Failed to disable stale controller %s", execution.controller_service, exc_info=True)
+        try:
+            self.systemd_manager.stop_and_disable(execution.controller_service)
+            logger.info("Stopped and disabled stale controller service %s", execution.controller_service)
+        except Exception:
+            logger.warning("Failed to stop/disable stale controller %s", execution.controller_service, exc_info=True)
 
     def _cleanup_orphan_resources(self):
         """Remove orphan nft rules, nft chains, and tap interfaces.
