@@ -3,7 +3,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Callable
 from decimal import Decimal
 from typing import TypeVar
 
@@ -67,12 +67,20 @@ Value = TypeVar("Value")
 COMMUNITY_STREAM_RATIO = Decimal(0.2)
 
 
-async def retry_generator(generator: AsyncIterable[Value], max_seconds: float = 8.0) -> AsyncIterable[Value]:
+async def retry_generator(
+    factory: Callable[[], AsyncIterable[Value]],
+    max_seconds: float = 8.0,
+) -> AsyncIterable[Value]:
+    """Repeatedly create and consume an async generator, reconnecting on failure.
+
+    ``factory`` is called on every (re)connection to produce a fresh async
+    generator. A single generator instance is exhausted once its underlying
+    connection drops, so reusing the same object would loop over nothing.
+    """
     retry_delay = 0.1
     while True:
         try:
-            async for value in generator:
-                # Reset delay on successful message
+            async for value in factory():
                 retry_delay = 0.1
                 yield value
         except RuntimeError as e:
@@ -154,7 +162,7 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool)
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
 
-    async for message in retry_generator(subscribe_via_ws(url)):
+    async for message in retry_generator(lambda: subscribe_via_ws(url)):
         # Dispatch update to running VMs
         await dispatcher.publish(key=message.item_hash, value=message)
         if hasattr(message.content, "ref") and message.content.ref:
