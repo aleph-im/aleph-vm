@@ -534,7 +534,10 @@ class VmPool:
         )
 
         execution.mapped_ports = await get_port_mappings(vm_hash)
+        execution.mode = saved_execution.mode or "normal"
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
+        if execution.mode != "normal":
+            logger.info("Execution %s is in %s mode", vm_hash, execution.mode)
 
         await execution.prepare()
         tap_interface = await self._restore_network(execution, vm_id, vm_hash)

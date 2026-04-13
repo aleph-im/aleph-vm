@@ -79,8 +79,8 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     async def setup(self):
         pass
 
-    async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+    async def configure(self, mode: str = "normal"):
+        """Configure the VM by saving controller service configuration."""
 
         logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
