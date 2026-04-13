@@ -127,6 +127,7 @@ class VmExecution:
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
+    mode: str = "normal"  # "normal" or "rescue"
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
 
@@ -550,9 +551,7 @@ class VmExecution:
             # for persistent and instances we will use SystemD manager
             if not self.persistent:
                 await self.vm.start()
-
-            await self.vm.configure()
-
+            await self.vm.configure(mode=self.mode)
             await self.vm.start_guest_api()
 
             # Start VM and snapshots automatically
@@ -775,6 +774,7 @@ class VmExecution:
                 persistent=self.persistent,
                 gpus=json.dumps(self.gpus, default=pydantic_encoder),
                 mapped_ports=self.mapped_ports,
+                mode=self.mode,
             )
             pid_info = self.vm.to_dict() if self.vm else None
             # Handle cases when the process cannot be accessed
@@ -792,6 +792,7 @@ class VmExecution:
             self.record.time_stopping = self.times.stopping_at
             self.record.persistent = self.persistent
             self.record.mapped_ports = self.mapped_ports
+            self.record.mode = self.mode
         await save_record(self.record)
 
     async def record_usage(self):

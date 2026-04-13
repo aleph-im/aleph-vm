@@ -88,3 +88,71 @@ def get_compatible_gpus() -> list[Any]:
     if not cached:
         return []
     return cached["compatible_gpus"]
+
+
+# ---- Runtimes aggregate ----
+
+_runtimes_cache = AsyncTTLCache(ttl_seconds=300.0)
+
+
+class RuntimeEntry(TypedDict, total=False):
+    id: str
+    name: str
+    type: str  # "program", "instance", "rescue", "firmware"
+    item_hash: str
+    default: bool
+    firmware_hash: str  # only for type == "firmware"
+
+
+async def fetch_runtimes_aggregate() -> list[RuntimeEntry]:
+    """Fetch the runtimes aggregate from the Aleph API."""
+    session = get_session()
+    url = f"{settings.API_SERVER}/api/v0/aggregates/" f"{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=runtimes"
+    logger.debug("Fetching runtimes aggregate from %s", url)
+    resp = await session.get(url)
+    resp.raise_for_status()
+    resp_data = await resp.json()
+    return resp_data["data"]["runtimes"]
+
+
+async def get_runtimes() -> list[RuntimeEntry]:
+    """Return the runtimes list, fetching and caching as needed."""
+    cached = _runtimes_cache.get("runtimes")
+    if cached is not None:
+        return cached
+
+    try:
+        runtimes = await fetch_runtimes_aggregate()
+        _runtimes_cache.set("runtimes", runtimes)
+        return runtimes
+    except Exception:
+        logger.exception("Failed to fetch runtimes aggregate")
+        return []
+
+
+async def get_runtime_by_id(runtime_id: str) -> RuntimeEntry | None:
+    """Find a specific runtime entry by its id."""
+    runtimes = await get_runtimes()
+    for entry in runtimes:
+        if entry.get("id") == runtime_id:
+            return entry
+    return None
+
+
+async def get_default_runtime(runtime_type: str) -> RuntimeEntry | None:
+    """Find the default runtime entry for a given type.
+
+    Falls back to the first entry of that type if none is marked
+    as default, so the caller always gets a result when at least
+    one entry of the requested type exists.
+    """
+    runtimes = await get_runtimes()
+    first_of_type: RuntimeEntry | None = None
+    for entry in runtimes:
+        if entry.get("type") != runtime_type:
+            continue
+        if entry.get("default"):
+            return entry
+        if first_of_type is None:
+            first_of_type = entry
+    return first_of_type
