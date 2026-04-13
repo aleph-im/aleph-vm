@@ -144,11 +144,30 @@ def main():
     if args.initialize_network_settings:
         network.setup()
     else:
-        # Wait for the network interface to be by the supervisor
-        # Otherwise QEMU will create a new one, and it won't be properly setup as a tuntap as we expect
+        # Wait for the supervisor to create the tap interface.
+        # The controller starts before the supervisor finishes loading
+        # persistent executions, so the tap may not exist yet.
+        max_wait = 120
+        waited = 0
         while not network.interface_exists(config.vm_id):
-            logger.info("Waiting for network interface to be created...")
+            if waited >= max_wait:
+                logger.error(
+                    "Tap interface vmtap%d was not created after %ds. "
+                    "The supervisor may not be running or may have "
+                    "classified this execution as dead. Exiting.",
+                    config.vm_id,
+                    max_wait,
+                )
+                sys.exit(1)
+            if waited % 10 == 0:
+                logger.info(
+                    "Waiting for network interface vmtap%d (%d/%ds)...",
+                    config.vm_id,
+                    waited,
+                    max_wait,
+                )
             sleep(1)
+            waited += 1
 
     asyncio.run(run_persistent_vm(config))
 
