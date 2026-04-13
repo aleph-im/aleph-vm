@@ -265,6 +265,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": execution.times,
                 "running": running_states.get(item_hash, False),
+                "mode": execution.mode,
             }
             for item_hash, execution in pool.executions.items()
         },

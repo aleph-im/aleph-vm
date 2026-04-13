@@ -704,6 +704,9 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
+        if execution.mode == "rescue":
+            return web.HTTPConflict(text="Exit rescue mode before erasing")
+
         logger.info(f"Erasing {execution.vm_hash}")
 
         # Stop the VM
@@ -743,6 +746,9 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         if not await is_sender_authorized(authenticated_sender, execution.message):
             return web.Response(status=403, body="Unauthorized sender")
 
+        if execution.mode == "rescue":
+            return web.HTTPConflict(text="Exit rescue mode before reinstalling")
+
         logger.info(f"Reinstalling (reset to initial state) {execution.vm_hash}")
 
         if execution.persistent:
@@ -776,6 +782,124 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
             )
 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_rescue(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Boot a persistent instance into rescue mode.
+
+    Downloads a rescue rootfs and boots from it, attaching the
+    original rootfs as a secondary drive so the user can mount
+    and repair it. The original rootfs is never moved or renamed.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    runtime_id = request.query.get("runtime_id")
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        if not execution.persistent:
+            return web.HTTPBadRequest(text="Rescue mode is only available for persistent instances")
+
+        if execution.mode == "rescue":
+            return web.HTTPConflict(text="Instance is already in rescue mode")
+
+        from aleph.vm.orchestrator.utils import get_default_runtime, get_runtime_by_id
+
+        if runtime_id:
+            rescue_runtime = await get_runtime_by_id(runtime_id)
+        else:
+            rescue_runtime = await get_default_runtime("rescue")
+
+        if not rescue_runtime:
+            return web.HTTPServiceUnavailable(
+                text="No rescue runtime available. The runtimes aggregate "
+                "may not contain a rescue image, or the aggregate is unreachable."
+            )
+
+        rescue_hash = rescue_runtime["item_hash"]
+        logger.info("Entering rescue mode for %s using image %s", vm_hash, rescue_hash)
+
+        await pool.stop_vm(execution.vm_hash)
+        # Prevent the forget-on-stop task from removing the execution
+        execution.stop_event = asyncio.Event()
+        pool.executions[execution.vm_hash] = execution
+
+        # Download rescue rootfs to a separate path (never touch the original)
+        rescue_rootfs_path = None
+        if execution.resources:
+            rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
+            from aleph.vm.storage import download_file
+
+            await download_file(rescue_hash, rescue_rootfs_path)
+
+        execution.mode = "rescue"
+        await metrics.record_event(
+            vm_hash=str(vm_hash),
+            event_type="rescue_entered",
+            detail=json.dumps({"runtime_id": runtime_id or "default", "image_hash": rescue_hash}),
+        )
+
+        await _restart_persistent_vm(pool, execution)
+
+        return web.json_response(
+            {
+                "status": "rescue",
+                "message": "Instance booted in rescue mode. Original rootfs available as /dev/vdb.",
+            },
+            dumps=dumps_for_json,
+        )
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_rescue_exit(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Exit rescue mode and restore normal boot from the original rootfs."""
+    vm_hash = get_itemhash_or_400(request.match_info)
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        if execution.mode != "rescue":
+            return web.HTTPConflict(text="Instance is not in rescue mode")
+
+        logger.info("Exiting rescue mode for %s", vm_hash)
+
+        await pool.stop_vm(execution.vm_hash)
+        execution.stop_event = asyncio.Event()
+        pool.executions[execution.vm_hash] = execution
+
+        # Delete the rescue rootfs — the original is untouched at its canonical path
+        if execution.resources:
+            rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
+            if rescue_rootfs_path.exists():
+                rescue_rootfs_path.unlink()
+                logger.info("Deleted rescue rootfs %s", rescue_rootfs_path)
+
+        execution.mode = "normal"
+        await metrics.record_event(
+            vm_hash=str(vm_hash),
+            event_type="rescue_exited",
+        )
+
+        await _restart_persistent_vm(pool, execution)
+
+        return web.json_response(
+            {
+                "status": "normal",
+                "message": "Instance restored to normal boot.",
+            },
+            dumps=dumps_for_json,
+        )
 
 
 @dataclass(frozen=True, slots=True)
