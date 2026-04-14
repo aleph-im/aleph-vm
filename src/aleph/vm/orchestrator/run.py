@@ -23,6 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator import metrics
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import HostNotFoundError
@@ -291,6 +292,7 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
+        await metrics.record_event(str(vm_hash), "started")
 
     await execution.becomes_ready()
 
