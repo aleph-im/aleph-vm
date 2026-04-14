@@ -33,7 +33,11 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
 
 
 def encode_user_data(
-    hostname, ssh_authorized_keys, has_gpu: bool = False, is_confidential: bool = False, install_guest_agent: bool = True
+    hostname,
+    ssh_authorized_keys,
+    has_gpu: bool = False,
+    is_confidential: bool = False,
+    install_guest_agent: bool = True,
 ) -> bytes:
     """Creates user data configuration file for cloud-init tool"""
     config: dict[str, str | bool | list[str] | list[list[str]]] = {
