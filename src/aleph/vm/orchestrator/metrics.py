@@ -106,17 +106,24 @@ class ExecutionEvent(Base):
 
 
 async def record_event(vm_hash: str, event_type: str, detail: str | None = None) -> None:
-    """Append a lifecycle event to the audit log."""
-    async with AsyncSessionMaker() as session:
-        session.add(
-            ExecutionEvent(
-                vm_hash=vm_hash,
-                event_type=event_type,
-                timestamp=datetime.now(tz=timezone.utc),
-                detail_json=detail,
+    """Append a lifecycle event to the audit log.
+
+    Best-effort: failures are logged but never propagate, so the
+    audit log cannot break the operation it is recording.
+    """
+    try:
+        async with AsyncSessionMaker() as session:
+            session.add(
+                ExecutionEvent(
+                    vm_hash=vm_hash,
+                    event_type=event_type,
+                    timestamp=datetime.now(tz=timezone.utc),
+                    detail_json=detail,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
+    except Exception:
+        logger.warning("Failed to record event %s for %s", event_type, vm_hash, exc_info=True)
 
 
 async def get_execution_events(vm_hash: str) -> list[ExecutionEvent]:
