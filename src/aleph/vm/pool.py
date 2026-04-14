@@ -606,18 +606,62 @@ class VmPool:
                 logger.warning("Failed to disable stale controller %s", execution.controller_service, exc_info=True)
 
     def _cleanup_orphan_resources(self):
-        """Remove orphan nft rules, nft chains, and tap interfaces.
+        """Remove orphan nft rules, nft chains, tap interfaces, and controller configs.
 
         Compares host resources against active executions in the pool
         and removes anything that doesn't belong to a running VM.
         Fetches the nftables ruleset once and passes it to both nft cleanup methods.
         """
         active_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.vm_id is not None}
+        active_vm_hashes = {str(vm_hash) for vm_hash in self.executions}
 
         nft_ruleset = get_existing_nftables_ruleset()
         self._cleanup_orphan_port_redirects(nft_ruleset)
         self._cleanup_orphan_nft_chains(active_vm_ids, nft_ruleset)
         self._cleanup_orphan_tap_interfaces(active_vm_ids)
+        self._cleanup_orphan_controller_configs(active_vm_hashes)
+
+    def _cleanup_orphan_controller_configs(self, active_vm_hashes: set[str]):
+        """Stop controller services and delete controller configs for forgotten VMs.
+
+        A VM removed from ``self.executions`` may leave behind:
+          - A running ``aleph-vm-controller@<hash>.service`` with an active
+            qemu process that still consumes host RAM the admission check
+            does not see, so the host's real free memory is lower than
+            ``check_admission`` assumes.
+          - A ``<hash>-controller.json`` file on disk that systemd would
+            reuse on the next boot, reviving the orphan.
+
+        Removing both keeps the host's actual free memory aligned with
+        what the admission check computes.
+        """
+        try:
+            config_files = list(settings.EXECUTION_ROOT.glob("*-controller.json"))
+        except Exception:
+            logger.warning("Failed to enumerate controller configs", exc_info=True)
+            return
+
+        removed = 0
+        for config_path in config_files:
+            vm_hash = config_path.name[: -len("-controller.json")]
+            if vm_hash in active_vm_hashes:
+                continue
+            service_name = f"aleph-vm-controller@{vm_hash}.service"
+            try:
+                self.systemd_manager.stop_and_disable(service_name)
+            except Exception:
+                logger.warning("Failed to stop orphan controller %s", service_name, exc_info=True)
+            try:
+                config_path.unlink()
+                removed += 1
+                logger.info("Removed orphan controller config %s", config_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.warning("Failed to remove orphan controller config %s", config_path, exc_info=True)
+
+        if removed:
+            logger.info("Removed %d orphan controller configs", removed)
 
     def _cleanup_orphan_port_redirects(self, nft_ruleset: list[dict]):
         """Remove DNAT prerouting rules with no matching active execution."""
