@@ -1,6 +1,7 @@
 [Unit]
 Description=Aleph VM %i Controller
-After=network.target
+After=network.target aleph-vm-supervisor.service
+Wants=aleph-vm-supervisor.service
 
 [Service]
 Type=simple
