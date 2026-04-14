@@ -721,6 +721,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
             await delete_port_mappings(execution.vm_hash)
         _erase_execution_volumes(execution)
 
+        await metrics.record_event(str(vm_hash), "erased")
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
@@ -781,6 +782,11 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 pool=pool,
             )
 
+        await metrics.record_event(
+            vm_hash=str(vm_hash),
+            event_type="reinstalled",
+            detail=json.dumps({"erase_volumes": not rootfs_only}),
+        )
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 

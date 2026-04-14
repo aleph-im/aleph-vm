@@ -28,6 +28,7 @@ from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     get_execution_records,
     get_port_mappings,
+    record_event,
 )
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
@@ -419,6 +420,7 @@ class VmPool:
             logger.info("stop_vm No execution found for %s", vm_hash)
             return None
         await execution.stop()
+        await record_event(str(vm_hash), "stopped")
         return execution
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
