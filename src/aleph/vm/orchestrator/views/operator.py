@@ -850,6 +850,27 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         rescue_url = await get_content_url(rescue_hash)
         await download_file(rescue_url, rescue_rootfs_path)
 
+        # Verify the downloaded image matches the SHA256 published
+        # in the runtimes aggregate. A tampered rescue image would
+        # have read-write access to the user's rootfs and volumes.
+        expected_sha256 = rescue_runtime.get("sha256")
+        if expected_sha256:
+            import hashlib
+
+            actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                rescue_rootfs_path.unlink(missing_ok=True)
+                logger.error(
+                    "Rescue image hash mismatch for %s: expected %s, got %s",
+                    vm_hash,
+                    expected_sha256,
+                    actual_sha256,
+                )
+                return web.HTTPServiceUnavailable(
+                    text="Rescue image integrity check failed. The downloaded image "
+                    "does not match the hash published in the runtimes aggregate."
+                )
+
         execution.mode = "rescue"
         await metrics.record_event(
             vm_hash=str(vm_hash),
