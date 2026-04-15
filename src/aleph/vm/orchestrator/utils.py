@@ -101,6 +101,7 @@ class RuntimeEntry(TypedDict, total=False):
     type: str  # "program", "instance", "rescue", "firmware"
     item_hash: str
     default: bool
+    sha256: str  # SHA256 of the image file, verified after download
     firmware_hash: str  # only for type == "firmware"
 
 
@@ -112,7 +113,8 @@ async def fetch_runtimes_aggregate() -> list[RuntimeEntry]:
     resp = await session.get(url)
     resp.raise_for_status()
     resp_data = await resp.json()
-    return resp_data["data"]["runtimes"]
+    runtimes = resp_data["data"]["runtimes"]
+    return runtimes["entries"]
 
 
 async def get_runtimes() -> list[RuntimeEntry]:
