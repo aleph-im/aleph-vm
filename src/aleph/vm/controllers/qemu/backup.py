@@ -266,10 +266,10 @@ async def download_volume_by_ref(
     Returns:
         Path to the downloaded file.
     """
-    from aleph.vm.storage import _get_content_url, download_file
+    from aleph.vm.storage import download_file, get_content_url
 
     dest_path = destination / f"{item_hash}.qcow2"
-    url = await _get_content_url(item_hash)
+    url = await get_content_url(item_hash)
     await download_file(url, dest_path)
     return dest_path
 
