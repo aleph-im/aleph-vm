@@ -208,15 +208,19 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             for volume in self.resources.volumes
         ]
 
-        # In rescue mode, attach the original rootfs as a secondary
-        # virtio drive so the user can mount and repair it.
+        # In rescue mode, insert the original rootfs as the first
+        # host volume so it appears as /dev/vdb inside the guest
+        # (QEMU assigns virtio device letters by drive order, the
+        # mount field is metadata for the controller config only).
+        # Data volumes follow as /dev/vdc, /dev/vdd, etc.
         if mode == "rescue":
-            host_volumes.append(
+            host_volumes.insert(
+                0,
                 QemuVMHostVolume(
                     mount="/dev/vdb",
                     path_on_host=Path(original_rootfs_path),
                     read_only=False,
-                )
+                ),
             )
 
         vm_configuration = QemuVMConfiguration(

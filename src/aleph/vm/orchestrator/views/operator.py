@@ -828,6 +828,9 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
                 "may not contain a rescue image, or the aggregate is unreachable."
             )
 
+        if not execution.resources:
+            return web.HTTPBadRequest(text="Instance has not been prepared yet. Start it normally first.")
+
         rescue_hash = rescue_runtime["item_hash"]
         logger.info("Entering rescue mode for %s using image %s", vm_hash, rescue_hash)
 
@@ -836,13 +839,16 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         execution.stop_event = asyncio.Event()
         pool.executions[execution.vm_hash] = execution
 
-        # Download rescue rootfs to a separate path (never touch the original)
-        rescue_rootfs_path = None
-        if execution.resources:
-            rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
-            from aleph.vm.storage import download_file
+        # Download rescue rootfs to a separate path (never touch the original).
+        # Delete any stale file first to avoid reusing a leftover from a
+        # previous rescue attempt with a different image.
+        rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
+        rescue_rootfs_path.unlink(missing_ok=True)
 
-            await download_file(rescue_hash, rescue_rootfs_path)
+        from aleph.vm.storage import download_file, get_content_url
+
+        rescue_url = await get_content_url(rescue_hash)
+        await download_file(rescue_url, rescue_rootfs_path)
 
         execution.mode = "rescue"
         await metrics.record_event(
@@ -856,7 +862,7 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         return web.json_response(
             {
                 "status": "rescue",
-                "message": "Instance booted in rescue mode. Original rootfs available as /dev/vdb.",
+                "message": "Instance booted in rescue mode. Original rootfs available as /dev/vdb. Data volumes available as /dev/vdc, /dev/vdd, etc.",
             },
             dumps=dumps_for_json,
         )
