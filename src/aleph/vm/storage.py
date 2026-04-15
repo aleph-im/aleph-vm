@@ -149,7 +149,7 @@ async def _fetch_aleph_message(ref: str) -> dict | None:
         return messages[0] if messages else None
 
 
-async def _get_content_url(ref: str) -> str:
+async def get_content_url(ref: str) -> str:
     """Resolve a STORE message ref to its raw content download URL."""
     msg = await _fetch_aleph_message(ref)
     if not msg:
@@ -236,7 +236,7 @@ async def get_code_path(ref: str) -> Path:
             raise ValueError(msg)
 
     cache_path = Path(settings.CODE_CACHE) / ref
-    url = await _get_content_url(ref)
+    url = await get_content_url(ref)
     await download_file(url, cache_path)
     return cache_path
 
@@ -248,7 +248,7 @@ async def get_data_path(ref: str) -> Path:
         return Path(f"{data_dir}.zip")
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = await _get_content_url(ref)
+    url = await get_content_url(ref)
     await download_file(url, cache_path)
     return cache_path
 
@@ -271,7 +271,7 @@ async def get_runtime_path(ref: str) -> Path:
     cache_path = Path(settings.RUNTIME_CACHE) / ref
 
     if not cache_path.is_file():
-        url = await _get_content_url(ref)
+        url = await get_content_url(ref)
         await download_file(url, cache_path)
 
     await check_squashfs_integrity(cache_path)
@@ -287,7 +287,7 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
     if not cache_path.is_file():
-        url = await _get_content_url(ref)
+        url = await get_content_url(ref)
         await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
@@ -409,7 +409,7 @@ async def get_existing_file(ref: str) -> Path:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
-    url = await _get_content_url(ref)
+    url = await get_content_url(ref)
     await download_file(url, cache_path)
     await chown_to_jailman(cache_path)
     return cache_path
