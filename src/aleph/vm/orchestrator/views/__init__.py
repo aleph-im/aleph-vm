@@ -32,7 +32,7 @@ from aleph.vm.network.firewall import (
     recreate_network_for_vms,
     remove_all_aleph_chains,
 )
-from aleph.vm.orchestrator import payment, status
+from aleph.vm.orchestrator import metrics, payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
@@ -265,6 +265,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": execution.times,
                 "running": running_states.get(item_hash, False),
+                "mode": execution.mode,
             }
             for item_hash, execution in pool.executions.items()
         },
@@ -939,6 +940,7 @@ async def notify_allocation(request: web.Request):
         await start_persistent_vm(item_hash, pubsub, pool)
         successful = True
         await pool.update_domain_mapping()
+        await metrics.record_event(str(item_hash), "created")
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error

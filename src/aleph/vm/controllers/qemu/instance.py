@@ -168,15 +168,27 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     async def setup(self):
         pass
 
-    async def configure(self):
-        """Configure the VM by saving controller service configuration"""
+    async def configure(self, mode: str = "normal"):
+        """Configure the VM by saving controller service configuration.
 
+        Args:
+            mode: "normal" for standard boot, "rescue" to boot from the
+                rescue rootfs and attach the original rootfs as a
+                secondary drive.
+        """
         logger.debug(f"Making  Qemu configuration: {self} ")
         monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_hash) + "-monitor.socket")
 
         cloud_init_drive = await self._create_cloud_init_drive()
 
-        image_path = str(self.resources.rootfs_path)
+        original_rootfs_path = str(self.resources.rootfs_path)
+        rescue_rootfs_path = original_rootfs_path + ".rescue"
+
+        if mode == "rescue" and Path(rescue_rootfs_path).exists():
+            image_path = rescue_rootfs_path
+        else:
+            image_path = original_rootfs_path
+
         vcpu_count = self.hardware_resources.vcpus
         mem_size_mib = self.hardware_resources.memory
         mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
@@ -186,6 +198,31 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         if self.tap_interface:
             interface_name = self.tap_interface.device_name
         cloud_init_drive_path = str(cloud_init_drive.path_on_host) if cloud_init_drive else None
+
+        host_volumes = [
+            QemuVMHostVolume(
+                mount=volume.mount,
+                path_on_host=volume.path_on_host,
+                read_only=volume.read_only,
+            )
+            for volume in self.resources.volumes
+        ]
+
+        # In rescue mode, insert the original rootfs as the first
+        # host volume so it appears as /dev/vdb inside the guest
+        # (QEMU assigns virtio device letters by drive order, the
+        # mount field is metadata for the controller config only).
+        # Data volumes follow as /dev/vdc, /dev/vdd, etc.
+        if mode == "rescue":
+            host_volumes.insert(
+                0,
+                QemuVMHostVolume(
+                    mount="/dev/vdb",
+                    path_on_host=Path(original_rootfs_path),
+                    read_only=False,
+                ),
+            )
+
         vm_configuration = QemuVMConfiguration(
             qemu_bin_path=qemu_bin_path,
             cloud_init_drive_path=cloud_init_drive_path,
@@ -196,14 +233,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
             vcpu_count=vcpu_count,
             mem_size_mb=mem_size_mb,
             interface_name=interface_name,
-            host_volumes=[
-                QemuVMHostVolume(
-                    mount=volume.mount,
-                    path_on_host=volume.path_on_host,
-                    read_only=volume.read_only,
-                )
-                for volume in self.resources.volumes
-            ],
+            host_volumes=host_volumes,
             gpus=[QemuGPU(pci_host=gpu.pci_host, supports_x_vga=gpu.supports_x_vga) for gpu in self.resources.gpus],
         )
 

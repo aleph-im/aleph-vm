@@ -81,12 +81,58 @@ class ExecutionRecord(Base):
 
     gpus = Column(JSON, nullable=True)
     mapped_ports = Column(JSON, nullable=True)
+    mode = Column(String, nullable=False, default="normal", server_default="normal")
 
     def __repr__(self):
         return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash}, vm_id={self.vm_id})>"
 
     def to_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.c}
+
+
+class ExecutionEvent(Base):
+    """Append-only audit log of instance lifecycle events."""
+
+    __tablename__ = "execution_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vm_hash = Column(String, nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    detail_json = Column(String, nullable=True)
+
+    def __repr__(self):
+        return f"<ExecutionEvent(vm_hash={self.vm_hash}, " f"event_type={self.event_type}, timestamp={self.timestamp})>"
+
+
+async def record_event(vm_hash: str, event_type: str, detail: str | None = None) -> None:
+    """Append a lifecycle event to the audit log.
+
+    Best-effort: failures are logged but never propagate, so the
+    audit log cannot break the operation it is recording.
+    """
+    try:
+        async with AsyncSessionMaker() as session:
+            session.add(
+                ExecutionEvent(
+                    vm_hash=vm_hash,
+                    event_type=event_type,
+                    timestamp=datetime.now(tz=timezone.utc),
+                    detail_json=detail,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.warning("Failed to record event %s for %s", event_type, vm_hash, exc_info=True)
+
+
+async def get_execution_events(vm_hash: str) -> list[ExecutionEvent]:
+    """Get lifecycle events for a specific VM."""
+    async with AsyncSessionMaker() as session:
+        result = await session.execute(
+            select(ExecutionEvent).where(ExecutionEvent.vm_hash == vm_hash).order_by(ExecutionEvent.timestamp.asc())
+        )
+        return list(result.scalars().all())
 
 
 async def save_execution_data(execution_uuid: UUID, execution_data: str):
