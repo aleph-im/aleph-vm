@@ -800,7 +800,7 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
     and repair it. The original rootfs is never moved or renamed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    runtime_id = request.query.get("runtime_id")
+    item_hash = request.query.get("item_hash")
 
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
@@ -815,23 +815,29 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         if execution.mode == "rescue":
             return web.HTTPConflict(text="Instance is already in rescue mode")
 
-        from aleph.vm.orchestrator.utils import get_default_runtime, get_runtime_by_id
-
-        if runtime_id:
-            rescue_runtime = await get_runtime_by_id(runtime_id)
-        else:
-            rescue_runtime = await get_default_runtime("rescue")
-
-        if not rescue_runtime:
-            return web.HTTPServiceUnavailable(
-                text="No rescue runtime available. The runtimes aggregate "
-                "may not contain a rescue image, or the aggregate is unreachable."
-            )
-
         if not execution.resources:
             return web.HTTPBadRequest(text="Instance has not been prepared yet. Start it normally first.")
 
-        rescue_hash = rescue_runtime["item_hash"]
+        # Resolve the rescue image: user-provided item_hash takes
+        # priority, otherwise fall back to the default rescue entry
+        # in the runtimes aggregate.
+        rescue_runtime: dict | None = None
+        expected_sha256: str | None = None
+
+        if item_hash:
+            rescue_hash = item_hash
+        else:
+            from aleph.vm.orchestrator.utils import get_default_runtime
+
+            rescue_runtime = await get_default_runtime("rescue")
+            if not rescue_runtime:
+                return web.HTTPServiceUnavailable(
+                    text="No rescue runtime available. Provide an item_hash "
+                    "parameter or publish a rescue entry in the runtimes aggregate."
+                )
+            rescue_hash = rescue_runtime["item_hash"]
+            expected_sha256 = rescue_runtime.get("sha256")
+
         logger.info("Entering rescue mode for %s using image %s", vm_hash, rescue_hash)
 
         await pool.stop_vm(execution.vm_hash)
@@ -851,9 +857,8 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         await download_file(rescue_url, rescue_rootfs_path)
 
         # Verify the downloaded image matches the SHA256 published
-        # in the runtimes aggregate. A tampered rescue image would
-        # have read-write access to the user's rootfs and volumes.
-        expected_sha256 = rescue_runtime.get("sha256")
+        # in the runtimes aggregate. Skipped for user-provided images
+        # (no aggregate entry to verify against).
         if expected_sha256:
             import hashlib
 
@@ -875,7 +880,7 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         await metrics.record_event(
             vm_hash=str(vm_hash),
             event_type="rescue_entered",
-            detail=json.dumps({"runtime_id": runtime_id or "default", "image_hash": rescue_hash}),
+            detail=json.dumps({"item_hash": rescue_hash, "source": "user" if item_hash else "aggregate"}),
         )
 
         await _restart_persistent_vm(pool, execution)
