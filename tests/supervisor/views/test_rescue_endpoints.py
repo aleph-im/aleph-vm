@@ -11,7 +11,7 @@ from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.orchestrator.views.operator import RescueState, _security_aggregate_cache
 
 MOCK_ADDRESS = "mock_address"
-MOCK_HASH = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+MOCK_HASH = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +109,7 @@ async def test_rescue_enter_no_aggregate_runtime(aiohttp_client, mocker):
     client, _ = await _setup_client(aiohttp_client, mocker, pool)
 
     with patch(
-        "aleph.vm.orchestrator.views.operator.get_default_runtime",
+        "aleph.vm.orchestrator.utils.get_default_runtime",
         new=AsyncMock(return_value=None),
     ):
         response = await client.post(f"/control/machine/{MOCK_HASH}/rescue")
@@ -126,7 +126,7 @@ async def test_rescue_enter_schedules_background_task(aiohttp_client, mocker):
     mock_runtime = {"id": "debian-12-rescue", "item_hash": "ddd444", "sha256": None}
     with (
         patch(
-            "aleph.vm.orchestrator.views.operator.get_default_runtime",
+            "aleph.vm.orchestrator.utils.get_default_runtime",
             new=AsyncMock(return_value=mock_runtime),
         ),
         patch("aleph.vm.orchestrator.views.operator.asyncio.create_task") as mock_create_task,
@@ -154,7 +154,7 @@ async def test_rescue_enter_with_custom_item_hash(aiohttp_client, mocker):
             return_value=MagicMock(),
         ),
         patch(
-            "aleph.vm.orchestrator.views.operator.get_default_runtime",
+            "aleph.vm.orchestrator.utils.get_default_runtime",
             new=mock_get_default,
         ),
     ):

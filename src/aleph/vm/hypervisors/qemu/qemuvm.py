@@ -185,7 +185,6 @@ class QemuVM:
         if not self.gpus:
             args += ["-machine", "pc-i440fx-6.2", "-cpu", "host,migratable=on"]
 
-
         args += self._get_gpu_args()
         logger.debug("QEMU args: %s", args)
 
