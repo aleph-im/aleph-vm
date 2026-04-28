@@ -81,7 +81,7 @@ class ExecutionRecord(Base):
 
     gpus = Column(JSON, nullable=True)
     mapped_ports = Column(JSON, nullable=True)
-    mode = Column(String, nullable=False, default="normal", server_default="normal")
+    mode = Column(String, nullable=False, server_default="normal")
 
     def __repr__(self):
         return f"<ExecutionRecord(uuid={self.uuid}, vm_hash={self.vm_hash}, vm_id={self.vm_id})>"

@@ -1,6 +1,7 @@
 """Tests for rescue mode, execution events, and runtimes aggregate."""
 
 import json
+from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
@@ -275,7 +276,7 @@ async def test_execution_record_mode_default(async_session):
         uuid="test-uuid-1",
         vm_hash="vm-hash-1",
         vm_id=1,
-        time_defined="2026-01-01T00:00:00Z",
+        time_defined=datetime(2026, 1, 1, tzinfo=timezone.utc),
         vcpus=2,
         memory=2048,
     )
@@ -298,7 +299,7 @@ async def test_execution_record_mode_rescue(async_session):
         uuid="test-uuid-2",
         vm_hash="vm-hash-2",
         vm_id=2,
-        time_defined="2026-01-01T00:00:00Z",
+        time_defined=datetime(2026, 1, 1, tzinfo=timezone.utc),
         vcpus=2,
         memory=2048,
         mode="rescue",
