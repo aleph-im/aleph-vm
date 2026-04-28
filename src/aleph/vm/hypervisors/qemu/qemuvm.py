@@ -148,6 +148,13 @@ class QemuVM:
                 f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
             ]
 
+        # Data and rescue volumes come before cloud-init so that device
+        # letter assignment is predictable: vdb is always the first host
+        # volume (original rootfs in rescue mode, first data volume in
+        # normal mode). Cloud-init is auto-detected by its "cidata" label
+        # and does not need a fixed device letter.
+        args += self._get_host_volumes_args()
+
         if self.cloud_init_drive_path:
             # Use explicit drive syntax instead of -cdrom for Q35
             # compatibility. On Q35, -cdrom creates an unattached IDE
@@ -167,8 +174,6 @@ class QemuVM:
                 "-device",
                 "virtio-balloon-pci,free-page-reporting=on",
             ]
-
-        args += self._get_host_volumes_args()
         args += self._get_gpu_args()
         logger.debug("QEMU args: %s", args)
 
