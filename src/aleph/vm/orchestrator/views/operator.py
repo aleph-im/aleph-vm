@@ -1041,6 +1041,14 @@ async def operate_rescue_exit(request: web.Request, authenticated_sender: str) -
                 rescue_rootfs_path.unlink()
                 logger.info("Deleted rescue rootfs %s", rescue_rootfs_path)
 
+        # Reset the tap interface to clear offload state left by the rescue
+        # QEMU process. Without this, the normal-boot QEMU hits
+        # TUNSETOFFLOAD EBADFD and crashes in a restart loop until the
+        # kernel-side tap state eventually settles.
+        if pool.network and execution.vm and pool.network.interface_exists(execution.vm.vm_id):
+            await execution.vm.tap_interface.delete()
+            await pool.network.create_tap(execution.vm.vm_id, execution.vm.tap_interface)
+
         execution.mode = "normal"
         await metrics.record_event(
             vm_hash=str(vm_hash),
