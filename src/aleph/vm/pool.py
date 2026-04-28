@@ -413,14 +413,15 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+    async def stop_vm(self, vm_hash: ItemHash, *, record_stopped_event: bool = True) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if not execution:
             logger.info("stop_vm No execution found for %s", vm_hash)
             return None
         await execution.stop()
-        await record_event(str(vm_hash), "stopped")
+        if record_stopped_event:
+            await record_event(str(vm_hash), "stopped")
         return execution
 
     def forget_vm(self, vm_hash: ItemHash) -> None:

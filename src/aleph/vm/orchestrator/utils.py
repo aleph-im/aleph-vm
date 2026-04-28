@@ -95,12 +95,15 @@ def get_compatible_gpus() -> list[Any]:
 _runtimes_cache = AsyncTTLCache(ttl_seconds=300.0)
 
 
-class RuntimeEntry(TypedDict, total=False):
+class _RuntimeEntryRequired(TypedDict):
     id: str
     name: str
     type: str  # "program", "instance", "rescue", "firmware"
     item_hash: str
     default: bool
+
+
+class RuntimeEntry(_RuntimeEntryRequired, total=False):
     sha256: str  # SHA256 of the image file, verified after download
     firmware_hash: str  # only for type == "firmware"
 
@@ -113,7 +116,11 @@ async def fetch_runtimes_aggregate() -> list[RuntimeEntry]:
     resp = await session.get(url)
     resp.raise_for_status()
     resp_data = await resp.json()
-    runtimes = resp_data["data"]["runtimes"]
+    data = resp_data.get("data", {})
+    runtimes = data.get("runtimes")
+    if not isinstance(runtimes, dict) or "entries" not in runtimes:
+        logger.error("Unexpected runtimes aggregate structure: %s", resp_data)
+        return []
     return runtimes["entries"]
 
 

@@ -62,6 +62,14 @@ logger = logging.getLogger(__name__)
 
 _BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max
 _RESCUE_RESULT_TTL = 3600
+_RESCUE_ACTIVE_RESPONSE = {
+    "status": "rescue",
+    "message": (
+        "Instance is in rescue mode. "
+        "Original rootfs available as /dev/vdb. "
+        "Data volumes available as /dev/vdc, /dev/vdd, etc."
+    ),
+}
 
 
 class RescueState:
@@ -830,7 +838,7 @@ async def _run_rescue_work(params: _RescueParams) -> dict:
     vm_hash = params.vm_hash
     rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
 
-    await pool.stop_vm(execution.vm_hash)
+    await pool.stop_vm(execution.vm_hash, record_stopped_event=False)
     execution.stop_event = asyncio.Event()
     pool.executions[execution.vm_hash] = execution
 
@@ -848,7 +856,10 @@ async def _run_rescue_work(params: _RescueParams) -> dict:
     if not cached:
         rescue_rootfs_path.unlink(missing_ok=True)
         rescue_url = await get_content_url(params.rescue_hash)
-        await download_file(rescue_url, rescue_rootfs_path)
+        await asyncio.wait_for(
+            download_file(rescue_url, rescue_rootfs_path),
+            timeout=settings.RESCUE_DOWNLOAD_TIMEOUT_SECONDS,
+        )
 
         if params.expected_sha256:
             actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
@@ -863,22 +874,19 @@ async def _run_rescue_work(params: _RescueParams) -> dict:
                 raise ValueError("Rescue image integrity check failed")
 
     execution.mode = "rescue"
+    try:
+        await _restart_persistent_vm(pool, execution)
+    except Exception:
+        execution.mode = "normal"
+        raise
+
     await metrics.record_event(
         vm_hash=vm_hash,
         event_type="rescue_entered",
         detail=json.dumps({"item_hash": params.rescue_hash}),
     )
 
-    await _restart_persistent_vm(pool, execution)
-
-    return {
-        "status": "rescue",
-        "message": (
-            "Instance booted in rescue mode. "
-            "Original rootfs available as /dev/vdb. "
-            "Data volumes available as /dev/vdc, /dev/vdd, etc."
-        ),
-    }
+    return _RESCUE_ACTIVE_RESPONSE
 
 
 async def _background_rescue_wrapper(params: _RescueParams) -> None:
@@ -1001,13 +1009,7 @@ async def operate_rescue_status(request: web.Request, authenticated_sender: str)
             return web.json_response(result, dumps=dumps_for_json)
 
         if execution.mode == "rescue":
-            return web.json_response(
-                {
-                    "status": "rescue",
-                    "message": ("Instance is in rescue mode. " "Original rootfs available as /dev/vdb."),
-                },
-                dumps=dumps_for_json,
-            )
+            return web.json_response(_RESCUE_ACTIVE_RESPONSE, dumps=dumps_for_json)
 
         return web.HTTPConflict(text="No rescue operation in progress for this instance")
 
@@ -1028,9 +1030,14 @@ async def operate_rescue_exit(request: web.Request, authenticated_sender: str) -
         if execution.mode != "rescue":
             return web.HTTPConflict(text="Instance is not in rescue mode")
 
+        state: RescueState = request.app["rescue_state"]
+        vm_hash_str = str(vm_hash)
+        if vm_hash_str in state.tasks:
+            return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
+
         logger.info("Exiting rescue mode for %s", vm_hash)
 
-        await pool.stop_vm(execution.vm_hash)
+        await pool.stop_vm(execution.vm_hash, record_stopped_event=False)
         execution.stop_event = asyncio.Event()
         pool.executions[execution.vm_hash] = execution
 

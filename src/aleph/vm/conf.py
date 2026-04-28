@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     PREALLOC_VM_COUNT: int = 0
     REUSE_TIMEOUT: float = 60 * 60.0
     DRAIN_TIMEOUT: float = 30.0
+    RESCUE_DOWNLOAD_TIMEOUT_SECONDS: float = 600.0
     WATCH_FOR_MESSAGES: bool = True
     WATCH_FOR_UPDATES: bool = True
 
