@@ -61,6 +61,24 @@ from aleph.vm.utils.logs import get_past_vm_logs
 logger = logging.getLogger(__name__)
 
 _BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max
+_RESCUE_RESULT_TTL = 3600
+
+
+class RescueState:
+    """Per-app container for in-progress rescue tasks and their results.
+
+    Stored on ``app["rescue_state"]`` so lifecycle is tied to the app.
+    """
+
+    def __init__(self) -> None:
+        self.tasks: dict[str, asyncio.Task] = {}
+        self.results: dict[str, tuple[float, dict | Exception]] = {}
+
+    def evict_stale_results(self) -> None:
+        now = time.time()
+        stale = [k for k, (ts, _) in self.results.items() if now - ts > _RESCUE_RESULT_TTL]
+        for k in stale:
+            self.results.pop(k, None)
 
 
 class BackupState:
@@ -205,6 +223,11 @@ async def _restart_persistent_vm(
     execution.stop_event = asyncio.Event()
     pool.executions[execution.vm_hash] = execution
     pool._schedule_forget_on_stop(execution)
+
+    # Regenerate the controller JSON before the systemd unit reads it,
+    # so the current execution.mode (normal or rescue) is reflected.
+    if execution.vm:
+        await execution.vm.configure(mode=execution.mode)
 
     if pool.network and execution.vm:
         if not pool.network.interface_exists(execution.vm.vm_id):
@@ -790,17 +813,98 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 
+@dataclass(frozen=True, slots=True)
+class _RescueParams:
+    vm_hash: str
+    execution: VmExecution
+    pool: VmPool
+    rescue_hash: str
+    expected_sha256: str | None
+    state: RescueState
+
+
+async def _run_rescue_work(params: _RescueParams) -> dict:
+    """Stop the VM, download the rescue image, and restart in rescue mode."""
+    execution = params.execution
+    pool = params.pool
+    vm_hash = params.vm_hash
+    rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
+
+    await pool.stop_vm(execution.vm_hash)
+    execution.stop_event = asyncio.Event()
+    pool.executions[execution.vm_hash] = execution
+
+    rescue_rootfs_path.unlink(missing_ok=True)
+
+    from aleph.vm.storage import download_file, get_content_url
+
+    rescue_url = await get_content_url(params.rescue_hash)
+    await download_file(rescue_url, rescue_rootfs_path)
+
+    if params.expected_sha256:
+        actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
+        if actual_sha256 != params.expected_sha256:
+            rescue_rootfs_path.unlink(missing_ok=True)
+            logger.error(
+                "Rescue image hash mismatch for %s: expected %s, got %s",
+                vm_hash,
+                params.expected_sha256,
+                actual_sha256,
+            )
+            raise ValueError("Rescue image integrity check failed")
+
+    execution.mode = "rescue"
+    await metrics.record_event(
+        vm_hash=vm_hash,
+        event_type="rescue_entered",
+        detail=json.dumps({"item_hash": params.rescue_hash}),
+    )
+
+    await _restart_persistent_vm(pool, execution)
+
+    return {
+        "status": "rescue",
+        "message": (
+            "Instance booted in rescue mode. "
+            "Original rootfs available as /dev/vdb. "
+            "Data volumes available as /dev/vdc, /dev/vdd, etc."
+        ),
+    }
+
+
+async def _background_rescue_wrapper(params: _RescueParams) -> None:
+    """Wrap _run_rescue_work, storing the result in RescueState."""
+    state = params.state
+    try:
+        result = await _run_rescue_work(params)
+        state.results[params.vm_hash] = (time.time(), result)
+    except Exception as exc:
+        logger.exception("Background rescue failed for %s", params.vm_hash)
+        state.results[params.vm_hash] = (time.time(), exc)
+    finally:
+        state.tasks.pop(params.vm_hash, None)
+
+
 @cors_allow_all
 @require_jwk_authentication
 async def operate_rescue(request: web.Request, authenticated_sender: str) -> web.Response:
     """Boot a persistent instance into rescue mode.
 
-    Downloads a rescue rootfs and boots from it, attaching the
-    original rootfs as a secondary drive so the user can mount
-    and repair it. The original rootfs is never moved or renamed.
+    Downloads a rescue rootfs in the background and boots from it,
+    attaching the original rootfs as a secondary drive. Returns 202
+    immediately; poll GET /control/machine/{ref}/rescue for completion.
+
+    Query Parameters:
+        item_hash: Aleph hash of a specific rescue image. If omitted,
+            the default rescue entry from the runtimes aggregate is used.
+
+    Returns:
+        202 while the download and restart are in progress.
+        200 (via GET) once the instance is in rescue mode.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     item_hash = request.query.get("item_hash")
+    vm_hash_str = str(vm_hash)
 
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
@@ -818,12 +922,13 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
         if not execution.resources:
             return web.HTTPBadRequest(text="Instance has not been prepared yet. Start it normally first.")
 
-        # Resolve the rescue image: user-provided item_hash takes
-        # priority, otherwise fall back to the default rescue entry
-        # in the runtimes aggregate.
-        rescue_runtime: dict | None = None
-        expected_sha256: str | None = None
+        state: RescueState = request.app["rescue_state"]
+        state.evict_stale_results()
 
+        if vm_hash_str in state.tasks:
+            return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
+
+        expected_sha256: str | None = None
         if item_hash:
             rescue_hash = item_hash
         else:
@@ -838,60 +943,64 @@ async def operate_rescue(request: web.Request, authenticated_sender: str) -> web
             rescue_hash = rescue_runtime["item_hash"]
             expected_sha256 = rescue_runtime.get("sha256")
 
-        logger.info("Entering rescue mode for %s using image %s", vm_hash, rescue_hash)
+        logger.info("Scheduling rescue mode for %s using image %s", vm_hash, rescue_hash)
 
-        await pool.stop_vm(execution.vm_hash)
-        # Prevent the forget-on-stop task from removing the execution
-        execution.stop_event = asyncio.Event()
-        pool.executions[execution.vm_hash] = execution
-
-        # Download rescue rootfs to a separate path (never touch the original).
-        # Delete any stale file first to avoid reusing a leftover from a
-        # previous rescue attempt with a different image.
-        rescue_rootfs_path = Path(str(execution.resources.rootfs_path) + ".rescue")
-        rescue_rootfs_path.unlink(missing_ok=True)
-
-        from aleph.vm.storage import download_file, get_content_url
-
-        rescue_url = await get_content_url(rescue_hash)
-        await download_file(rescue_url, rescue_rootfs_path)
-
-        # Verify the downloaded image matches the SHA256 published
-        # in the runtimes aggregate. Skipped for user-provided images
-        # (no aggregate entry to verify against).
-        if expected_sha256:
-            import hashlib
-
-            actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
-            if actual_sha256 != expected_sha256:
-                rescue_rootfs_path.unlink(missing_ok=True)
-                logger.error(
-                    "Rescue image hash mismatch for %s: expected %s, got %s",
-                    vm_hash,
-                    expected_sha256,
-                    actual_sha256,
-                )
-                return web.HTTPServiceUnavailable(
-                    text="Rescue image integrity check failed. The downloaded image "
-                    "does not match the hash published in the runtimes aggregate."
-                )
-
-        execution.mode = "rescue"
-        await metrics.record_event(
-            vm_hash=str(vm_hash),
-            event_type="rescue_entered",
-            detail=json.dumps({"item_hash": rescue_hash, "source": "user" if item_hash else "aggregate"}),
+        params = _RescueParams(
+            vm_hash=vm_hash_str,
+            execution=execution,
+            pool=pool,
+            rescue_hash=rescue_hash,
+            expected_sha256=expected_sha256,
+            state=state,
         )
+        task = asyncio.create_task(_background_rescue_wrapper(params))
+        state.tasks[vm_hash_str] = task
 
-        await _restart_persistent_vm(pool, execution)
+        return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
 
-        return web.json_response(
-            {
-                "status": "rescue",
-                "message": "Instance booted in rescue mode. Original rootfs available as /dev/vdb. Data volumes available as /dev/vdc, /dev/vdd, etc.",
-            },
-            dumps=dumps_for_json,
-        )
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_rescue_status(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Poll the status of an in-progress or completed rescue operation.
+
+    Returns:
+        202 while the rescue download/restart is still running.
+        200 once the instance is in rescue mode (or already was).
+        409 if no rescue operation was started.
+        500 if the rescue operation failed.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    vm_hash_str = str(vm_hash)
+
+    with set_vm_for_logging(vm_hash=vm_hash):
+        pool: VmPool = request.app["vm_pool"]
+        execution = get_execution_or_404(vm_hash, pool=pool)
+
+        if not await is_sender_authorized(authenticated_sender, execution.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        state: RescueState = request.app["rescue_state"]
+
+        if vm_hash_str in state.tasks:
+            return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
+
+        if vm_hash_str in state.results:
+            _, result = state.results.pop(vm_hash_str)
+            if isinstance(result, Exception):
+                return web.Response(status=500, body=f"Rescue failed: {result}")
+            return web.json_response(result, dumps=dumps_for_json)
+
+        if execution.mode == "rescue":
+            return web.json_response(
+                {
+                    "status": "rescue",
+                    "message": ("Instance is in rescue mode. " "Original rootfs available as /dev/vdb."),
+                },
+                dumps=dumps_for_json,
+            )
+
+        return web.HTTPConflict(text="No rescue operation in progress for this instance")
 
 
 @cors_allow_all
