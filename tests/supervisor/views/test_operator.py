@@ -277,7 +277,7 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
 @pytest.mark.asyncio
 async def test_reboot_ok(aiohttp_client, mocker):
     mock_address = "mock_address"
-    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=mock_address,
@@ -303,7 +303,7 @@ async def test_reboot_ok(aiohttp_client, mocker):
     )
     assert response.status == 200
     assert (
-        await response.text() == "Rebooted VM with ref fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+        await response.text() == "Rebooted VM with ref decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     )
     assert pool.systemd_manager.restart.call_count == 1
 
@@ -311,7 +311,7 @@ async def test_reboot_ok(aiohttp_client, mocker):
 @pytest.mark.asyncio
 async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
     mock_address = "mock_address"
-    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
@@ -350,7 +350,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
 @pytest.mark.asyncio
 async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     mock_address = "mock_address"
-    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
@@ -394,7 +394,7 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
     signer_account, headers = await generate_signer_and_signed_headers_for_operation(patch_datetime_now, payload)
 
     mock_address = signer_account.address
-    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_queue: Queue[tuple[str, str]] = asyncio.Queue()
     await fake_queue.put(("stdout", "this is a first log entry"))
@@ -439,7 +439,7 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
 @pytest.mark.asyncio
 async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
     mock_address = "0x40684b43B88356F62DCc56017547B6A7AC68780B"
-    mock_hash = "fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_"
+    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=mock_address,
@@ -528,13 +528,13 @@ async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
     assert await response.json() == [
         {
             "MESSAGE": "logline1",
-            "SYSLOG_IDENTIFIER": "vm-fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_-stdout",
+            "SYSLOG_IDENTIFIER": "vm-decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca-stdout",
             "__REALTIME_TIMESTAMP": "2020-10-12 01:02:00",
             "file": "stdout",
         },
         {
             "MESSAGE": "logline2",
-            "SYSLOG_IDENTIFIER": "vm-fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_fake_vm_-stderr",
+            "SYSLOG_IDENTIFIER": "vm-decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca-stderr",
             "__REALTIME_TIMESTAMP": "2020-10-12 01:03:00",
             "file": "stderr",
         },
