@@ -150,6 +150,13 @@ class QemuVM:
                 f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
             ]
 
+        # Data and rescue volumes come before cloud-init so that device
+        # letter assignment is predictable: vdb is always the first host
+        # volume (original rootfs in rescue mode, first data volume in
+        # normal mode). Cloud-init is auto-detected by its "cidata" label
+        # and does not need a fixed device letter.
+        args += self._get_host_volumes_args()
+
         if self.cloud_init_drive_path:
             # Use explicit drive syntax instead of -cdrom for Q35
             # compatibility. On Q35, -cdrom creates an unattached IDE
@@ -170,8 +177,6 @@ class QemuVM:
                 "virtio-balloon-pci,free-page-reporting=on",
             ]
 
-        args += self._get_host_volumes_args()
-
         # Add CPU configuration for migration compatibility
         # Use migratable=on to ensure CPU features are compatible across different hosts
         # Note: GPU mode uses its own -cpu flag in _get_gpu_args() with host-phys-bits-limit
@@ -179,6 +184,7 @@ class QemuVM:
         # as less as possible to allow migration between different hosts
         if not self.gpus:
             args += ["-machine", "pc-i440fx-6.2", "-cpu", "host,migratable=on"]
+
 
         args += self._get_gpu_args()
         logger.debug("QEMU args: %s", args)
