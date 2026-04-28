@@ -198,7 +198,7 @@ class QemuVM:
         for volume in self.host_volumes:
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format=raw,"
+                f"file={volume.path_on_host},format={'qcow2' if str(volume.path_on_host).endswith('.qcow2') else 'raw'},"
                 f"readonly={'on' if volume.read_only else 'off'},"
                 f"media=disk,if=virtio",
             ]
