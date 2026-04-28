@@ -834,24 +834,33 @@ async def _run_rescue_work(params: _RescueParams) -> dict:
     execution.stop_event = asyncio.Event()
     pool.executions[execution.vm_hash] = execution
 
-    rescue_rootfs_path.unlink(missing_ok=True)
-
     from aleph.vm.storage import download_file, get_content_url
 
-    rescue_url = await get_content_url(params.rescue_hash)
-    await download_file(rescue_url, rescue_rootfs_path)
-
-    if params.expected_sha256:
+    cached = False
+    if rescue_rootfs_path.exists() and params.expected_sha256:
         actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
-        if actual_sha256 != params.expected_sha256:
-            rescue_rootfs_path.unlink(missing_ok=True)
-            logger.error(
-                "Rescue image hash mismatch for %s: expected %s, got %s",
-                vm_hash,
-                params.expected_sha256,
-                actual_sha256,
-            )
-            raise ValueError("Rescue image integrity check failed")
+        if actual_sha256 == params.expected_sha256:
+            logger.info("Rescue image already cached for %s, skipping download", vm_hash)
+            cached = True
+        else:
+            rescue_rootfs_path.unlink()
+
+    if not cached:
+        rescue_rootfs_path.unlink(missing_ok=True)
+        rescue_url = await get_content_url(params.rescue_hash)
+        await download_file(rescue_url, rescue_rootfs_path)
+
+        if params.expected_sha256:
+            actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
+            if actual_sha256 != params.expected_sha256:
+                rescue_rootfs_path.unlink(missing_ok=True)
+                logger.error(
+                    "Rescue image hash mismatch for %s: expected %s, got %s",
+                    vm_hash,
+                    params.expected_sha256,
+                    actual_sha256,
+                )
+                raise ValueError("Rescue image integrity check failed")
 
     execution.mode = "rescue"
     await metrics.record_event(
