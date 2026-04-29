@@ -23,13 +23,19 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseModel, Field
 
-from aleph.vm.migration.jobs import DiskFileInfo, ExportJob, ImportJob, export_jobs, import_jobs
-from aleph.vm.migration.runner import _run_export, _run_import
+from aleph.vm.migration.jobs import (
+    DiskFileInfo,
+    ExportJob,
+    ImportJob,
+    export_jobs,
+    import_jobs,
+)
+from aleph.vm.migration.runner import run_export, run_import
 from aleph.vm.models import MigrationState, VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import cors_allow_all, create_task_log_exceptions, dumps_for_json
 
-from . import authenticate_api_request
+from . import requires_allocation_auth
 from .operator import get_execution_or_404, get_itemhash_or_400
 
 logger = logging.getLogger(__name__)
@@ -71,28 +77,32 @@ class ColdMigrationImportRequest(BaseModel):
 
 
 @cors_allow_all
+@requires_allocation_auth
 async def migration_export(request: web.Request) -> web.Response:
     """POST /control/machine/{ref}/migration/export — start an async export job.
 
     Returns 202 immediately. Caller polls GET /export/status for progress.
     """
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     vm_hash = get_itemhash_or_400(request.match_info)
     pool: VmPool = request.app["vm_pool"]
     execution: VmExecution = get_execution_or_404(vm_hash, pool)
 
     if not execution.is_running:
-        return web.json_response({"status": "error", "error": "VM is not running"}, status=HTTPStatus.BAD_REQUEST)
+        return web.json_response({"error": "VM is not running"}, status=HTTPStatus.BAD_REQUEST)
     if execution.hypervisor != HypervisorType.qemu:
-        return web.json_response({"status": "error", "error": "Migration only supported for QEMU instances"}, status=HTTPStatus.BAD_REQUEST)
+        return web.json_response(
+            {"error": "Migration only supported for QEMU instances"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
     if execution.is_confidential:
-        return web.json_response({"status": "error", "error": "Migration is not supported for confidential VMs"}, status=HTTPStatus.BAD_REQUEST)
+        return web.json_response(
+            {"error": "Migration is not supported for confidential VMs"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
 
     # Read-modify-write of the registry below MUST stay await-free so two simultaneous
     # POSTs for the same vm_hash can't both pass the existence check. The prior task
-    # (if any) is captured here and awaited inside _run_export, not here.
+    # (if any) is captured here and awaited inside run_export, not here.
     prior_task: asyncio.Task | None = None
     existing = export_jobs.get(vm_hash)
     if existing is not None:
@@ -110,9 +120,7 @@ async def migration_export(request: web.Request) -> web.Response:
         started_at=datetime.now(timezone.utc),
     )
     export_jobs[vm_hash] = job
-    job.task = create_task_log_exceptions(
-        _run_export(job, execution, prior_task=prior_task), name=f"export-{vm_hash}"
-    )
+    job.task = create_task_log_exceptions(run_export(job, execution, prior_task=prior_task), name=f"export-{vm_hash}")
 
     return _export_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
@@ -122,7 +130,7 @@ def _reset_failed_export(job: ExportJob) -> None:
 
     Synchronous on purpose: the caller relies on this returning before yielding
     to the event loop so concurrent retry POSTs see the slot freed. The prior
-    runner task is awaited later, inside the new _run_export.
+    runner task is awaited later, inside the new run_export.
     """
     logger.info("Resetting failed export for %s (previous error: %s)", job.vm_hash, job.error)
     if job.ttl_task is not None and not job.ttl_task.done():
@@ -150,15 +158,13 @@ def _export_job_descriptor_response(job: ExportJob, status: int) -> web.Response
 
 
 @cors_allow_all
+@requires_allocation_auth
 async def migration_export_status(request: web.Request) -> web.Response:
     """GET /control/machine/{ref}/migration/export/status — return live export job state."""
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     vm_hash = get_itemhash_or_400(request.match_info)
     job = export_jobs.get(vm_hash)
     if job is None:
-        return web.json_response({"status": "error", "error": "No export job"}, status=HTTPStatus.NOT_FOUND)
+        return web.json_response({"error": "No export job"}, status=HTTPStatus.NOT_FOUND)
 
     return web.json_response(
         {
@@ -223,11 +229,9 @@ async def migration_disk_download(request: web.Request) -> web.StreamResponse:
 
 
 @cors_allow_all
+@requires_allocation_auth
 async def migration_import(request: web.Request) -> web.Response:
     """POST /control/migrate — start an async import job."""
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     try:
         data = await request.json()
         params = ColdMigrationImportRequest.model_validate(data)
@@ -240,13 +244,13 @@ async def migration_import(request: web.Request) -> web.Response:
     existing_exec = pool.executions.get(vm_hash)
     if existing_exec is not None and existing_exec.is_running:
         return web.json_response(
-            {"status": "error", "error": "VM already running on this host"},
+            {"error": "VM already running on this host"},
             status=HTTPStatus.CONFLICT,
         )
 
     # Read-modify-write of the registry below MUST stay await-free so two simultaneous
     # POSTs for the same vm_hash can't both pass the existence check. The prior task
-    # (if any) is captured here and awaited inside _run_import, not here.
+    # (if any) is captured here and awaited inside run_import, not here.
     prior_task: asyncio.Task | None = None
     existing = import_jobs.get(vm_hash)
     if existing is not None:
@@ -267,8 +271,9 @@ async def migration_import(request: web.Request) -> web.Response:
     )
     import_jobs[vm_hash] = job
     job.task = create_task_log_exceptions(
-        _run_import(
-            job, pool,
+        run_import(
+            job,
+            pool,
             disk_files=params.disk_files,
             export_token=params.export_token,
             prior_task=prior_task,
@@ -284,8 +289,8 @@ def _reset_failed_import(job: ImportJob, pool: VmPool) -> None:
 
     Synchronous on purpose: the caller relies on this returning before yielding
     to the event loop so concurrent retry POSTs see the slot freed. The prior
-    runner task is awaited later, inside the new _run_import. Mirrors the
-    safety check in _run_import's failure path: only rmtree if the pool has no
+    runner task is awaited later, inside the new run_import. Mirrors the
+    safety check in run_import's failure path: only rmtree if the pool has no
     execution.
     """
     logger.info("Resetting failed import for %s (previous error: %s)", job.vm_hash, job.error)
@@ -311,16 +316,14 @@ def _import_job_descriptor_response(job: ImportJob, status: int) -> web.Response
 
 
 @cors_allow_all
+@requires_allocation_auth
 async def migration_import_status(request: web.Request) -> web.Response:
     """GET /control/migrate/{vm_hash}/status — return live import job state."""
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     vm_hash = get_itemhash_or_400(request.match_info)
 
     job = import_jobs.get(vm_hash)
     if job is None:
-        return web.json_response({"status": "error", "error": "No import job"}, status=HTTPStatus.NOT_FOUND)
+        return web.json_response({"error": "No import job"}, status=HTTPStatus.NOT_FOUND)
 
     return web.json_response(
         {
@@ -340,27 +343,25 @@ async def migration_import_status(request: web.Request) -> web.Response:
 
 
 @cors_allow_all
+@requires_allocation_auth
 async def migration_cleanup(request: web.Request) -> web.Response:
     """POST /control/machine/{ref}/migration/cleanup — release source after dest reports IMPORTED.
 
     Refuses if no EXPORTED job exists (catches scheduler bugs that call cleanup too early).
     """
-    if not authenticate_api_request(request):
-        return web.HTTPUnauthorized(text="Authentication token received is invalid")
-
     vm_hash = get_itemhash_or_400(request.match_info)
     pool: VmPool = request.app["vm_pool"]
 
     job = export_jobs.get(vm_hash)
     if job is None or job.state != MigrationState.EXPORTED:
         return web.json_response(
-            {"status": "error", "error": "No completed export to clean up"},
+            {"error": "No completed export to clean up"},
             status=HTTPStatus.CONFLICT,
         )
 
     if job.active_downloads > 0:
         return web.json_response(
-            {"status": "error", "error": "Cannot clean up while disk download in progress"},
+            {"error": "Cannot clean up while disk download in progress"},
             status=HTTPStatus.CONFLICT,
         )
 
@@ -381,6 +382,6 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     except Exception as error:
         logger.exception("Cleanup failed for %s: %s", vm_hash, error)
         return web.json_response(
-            {"status": "error", "error": f"Cleanup failed: {error}"},
+            {"error": f"Cleanup failed: {error}"},
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )

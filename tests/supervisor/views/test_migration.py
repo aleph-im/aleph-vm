@@ -17,6 +17,7 @@ from aleph.vm.orchestrator.supervisor import setup_webapp
 @pytest.fixture(autouse=True)
 def _clear_migration_registries():
     from aleph.vm.migration.jobs import export_jobs, import_jobs
+
     export_jobs.clear()
     import_jobs.clear()
     yield
@@ -32,9 +33,13 @@ def mock_vm_hash():
 
 @pytest.fixture
 def mock_scheduler_auth(mocker):
-    """Mock the scheduler authentication to always pass."""
+    """Mock the scheduler authentication to always pass.
+
+    The migration handlers wrap themselves with @requires_allocation_auth, which
+    calls aleph.vm.orchestrator.views.authenticate_api_request — patch there.
+    """
     mocker.patch(
-        "aleph.vm.orchestrator.views.migration.authenticate_api_request",
+        "aleph.vm.orchestrator.views.authenticate_api_request",
         return_value=True,
     )
 
@@ -88,7 +93,7 @@ class TestMigrationExportEndpoint:
     async def test_export_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.migration.authenticate_api_request",
+            "aleph.vm.orchestrator.views.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -309,7 +314,7 @@ class TestMigrationImportEndpoint:
     async def test_import_unauthorized(self, aiohttp_client, mocker):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.migration.authenticate_api_request",
+            "aleph.vm.orchestrator.views.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -529,9 +534,7 @@ class TestMigrationImportEndpoint:
         await asyncio.sleep(0.1)
 
     @pytest.mark.asyncio
-    async def test_post_against_imported_returns_409(
-        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
-    ):
+    async def test_post_against_imported_returns_409(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         from datetime import datetime, timezone
 
         from aleph.vm.migration.jobs import ImportJob, import_jobs
@@ -588,7 +591,7 @@ class TestMigrationCleanupEndpoint:
     async def test_cleanup_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.migration.authenticate_api_request",
+            "aleph.vm.orchestrator.views.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -851,13 +854,13 @@ class TestImportRequestSourceHostValidation:
     @pytest.mark.parametrize(
         "bad_host",
         [
-            "127.0.0.1",          # IPv4 loopback
-            "127.42.42.42",       # anywhere in 127.0.0.0/8
-            "::1",                # IPv6 loopback
-            "169.254.169.254",    # cloud metadata service
-            "fe80::1",            # IPv6 link-local
-            "224.0.0.1",          # multicast
-            "0.0.0.0",            # unspecified
+            "127.0.0.1",  # IPv4 loopback
+            "127.42.42.42",  # anywhere in 127.0.0.0/8
+            "::1",  # IPv6 loopback
+            "169.254.169.254",  # cloud metadata service
+            "fe80::1",  # IPv6 link-local
+            "224.0.0.1",  # multicast
+            "0.0.0.0",  # unspecified
             "localhost",
             "LocalHost",
             "",
@@ -881,8 +884,8 @@ class TestImportRequestSourceHostValidation:
     @pytest.mark.parametrize(
         "good_host",
         [
-            "8.8.8.8",          # routable IPv4
-            "2001:db8::1",      # documentation IPv6 (treated as routable for our purposes)
+            "8.8.8.8",  # routable IPv4
+            "2001:db8::1",  # documentation IPv6 (treated as routable for our purposes)
             "src.example.com",  # hostname — we don't resolve, allow-list belongs higher up
             "crn-42",
         ],
@@ -902,9 +905,7 @@ class TestImportRequestSourceHostValidation:
 
 class TestMigrationCleanupActiveDownload:
     @pytest.mark.asyncio
-    async def test_cleanup_during_download_returns_409(
-        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
-    ):
+    async def test_cleanup_during_download_returns_409(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         from datetime import datetime, timezone
 
         from aleph.vm.migration.jobs import ExportJob, export_jobs

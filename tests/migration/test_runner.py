@@ -11,11 +11,8 @@ from aleph_message.models import ItemHash, MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
-from aleph.vm.migration.jobs import (
-    ExportJob,
-    _reset_migration_semaphore_for_tests,
-)
-from aleph.vm.migration.runner import _run_export
+from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
+from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
 
 
@@ -27,7 +24,7 @@ def _reset_semaphore():
 
 
 @pytest.mark.asyncio
-async def test_run_export_success(tmp_path, monkeypatch):
+async def testrun_export_success(tmp_path, monkeypatch):
     """Happy path: graceful shutdown succeeds, two qcow2 disks compress, state ends in EXPORTED."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     volumes_dir = tmp_path / str(vm_hash)
@@ -55,7 +52,7 @@ async def test_run_export_success(tmp_path, monkeypatch):
         state=MigrationState.EXPORTING,
         started_at=datetime.now(timezone.utc),
     )
-    await _run_export(job, execution)
+    await run_export(job, execution)
 
     assert job.state == MigrationState.EXPORTED
     assert job.finished_at is not None
@@ -70,7 +67,7 @@ async def test_run_export_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_export_compression_failure(tmp_path, monkeypatch):
+async def testrun_export_compression_failure(tmp_path, monkeypatch):
     """If compress_disk raises on any file, state goes to EXPORT_FAILED and partial exports are deleted."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     volumes_dir = tmp_path / str(vm_hash)
@@ -103,7 +100,7 @@ async def test_run_export_compression_failure(tmp_path, monkeypatch):
         state=MigrationState.EXPORTING,
         started_at=datetime.now(timezone.utc),
     )
-    await _run_export(job, execution)
+    await run_export(job, execution)
 
     assert job.state == MigrationState.EXPORT_FAILED
     assert "boom" in job.error
@@ -117,7 +114,7 @@ from aleph.vm.migration.jobs import ImportJob
 
 
 @pytest.mark.asyncio
-async def test_run_import_success(tmp_path, monkeypatch):
+async def testrun_import_success(tmp_path, monkeypatch):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -161,7 +158,7 @@ async def test_run_import_success(tmp_path, monkeypatch):
     monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", fake_rebase)
 
     from aleph.vm.migration.jobs import DiskFileInfo
-    from aleph.vm.migration.runner import _run_import
+    from aleph.vm.migration.runner import run_import
 
     job = ImportJob(
         vm_hash=vm_hash,
@@ -179,7 +176,7 @@ async def test_run_import_success(tmp_path, monkeypatch):
         )
     ]
 
-    await _run_import(job, pool, disk_files=disk_files, export_token="t0k3n")
+    await run_import(job, pool, disk_files=disk_files, export_token="t0k3n")
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
@@ -189,10 +186,10 @@ async def test_run_import_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_import_aborts_when_message_not_instance(tmp_path, monkeypatch):
+async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch):
     """If the fetched message isn't an instance, state ends in IMPORT_FAILED."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import _run_import
+    from aleph.vm.migration.runner import run_import
 
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -214,7 +211,7 @@ async def test_run_import_aborts_when_message_not_instance(tmp_path, monkeypatch
         source_host="src",
         source_port=443,
     )
-    await _run_import(
+    await run_import(
         job,
         pool,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
@@ -226,10 +223,10 @@ async def test_run_import_aborts_when_message_not_instance(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypatch):
+async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypatch):
     """If download_disk_from_source raises, dest_dir is rmtree'd."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import _run_import
+    from aleph.vm.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -267,7 +264,7 @@ async def test_run_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypa
         source_host="src",
         source_port=443,
     )
-    await _run_import(
+    await run_import(
         job,
         pool,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
@@ -281,10 +278,10 @@ async def test_run_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_run_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkeypatch):
+async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkeypatch):
     """If pool.create_a_vm raises, dest_dir is rmtree'd."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import _run_import
+    from aleph.vm.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -327,7 +324,7 @@ async def test_run_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monke
         source_host="src",
         source_port=443,
     )
-    await _run_import(
+    await run_import(
         job,
         pool,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
@@ -340,11 +337,11 @@ async def test_run_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_run_import_keeps_dest_dir_when_pool_already_has_execution(tmp_path, monkeypatch):
+async def testrun_import_keeps_dest_dir_when_pool_already_has_execution(tmp_path, monkeypatch):
     """Defence-in-depth: if pool somehow already has a VmExecution for this hash,
     do NOT rmtree the dest dir on failure."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import _run_import
+    from aleph.vm.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -389,7 +386,7 @@ async def test_run_import_keeps_dest_dir_when_pool_already_has_execution(tmp_pat
         source_host="src",
         source_port=443,
     )
-    await _run_import(
+    await run_import(
         job,
         pool,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
@@ -403,12 +400,9 @@ async def test_run_import_keeps_dest_dir_when_pool_already_has_execution(tmp_pat
 
 @pytest.mark.asyncio
 async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
-    """With MAX_CONCURRENT_MIGRATIONS=1, two concurrent _run_export calls must run sequentially."""
-    from aleph.vm.migration.jobs import (
-        ExportJob,
-        _reset_migration_semaphore_for_tests,
-    )
-    from aleph.vm.migration.runner import _run_export
+    """With MAX_CONCURRENT_MIGRATIONS=1, two concurrent run_export calls must run sequentially."""
+    from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
+    from aleph.vm.migration.runner import run_export
 
     monkeypatch.setattr(settings, "MAX_CONCURRENT_MIGRATIONS", 1)
     _reset_migration_semaphore_for_tests()
@@ -448,7 +442,7 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
     job_a = ExportJob(vm_hash=hash_a, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
     job_b = ExportJob(vm_hash=hash_b, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
 
-    await asyncio.gather(_run_export(job_a, exec_a), _run_export(job_b, exec_b))
+    await asyncio.gather(run_export(job_a, exec_a), run_export(job_b, exec_b))
 
     assert max_in_flight == 1, f"Expected serial execution, but {max_in_flight} ran in parallel"
     assert job_a.state == MigrationState.EXPORTED
@@ -495,18 +489,14 @@ async def test_download_disk_verifies_sha256(tmp_path):
     dest = tmp_path / "rootfs.qcow2"
 
     # Happy path: matching hash, file lands at dest_path.
-    n = await download_disk_from_source(
-        FakeSession(), "http://x", dest, "tok", expected_sha256=correct
-    )
+    n = await download_disk_from_source(FakeSession(), "http://x", dest, "tok", expected_sha256=correct)
     assert n == len(payload)
     assert dest.read_bytes() == payload
 
     # Bad hash: file is unlinked, RuntimeError raised, dest is gone.
     dest.unlink()
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
-        await download_disk_from_source(
-            FakeSession(), "http://x", dest, "tok", expected_sha256="f" * 64
-        )
+        await download_disk_from_source(FakeSession(), "http://x", dest, "tok", expected_sha256="f" * 64)
     assert not dest.exists()
     assert not dest.with_suffix(dest.suffix + ".part").exists()
 

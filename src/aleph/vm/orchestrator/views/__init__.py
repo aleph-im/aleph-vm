@@ -475,6 +475,24 @@ def authenticate_api_request(request: web.Request) -> bool:
     return sha256(signature).hexdigest() == settings.ALLOCATION_TOKEN_HASH
 
 
+def requires_allocation_auth(handler):
+    """Decorator: reject the request with 401 unless the X-Auth-Signature header matches.
+
+    Wraps :func:`authenticate_api_request` so endpoints don't have to repeat the
+    three-line check. Apply BELOW any CORS decorator so OPTIONS preflights pass
+    through unauthenticated.
+    """
+    import functools
+
+    @functools.wraps(handler)
+    async def wrapper(request: web.Request) -> web.StreamResponse:
+        if not authenticate_api_request(request):
+            return web.HTTPUnauthorized(text="Authentication token received is invalid")
+        return await handler(request)
+
+    return wrapper
+
+
 allocation_lock = None
 network_recreation_lock = None
 proxy_regeneration_lock = None

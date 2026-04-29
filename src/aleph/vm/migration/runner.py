@@ -7,6 +7,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiohttp
 from aleph_message.models import MessageType
@@ -33,6 +34,9 @@ from aleph.vm.models import MigrationState, VmExecution
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.storage import get_rootfs_base_path
 
+if TYPE_CHECKING:
+    from aleph.vm.pool import VmPool
+
 logger = logging.getLogger(__name__)
 
 EXPORT_TTL_SECONDS = 1800  # 30 minutes — matches today's behaviour
@@ -55,13 +59,16 @@ async def _export_ttl_cleanup(job: ExportJob, timeout: int) -> None:
 
 
 def schedule_export_ttl(job: ExportJob, timeout: int) -> None:
-    """Cancel any prior TTL task and schedule a fresh one."""
-    if job.ttl_task is not None and not job.ttl_task.done():
-        job.ttl_task.cancel()
-    job.ttl_task = asyncio.create_task(_export_ttl_cleanup(job, timeout))
+    """Cancel any prior TTL task and schedule a fresh one. Logs and swallows failures."""
+    try:
+        if job.ttl_task is not None and not job.ttl_task.done():
+            job.ttl_task.cancel()
+        job.ttl_task = asyncio.create_task(_export_ttl_cleanup(job, timeout))
+    except Exception as e:
+        logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
 
 
-async def _run_export(
+async def run_export(
     job: ExportJob,
     execution: VmExecution,
     *,
@@ -117,10 +124,7 @@ async def _run_export(
             job.token = secrets.token_urlsafe(32)
             job.finished_at = datetime.now(timezone.utc)
             job.state = MigrationState.EXPORTED
-            try:
-                schedule_export_ttl(job, EXPORT_TTL_SECONDS)
-            except Exception as e:
-                logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
+            schedule_export_ttl(job, EXPORT_TTL_SECONDS)
 
         except Exception as error:
             logger.exception("Export failed for %s: %s", job.vm_hash, error)
@@ -141,10 +145,7 @@ async def _run_export(
             except Exception as restart_error:
                 logger.error("Failed to restart VM %s after export failure: %s", job.vm_hash, restart_error)
 
-            try:
-                schedule_export_ttl(job, EXPORT_TTL_SECONDS)
-            except Exception as e:
-                logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
+            schedule_export_ttl(job, EXPORT_TTL_SECONDS)
 
 
 async def _import_ttl_cleanup(job: ImportJob, timeout: int) -> None:
@@ -157,15 +158,18 @@ async def _import_ttl_cleanup(job: ImportJob, timeout: int) -> None:
 
 
 def schedule_import_ttl(job: ImportJob, timeout: int) -> None:
-    """Cancel any prior TTL task and schedule a fresh one for an import job."""
-    if job.ttl_task is not None and not job.ttl_task.done():
-        job.ttl_task.cancel()
-    job.ttl_task = asyncio.create_task(_import_ttl_cleanup(job, timeout))
+    """Cancel any prior TTL task and schedule a fresh one. Logs and swallows failures."""
+    try:
+        if job.ttl_task is not None and not job.ttl_task.done():
+            job.ttl_task.cancel()
+        job.ttl_task = asyncio.create_task(_import_ttl_cleanup(job, timeout))
+    except Exception as e:
+        logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
 
 
-async def _run_import(
+async def run_import(
     job: ImportJob,
-    pool,
+    pool: "VmPool",
     *,
     disk_files: list[DiskFileInfo],
     export_token: str,
@@ -259,10 +263,7 @@ async def _run_import(
             job.transfer_time_ms = int((time.monotonic() - start) * 1000)
             job.finished_at = datetime.now(timezone.utc)
             job.state = MigrationState.IMPORTED
-            try:
-                schedule_import_ttl(job, IMPORT_TTL_SECONDS)
-            except Exception as e:
-                logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
+            schedule_import_ttl(job, IMPORT_TTL_SECONDS)
 
         except Exception as error:
             logger.exception("Import failed for %s: %s", job.vm_hash, error)
@@ -272,7 +273,4 @@ async def _run_import(
 
             if job.dest_dir is not None and pool.executions.get(job.vm_hash) is None:
                 shutil.rmtree(job.dest_dir, ignore_errors=True)
-            try:
-                schedule_import_ttl(job, IMPORT_TTL_SECONDS)
-            except Exception as e:
-                logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
+            schedule_import_ttl(job, IMPORT_TTL_SECONDS)
