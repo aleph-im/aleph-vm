@@ -52,8 +52,13 @@ async def compress_disk(source_path: Path, dest_path: Path) -> None:
         raise RuntimeError(msg)
 
     proc = await asyncio.create_subprocess_exec(
-        qemu_img, "convert", "-c", "-O", "qcow2",
-        str(source_path), str(dest_path),
+        qemu_img,
+        "convert",
+        "-c",
+        "-O",
+        "qcow2",
+        str(source_path),
+        str(dest_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -71,9 +76,13 @@ async def rebase_overlay(overlay_path: Path, parent_path: Path, parent_format: s
         raise RuntimeError(msg)
 
     proc = await asyncio.create_subprocess_exec(
-        qemu_img, "rebase", "-u",
-        "-b", str(parent_path),
-        "-F", parent_format,
+        qemu_img,
+        "rebase",
+        "-u",
+        "-b",
+        str(parent_path),
+        "-F",
+        parent_format,
         str(overlay_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -94,7 +103,10 @@ async def detect_parent_format(parent_path: Path) -> str:
         raise RuntimeError(msg)
 
     proc = await asyncio.create_subprocess_exec(
-        qemu_img, "info", str(parent_path), "--output=json",
+        qemu_img,
+        "info",
+        str(parent_path),
+        "--output=json",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

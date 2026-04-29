@@ -58,7 +58,8 @@ async def reap_orphan_migration_files(pool) -> None:
             if qcow_files:
                 logger.warning(
                     "Found orphan complete volumes dir %s with %d qcow2 files; leaving in place",
-                    entry, len(qcow_files),
+                    entry,
+                    len(qcow_files),
                 )
 
     logger.info("Migration reaper: removed %d orphan export files, %d orphan import dirs", n_exports, n_dirs)
