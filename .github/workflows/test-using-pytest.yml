@@ -78,9 +78,14 @@ jobs:
 
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
+        env:
+          # Override the Aleph API endpoint without touching code. Defaults to api.aleph.im
+          # (canonical PyAleph node) so CI does not depend on the flakier official.aleph.cloud.
+          # Set repo/org GH Actions variable ALEPH_VM_API_SERVER to point at another CCN.
+          ALEPH_VM_API_SERVER: ${{ vars.ALEPH_VM_API_SERVER || 'https://api.aleph.im' }}
         run: |
           sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
-          sudo hatch run testing:cov
+          sudo --preserve-env=ALEPH_VM_API_SERVER hatch run testing:cov
 
       - name: Output modules used and their version
         if: ${{ !cancelled() }}
