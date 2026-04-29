@@ -69,14 +69,15 @@ logger = logging.getLogger(__name__)
 
 
 class MigrationState(str, Enum):
-    """State of VM migration process."""
+    """State of VM migration process. Source-side states begin with EXPORT_, destination-side with IMPORT_."""
 
     NONE = "none"
     EXPORTING = "exporting"
     EXPORTED = "exported"
+    EXPORT_FAILED = "export_failed"
     IMPORTING = "importing"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    IMPORTED = "imported"
+    IMPORT_FAILED = "import_failed"
 
 
 @dataclass
@@ -128,10 +129,6 @@ class VmExecution:
     persistent: bool = False
     mapped_ports: dict[int, dict]  # Port redirect to the VM
     record: ExecutionRecord | None = None
-
-    # Migration state tracking
-    migration_state: MigrationState = MigrationState.NONE
-    export_token: str | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
         if not self.is_instance:

@@ -2,8 +2,7 @@
 
 import asyncio
 from http import HTTPStatus
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient
@@ -13,6 +12,16 @@ from aleph_message.models.execution.environment import HypervisorType
 from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.supervisor import setup_webapp
+
+
+@pytest.fixture(autouse=True)
+def _clear_migration_registries():
+    from aleph.vm.migration.jobs import export_jobs, import_jobs
+    export_jobs.clear()
+    import_jobs.clear()
+    yield
+    export_jobs.clear()
+    import_jobs.clear()
 
 
 @pytest.fixture
@@ -30,7 +39,7 @@ def mock_scheduler_auth(mocker):
     )
 
 
-def _make_running_qemu_execution(mocker, vm_hash, migration_state=MigrationState.NONE):
+def _make_running_qemu_execution(mocker, vm_hash):
     """Helper to create a mock running QEMU execution."""
     execution = mocker.Mock()
     execution.vm_hash = vm_hash
@@ -38,14 +47,38 @@ def _make_running_qemu_execution(mocker, vm_hash, migration_state=MigrationState
     execution.is_stopping = False
     execution.hypervisor = HypervisorType.qemu
     execution.is_confidential = False
-    execution.migration_state = migration_state
-    execution.export_token = None
     execution.systemd_manager = mocker.Mock()
     execution.controller_service = f"aleph-vm-controller@{vm_hash}.service"
     execution.vm = mocker.Mock()
     execution.vm.qmp_socket_path = mocker.Mock()
     execution.vm.qmp_socket_path.exists.return_value = True
     return execution
+
+
+async def wait_for_export_state(client: TestClient, vm_hash, target_state: str, timeout: float = 5.0):
+    """Poll /export/status until job.state == target_state or timeout."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/control/machine/{vm_hash}/migration/export/status")
+        if r.status == HTTPStatus.OK:
+            data = await r.json()
+            if data["state"] == target_state:
+                return data
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"export job did not reach {target_state} within {timeout}s")
+
+
+async def wait_for_import_state(client: TestClient, vm_hash, target_state: str, timeout: float = 5.0):
+    """Poll /control/migrate/{vm_hash}/status until job.state == target_state or timeout."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/control/migrate/{vm_hash}/status")
+        if r.status == HTTPStatus.OK:
+            data = await r.json()
+            if data["state"] == target_state:
+                return data
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"import job did not reach {target_state} within {timeout}s")
 
 
 class TestMigrationExportEndpoint:
@@ -124,9 +157,21 @@ class TestMigrationExportEndpoint:
         assert "confidential" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_export_already_in_progress(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
-        """Test that export fails if migration already in progress."""
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash, MigrationState.EXPORTING)
+    async def test_export_already_completed_returns_409(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        """Test that POST /export returns 409 when a terminal-state job already exists."""
+        from datetime import datetime, timezone
+
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+        )
+
+        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
         pool = mocker.Mock(executions={mock_vm_hash: execution})
         app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
@@ -135,45 +180,35 @@ class TestMigrationExportEndpoint:
         assert response.status == HTTPStatus.CONFLICT
 
     @pytest.mark.asyncio
-    async def test_export_success(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path):
-        """Test successful export."""
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
+    async def test_export_returns_202_and_completes(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        """Test successful export: POST returns 202, polling reaches EXPORTED."""
+        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
 
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        async def fake_compress(src, dst):
+            dst.write_bytes(b"compressed")
 
-        # Create a fake disk file
-        volumes_dir = tmp_path / str(mock_vm_hash)
-        volumes_dir.mkdir()
-        rootfs = volumes_dir / "rootfs.qcow2"
-        rootfs.write_bytes(b"fake qcow2 data")
+        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
 
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration._graceful_shutdown",
-            new_callable=AsyncMock,
-        )
+        volumes = tmp_path / str(mock_vm_hash)
+        volumes.mkdir(parents=True)
+        (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        # Mock _compress_disk to just copy the file
-        async def fake_compress(src, dst):
-            dst.write_bytes(src.read_bytes())
-
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration._compress_disk",
-            side_effect=fake_compress,
-        )
-        mocker.patch("aleph.vm.orchestrator.views.migration.create_task_log_exceptions", return_value=mocker.Mock())
-
+        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
+        pool = mocker.Mock(executions={mock_vm_hash: execution})
+        app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
-        response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
 
-        assert response.status == HTTPStatus.OK
-        data = await response.json()
-        assert data["status"] == "ready"
-        assert len(data["disk_files"]) == 1
-        assert data["disk_files"][0]["name"] == "rootfs.qcow2"
+        r = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
+        assert r.status == HTTPStatus.ACCEPTED
+        body = await r.json()
+        assert body["status_url"].endswith("/migration/export/status")
+
+        data = await wait_for_export_state(client, mock_vm_hash, "exported")
+        assert data["disk_files"] is not None
         assert data["export_token"]
-        assert execution.migration_state == MigrationState.EXPORTED
 
 
 class TestMigrationDiskDownloadEndpoint:
@@ -181,12 +216,7 @@ class TestMigrationDiskDownloadEndpoint:
 
     @pytest.mark.asyncio
     async def test_download_no_export_state(self, aiohttp_client, mocker, mock_vm_hash):
-        """Test that download fails when no export state exists."""
-        # Clear any existing export state
-        from aleph.vm.orchestrator.views.migration import _export_state
-
-        _export_state.pop(mock_vm_hash, None)
-
+        """Test that download fails when no export job exists."""
         pool = mocker.Mock(executions={})
         app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
@@ -197,14 +227,17 @@ class TestMigrationDiskDownloadEndpoint:
     @pytest.mark.asyncio
     async def test_download_invalid_token(self, aiohttp_client, mocker, mock_vm_hash, tmp_path):
         """Test that download fails with invalid token."""
-        from aleph.vm.orchestrator.views.migration import _export_state
+        from datetime import datetime, timezone
 
-        _export_state[mock_vm_hash] = {
-            "token": "correct-token",
-            "disk_files": [],
-            "export_paths": [],
-            "volumes_dir": str(tmp_path),
-        }
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+            token="correct-token",
+            volumes_dir=tmp_path,
+        )
 
         pool = mocker.Mock(executions={})
         app = setup_webapp(pool=pool)
@@ -213,20 +246,20 @@ class TestMigrationDiskDownloadEndpoint:
         response = await client.get(f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2?token=wrong-token")
         assert response.status == HTTPStatus.UNAUTHORIZED
 
-        # Cleanup
-        _export_state.pop(mock_vm_hash, None)
-
     @pytest.mark.asyncio
     async def test_download_file_not_found(self, aiohttp_client, mocker, mock_vm_hash, tmp_path):
         """Test that download returns 404 for missing file."""
-        from aleph.vm.orchestrator.views.migration import _export_state
+        from datetime import datetime, timezone
 
-        _export_state[mock_vm_hash] = {
-            "token": "test-token",
-            "disk_files": [],
-            "export_paths": [],
-            "volumes_dir": str(tmp_path),
-        }
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+            token="test-token",
+            volumes_dir=tmp_path,
+        )
 
         pool = mocker.Mock(executions={})
         app = setup_webapp(pool=pool)
@@ -237,23 +270,25 @@ class TestMigrationDiskDownloadEndpoint:
         )
         assert response.status == HTTPStatus.NOT_FOUND
 
-        # Cleanup
-        _export_state.pop(mock_vm_hash, None)
-
     @pytest.mark.asyncio
     async def test_download_success(self, aiohttp_client, mocker, mock_vm_hash, tmp_path):
         """Test successful file download."""
-        from aleph.vm.orchestrator.views.migration import _export_state
+        from datetime import datetime, timezone
 
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        # The handler reads from `{volumes_dir}/{filename}.export.qcow2`
         export_file = tmp_path / "rootfs.qcow2.export.qcow2"
         export_file.write_bytes(b"compressed qcow2 data")
 
-        _export_state[mock_vm_hash] = {
-            "token": "test-token",
-            "disk_files": [],
-            "export_paths": [str(export_file)],
-            "volumes_dir": str(tmp_path),
-        }
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+            token="test-token",
+            volumes_dir=tmp_path,
+            export_paths=[export_file],
+        )
 
         pool = mocker.Mock(executions={})
         app = setup_webapp(pool=pool)
@@ -263,9 +298,6 @@ class TestMigrationDiskDownloadEndpoint:
         assert response.status == HTTPStatus.OK
         body = await response.read()
         assert body == b"compressed qcow2 data"
-
-        # Cleanup
-        _export_state.pop(mock_vm_hash, None)
 
 
 class TestMigrationImportEndpoint:
@@ -316,22 +348,28 @@ class TestMigrationImportEndpoint:
                 "vm_hash": str(mock_vm_hash),
                 "source_host": "source.example.com",
                 "export_token": "token",
-                "disk_files": [],
+                "disk_files": [
+                    {
+                        "name": "rootfs.qcow2",
+                        "size_bytes": 1,
+                        "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
+                    }
+                ],
             },
         )
         assert response.status == HTTPStatus.CONFLICT
 
     @pytest.mark.asyncio
     async def test_import_not_instance(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
-        """Test that import fails for non-instance messages."""
+        """Wrong message type is now reported via the import status endpoint (async)."""
         from aleph_message.models import MessageType
 
         mock_message = mocker.Mock()
         mock_message.type = MessageType.program
 
         mocker.patch(
-            "aleph.vm.orchestrator.views.migration.load_updated_message",
-            return_value=(mock_message, mock_message),
+            "aleph.vm.migration.runner.load_updated_message",
+            AsyncMock(return_value=(mock_message, mock_message)),
         )
 
         pool = mocker.Mock(executions={})
@@ -344,90 +382,197 @@ class TestMigrationImportEndpoint:
                 "vm_hash": str(mock_vm_hash),
                 "source_host": "source.example.com",
                 "export_token": "token",
-                "disk_files": [],
-            },
-        )
-        assert response.status == HTTPStatus.BAD_REQUEST
-        data = await response.json()
-        assert "not an instance" in data["error"]
-
-    @pytest.mark.asyncio
-    async def test_import_success(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path):
-        """Test successful import."""
-        from aleph_message.models import MessageType
-
-        mock_message = mocker.Mock()
-        mock_message.type = MessageType.instance
-        mock_message.content = mocker.Mock()
-        mock_message.content.environment = mocker.Mock()
-        mock_message.content.environment.hypervisor = HypervisorType.qemu
-        mock_message.content.environment.trusted_execution = None
-        mock_message.content.rootfs = mocker.Mock()
-        mock_message.content.rootfs.parent = mocker.Mock()
-        mock_message.content.rootfs.parent.ref = ItemHash("b" * 64)
-
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration.load_updated_message",
-            return_value=(mock_message, mock_message),
-        )
-
-        parent_path = tmp_path / "parent.qcow2"
-        parent_path.write_bytes(b"parent image")
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration.get_rootfs_base_path",
-            return_value=parent_path,
-        )
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration._detect_parent_format",
-            return_value="qcow2",
-        )
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration._download_disk_from_source",
-            return_value=1024,
-        )
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration._rebase_overlay",
-            new_callable=AsyncMock,
-        )
-        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
-
-        # Create the destination directory so overlay_path.exists() returns True
-        dest_dir = tmp_path / str(mock_vm_hash)
-        dest_dir.mkdir()
-        (dest_dir / "rootfs.qcow2").write_bytes(b"overlay")
-
-        mock_execution = mocker.Mock()
-        pool = mocker.AsyncMock()
-        pool.executions = {}
-        pool.create_a_vm = AsyncMock(return_value=mock_execution)
-
-        app = setup_webapp(pool=pool)
-        client: TestClient = await aiohttp_client(app)
-
-        response = await client.post(
-            "/control/migrate",
-            json={
-                "vm_hash": str(mock_vm_hash),
-                "source_host": "source.example.com",
-                "source_port": 443,
-                "export_token": "test-token",
                 "disk_files": [
                     {
                         "name": "rootfs.qcow2",
-                        "size_bytes": 1024,
+                        "size_bytes": 1,
                         "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                     }
                 ],
             },
         )
+        assert response.status == HTTPStatus.ACCEPTED
 
-        assert response.status == HTTPStatus.OK
-        data = await response.json()
-        assert data["status"] == "completed"
-        assert "transfer_time_ms" in data
-        assert data["total_bytes_transferred"] == 1024
+        data = await wait_for_import_state(client, mock_vm_hash, "import_failed")
+        assert "not an instance" in data["error"]
 
-        pool.create_a_vm.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_import_returns_202_and_completes(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        from aleph_message.models import MessageType
+        from aleph_message.models.execution.environment import HypervisorType
+
+        # Patch every external call inside _run_import.
+        fake_message = mocker.Mock()
+        fake_message.type = MessageType.instance
+        fake_message.content.environment.hypervisor = HypervisorType.qemu
+        fake_message.content.environment.trusted_execution = None
+        fake_message.content.rootfs.parent.ref = "parent"
+
+        mocker.patch(
+            "aleph.vm.migration.runner.load_updated_message",
+            AsyncMock(return_value=(fake_message, fake_message)),
+        )
+        mocker.patch(
+            "aleph.vm.migration.runner.get_rootfs_base_path",
+            AsyncMock(return_value=tmp_path / "parent.qcow2"),
+        )
+        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+
+        async def fake_download(session, url, dest_path, token, on_chunk=None):
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"x")
+            if on_chunk:
+                on_chunk(1)
+            return 1
+
+        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+        (tmp_path / "parent.qcow2").write_bytes(b"x")
+
+        pool = mocker.Mock(executions={})
+        pool.create_a_vm = AsyncMock()
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        body = {
+            "vm_hash": str(mock_vm_hash),
+            "source_host": "src.example",
+            "source_port": 443,
+            "export_token": "tok",
+            "disk_files": [
+                {
+                    "name": "rootfs.qcow2",
+                    "size_bytes": 1,
+                    "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
+                }
+            ],
+        }
+        r = await client.post("/control/migrate", json=body)
+        assert r.status == HTTPStatus.ACCEPTED
+
+        data = await wait_for_import_state(client, mock_vm_hash, "imported")
+        assert data["transfer_time_ms"] is not None
+
+    @pytest.mark.asyncio
+    async def test_second_post_returns_existing_import_job(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        """Two POSTs while a job is IMPORTING return 202 referencing the same job."""
+        from aleph_message.models import MessageType
+        from aleph_message.models.execution.environment import HypervisorType
+
+        # Make the import hang in the disk-download step.
+        slow = asyncio.Event()
+
+        async def fake_download(session, url, dest_path, token, on_chunk=None):
+            await slow.wait()
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"x")
+            return 1
+
+        fake_message = mocker.Mock()
+        fake_message.type = MessageType.instance
+        fake_message.content.environment.hypervisor = HypervisorType.qemu
+        fake_message.content.environment.trusted_execution = None
+        fake_message.content.rootfs.parent.ref = "parent"
+
+        mocker.patch(
+            "aleph.vm.migration.runner.load_updated_message",
+            AsyncMock(return_value=(fake_message, fake_message)),
+        )
+        mocker.patch(
+            "aleph.vm.migration.runner.get_rootfs_base_path",
+            AsyncMock(return_value=tmp_path / "parent.qcow2"),
+        )
+        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+        (tmp_path / "parent.qcow2").write_bytes(b"x")
+
+        pool = mocker.Mock(executions={})
+        pool.create_a_vm = AsyncMock()
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        body = {
+            "vm_hash": str(mock_vm_hash),
+            "source_host": "src.example",
+            "source_port": 443,
+            "export_token": "tok",
+            "disk_files": [
+                {
+                    "name": "rootfs.qcow2",
+                    "size_bytes": 1,
+                    "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
+                }
+            ],
+        }
+        r1 = await client.post("/control/migrate", json=body)
+        assert r1.status == HTTPStatus.ACCEPTED
+        r2 = await client.post("/control/migrate", json=body)
+        assert r2.status == HTTPStatus.ACCEPTED
+
+        d1, d2 = await r1.json(), await r2.json()
+        assert d1["started_at"] == d2["started_at"]
+
+        slow.set()
+        await asyncio.sleep(0.1)
+
+    @pytest.mark.asyncio
+    async def test_post_against_imported_returns_409(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        from datetime import datetime, timezone
+
+        from aleph.vm.migration.jobs import ImportJob, import_jobs
+
+        import_jobs[mock_vm_hash] = ImportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.IMPORTED,
+            started_at=datetime.now(timezone.utc),
+            source_host="src",
+            source_port=443,
+        )
+
+        pool = mocker.Mock(executions={})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        body = {
+            "vm_hash": str(mock_vm_hash),
+            "source_host": "src",
+            "source_port": 443,
+            "export_token": "tok",
+            "disk_files": [{"name": "rootfs.qcow2", "size_bytes": 1, "download_path": "/x"}],
+        }
+        r = await client.post("/control/migrate", json=body)
+        assert r.status == HTTPStatus.CONFLICT
+
+
+class TestMigrationStatusEndpoints:
+    @pytest.mark.asyncio
+    async def test_export_status_404_for_unknown_vm_hash(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        pool = mocker.Mock(executions={})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+        r = await client.get(f"/control/machine/{mock_vm_hash}/migration/export/status")
+        assert r.status == HTTPStatus.NOT_FOUND
+
+    @pytest.mark.asyncio
+    async def test_import_status_404_for_unknown_vm_hash(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        pool = mocker.Mock(executions={})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+        r = await client.get(f"/control/migrate/{mock_vm_hash}/status")
+        assert r.status == HTTPStatus.NOT_FOUND
 
 
 class TestMigrationCleanupEndpoint:
@@ -449,9 +594,22 @@ class TestMigrationCleanupEndpoint:
 
     @pytest.mark.asyncio
     async def test_cleanup_success(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
-        """Test successful cleanup."""
+        """Test successful cleanup when an EXPORTED job is present."""
+        from datetime import datetime, timezone
+
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+        )
+
         pool = mocker.AsyncMock()
         pool.executions = {}
+        # forget_vm is sync in production (not awaited); use a regular Mock
+        # so we don't emit a RuntimeWarning about an unawaited coroutine.
+        pool.forget_vm = mocker.Mock()
         app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
 
@@ -464,179 +622,6 @@ class TestMigrationCleanupEndpoint:
         pool.forget_vm.assert_called_once_with(mock_vm_hash)
 
 
-class TestMigrationHelpers:
-    """Tests for migration helper functions."""
-
-    @pytest.mark.asyncio
-    async def test_graceful_shutdown_success(self, mocker):
-        """Test graceful shutdown via QMP system_powerdown."""
-        from aleph.vm.orchestrator.views.migration import _graceful_shutdown
-
-        mock_client = mocker.Mock()
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration.QemuVmClient",
-            return_value=mock_client,
-        )
-
-        execution = mocker.Mock()
-        execution.vm_hash = "test"
-        execution.vm = mocker.Mock()
-        execution.systemd_manager = mocker.Mock()
-        execution.systemd_manager.is_service_active.return_value = False
-        execution.controller_service = "test-service"
-
-        await _graceful_shutdown(execution, timeout=2)
-
-        mock_client.system_powerdown.assert_called_once()
-        mock_client.close.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_graceful_shutdown_timeout_forces_stop(self, mocker):
-        """Test that shutdown falls back to force stop on timeout."""
-        from aleph.vm.orchestrator.views.migration import _graceful_shutdown
-
-        mock_client = mocker.Mock()
-        mocker.patch(
-            "aleph.vm.orchestrator.views.migration.QemuVmClient",
-            return_value=mock_client,
-        )
-
-        execution = mocker.Mock()
-        execution.vm_hash = "test"
-        execution.vm = mocker.Mock()
-        execution.systemd_manager = mocker.Mock()
-        # Service stays active (never shuts down)
-        execution.systemd_manager.is_service_active.return_value = True
-        execution.controller_service = "test-service"
-
-        await _graceful_shutdown(execution, timeout=1)
-
-        execution.systemd_manager.stop_and_disable.assert_called_once_with("test-service")
-
-    @pytest.mark.asyncio
-    async def test_compress_disk(self, mocker, tmp_path):
-        """Test disk compression with qemu-img convert."""
-        from aleph.vm.orchestrator.views.migration import _compress_disk
-
-        source = tmp_path / "source.qcow2"
-        dest = tmp_path / "dest.qcow2"
-        source.write_bytes(b"fake qcow2")
-
-        mock_proc = mocker.Mock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-
-        mocker.patch("asyncio.create_subprocess_exec", return_value=mock_proc)
-        mocker.patch("shutil.which", return_value="/usr/bin/qemu-img")
-
-        await _compress_disk(source, dest)
-
-    @pytest.mark.asyncio
-    async def test_compress_disk_failure(self, mocker, tmp_path):
-        """Test that compress_disk raises on failure."""
-        from aleph.vm.orchestrator.views.migration import _compress_disk
-
-        source = tmp_path / "source.qcow2"
-        dest = tmp_path / "dest.qcow2"
-        source.write_bytes(b"fake qcow2")
-
-        mock_proc = mocker.Mock()
-        mock_proc.returncode = 1
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"error: bad image"))
-
-        mocker.patch("asyncio.create_subprocess_exec", return_value=mock_proc)
-        mocker.patch("shutil.which", return_value="/usr/bin/qemu-img")
-
-        with pytest.raises(RuntimeError, match="qemu-img convert failed"):
-            await _compress_disk(source, dest)
-
-    @pytest.mark.asyncio
-    async def test_rebase_overlay(self, mocker, tmp_path):
-        """Test overlay rebase with qemu-img rebase."""
-        from aleph.vm.orchestrator.views.migration import _rebase_overlay
-
-        overlay = tmp_path / "overlay.qcow2"
-        parent = tmp_path / "parent.qcow2"
-        overlay.write_bytes(b"overlay")
-        parent.write_bytes(b"parent")
-
-        mock_proc = mocker.Mock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-
-        mocker.patch("asyncio.create_subprocess_exec", return_value=mock_proc)
-        mocker.patch("shutil.which", return_value="/usr/bin/qemu-img")
-
-        await _rebase_overlay(overlay, parent, "qcow2")
-
-    @pytest.mark.asyncio
-    async def test_rebase_overlay_failure(self, mocker, tmp_path):
-        """Test that rebase raises on failure."""
-        from aleph.vm.orchestrator.views.migration import _rebase_overlay
-
-        mock_proc = mocker.Mock()
-        mock_proc.returncode = 1
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"rebase error"))
-
-        mocker.patch("asyncio.create_subprocess_exec", return_value=mock_proc)
-        mocker.patch("shutil.which", return_value="/usr/bin/qemu-img")
-
-        with pytest.raises(RuntimeError, match="qemu-img rebase failed"):
-            await _rebase_overlay(tmp_path / "a.qcow2", tmp_path / "b.qcow2", "qcow2")
-
-    @pytest.mark.asyncio
-    async def test_download_disk_from_source(self, mocker, tmp_path):
-        """Test streaming download with atomic rename."""
-        from aleph.vm.orchestrator.views.migration import _download_disk_from_source
-
-        dest_path = tmp_path / "rootfs.qcow2"
-        test_data = b"downloaded disk data"
-
-        # Create a mock response with async iterator
-        mock_content = mocker.Mock()
-
-        async def mock_iter_chunked(size):
-            yield test_data
-
-        mock_content.iter_chunked = mock_iter_chunked
-
-        mock_response = mocker.AsyncMock()
-        mock_response.status = 200
-        mock_response.content = mock_content
-        mock_response.__aenter__ = mocker.AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = mocker.AsyncMock(return_value=False)
-
-        mock_session = mocker.Mock()
-        mock_session.get = mocker.Mock(return_value=mock_response)
-
-        result = await _download_disk_from_source(
-            mock_session, "https://source:443/disk/rootfs.qcow2", dest_path, "token"
-        )
-
-        assert result == len(test_data)
-        assert dest_path.exists()
-        assert dest_path.read_bytes() == test_data
-
-    @pytest.mark.asyncio
-    async def test_download_disk_from_source_http_error(self, mocker, tmp_path):
-        """Test that download raises on HTTP error."""
-        from aleph.vm.orchestrator.views.migration import _download_disk_from_source
-
-        dest_path = tmp_path / "rootfs.qcow2"
-
-        mock_response = mocker.AsyncMock()
-        mock_response.status = 404
-        mock_response.text = mocker.AsyncMock(return_value="Not found")
-        mock_response.__aenter__ = mocker.AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = mocker.AsyncMock(return_value=False)
-
-        mock_session = mocker.Mock()
-        mock_session.get = mocker.Mock(return_value=mock_response)
-
-        with pytest.raises(RuntimeError, match="HTTP 404"):
-            await _download_disk_from_source(mock_session, "https://source:443/disk/rootfs.qcow2", dest_path, "token")
-
-
 class TestMigrationState:
     """Tests for updated MigrationState enum."""
 
@@ -645,9 +630,10 @@ class TestMigrationState:
         assert MigrationState.NONE.value == "none"
         assert MigrationState.EXPORTING.value == "exporting"
         assert MigrationState.EXPORTED.value == "exported"
+        assert MigrationState.EXPORT_FAILED.value == "export_failed"
         assert MigrationState.IMPORTING.value == "importing"
-        assert MigrationState.COMPLETED.value == "completed"
-        assert MigrationState.FAILED.value == "failed"
+        assert MigrationState.IMPORTED.value == "imported"
+        assert MigrationState.IMPORT_FAILED.value == "import_failed"
 
     def test_migration_state_is_string_enum(self):
         """Test that MigrationState is a string enum."""
@@ -658,3 +644,90 @@ class TestMigrationState:
         assert not hasattr(MigrationState, "PREPARING")
         assert not hasattr(MigrationState, "WAITING")
         assert not hasattr(MigrationState, "MIGRATING")
+        assert not hasattr(MigrationState, "COMPLETED")
+        assert not hasattr(MigrationState, "FAILED")
+
+
+class TestMigrationExportIdempotency:
+    @pytest.mark.asyncio
+    async def test_second_post_returns_existing_job(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        """Two POSTs while a job is EXPORTING return 202 referencing the same job."""
+        # Make compress_disk hang so the job stays in EXPORTING.
+        slow = asyncio.Event()
+
+        async def fake_compress(src, dst):
+            await slow.wait()
+            dst.write_bytes(b"x")
+
+        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
+        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
+        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+
+        # Pre-create the volumes dir so the runner finds disk files to compress.
+        volumes = tmp_path / str(mock_vm_hash)
+        volumes.mkdir(parents=True, exist_ok=True)
+        (volumes / "rootfs.qcow2").write_bytes(b"x")
+
+        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
+        pool = mocker.Mock(executions={mock_vm_hash: execution})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        r1 = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
+        assert r1.status == HTTPStatus.ACCEPTED
+
+        r2 = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
+        assert r2.status == HTTPStatus.ACCEPTED
+
+        d1, d2 = await r1.json(), await r2.json()
+        assert d1["started_at"] == d2["started_at"]  # same job
+
+        # Let the job finish so the test cleans up.
+        slow.set()
+        # Give the runner a tick to complete.
+        await asyncio.sleep(0.1)
+
+
+class TestMigrationCleanupGuard:
+    @pytest.mark.asyncio
+    async def test_cleanup_without_exported_job_returns_409(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        pool = mocker.Mock(executions={})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        r = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
+        assert r.status == HTTPStatus.CONFLICT
+        body = await r.json()
+        assert "No completed export" in body["error"]
+
+
+class TestMigrationCleanupActiveDownload:
+    @pytest.mark.asyncio
+    async def test_cleanup_during_download_returns_409(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
+    ):
+        from datetime import datetime, timezone
+
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.models import MigrationState
+
+        job = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORTED,
+            started_at=datetime.now(timezone.utc),
+            active_downloads=1,
+        )
+        export_jobs[mock_vm_hash] = job
+
+        pool = mocker.Mock(executions={})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        r = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
+        assert r.status == HTTPStatus.CONFLICT
+        body = await r.json()
+        assert "download" in body["error"].lower()
