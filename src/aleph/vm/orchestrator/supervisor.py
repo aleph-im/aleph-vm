@@ -17,6 +17,7 @@ from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
+from aleph.vm.migration.reaper import reap_orphan_migration_files
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
@@ -64,7 +65,6 @@ from .views.migration import (
     migration_import,
     migration_import_status,
 )
-from aleph.vm.migration.reaper import reap_orphan_migration_files
 from .views.operator import (
     BackupState,
     operate_backup,
