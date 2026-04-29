@@ -10,6 +10,7 @@ These endpoints are called by the scheduler to coordinate VM migration:
 
 import logging
 import secrets
+import shutil
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -78,7 +79,10 @@ async def migration_export(request: web.Request) -> web.Response:
     if existing is not None:
         if existing.state == MigrationState.EXPORTING:
             return _export_job_descriptor_response(existing, status=HTTPStatus.ACCEPTED)
-        return _export_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
+        if existing.state == MigrationState.EXPORT_FAILED:
+            _reset_failed_export(existing)
+        else:
+            return _export_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
 
     job = ExportJob(
         vm_hash=vm_hash,
@@ -91,10 +95,23 @@ async def migration_export(request: web.Request) -> web.Response:
     return _export_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
 
+def _reset_failed_export(job: ExportJob) -> None:
+    """Clear an EXPORT_FAILED slot so the caller's retry can start fresh."""
+    logger.info("Resetting failed export for %s (previous error: %s)", job.vm_hash, job.error)
+    if job.ttl_task is not None and not job.ttl_task.done():
+        job.ttl_task.cancel()
+    for path in job.export_paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to delete partial export %s: %s", path, e)
+    export_jobs.pop(job.vm_hash, None)
+
+
 def _export_job_descriptor_response(job: ExportJob, status: int) -> web.Response:
     return web.json_response(
         {
-            "status": job.state.value,
+            "state": job.state.value,
             "vm_hash": str(job.vm_hash),
             "started_at": job.started_at.isoformat(),
             "status_url": f"/control/machine/{job.vm_hash}/migration/export/status",
@@ -200,7 +217,10 @@ async def migration_import(request: web.Request) -> web.Response:
     if existing is not None:
         if existing.state == MigrationState.IMPORTING:
             return _import_job_descriptor_response(existing, status=HTTPStatus.ACCEPTED)
-        return _import_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
+        if existing.state == MigrationState.IMPORT_FAILED:
+            _reset_failed_import(existing, pool)
+        else:
+            return _import_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
 
     job = ImportJob(
         vm_hash=vm_hash,
@@ -218,10 +238,24 @@ async def migration_import(request: web.Request) -> web.Response:
     return _import_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
 
+def _reset_failed_import(job: ImportJob, pool: VmPool) -> None:
+    """Clear an IMPORT_FAILED slot so the caller's retry can start fresh.
+
+    Mirrors the safety check in _run_import's failure path: only rmtree the
+    dest dir if the pool has no execution for this vm_hash.
+    """
+    logger.info("Resetting failed import for %s (previous error: %s)", job.vm_hash, job.error)
+    if job.ttl_task is not None and not job.ttl_task.done():
+        job.ttl_task.cancel()
+    if job.dest_dir is not None and pool.executions.get(job.vm_hash) is None:
+        shutil.rmtree(job.dest_dir, ignore_errors=True)
+    import_jobs.pop(job.vm_hash, None)
+
+
 def _import_job_descriptor_response(job: ImportJob, status: int) -> web.Response:
     return web.json_response(
         {
-            "status": job.state.value,
+            "state": job.state.value,
             "vm_hash": str(job.vm_hash),
             "started_at": job.started_at.isoformat(),
             "status_url": f"/control/migrate/{job.vm_hash}/status",

@@ -204,6 +204,8 @@ class TestMigrationExportEndpoint:
         r = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
         assert r.status == HTTPStatus.ACCEPTED
         body = await r.json()
+        assert body["state"] == "exporting"
+        assert "status" not in body
         assert body["status_url"].endswith("/migration/export/status")
 
         data = await wait_for_export_state(client, mock_vm_hash, "exported")
@@ -688,6 +690,139 @@ class TestMigrationExportIdempotency:
         slow.set()
         # Give the runner a tick to complete.
         await asyncio.sleep(0.1)
+
+
+class TestMigrationFailedReset:
+    @pytest.mark.asyncio
+    async def test_export_post_after_failed_resets_and_restarts(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        """POST against an EXPORT_FAILED slot clears partial files and starts a fresh job."""
+        from datetime import datetime, timezone
+
+        from aleph.vm.migration.jobs import ExportJob, export_jobs
+
+        partial = tmp_path / "rootfs.qcow2.export.qcow2"
+        partial.write_bytes(b"partial")
+
+        export_jobs[mock_vm_hash] = ExportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.EXPORT_FAILED,
+            started_at=datetime.now(timezone.utc),
+            error="boom",
+            export_paths=[partial],
+        )
+
+        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
+
+        async def fake_compress(src, dst):
+            dst.write_bytes(b"compressed")
+
+        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
+        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+        volumes = tmp_path / str(mock_vm_hash)
+        volumes.mkdir(parents=True)
+        (volumes / "rootfs.qcow2").write_bytes(b"x")
+
+        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
+        pool = mocker.Mock(executions={mock_vm_hash: execution})
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        r = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
+        assert r.status == HTTPStatus.ACCEPTED
+        body = await r.json()
+        # Descriptor reports the freshly-created job (state == EXPORTING) without the prior error.
+        assert body["state"] == "exporting"
+        assert "error" not in body
+        # Partial file from the previous failed attempt has been deleted.
+        assert not partial.exists()
+
+        await wait_for_export_state(client, mock_vm_hash, "exported")
+
+    @pytest.mark.asyncio
+    async def test_import_post_after_failed_resets_and_restarts(
+        self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
+    ):
+        """POST against an IMPORT_FAILED slot rmtrees dest_dir and starts a fresh job."""
+        from datetime import datetime, timezone
+
+        from aleph_message.models import MessageType
+        from aleph_message.models.execution.environment import HypervisorType
+
+        from aleph.vm.migration.jobs import ImportJob, import_jobs
+
+        prior_dest = tmp_path / "prior_dest"
+        prior_dest.mkdir()
+        (prior_dest / "junk").write_bytes(b"junk")
+
+        import_jobs[mock_vm_hash] = ImportJob(
+            vm_hash=mock_vm_hash,
+            state=MigrationState.IMPORT_FAILED,
+            started_at=datetime.now(timezone.utc),
+            source_host="src",
+            source_port=443,
+            error="prior failure",
+            dest_dir=prior_dest,
+        )
+
+        fake_message = mocker.Mock()
+        fake_message.type = MessageType.instance
+        fake_message.content.environment.hypervisor = HypervisorType.qemu
+        fake_message.content.environment.trusted_execution = None
+        fake_message.content.rootfs.parent.ref = "parent"
+
+        mocker.patch(
+            "aleph.vm.migration.runner.load_updated_message",
+            AsyncMock(return_value=(fake_message, fake_message)),
+        )
+        mocker.patch(
+            "aleph.vm.migration.runner.get_rootfs_base_path",
+            AsyncMock(return_value=tmp_path / "parent.qcow2"),
+        )
+        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+
+        async def fake_download(session, url, dest_path, token, on_chunk=None):
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"x")
+            if on_chunk:
+                on_chunk(1)
+            return 1
+
+        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+        (tmp_path / "parent.qcow2").write_bytes(b"x")
+
+        pool = mocker.Mock(executions={})
+        pool.create_a_vm = AsyncMock()
+        app = setup_webapp(pool=pool)
+        client: TestClient = await aiohttp_client(app)
+
+        body = {
+            "vm_hash": str(mock_vm_hash),
+            "source_host": "src.example",
+            "source_port": 443,
+            "export_token": "tok",
+            "disk_files": [
+                {
+                    "name": "rootfs.qcow2",
+                    "size_bytes": 1,
+                    "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
+                }
+            ],
+        }
+        r = await client.post("/control/migrate", json=body)
+        assert r.status == HTTPStatus.ACCEPTED
+        descriptor = await r.json()
+        # Descriptor reports the freshly-created job (state == IMPORTING) without the prior error.
+        assert descriptor["state"] == "importing"
+        assert "status" not in descriptor
+        assert "error" not in descriptor
+        # Previous dest dir was rmtree'd by the reset.
+        assert not prior_dest.exists()
+
+        await wait_for_import_state(client, mock_vm_hash, "imported")
 
 
 class TestMigrationCleanupGuard:
