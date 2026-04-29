@@ -845,6 +845,61 @@ class TestMigrationCleanupGuard:
         assert "No completed export" in body["error"]
 
 
+class TestImportRequestSourceHostValidation:
+    """Validator on ColdMigrationImportRequest.source_host blocks obvious SSRF targets."""
+
+    @pytest.mark.parametrize(
+        "bad_host",
+        [
+            "127.0.0.1",          # IPv4 loopback
+            "127.42.42.42",       # anywhere in 127.0.0.0/8
+            "::1",                # IPv6 loopback
+            "169.254.169.254",    # cloud metadata service
+            "fe80::1",            # IPv6 link-local
+            "224.0.0.1",          # multicast
+            "0.0.0.0",            # unspecified
+            "localhost",
+            "LocalHost",
+            "",
+        ],
+    )
+    def test_rejects_unsafe_hosts(self, bad_host):
+        from pydantic import ValidationError
+
+        from aleph.vm.migration.jobs import DiskFileInfo
+        from aleph.vm.orchestrator.views.migration import ColdMigrationImportRequest
+
+        with pytest.raises(ValidationError):
+            ColdMigrationImportRequest(
+                vm_hash="0" * 64,
+                source_host=bad_host,
+                source_port=443,
+                export_token="t",
+                disk_files=[DiskFileInfo(name="a.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
+            )
+
+    @pytest.mark.parametrize(
+        "good_host",
+        [
+            "8.8.8.8",          # routable IPv4
+            "2001:db8::1",      # documentation IPv6 (treated as routable for our purposes)
+            "src.example.com",  # hostname — we don't resolve, allow-list belongs higher up
+            "crn-42",
+        ],
+    )
+    def test_accepts_routable_or_hostname(self, good_host):
+        from aleph.vm.migration.jobs import DiskFileInfo
+        from aleph.vm.orchestrator.views.migration import ColdMigrationImportRequest
+
+        ColdMigrationImportRequest(
+            vm_hash="0" * 64,
+            source_host=good_host,
+            source_port=443,
+            export_token="t",
+            disk_files=[DiskFileInfo(name="a.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
+        )
+
+
 class TestMigrationCleanupActiveDownload:
     @pytest.mark.asyncio
     async def test_cleanup_during_download_returns_409(

@@ -61,11 +61,26 @@ def schedule_export_ttl(job: ExportJob, timeout: int) -> None:
     job.ttl_task = asyncio.create_task(_export_ttl_cleanup(job, timeout))
 
 
-async def _run_export(job: ExportJob, execution: VmExecution) -> None:
+async def _run_export(
+    job: ExportJob,
+    execution: VmExecution,
+    *,
+    prior_task: asyncio.Task | None = None,
+) -> None:
     """Drive an ExportJob from EXPORTING to a terminal state.
 
     Mutates the job in place. Never raises; failures are recorded on the job.
+
+    prior_task: when this run replaces a FAILED slot, the previous task — wait
+    for its cleanup (file unlink, VM restart) to finish before touching the VM.
     """
+    if prior_task is not None and not prior_task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(prior_task), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning("Prior export task for %s did not finish within 30s; proceeding", job.vm_hash)
+        except Exception as e:
+            logger.debug("Prior export task for %s ended with error: %s", job.vm_hash, e)
     sem = get_migration_semaphore()
     export_paths: list[Path] = []
     async with sem:
@@ -154,11 +169,22 @@ async def _run_import(
     *,
     disk_files: list[DiskFileInfo],
     export_token: str,
+    prior_task: asyncio.Task | None = None,
 ) -> None:
     """Drive an ImportJob from IMPORTING to a terminal state.
 
     Mutates the job in place. Never raises; failures are recorded on the job.
+
+    prior_task: when this run replaces a FAILED slot, the previous task — wait
+    for its dest-dir rmtree to finish before recreating the same path.
     """
+    if prior_task is not None and not prior_task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(prior_task), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning("Prior import task for %s did not finish within 30s; proceeding", job.vm_hash)
+        except Exception as e:
+            logger.debug("Prior import task for %s ended with error: %s", job.vm_hash, e)
     sem = get_migration_semaphore()
     start = time.monotonic()
     async with sem:
@@ -191,7 +217,11 @@ async def _run_import(
             scheme = "https" if job.source_port == 443 else "http"
             base_url = f"{scheme}://{job.source_host}:{job.source_port}"
 
-            async with aiohttp.ClientSession() as session:
+            # No total cap (transfers can be large), but require steady progress —
+            # without this a hung peer leaves the import task running forever and
+            # holding the migration semaphore slot.
+            timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 for disk_file in disk_files:
                     url = f"{base_url}{disk_file.download_path}"
                     dest_path = dest_dir / disk_file.name

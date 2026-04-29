@@ -8,6 +8,8 @@ These endpoints are called by the scheduler to coordinate VM migration:
 4. POST /control/machine/{ref}/migration/cleanup - Clean up source VM after successful migration
 """
 
+import asyncio
+import ipaddress
 import logging
 import secrets
 import shutil
@@ -33,21 +35,36 @@ from .operator import get_execution_or_404, get_itemhash_or_400
 logger = logging.getLogger(__name__)
 
 
-class MigrationExportResponse(BaseModel):
-    """Response from the export endpoint."""
-
-    status: str
-    vm_hash: str
-    disk_files: list[DiskFileInfo]
-    export_token: str
-
-
 class ColdMigrationImportRequest(BaseModel):
     vm_hash: str
     source_host: str
     source_port: int = 443
     export_token: str
     disk_files: list[DiskFileInfo] = Field(..., min_length=1)
+
+    @pydantic.field_validator("source_host")
+    @classmethod
+    def _reject_unsafe_hosts(cls, value: str) -> str:
+        """Reject obvious SSRF targets at the request boundary.
+
+        Hostnames are passed through untouched — full protection requires DNS
+        resolution against a per-deployment CRN allow-list and belongs at a
+        higher layer.
+        """
+        if not value:
+            msg = "source_host must not be empty"
+            raise ValueError(msg)
+        if value.lower() in {"localhost", "localhost.localdomain"}:
+            msg = "source_host cannot reference loopback"
+            raise ValueError(msg)
+        try:
+            ip = ipaddress.ip_address(value)
+        except ValueError:
+            return value
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+            msg = f"source_host {value} is not a routable address"
+            raise ValueError(msg)
+        return value
 
 
 # --- Endpoints ---
@@ -74,12 +91,15 @@ async def migration_export(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "error": "Migration is not supported for confidential VMs"}, status=HTTPStatus.BAD_REQUEST)
 
     # Read-modify-write of the registry below MUST stay await-free so two simultaneous
-    # POSTs for the same vm_hash can't both pass the existence check.
+    # POSTs for the same vm_hash can't both pass the existence check. The prior task
+    # (if any) is captured here and awaited inside _run_export, not here.
+    prior_task: asyncio.Task | None = None
     existing = export_jobs.get(vm_hash)
     if existing is not None:
         if existing.state == MigrationState.EXPORTING:
             return _export_job_descriptor_response(existing, status=HTTPStatus.ACCEPTED)
         if existing.state == MigrationState.EXPORT_FAILED:
+            prior_task = existing.task
             _reset_failed_export(existing)
         else:
             return _export_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
@@ -90,13 +110,20 @@ async def migration_export(request: web.Request) -> web.Response:
         started_at=datetime.now(timezone.utc),
     )
     export_jobs[vm_hash] = job
-    job.task = create_task_log_exceptions(_run_export(job, execution), name=f"export-{vm_hash}")
+    job.task = create_task_log_exceptions(
+        _run_export(job, execution, prior_task=prior_task), name=f"export-{vm_hash}"
+    )
 
     return _export_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
 
 def _reset_failed_export(job: ExportJob) -> None:
-    """Clear an EXPORT_FAILED slot so the caller's retry can start fresh."""
+    """Clear an EXPORT_FAILED slot so the caller's retry can start fresh.
+
+    Synchronous on purpose: the caller relies on this returning before yielding
+    to the event loop so concurrent retry POSTs see the slot freed. The prior
+    runner task is awaited later, inside the new _run_export.
+    """
     logger.info("Resetting failed export for %s (previous error: %s)", job.vm_hash, job.error)
     if job.ttl_task is not None and not job.ttl_task.done():
         job.ttl_task.cancel()
@@ -180,8 +207,14 @@ async def migration_disk_download(request: web.Request) -> web.StreamResponse:
             headers={"Content-Type": "application/octet-stream", "Content-Length": str(export_path.stat().st_size)},
         )
         await response.prepare(request)
+        # Sync read on the event loop would block the supervisor for the whole
+        # transfer; offload each chunk to a worker thread.
+        loop = asyncio.get_running_loop()
         with open(export_path, "rb") as f:
-            while chunk := f.read(1024 * 1024):
+            while True:
+                chunk = await loop.run_in_executor(None, f.read, 1024 * 1024)
+                if not chunk:
+                    break
                 await response.write(chunk)
         await response.write_eof()
         return response
@@ -212,12 +245,15 @@ async def migration_import(request: web.Request) -> web.Response:
         )
 
     # Read-modify-write of the registry below MUST stay await-free so two simultaneous
-    # POSTs for the same vm_hash can't both pass the existence check.
+    # POSTs for the same vm_hash can't both pass the existence check. The prior task
+    # (if any) is captured here and awaited inside _run_import, not here.
+    prior_task: asyncio.Task | None = None
     existing = import_jobs.get(vm_hash)
     if existing is not None:
         if existing.state == MigrationState.IMPORTING:
             return _import_job_descriptor_response(existing, status=HTTPStatus.ACCEPTED)
         if existing.state == MigrationState.IMPORT_FAILED:
+            prior_task = existing.task
             _reset_failed_import(existing, pool)
         else:
             return _import_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
@@ -231,7 +267,12 @@ async def migration_import(request: web.Request) -> web.Response:
     )
     import_jobs[vm_hash] = job
     job.task = create_task_log_exceptions(
-        _run_import(job, pool, disk_files=params.disk_files, export_token=params.export_token),
+        _run_import(
+            job, pool,
+            disk_files=params.disk_files,
+            export_token=params.export_token,
+            prior_task=prior_task,
+        ),
         name=f"import-{vm_hash}",
     )
 
@@ -241,8 +282,11 @@ async def migration_import(request: web.Request) -> web.Response:
 def _reset_failed_import(job: ImportJob, pool: VmPool) -> None:
     """Clear an IMPORT_FAILED slot so the caller's retry can start fresh.
 
-    Mirrors the safety check in _run_import's failure path: only rmtree the
-    dest dir if the pool has no execution for this vm_hash.
+    Synchronous on purpose: the caller relies on this returning before yielding
+    to the event loop so concurrent retry POSTs see the slot freed. The prior
+    runner task is awaited later, inside the new _run_import. Mirrors the
+    safety check in _run_import's failure path: only rmtree if the pool has no
+    execution.
     """
     logger.info("Resetting failed import for %s (previous error: %s)", job.vm_hash, job.error)
     if job.ttl_task is not None and not job.ttl_task.done():
