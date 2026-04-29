@@ -15,6 +15,7 @@ from aleph_message.models.execution.environment import HypervisorType
 from aleph.vm.conf import settings
 from aleph.vm.migration.helpers import (
     compress_disk,
+    compute_sha256,
     detect_parent_format,
     download_disk_from_source,
     graceful_shutdown,
@@ -82,10 +83,12 @@ async def _run_export(job: ExportJob, execution: VmExecution) -> None:
                     export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
                     await compress_disk(qcow2_file, export_path)
                     export_paths.append(export_path)
+                    sha256 = await compute_sha256(export_path)
                     disk_files.append(
                         DiskFileInfo(
                             name=qcow2_file.name,
                             size_bytes=export_path.stat().st_size,
+                            sha256=sha256,
                             download_path=f"/control/machine/{job.vm_hash}/migration/disk/{qcow2_file.name}",
                         )
                     )
@@ -199,7 +202,12 @@ async def _run_import(
                         job.bytes_downloaded = _b + file_total
 
                     await download_disk_from_source(
-                        session, url, dest_path, export_token, on_chunk=_progress
+                        session,
+                        url,
+                        dest_path,
+                        export_token,
+                        expected_sha256=disk_file.sha256,
+                        on_chunk=_progress,
                     )
 
             job.current_step = "rebasing"

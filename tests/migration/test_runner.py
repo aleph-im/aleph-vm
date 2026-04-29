@@ -1,6 +1,7 @@
 """Tests for the export and import background runners."""
 
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -63,6 +64,9 @@ async def test_run_export_success(tmp_path, monkeypatch):
     assert job.disk_files is not None and len(job.disk_files) == 2
     assert {df.name for df in job.disk_files} == {"rootfs.qcow2", "data.qcow2"}
     assert all(Path(p).exists() for p in job.export_paths)
+    # Each disk file carries a SHA-256 of the compressed export.
+    expected = hashlib.sha256(b"compressed").hexdigest()
+    assert all(df.sha256 == expected for df in job.disk_files)
 
 
 @pytest.mark.asyncio
@@ -136,7 +140,7 @@ async def test_run_import_success(tmp_path, monkeypatch):
     async def fake_detect_format(_path):
         return "qcow2"
 
-    async def fake_download(session, url, dest_path, token, on_chunk=None):
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(b"downloaded")
         if on_chunk is not None:
@@ -170,6 +174,7 @@ async def test_run_import_success(tmp_path, monkeypatch):
         DiskFileInfo(
             name="rootfs.qcow2",
             size_bytes=10,
+            sha256="0" * 64,
             download_path=f"/control/machine/{vm_hash}/migration/disk/rootfs.qcow2",
         )
     ]
@@ -212,7 +217,7 @@ async def test_run_import_aborts_when_message_not_instance(tmp_path, monkeypatch
     await _run_import(
         job,
         pool,
-        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, download_path="/x")],
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
 
@@ -265,7 +270,7 @@ async def test_run_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypa
     await _run_import(
         job,
         pool,
-        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, download_path="/x")],
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
 
@@ -291,7 +296,7 @@ async def test_run_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monke
     fake_message.content.environment.trusted_execution = None
     fake_message.content.rootfs.parent.ref = "p"
 
-    async def fake_download(session, url, dest_path, token, on_chunk=None):
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(b"x")
         return 1
@@ -325,7 +330,7 @@ async def test_run_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monke
     await _run_import(
         job,
         pool,
-        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, download_path="/x")],
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
 
@@ -351,7 +356,7 @@ async def test_run_import_keeps_dest_dir_when_pool_already_has_execution(tmp_pat
     fake_message.content.environment.trusted_execution = None
     fake_message.content.rootfs.parent.ref = "p"
 
-    async def fake_download(session, url, dest_path, token, on_chunk=None):
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(b"x")
         return 1
@@ -387,7 +392,7 @@ async def test_run_import_keeps_dest_dir_when_pool_already_has_execution(tmp_pat
     await _run_import(
         job,
         pool,
-        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, download_path="/x")],
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
 
@@ -448,6 +453,62 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
     assert max_in_flight == 1, f"Expected serial execution, but {max_in_flight} ran in parallel"
     assert job_a.state == MigrationState.EXPORTED
     assert job_b.state == MigrationState.EXPORTED
+
+
+@pytest.mark.asyncio
+async def test_download_disk_verifies_sha256(tmp_path):
+    """download_disk_from_source raises and unlinks the partial file when sha256 mismatches."""
+    from aleph.vm.migration.helpers import download_disk_from_source
+
+    payload = b"hello world"
+    correct = hashlib.sha256(payload).hexdigest()
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        @property
+        def content(self):
+            class _Content:
+                @staticmethod
+                async def iter_chunked(_size):
+                    for chunk in (b"hello ", b"world"):
+                        yield chunk
+
+            return _Content()
+
+        async def text(self):
+            return ""
+
+    class FakeSession:
+        def get(self, _url, params=None):
+            return FakeResponse(payload)
+
+    dest = tmp_path / "rootfs.qcow2"
+
+    # Happy path: matching hash, file lands at dest_path.
+    n = await download_disk_from_source(
+        FakeSession(), "http://x", dest, "tok", expected_sha256=correct
+    )
+    assert n == len(payload)
+    assert dest.read_bytes() == payload
+
+    # Bad hash: file is unlinked, RuntimeError raised, dest is gone.
+    dest.unlink()
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        await download_disk_from_source(
+            FakeSession(), "http://x", dest, "tok", expected_sha256="f" * 64
+        )
+    assert not dest.exists()
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
 
 
 @pytest.mark.asyncio

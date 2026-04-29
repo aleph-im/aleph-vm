@@ -1,6 +1,7 @@
 """qemu-img and aiohttp helpers used by the migration runners."""
 
 import asyncio
+import hashlib
 import logging
 import shutil
 import time
@@ -115,15 +116,22 @@ async def download_disk_from_source(
     url: str,
     dest_path: Path,
     token: str,
+    *,
+    expected_sha256: str,
     on_chunk=None,
 ) -> int:
-    """Download a disk file from the source CRN.
+    """Download a disk file from the source CRN and verify its SHA-256.
+
+    The hash is computed while streaming (no extra read pass). If verification
+    fails the partial file is unlinked and RuntimeError is raised, so callers
+    never observe a corrupt file at dest_path.
 
     on_chunk: optional callback(bytes_downloaded_so_far) for progress reporting.
     """
     part_path = dest_path.with_suffix(dest_path.suffix + ".part")
     part_path.parent.mkdir(parents=True, exist_ok=True)
     total_bytes = 0
+    hasher = hashlib.sha256()
 
     async with session.get(url, params={"token": token}) as resp:
         if resp.status != 200:
@@ -133,9 +141,29 @@ async def download_disk_from_source(
         with open(part_path, "wb") as f:
             async for chunk in resp.content.iter_chunked(1024 * 1024):
                 f.write(chunk)
+                hasher.update(chunk)
                 total_bytes += len(chunk)
                 if on_chunk is not None:
                     on_chunk(total_bytes)
 
+    actual_sha256 = hasher.hexdigest()
+    if actual_sha256 != expected_sha256:
+        part_path.unlink(missing_ok=True)
+        msg = f"sha256 mismatch for {url}: expected {expected_sha256}, got {actual_sha256}"
+        raise RuntimeError(msg)
+
     part_path.rename(dest_path)
     return total_bytes
+
+
+async def compute_sha256(path: Path) -> str:
+    """Stream-hash a file with SHA-256, off the event loop."""
+
+    def _hash() -> str:
+        hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    return await asyncio.get_running_loop().run_in_executor(None, _hash)

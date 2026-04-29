@@ -354,6 +354,7 @@ class TestMigrationImportEndpoint:
                     {
                         "name": "rootfs.qcow2",
                         "size_bytes": 1,
+                        "sha256": "0" * 64,
                         "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                     }
                 ],
@@ -388,6 +389,7 @@ class TestMigrationImportEndpoint:
                     {
                         "name": "rootfs.qcow2",
                         "size_bytes": 1,
+                        "sha256": "0" * 64,
                         "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                     }
                 ],
@@ -423,7 +425,7 @@ class TestMigrationImportEndpoint:
         mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
         mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
 
-        async def fake_download(session, url, dest_path, token, on_chunk=None):
+        async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"x")
             if on_chunk:
@@ -448,6 +450,7 @@ class TestMigrationImportEndpoint:
                 {
                     "name": "rootfs.qcow2",
                     "size_bytes": 1,
+                    "sha256": "0" * 64,
                     "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                 }
             ],
@@ -469,7 +472,7 @@ class TestMigrationImportEndpoint:
         # Make the import hang in the disk-download step.
         slow = asyncio.Event()
 
-        async def fake_download(session, url, dest_path, token, on_chunk=None):
+        async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             await slow.wait()
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"x")
@@ -509,6 +512,7 @@ class TestMigrationImportEndpoint:
                 {
                     "name": "rootfs.qcow2",
                     "size_bytes": 1,
+                    "sha256": "0" * 64,
                     "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                 }
             ],
@@ -549,7 +553,7 @@ class TestMigrationImportEndpoint:
             "source_host": "src",
             "source_port": 443,
             "export_token": "tok",
-            "disk_files": [{"name": "rootfs.qcow2", "size_bytes": 1, "download_path": "/x"}],
+            "disk_files": [{"name": "rootfs.qcow2", "size_bytes": 1, "sha256": "0" * 64, "download_path": "/x"}],
         }
         r = await client.post("/control/migrate", json=body)
         assert r.status == HTTPStatus.CONFLICT
@@ -783,7 +787,7 @@ class TestMigrationFailedReset:
         mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
         mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
 
-        async def fake_download(session, url, dest_path, token, on_chunk=None):
+        async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"x")
             if on_chunk:
@@ -808,6 +812,7 @@ class TestMigrationFailedReset:
                 {
                     "name": "rootfs.qcow2",
                     "size_bytes": 1,
+                    "sha256": "0" * 64,
                     "download_path": f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2",
                 }
             ],

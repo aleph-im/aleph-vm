@@ -17,6 +17,7 @@ class DiskFileInfo(BaseModel):
 
     name: str
     size_bytes: int
+    sha256: str
     download_path: str
 
 
