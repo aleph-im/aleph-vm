@@ -17,6 +17,7 @@ from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
+from aleph.vm.migration.reaper import reap_orphan_migration_files
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.version import __version__
@@ -55,6 +56,14 @@ from .views import (
     status_check_version,
     status_public_config,
     update_allocations,
+)
+from .views.migration import (
+    migration_cleanup,
+    migration_disk_download,
+    migration_export,
+    migration_export_status,
+    migration_import,
+    migration_import_status,
 )
 from .views.operator import (
     BackupState,
@@ -216,6 +225,13 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/allocations", update_allocations),
         web.post("/control/network/recreate", recreate_network),
         web.post("/control/proxy/regenerate", regenerate_proxy),
+        # Migration endpoints (scheduler-only, uses ALLOCATION_TOKEN_HASH auth)
+        web.post("/control/machine/{ref}/migration/export", migration_export),
+        web.get("/control/machine/{ref}/migration/export/status", migration_export_status),
+        web.get("/control/machine/{ref}/migration/disk/{filename}", migration_disk_download),
+        web.post("/control/migrate", migration_import),
+        web.get("/control/migrate/{ref}/status", migration_import_status),
+        web.post("/control/machine/{ref}/migration/cleanup", migration_cleanup),
         # Raise an HTTP Error 404 if attempting to access an unknown URL within these paths.
         web.get("/about/{suffix:.*}", http_not_found),
         web.get("/control/{suffix:.*}", http_not_found),
@@ -242,6 +258,13 @@ async def stop_all_vms(app: web.Application):
     await pool.stop()
 
 
+async def _run_migration_reaper(app: web.Application) -> None:
+    """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
+    pool = app.get("vm_pool")
+    if pool is not None:
+        await reap_orphan_migration_files(pool)
+
+
 def run():
     """Run the VM Supervisor."""
     settings.check()
@@ -266,6 +289,7 @@ def run():
         domain_name=settings.DOMAIN_NAME,
         cache_dir=settings.EXECUTION_ROOT,
     )
+    app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

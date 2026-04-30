@@ -6,6 +6,8 @@ from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
 
 from aleph_message.models import (
     ExecutableContent,
@@ -64,6 +66,18 @@ from aleph.vm.utils.aggregate import get_user_settings
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 
 logger = logging.getLogger(__name__)
+
+
+class MigrationState(str, Enum):
+    """State of VM migration process. Source-side states begin with EXPORT_, destination-side with IMPORT_."""
+
+    NONE = "none"
+    EXPORTING = "exporting"
+    EXPORTED = "exported"
+    EXPORT_FAILED = "export_failed"
+    IMPORTING = "importing"
+    IMPORTED = "imported"
+    IMPORT_FAILED = "import_failed"
 
 
 @dataclass
@@ -536,7 +550,9 @@ class VmExecution:
             # for persistent and instances we will use SystemD manager
             if not self.persistent:
                 await self.vm.start()
+
             await self.vm.configure()
+
             await self.vm.start_guest_api()
 
             # Start VM and snapshots automatically
