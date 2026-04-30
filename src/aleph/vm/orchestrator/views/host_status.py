@@ -34,7 +34,7 @@ async def check_http_endpoint(
             async with s.get(url) as resp:
                 # Any HTTP response confirms connectivity — the status code is
                 # irrelevant since probe endpoints may return 200, 204, 400, or 404.
-                return resp.status < 600
+                return True
         except aiohttp.ClientConnectorError:
             return False
 
