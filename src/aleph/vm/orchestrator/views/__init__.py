@@ -63,6 +63,8 @@ from aleph.vm.orchestrator.views.host_status import (
     check_domain_resolution_ipv6,
     check_host_egress_ipv4,
     check_host_egress_ipv6,
+    check_host_http_ipv4,
+    check_host_http_ipv6,
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.pool import VmPool
@@ -358,14 +360,21 @@ async def status_check_host(request: web.Request):
             "egress": await check_host_egress_ipv4(),
             "dns": await check_dns_ipv4(),
             "domain": await check_domain_resolution_ipv4(),
+            "http": await check_host_http_ipv4(),
         },
         "ipv6": {
             "egress": await check_host_egress_ipv6(),
             "dns": await check_dns_ipv6(),
             "domain": await check_domain_resolution_ipv6(),
+            "http": await check_host_http_ipv6(),
         },
     }
-    result_status = 200 if all(result["ipv4"].values()) and all(result["ipv6"].values()) else 503
+    # "http" is advisory — transient failures in third-party probe endpoints
+    # should not make the CRN appear offline to monitoring systems.
+    required_keys = {"egress", "dns", "domain"}
+    result_status = (
+        200 if all(result["ipv4"][k] for k in required_keys) and all(result["ipv6"][k] for k in required_keys) else 503
+    )
     return web.json_response(result, status=result_status)
 
 

@@ -21,29 +21,74 @@ def return_false_on_timeout(func: Callable[..., Awaitable[Any]]) -> Callable[...
     return wrapper
 
 
-async def check_ip_connectivity(url: str, socket_family: socket.AddressFamily = socket.AF_UNSPEC) -> bool:
+async def check_http_endpoint(
+    url: str,
+    socket_family: socket.AddressFamily = socket.AF_UNSPEC,
+    session: aiohttp.ClientSession | None = None,
+) -> bool:
+    """Return True if url responds with any valid HTTP status code."""
     timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket_family), timeout=timeout) as session:
+
+    async def _do_get(s: aiohttp.ClientSession) -> bool:
         try:
-            async with session.get(url) as resp:
-                # We expect the Quad9 endpoints to return a 404 or 400 error, but other endpoints may return a 200
-                if resp.status not in (200, 400, 404):
-                    resp.raise_for_status()
+            async with s.get(url) as resp:
+                # Any HTTP response confirms connectivity — the status code is
+                # irrelevant since probe endpoints may return 200, 204, 400, or 404.
                 return True
         except aiohttp.ClientConnectorError:
             return False
 
+    if session is not None:
+        return await _do_get(session)
+
+    connector = aiohttp.TCPConnector(family=socket_family)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as new_session:
+        return await _do_get(new_session)
+
 
 @return_false_on_timeout
 async def check_host_egress_ipv4() -> bool:
-    """Check if the host has IPv4 connectivity."""
-    return await check_ip_connectivity(settings.CONNECTIVITY_IPV4_URL)
+    """Check if the host has IPv4 connectivity (raw IP, no DNS required)."""
+    return await check_http_endpoint(settings.CONNECTIVITY_IPV4_URL, socket.AF_INET)
 
 
 @return_false_on_timeout
 async def check_host_egress_ipv6() -> bool:
-    """Check if the host has IPv6 connectivity."""
-    return await check_ip_connectivity(settings.CONNECTIVITY_IPV6_URL)
+    """Check if the host has IPv6 connectivity (raw IP, no DNS required)."""
+    return await check_http_endpoint(settings.CONNECTIVITY_IPV6_URL, socket.AF_INET6)
+
+
+async def check_http_connectivity_with_fallback(
+    urls: list[str],
+    socket_family: socket.AddressFamily,
+) -> bool:
+    """Try each URL in order using a single session, returning True on first success."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    connector = aiohttp.TCPConnector(family=socket_family)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        for url in urls:
+            if await check_http_endpoint(url, session=session):
+                return True
+            logger.debug("HTTP connectivity check failed for %s, trying next", url)
+    return False
+
+
+@return_false_on_timeout
+async def check_host_http_ipv4() -> bool:
+    """Check DNS resolution + IPv4 HTTP egress end-to-end, with fallback URLs."""
+    return await check_http_connectivity_with_fallback(
+        settings.CONNECTIVITY_HTTP_URLS,
+        socket.AF_INET,
+    )
+
+
+@return_false_on_timeout
+async def check_host_http_ipv6() -> bool:
+    """Check DNS resolution + IPv6 HTTP egress end-to-end, with fallback URLs."""
+    return await check_http_connectivity_with_fallback(
+        settings.CONNECTIVITY_HTTP_URLS,
+        socket.AF_INET6,
+    )
 
 
 async def resolve_dns(hostname: str) -> tuple[str | None, str | None]:
@@ -99,10 +144,10 @@ async def check_domain_resolution_ipv6() -> bool:
 @return_false_on_timeout
 async def check_domain_ipv4() -> bool:
     """Check if the host's hostname is accessible via IPv4."""
-    return await check_ip_connectivity(settings.DOMAIN_NAME, socket.AF_INET)
+    return await check_http_endpoint(settings.DOMAIN_NAME, socket.AF_INET)
 
 
 @return_false_on_timeout
 async def check_domain_ipv6() -> bool:
     """Check if the host's hostname is accessible via IPv6."""
-    return await check_ip_connectivity(settings.DOMAIN_NAME, socket.AF_INET6)
+    return await check_http_endpoint(settings.DOMAIN_NAME, socket.AF_INET6)
