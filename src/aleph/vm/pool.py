@@ -28,6 +28,7 @@ from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     get_execution_records,
     get_port_mappings,
+    record_event,
 )
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
@@ -412,13 +413,15 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+    async def stop_vm(self, vm_hash: ItemHash, *, record_stopped_event: bool = True) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if not execution:
             logger.info("stop_vm No execution found for %s", vm_hash)
             return None
         await execution.stop()
+        if record_stopped_event:
+            await record_event(str(vm_hash), "stopped")
         return execution
 
     def forget_vm(self, vm_hash: ItemHash) -> None:
@@ -534,7 +537,10 @@ class VmPool:
         )
 
         execution.mapped_ports = await get_port_mappings(vm_hash)
+        execution.mode = saved_execution.mode or "normal"
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
+        if execution.mode != "normal":
+            logger.info("Execution %s is in %s mode", vm_hash, execution.mode)
 
         await execution.prepare()
         tap_interface = await self._restore_network(execution, vm_id, vm_hash)

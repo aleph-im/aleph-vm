@@ -58,6 +58,7 @@ from .views import (
 )
 from .views.operator import (
     BackupState,
+    RescueState,
     operate_backup,
     operate_backup_delete,
     operate_backup_download,
@@ -70,6 +71,9 @@ from .views.operator import (
     operate_logs_json,
     operate_reboot,
     operate_reinstall,
+    operate_rescue,
+    operate_rescue_exit,
+    operate_rescue_status,
     operate_restore,
     operate_stop,
     stream_logs,
@@ -155,6 +159,7 @@ def setup_webapp(pool: VmPool | None):
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
     app["backup_state"] = BackupState()
+    app["rescue_state"] = RescueState()
     cors = setup(
         app,
         defaults={
@@ -189,6 +194,9 @@ def setup_webapp(pool: VmPool | None):
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
         web.post("/control/machine/{ref}/reinstall", operate_reinstall),
+        web.post("/control/machine/{ref}/rescue", operate_rescue),
+        web.get("/control/machine/{ref}/rescue", operate_rescue_status),
+        web.delete("/control/machine/{ref}/rescue", operate_rescue_exit),
         web.post("/control/machine/{ref}/backup", operate_backup),
         web.get("/control/machine/{ref}/backup", operate_backup_status),
         web.get("/control/machine/{ref}/backup/{backup_id}", operate_backup_download),
