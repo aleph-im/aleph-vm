@@ -141,10 +141,18 @@ class Settings(BaseSettings):
 
     API_SERVER: str = "https://official.aleph.cloud"
     IPFS_GATEWAY: str = "https://ipfs.aleph.im/ipfs"
-    # Connect to the Quad9 VPN provider using their IPv4 and IPv6 addresses.
-    CONNECTIVITY_IPV4_URL: str = "https://9.9.9.9/"
-    CONNECTIVITY_IPV6_URL: str = "https://[2620:fe::fe]/"
+    # Cloudflare DNS resolvers — have valid TLS certs for the raw IP and a
+    # real HTTP/1.1 web server, making them reliable egress connectivity probes.
+    CONNECTIVITY_IPV4_URL: str = "https://1.1.1.1/"
+    CONNECTIVITY_IPV6_URL: str = "https://[2606:4700:4700::1111]/"
     CONNECTIVITY_DNS_HOSTNAME: str = "example.org"
+    # Hostname-based HTTP checks — verify that DNS + egress work end-to-end.
+    # Tried in order for both IPv4 and IPv6; the check passes on first success.
+    CONNECTIVITY_HTTP_URLS: list[str] = [
+        "http://detectportal.firefox.com/success.txt",
+        "https://connectivity-check.ubuntu.com/",
+        "https://www.gstatic.com/generate_204",
+    ]
 
     USE_JAILER: bool = True
     # Changelog: PRINT_SYSTEM_LOGS use to print the MicroVM logs with the supervisor output.
