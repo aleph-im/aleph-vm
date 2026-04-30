@@ -1,6 +1,5 @@
 import logging
 import socket
-import ssl
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -9,14 +8,6 @@ import aiohttp
 from aleph.vm.conf import settings
 
 logger = logging.getLogger(__name__)
-
-# SSL context that negotiates HTTP/1.1 only via ALPN.
-# Without this, newer Python ssl advertises h2 as the preferred protocol.
-# Some connectivity probe endpoints accept h2 in the TLS handshake but only
-# speak HTTP/1.1, causing them to return 505 when they receive HTTP/1.1
-# frames over a connection negotiated as h2. Plain HTTP URLs are unaffected.
-_HTTP11_SSL_CONTEXT = ssl.create_default_context()
-_HTTP11_SSL_CONTEXT.set_alpn_protocols(["http/1.1"])
 
 
 def return_false_on_timeout(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[bool]]:
@@ -50,7 +41,7 @@ async def check_http_endpoint(
     if session is not None:
         return await _do_get(session)
 
-    connector = aiohttp.TCPConnector(family=socket_family, ssl=_HTTP11_SSL_CONTEXT)
+    connector = aiohttp.TCPConnector(family=socket_family)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as new_session:
         return await _do_get(new_session)
 
@@ -73,7 +64,7 @@ async def check_http_connectivity_with_fallback(
 ) -> bool:
     """Try each URL in order using a single session, returning True on first success."""
     timeout = aiohttp.ClientTimeout(total=5)
-    connector = aiohttp.TCPConnector(family=socket_family, ssl=_HTTP11_SSL_CONTEXT)
+    connector = aiohttp.TCPConnector(family=socket_family)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         for url in urls:
             if await check_http_endpoint(url, session=session):
