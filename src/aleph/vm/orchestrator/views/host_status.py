@@ -31,11 +31,11 @@ async def check_http_endpoint(
 
     async def _do_get(s: aiohttp.ClientSession) -> bool:
         try:
-            async with s.get(url) as resp:
+            async with s.get(url):
                 # Any HTTP response confirms connectivity — the status code is
                 # irrelevant since probe endpoints may return 200, 204, 400, or 404.
                 return True
-        except aiohttp.ClientConnectorError:
+        except aiohttp.ClientError:
             return False
 
     if session is not None:
