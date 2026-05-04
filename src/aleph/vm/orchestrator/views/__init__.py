@@ -340,7 +340,9 @@ async def status_check_fastapi(request: web.Request, vm_id: ItemHash | None = No
                     # "ipv6": await status.check_ipv6(session),
                 }
 
-            return web.json_response(result, status=200 if all(result.values()) else 503)
+            required_keys = {"index", "environ", "ipv4", "internet", "dns", "error_handling", "lifespan"}
+            required_ok = all(result[k] for k in required_keys if k in result)
+            return web.json_response(result, status=200 if required_ok else 503)
     except aiohttp.ServerDisconnectedError as error:
         return web.json_response({"error": f"Server disconnected: {error}"}, status=503)
 
