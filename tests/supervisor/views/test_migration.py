@@ -36,10 +36,11 @@ def mock_scheduler_auth(mocker):
     """Mock the scheduler authentication to always pass.
 
     The migration handlers wrap themselves with @requires_allocation_auth, which
-    calls aleph.vm.orchestrator.views.authenticate_api_request — patch there.
+    looks up authenticate_api_request in its own module
+    (aleph.vm.orchestrator.views.allocation_auth) — patch there.
     """
     mocker.patch(
-        "aleph.vm.orchestrator.views.authenticate_api_request",
+        "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
         return_value=True,
     )
 
@@ -93,7 +94,7 @@ class TestMigrationExportEndpoint:
     async def test_export_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.authenticate_api_request",
+            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -314,7 +315,7 @@ class TestMigrationImportEndpoint:
     async def test_import_unauthorized(self, aiohttp_client, mocker):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.authenticate_api_request",
+            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -591,7 +592,7 @@ class TestMigrationCleanupEndpoint:
     async def test_cleanup_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.authenticate_api_request",
+            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
             return_value=False,
         )
         pool = mocker.Mock(executions={})

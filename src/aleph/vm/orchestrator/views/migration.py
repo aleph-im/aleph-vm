@@ -35,7 +35,7 @@ from aleph.vm.models import MigrationState, VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import cors_allow_all, create_task_log_exceptions, dumps_for_json
 
-from . import requires_allocation_auth
+from .allocation_auth import requires_allocation_auth
 from .operator import get_execution_or_404, get_itemhash_or_400
 
 logger = logging.getLogger(__name__)
