@@ -23,13 +23,6 @@ jobs:
             make_target: "all-podman-debian-12"
             artifact_name: "aleph-vm.debian-12.deb"
 
-          - hostname: "hetzner.staging.aleph.sh"
-            # Use `ssh-keyscan -H host | base64 --wrap=0` to obtain the host keys
-            host_keys: "fDF8WUlKd0FYWnYxZ24vNkRCU0tkYjg0TC9sUngwPXwrRk96RzdoSTJ5Y3JzUW1uSEwrdEFBQkR4YUU9IHNzaC1yc2EgQUFBQUIzTnphQzF5YzJFQUFBQURBUUFCQUFBQmdRRHBKcHF5ajUxWUluRkNyZjZUWjE5eUF3cHlXNTNHaFAxNXQ0Wm56cHBwOUVnNTNnZmVWdmk5WUV1bVV6cnVUN01LdFpobjNsb0U5YVFtRUYzSElpb3c5ZmlCWVA3aUMzUUFGdUJCandPUmQwV1RVWDZQQUN2c2p0b1JLWjJpTWZ2YXdITHdrWHErWnkrc2hHNU44L2pwQlJ4MC9paXJta2xPS0F5QWw0QTYzZ2MxMndsVGQzcS9IcDVxd1dSYVV3M1JVUTFTVVJSN2RGRW81VWxqeUZVYS9zdWV1STBYOXdLd0tPZ09iOEo3ZFZDMEdDT3VibkJXL3Jmb3N0YVV5eStaSzdQdzBrM251M2szTFZuUVlPTGlNOG1NMnJub2ZWZ2RSWXpiM3RTUVVrbk9wektBVzBXK3llWmpSOXp1UG4yNXF4bWxsRmRaNmt3QTFDcWY2MmQyQ0dtQ2NDU3dUSUl4ZHJ3M29oOEZOclpROTI4OGQvcmF4djZXZi9oZDI0Y1JqeDdFSEJxOUFWMW02UTZWeGxnSWl0WjIzODlsYjRmODNGclRrNUtib3J3Zm5oM3NaZFRSSkJqRjRhdHZ5NktsWFYxenROc05BeDhFN1RnTDMzVFlnRGc4RWlldGN1TVlzUlcwSnREdldBNGxsZDFQS3JrbDJ1LzZvLzNUb0xVPQp8MXxmQ3FnTjB2WHpMTnAzdklnZXdkSFRQRTA0ZUk9fDhnSituTC9hUGpEQlRMcUNJak1sZFpVbFRpST0gZWNkc2Etc2hhMi1uaXN0cDI1NiBBQUFBRTJWalpITmhMWE5vWVRJdGJtbHpkSEF5TlRZQUFBQUlibWx6ZEhBeU5UWUFBQUJCQktWbnE5aWsvcHZFaDdXbHFydUtWZmdZeTlwOVpNQnVKV2IrZkVvS0hZY0ZSYld5c0lYRjJlalBnaUMyOFEvZExqeUhXd2RVZlMySFBMbGNxRVFEZlpvPQp8MXxtVzA4T3ZqUnh0bmRjYVNyc0poWXBQcXp2akk9fFlDcktMeUg4ZnJJR0lRV05RS3hiUnArNlIvTT0gc3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUl5ZGNhTXF1dkZFTEpNUDBlRmhNUGJWZVBSVjlSUEhVRzhIZGZIQmRvaTEK"
-            os: "debian-12"
-            make_target: "all-podman-debian-12"
-            artifact_name: "aleph-vm.debian-12.deb"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
