@@ -3,7 +3,6 @@ import binascii
 import http
 import logging
 from decimal import Decimal
-from hashlib import sha256
 from json import JSONDecodeError
 from packaging.version import InvalidVersion, Version
 from pathlib import Path
@@ -55,6 +54,7 @@ from aleph.vm.orchestrator.utils import (
     is_after_community_wallet_start,
     update_aggregate_settings,
 )
+from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
 from aleph.vm.orchestrator.views.authentication import require_jwk_authentication
 from aleph.vm.orchestrator.views.host_status import (
     check_dns_ipv4,
@@ -473,35 +473,6 @@ async def status_public_config(request: web.Request):
         },
         dumps=dumps_for_json,
     )
-
-
-def authenticate_api_request(request: web.Request) -> bool:
-    """Authenticate an API request to update the VM allocations."""
-    signature: bytes = request.headers.get("X-Auth-Signature", "").encode()
-
-    if not signature:
-        raise web.HTTPUnauthorized(text="Authentication token is missing")
-
-    # Use a simple authentication method: the hash of the signature should match the value in the settings
-    return sha256(signature).hexdigest() == settings.ALLOCATION_TOKEN_HASH
-
-
-def requires_allocation_auth(handler):
-    """Decorator: reject the request with 401 unless the X-Auth-Signature header matches.
-
-    Wraps :func:`authenticate_api_request` so endpoints don't have to repeat the
-    three-line check. Apply BELOW any CORS decorator so OPTIONS preflights pass
-    through unauthenticated.
-    """
-    import functools
-
-    @functools.wraps(handler)
-    async def wrapper(request: web.Request) -> web.StreamResponse:
-        if not authenticate_api_request(request):
-            return web.HTTPUnauthorized(text="Authentication token received is invalid")
-        return await handler(request)
-
-    return wrapper
 
 
 allocation_lock = None
