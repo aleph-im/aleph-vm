@@ -257,10 +257,10 @@ async def stop_all_vms(app: web.Application):
     pool: VmPool = app["vm_pool"]
     try:
         await pool.stop()
-    except Exception as error:
+    except Exception:
         # Never let cleanup errors fail the supervisor shutdown — a non-zero
         # exit would trigger the systemd restart loop and break package upgrades.
-        logger.exception("Error stopping VMs during shutdown: %s", error)
+        logger.exception("Error stopping VMs during shutdown")
 
 
 async def _run_migration_reaper(app: web.Application) -> None:
