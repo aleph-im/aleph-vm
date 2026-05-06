@@ -57,7 +57,12 @@ class NdpProxy:
     def _schedule_restart(self):
         if self._restart_task and not self._restart_task.done():
             return  # restart already pending — config write will be picked up
-        self._restart_task = asyncio.create_task(self._debounced_restart())
+        try:
+            self._restart_task = asyncio.create_task(self._debounced_restart())
+        except RuntimeError:
+            # Event loop is closing/closed (e.g. during shutdown) — skip the
+            # restart rather than crash. The new config is already on disk.
+            logger.debug("Skipping ndppd restart: event loop unavailable")
 
     async def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"

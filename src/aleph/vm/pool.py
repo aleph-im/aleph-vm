@@ -777,7 +777,10 @@ class VmPool:
         )
         for result in results:
             if isinstance(result, BaseException):
-                logger.warning("Error stopping execution during pool shutdown: %s", result)
+                logger.warning(
+                    "Error stopping execution during pool shutdown",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
         executions = (

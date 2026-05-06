@@ -13,7 +13,10 @@ Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
 ExecStart=python3 -m aleph.vm.orchestrator --print-settings
 Restart=on-failure
-RestartPreventExitStatus=SIGTERM SIGINT
+# Numeric exit codes for portability — signal names need to be without "SIG"
+# prefix in systemd, and older systemd versions only accept numeric codes.
+# 130 = killed by SIGINT (128+2), 143 = killed by SIGTERM (128+15).
+RestartPreventExitStatus=0 130 143
 RestartSec=10s
 TimeoutStopSec=30s
 
