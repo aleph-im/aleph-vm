@@ -27,11 +27,15 @@ class NdpRule:
     address_range: IPv6Network
 
 
+_RESTART_DEBOUNCE_SECONDS = 0.5
+
+
 class NdpProxy:
     def __init__(self, host_network_interface: str):
         self.host_network_interface = host_network_interface
         self.interface_address_range_mapping: dict[str, IPv6Network] = {}
         self._lock = asyncio.Lock()
+        self._restart_task: asyncio.Task | None = None
 
     @staticmethod
     async def _restart_ndppd():
@@ -41,13 +45,27 @@ class NdpProxy:
         except CalledProcessError as error:
             logger.error("Failed to restart ndppd: %s", error)
 
+    async def _debounced_restart(self):
+        # Wait so that bursts of add/delete (e.g. one per VM at startup
+        # or shutdown) coalesce into a single ndppd restart.
+        try:
+            await asyncio.sleep(_RESTART_DEBOUNCE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        await self._restart_ndppd()
+
+    def _schedule_restart(self):
+        if self._restart_task and not self._restart_task.done():
+            return  # restart already pending — config write will be picked up
+        self._restart_task = asyncio.create_task(self._debounced_restart())
+
     async def _update_ndppd_conf(self):
         config = f"proxy {self.host_network_interface} {{\n"
         for interface, address_range in self.interface_address_range_mapping.items():
             config += f"  rule {address_range} {{\n    iface {interface}\n  }}\n"
         config += "}\n"
         Path("/etc/ndppd.conf").write_text(config)
-        await self._restart_ndppd()
+        self._schedule_restart()
 
     async def add_range(self, interface: str, address_range: IPv6Network, update_service: bool = True):
         async with self._lock:
