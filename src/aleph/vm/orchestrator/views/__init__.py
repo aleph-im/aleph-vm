@@ -77,6 +77,7 @@ from aleph.vm.utils import (
     get_ref_from_dns,
 )
 from aleph.vm.version import __version__
+from aleph.vm.vm_type import VmType
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,7 @@ async def list_executions(request: web.Request) -> web.Response:
                     "ipv4": execution.vm.tap_interface.ip_network,
                     "ipv6": execution.vm.tap_interface.ipv6_network,
                 },
+                "vm_type": VmType.from_message_content(execution.message).name,
             }
             for item_hash, execution in pool.executions.items()
             if running_states.get(item_hash, False)
@@ -267,6 +269,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": execution.times,
                 "running": running_states.get(item_hash, False),
+                "vm_type": VmType.from_message_content(execution.message).name,
             }
             for item_hash, execution in pool.executions.items()
         },
