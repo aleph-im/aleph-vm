@@ -26,3 +26,4 @@ node_modules
 /kernels/linux-*/
 /kernels/linux-*.tar
 /kernels/linux-*.tar.sign
+/.worktrees/
