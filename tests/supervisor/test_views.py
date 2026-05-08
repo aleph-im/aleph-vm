@@ -1,6 +1,9 @@
+import json
 import os
 import tempfile
+import time as time_module
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from unittest import mock
 from unittest.mock import call
@@ -8,6 +11,8 @@ from unittest.mock import call
 import pytest
 from aiohttp import web
 from aleph_message.models import InstanceContent
+from eth_account import Account
+from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
 
 from aleph.vm.conf import settings
@@ -337,7 +342,7 @@ async def test_allocation_missing_auth_token(aiohttp_client):
         json={"persistent_vms": []},
     )
     assert response.status == 401
-    assert await response.json() == {"error": "Authentication token is missing"}
+    assert await response.json() == {"error": "Authentication token received is invalid"}
 
 
 @pytest.mark.asyncio
@@ -903,7 +908,7 @@ async def test_regenerate_proxy_missing_auth_token(aiohttp_client):
     client = await aiohttp_client(app)
     response: web.Response = await client.post("/control/proxy/regenerate")
     assert response.status == 401
-    assert await response.json() == {"error": "Authentication token is missing"}
+    assert await response.json() == {"error": "Authentication token received is invalid"}
 
 
 @pytest.mark.asyncio
@@ -981,3 +986,97 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
     assert response.status == 500
     resp = await response.json()
     assert resp == {"success": False, "error": "Failed to regenerate HAProxy configuration: HAProxy connection failed"}
+
+
+class _FakeVmPool:
+    def get_persistent_executions(self):
+        return []
+
+
+def _make_aleph_eip191_v1_header(account, *, method="POST", path="/control/allocations", body=b"", iat=None) -> str:
+    payload = {
+        "method": method,
+        "path": path,
+        "body_sha256": sha256(body).hexdigest(),
+        "iat": iat if iat is not None else int(time_module.time()),
+    }
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signed = account.sign_message(encode_defunct(payload_bytes))
+    return f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
+
+
+@pytest.fixture(autouse=True)
+def _reset_iat_cache_between_views_tests():
+    from aleph.vm.orchestrator.views.allocation_auth import _last_accepted_iat
+
+    _last_accepted_iat.clear()
+    yield
+    _last_accepted_iat.clear()
+
+
+@pytest.mark.asyncio
+async def test_allocation_aleph_eip191_v1_valid(aiohttp_client, monkeypatch):
+    """Valid Aleph-EIP191-V1 signature → 200 (mirrors test_allocation_valid_token)."""
+    account = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
+
+    body_dict: dict[str, list[str]] = {"persistent_vms": []}
+    body_bytes = json.dumps(body_dict).encode()
+    auth = _make_aleph_eip191_v1_header(account, body=body_bytes)
+
+    app = setup_webapp(pool=_FakeVmPool())
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+
+    response = await client.post(
+        "/control/allocations",
+        data=body_bytes,
+        headers={"Authorization": auth, "Content-Type": "application/json"},
+    )
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_allocation_aleph_eip191_v1_invalid_no_fallback(aiohttp_client, monkeypatch):
+    """Garbage Aleph-EIP191-V1 + valid legacy token → 401 (no fallback)."""
+    monkeypatch.setattr(
+        settings,
+        "ALLOCATION_TOKEN_HASH",
+        sha256(b"test").hexdigest(),
+    )
+
+    app = setup_webapp(pool=_FakeVmPool())
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={
+            "Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef",
+            "X-Auth-Signature": "test",  # would be valid via legacy
+        },
+    )
+    assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_allocation_legacy_token_logs_deprecation_warning(aiohttp_client, monkeypatch, caplog):
+    """No Aleph-EIP191-V1 + valid legacy token → 200, warning logged."""
+    monkeypatch.setattr(
+        settings,
+        "ALLOCATION_TOKEN_HASH",
+        sha256(b"test").hexdigest(),
+    )
+
+    app = setup_webapp(pool=_FakeVmPool())
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+
+    with caplog.at_level("WARNING"):
+        response = await client.post(
+            "/control/allocations",
+            json={"persistent_vms": []},
+            headers={"X-Auth-Signature": "test"},
+        )
+    assert response.status == 200
+    assert any("legacy token path" in r.message for r in caplog.records)

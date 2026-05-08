@@ -41,6 +41,7 @@ def mock_scheduler_auth(mocker):
     """
     mocker.patch(
         "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+        new_callable=AsyncMock,
         return_value=True,
     )
 
@@ -95,6 +96,7 @@ class TestMigrationExportEndpoint:
         """Test that unauthorized requests are rejected."""
         mocker.patch(
             "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            new_callable=AsyncMock,
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -316,6 +318,7 @@ class TestMigrationImportEndpoint:
         """Test that unauthorized requests are rejected."""
         mocker.patch(
             "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            new_callable=AsyncMock,
             return_value=False,
         )
         pool = mocker.Mock(executions={})
@@ -593,6 +596,7 @@ class TestMigrationCleanupEndpoint:
         """Test that unauthorized requests are rejected."""
         mocker.patch(
             "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            new_callable=AsyncMock,
             return_value=False,
         )
         pool = mocker.Mock(executions={})
