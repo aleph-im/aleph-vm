@@ -170,8 +170,11 @@ async def get_latest_amend(item_hash: str) -> str:
     msg = await _fetch_aleph_message(item_hash)
     if not msg:
         return item_hash
-    sender = msg["sender"]
-    url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={item_hash}&addresses={sender}"
+    # Match amends by owner (`content.address`), not signer (`sender`), so
+    # delegated publishers (sender ≠ content.address, authorised via the
+    # owner's security aggregate) can still update the original.
+    owner = msg["content"]["address"]
+    url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={item_hash}&owners={owner}"
     async with aiohttp.ClientSession() as session:
         resp = await session.get(url)
         resp.raise_for_status()
@@ -180,7 +183,7 @@ async def get_latest_amend(item_hash: str) -> str:
         if messages:
             latest = messages[0]
             latest_content = latest.get("content", {})
-            if latest.get("sender") == sender and latest_content.get("ref") == item_hash:
+            if latest_content.get("address") == owner and latest_content.get("ref") == item_hash:
                 return latest["item_hash"]
     return item_hash
 
