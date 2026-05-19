@@ -768,8 +768,19 @@ class VmPool:
 
     async def stop(self):
         """Stop ephemeral VMs in the pool."""
-        # Stop executions in parallel:
-        await asyncio.gather(*(execution.stop() for execution in self.get_ephemeral_executions()))
+        # Stop executions in parallel. return_exceptions=True ensures one
+        # failing VM cleanup does not abort the rest, and does not propagate
+        # a non-zero exit to systemd (which would trigger a restart loop).
+        results = await asyncio.gather(
+            *(execution.stop() for execution in self.get_ephemeral_executions()),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Error stopping execution during pool shutdown",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
     def get_ephemeral_executions(self) -> Iterable[VmExecution]:
         executions = (
