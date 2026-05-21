@@ -129,7 +129,12 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         max_age = settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS
         stale = abs(iat - now) > max_age
         method_path_mismatch = payload["method"] != request.method or payload["path"] != request.path
-        if stale or method_path_mismatch:
+        # The signed payload binds method + path only — not the query string.
+        # Rather than extend the wire format, forbid query strings on signed
+        # endpoints: callers control them, attackers do too, and silent
+        # under-binding is the worst of both worlds.
+        has_query = bool(request.query_string)
+        if stale or method_path_mismatch or has_query:
             return False
 
         # Crypto: recover signer and check authorization.

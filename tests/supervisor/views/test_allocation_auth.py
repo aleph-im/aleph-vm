@@ -100,6 +100,8 @@ def mock_request(mocker):
         # Match aiohttp's behavior: Content-Length defaults to body length
         # unless the caller wants to exercise the cap or chunked-encoding paths.
         request.content_length = content_length if content_length is not None else len(body)
+        # No query string by default; tests covering H2 override this.
+        request.query_string = ""
         request.remote = "127.0.0.1"
         return request
 
@@ -453,6 +455,7 @@ async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
         request.path = "/control/allocations"
         request.headers = {"Authorization": auth}
         request.content_length = len(b"{}")
+        request.query_string = ""
         request.read = slow_read
         request.remote = "127.0.0.1"
         return request
@@ -522,3 +525,36 @@ async def test_dispatcher_accepts_lowercase_scheme(mock_request, authorize_signe
     auth = f"aleph-eip191-v1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
     assert await allocation_auth.authenticate_api_request(request) is True
+
+
+# --- H2: query strings are forbidden on signed endpoints ---
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_request_with_query_string(mock_request, authorize_signer):
+    """A request whose URL carries a query string is rejected.
+
+    Rationale: the signed payload binds method + path but not the query
+    string. Rather than extend the wire format, signed endpoints forbid
+    query strings entirely. A scheduler that accidentally appends one
+    must be told via 401 rather than silently authenticate with an
+    unbinding query in play.
+    """
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    # Simulate aiohttp's `query_string` attribute.
+    request.query_string = "foo=bar"
+
+    assert await _verify_aleph_signature(request, auth) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_request_with_empty_query_string(mock_request, authorize_signer):
+    """An empty query string (the common case) does not block verification."""
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    request.query_string = ""
+
+    assert await _verify_aleph_signature(request, auth) is True
