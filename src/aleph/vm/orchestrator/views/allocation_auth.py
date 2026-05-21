@@ -138,6 +138,8 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         now = time.time()
         max_age = settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS
         stale = abs(iat - now) > max_age
+        # Path matching is exact: aiohttp routes `/foo` and `/foo/` distinctly,
+        # so signers must use the exact path the route will receive.
         method_path_mismatch = payload["method"] != request.method or payload["path"] != request.path
         # The signed payload binds method + path only — not the query string.
         # Rather than extend the wire format, forbid query strings on signed
