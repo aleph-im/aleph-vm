@@ -497,3 +497,28 @@ async def test_verify_rejects_missing_content_length(mock_request, authorize_sig
 
     assert await _verify_aleph_signature(request, auth) is False
     request.read.assert_not_called()
+
+
+# --- H1: scheme name is case-insensitive (RFC 7235 §2.1) ---
+
+
+def test_parse_auth_params_lowercase_scheme_accepted():
+    """Lowercase scheme `aleph-eip191-v1` must parse — auth-scheme tokens
+    are case-insensitive per RFC 7235."""
+    params = _parse_auth_params("aleph-eip191-v1 sig=0xdead,payload=0xbeef")
+    assert params == {"sig": "0xdead", "payload": "0xbeef"}
+
+
+def test_parse_auth_params_uppercase_scheme_accepted():
+    params = _parse_auth_params("ALEPH-EIP191-V1 sig=0xdead,payload=0xbeef")
+    assert params == {"sig": "0xdead", "payload": "0xbeef"}
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_accepts_lowercase_scheme(mock_request, authorize_signer):
+    """End-to-end: a client lowercasing the scheme is accepted."""
+    payload_bytes = make_signed_payload(body=b"{}")
+    signed = authorize_signer.sign_message(encode_defunct(payload_bytes))
+    auth = f"aleph-eip191-v1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await allocation_auth.authenticate_api_request(request) is True

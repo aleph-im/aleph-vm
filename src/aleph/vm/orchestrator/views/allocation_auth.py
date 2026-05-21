@@ -36,10 +36,11 @@ def _parse_auth_params(auth_header: str) -> dict[str, str]:
 
     Raises ValueError if the scheme is wrong, the params are missing, or any
     pair is malformed (not key=value, or value is empty). Required keys
-    (`sig`, `payload`) are checked here to keep call sites simple.
+    (`sig`, `payload`) are checked here to keep call sites simple. The
+    scheme name is compared case-insensitively per RFC 7235 §2.1.
     """
     scheme, _, params_str = auth_header.partition(" ")
-    if scheme != ALEPH_EIP191_V1_SCHEME:
+    if scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
         msg = f"Unsupported auth scheme: {scheme!r}"
         raise ValueError(msg)
     params_str = params_str.strip()
@@ -185,13 +186,15 @@ async def authenticate_api_request(request: web.Request) -> bool:
 
     The presence of an `Authorization` header (any value) is authoritative —
     a malformed/invalid signature is rejected, with no fallback to the
-    legacy `X-Auth-Signature` path. Otherwise, the legacy token is
+    legacy `X-Auth-Signature` path. The scheme name is matched
+    case-insensitively (RFC 7235 §2.1). Otherwise, the legacy token is
     checked and a deprecation warning is logged so operators can spot
     un-migrated scheduler clients.
     """
     auth = request.headers.get("Authorization", "")
     if auth:
-        if not auth.startswith(f"{ALEPH_EIP191_V1_SCHEME} "):
+        scheme, sep, _ = auth.partition(" ")
+        if not sep or scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
             return False
         return await _verify_aleph_signature(request, auth)
     if "X-Auth-Signature" in request.headers:
