@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time as time_module
+import types
 from hashlib import sha256
 
 import pytest
@@ -86,6 +87,16 @@ def make_auth_header(account, payload_bytes: bytes) -> str:
     """Sign payload_bytes with `account` and produce the full Authorization value."""
     signed = account.sign_message(encode_defunct(payload_bytes))
     return f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
+
+
+def _freeze_time(monkeypatch, fixed_now: float) -> None:
+    """Pin `allocation_auth.time.time()` to `fixed_now` for this test.
+
+    Swaps just the local `time` reference inside allocation_auth's namespace
+    — the real `time` module stays untouched, so pytest's own timing and
+    other modules' `time.time()` calls are unaffected.
+    """
+    monkeypatch.setattr(allocation_auth, "time", types.SimpleNamespace(time=lambda: fixed_now))
 
 
 @pytest.fixture
@@ -658,3 +669,70 @@ def test_log_allocation_auth_config_nothing_configured_warns(caplog, monkeypatch
     with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
         log_allocation_auth_config()
     assert any("no auth method configured" in r.message for r in caplog.records)
+
+
+# --- M3: iat window boundary behavior ---
+
+
+@pytest.mark.asyncio
+async def test_verify_iat_equal_to_now_accepted(monkeypatch, mock_request, authorize_signer):
+    """iat == now (delta 0) → accepted. Sanity baseline."""
+    fixed_now = 1_700_000_000.0
+    _freeze_time(monkeypatch, fixed_now)
+    payload_bytes = make_signed_payload(body=b"{}", iat=int(fixed_now))
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_iat_at_lower_boundary_accepted(monkeypatch, mock_request, authorize_signer):
+    """iat == now - max_age (exactly at the edge) → accepted.
+
+    Pins down that the comparison is `abs(...) > max_age` (strict), not
+    `>=`. A future maintainer flipping this would silently shrink the
+    window by 1 second and break clients that sign with their own clock.
+    """
+    fixed_now = 1_700_000_000.0
+    _freeze_time(monkeypatch, fixed_now)
+    iat = int(fixed_now) - settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS
+    payload_bytes = make_signed_payload(body=b"{}", iat=iat)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_iat_just_past_lower_boundary_rejected(monkeypatch, mock_request, authorize_signer):
+    """iat == now - max_age - 1 → rejected (one second over the edge)."""
+    fixed_now = 1_700_000_000.0
+    _freeze_time(monkeypatch, fixed_now)
+    iat = int(fixed_now) - settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS - 1
+    payload_bytes = make_signed_payload(body=b"{}", iat=iat)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_iat_at_upper_boundary_accepted(monkeypatch, mock_request, authorize_signer):
+    """iat == now + max_age (clock-skew on the far side) → accepted."""
+    fixed_now = 1_700_000_000.0
+    _freeze_time(monkeypatch, fixed_now)
+    iat = int(fixed_now) + settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS
+    payload_bytes = make_signed_payload(body=b"{}", iat=iat)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_iat_just_past_upper_boundary_rejected(monkeypatch, mock_request, authorize_signer):
+    """iat == now + max_age + 1 → rejected."""
+    fixed_now = 1_700_000_000.0
+    _freeze_time(monkeypatch, fixed_now)
+    iat = int(fixed_now) + settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS + 1
+    payload_bytes = make_signed_payload(body=b"{}", iat=iat)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is False
