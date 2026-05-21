@@ -1,5 +1,6 @@
 """Unit tests for src/aleph/vm/orchestrator/views/allocation_auth.py."""
 
+import asyncio
 import json
 import time as time_module
 from hashlib import sha256
@@ -418,3 +419,41 @@ async def test_dispatcher_eip191_scheme_without_params_does_not_fall_back(mock_r
     spy_legacy = mocker.spy(allocation_auth, "_verify_legacy_token")
     assert await allocation_auth.authenticate_api_request(request) is False
     spy_legacy.assert_not_called()
+
+
+# --- C1: concurrent iat check+update must not race ---
+
+
+@pytest.mark.asyncio
+async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
+    """Two concurrent verifications with the same captured signed payload:
+    exactly one must succeed. Without the asyncio.Lock around the iat
+    check+update, both observe the old floor and both write — a same-iat
+    replay slips through.
+
+    Forces an interleave by making `request.read()` yield control.
+    """
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+
+    async def slow_read():
+        # Yield, then return body — guarantees both tasks reach the await
+        # point before either completes, so the post-await iat critical
+        # section is what serializes them.
+        await asyncio.sleep(0)
+        return b"{}"
+
+    def make_req():
+        request = mocker.Mock()
+        request.method = "POST"
+        request.path = "/control/allocations"
+        request.headers = {"Authorization": auth}
+        request.read = slow_read
+        request.remote = "127.0.0.1"
+        return request
+
+    results = await asyncio.gather(
+        _verify_aleph_signature(make_req(), auth),
+        _verify_aleph_signature(make_req(), auth),
+    )
+    assert sum(results) == 1, f"Exactly one of two same-iat verifications must succeed, got {results}"

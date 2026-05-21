@@ -7,6 +7,7 @@ the verifier and the decorator so they can be evolved (signature-based
 auth, key rotation, etc.) without touching the views package's `__init__`.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -58,9 +59,34 @@ def _parse_auth_params(auth_header: str) -> dict[str, str]:
 _last_accepted_iat: dict[str, int] = {}
 """Per-signer floor on accepted `iat` values. Module-level state, in-memory
 only; doesn't survive supervisor restarts (the absolute time window covers
-the post-restart gap)."""
+the post-restart gap). Single-process only: a multi-worker supervisor would
+let a captured request be replayed against a sibling worker."""
+
+_iat_lock: asyncio.Lock | None = None
+"""Serializes the read-check-write on `_last_accepted_iat`. Without this,
+two concurrent verifications for the same signer can both observe the old
+floor and both write, letting a same-iat replay slip through. Lazily
+initialized so module import doesn't require a running event loop."""
 
 PAYLOAD_REQUIRED_FIELDS = ("method", "path", "body_sha256", "iat")
+
+
+async def _accept_iat_if_fresh(signer_key: str, iat: int) -> bool:
+    """Atomically check `iat > last accepted for this signer` and update.
+
+    Returns True iff the iat strictly exceeds the floor and the floor was
+    advanced. The lock prevents two concurrent verifications for the same
+    signer from both observing the old floor and both succeeding.
+    """
+    global _iat_lock  # noqa: PLW0603 — lazy singleton; deferred to first call so import doesn't need a running loop
+    if _iat_lock is None:
+        _iat_lock = asyncio.Lock()
+    async with _iat_lock:
+        previous = _last_accepted_iat.get(signer_key, float("-inf"))
+        if iat <= previous:
+            return False
+        _last_accepted_iat[signer_key] = iat
+        return True
 
 
 async def _verify_aleph_signature(request: web.Request, auth_header: str) -> bool:
@@ -108,13 +134,11 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         if sha256(body).hexdigest() != payload["body_sha256"]:
             return False
 
-        # Monotonic-iat replay protection.
-        previous = _last_accepted_iat.get(recovered.lower(), float("-inf"))
-        if iat <= previous:
-            return False
-
-        _last_accepted_iat[recovered.lower()] = iat
-        return True
+        # Monotonic-iat replay protection. The check-and-update MUST be
+        # atomic; without it, two concurrent requests with the same signer
+        # can both succeed. Done last so we don't bump the floor for a
+        # request that would otherwise fail downstream.
+        return await _accept_iat_if_fresh(recovered.lower(), iat)
     except Exception as exc:  # broad catch intentional — auth verifier MUST NOT raise
         # Signature recovery, hex decoding, JSON parsing, and field type
         # coercion all raise different exception types. For an auth verifier,
