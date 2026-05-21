@@ -558,3 +558,30 @@ async def test_verify_accepts_request_with_empty_query_string(mock_request, auth
     request.query_string = ""
 
     assert await _verify_aleph_signature(request, auth) is True
+
+
+# --- H3: unknown auth-params rejected ---
+
+
+def test_parse_auth_params_rejects_unknown_param():
+    """`Aleph-EIP191-V1 sig=…,payload=…,extra=poison` is rejected.
+
+    The verifier promises to bind everything it accepts. Silently ignoring
+    extras would break that promise the day a new param is added without
+    updating the verifier."""
+    with pytest.raises(ValueError, match="Unknown auth-param"):
+        _parse_auth_params("Aleph-EIP191-V1 sig=0xdead,payload=0xbeef,extra=0xc0ffee")
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_unknown_auth_param(mock_request, authorize_signer):
+    """End-to-end: an extra auth-param yields a 401 even with a valid sig+payload."""
+    payload_bytes = make_signed_payload(body=b"{}")
+    signed = authorize_signer.sign_message(encode_defunct(payload_bytes))
+    auth = (
+        f"Aleph-EIP191-V1 sig={signed.signature.hex()},"
+        f"payload={payload_bytes.hex()},extra=poison"
+    )
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    assert await _verify_aleph_signature(request, auth) is False

@@ -31,13 +31,19 @@ ALEPH_EIP191_V1_SCHEME = "Aleph-EIP191-V1"
 MAX_SIGNED_REQUEST_BODY_BYTES = 1 * 1024 * 1024
 
 
+ALLOWED_AUTH_PARAMS = frozenset({"sig", "payload"})
+
+
 def _parse_auth_params(auth_header: str) -> dict[str, str]:
     """Parse `Aleph-EIP191-V1 key=val,key=val` into a dict.
 
-    Raises ValueError if the scheme is wrong, the params are missing, or any
-    pair is malformed (not key=value, or value is empty). Required keys
-    (`sig`, `payload`) are checked here to keep call sites simple. The
-    scheme name is compared case-insensitively per RFC 7235 §2.1.
+    Raises ValueError if the scheme is wrong, the params are missing or
+    malformed, the required keys (`sig`, `payload`) are absent, or any
+    unknown param is present. Rejecting unknowns keeps the auth contract
+    tight: the verifier promises to bind everything it accepts, so silently
+    ignoring extras would break that promise the moment a new param is added
+    without updating the verifier. The scheme name is compared
+    case-insensitively per RFC 7235 §2.1.
     """
     scheme, _, params_str = auth_header.partition(" ")
     if scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
@@ -56,10 +62,14 @@ def _parse_auth_params(auth_header: str) -> dict[str, str]:
             raise ValueError(msg)
         params[key] = value
 
-    for required in ("sig", "payload"):
-        if required not in params:
-            msg = f"Missing required auth-param: {required!r}"
-            raise ValueError(msg)
+    missing = ALLOWED_AUTH_PARAMS - params.keys()
+    if missing:
+        msg = f"Missing required auth-param(s): {sorted(missing)}"
+        raise ValueError(msg)
+    unknown = params.keys() - ALLOWED_AUTH_PARAMS
+    if unknown:
+        msg = f"Unknown auth-param(s): {sorted(unknown)}"
+        raise ValueError(msg)
 
     return params
 
