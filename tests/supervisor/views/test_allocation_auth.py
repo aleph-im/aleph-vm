@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from aleph.vm.conf import Settings, settings
 from aleph.vm.orchestrator.views import allocation_auth
 from aleph.vm.orchestrator.views.allocation_auth import (
+    MAX_SIGNED_REQUEST_BODY_BYTES,
     _last_accepted_iat,
     _parse_auth_params,
     _verify_aleph_signature,
@@ -90,12 +91,15 @@ def make_auth_header(account, payload_bytes: bytes) -> str:
 def mock_request(mocker):
     """Build a minimal fake aiohttp request supporting `await request.read()`."""
 
-    def factory(*, method="POST", path="/control/allocations", headers=None, body=b""):
+    def factory(*, method="POST", path="/control/allocations", headers=None, body=b"", content_length=None):
         request = mocker.Mock()
         request.method = method
         request.path = path
         request.headers = headers or {}
         request.read = mocker.AsyncMock(return_value=body)
+        # Match aiohttp's behavior: Content-Length defaults to body length
+        # unless the caller wants to exercise the cap or chunked-encoding paths.
+        request.content_length = content_length if content_length is not None else len(body)
         request.remote = "127.0.0.1"
         return request
 
@@ -448,6 +452,7 @@ async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
         request.method = "POST"
         request.path = "/control/allocations"
         request.headers = {"Authorization": auth}
+        request.content_length = len(b"{}")
         request.read = slow_read
         request.remote = "127.0.0.1"
         return request
@@ -457,3 +462,38 @@ async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
         _verify_aleph_signature(make_req(), auth),
     )
     assert sum(results) == 1, f"Exactly one of two same-iat verifications must succeed, got {results}"
+
+
+# --- C2: body size cap ---
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_oversized_body(mock_request, authorize_signer):
+    """Content-Length over the cap → reject without reading the body."""
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(
+        headers={"Authorization": auth},
+        body=b"{}",
+        content_length=MAX_SIGNED_REQUEST_BODY_BYTES + 1,
+    )
+
+    assert await _verify_aleph_signature(request, auth) is False
+    # Body must not be read once the cap rejects.
+    request.read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_missing_content_length(mock_request, authorize_signer):
+    """Content-Length is None (chunked encoding) → reject. Scheduler clients
+    always send length-delimited JSON; chunked uploads here are suspicious."""
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(
+        headers={"Authorization": auth},
+        body=b"{}",
+    )
+    request.content_length = None  # explicit None overrides the auto-set length
+
+    assert await _verify_aleph_signature(request, auth) is False
+    request.read.assert_not_called()

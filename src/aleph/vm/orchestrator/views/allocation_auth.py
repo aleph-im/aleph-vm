@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 ALEPH_EIP191_V1_SCHEME = "Aleph-EIP191-V1"
 
+# Defense-in-depth cap on the size of a signed request body. aiohttp's
+# Application has a default `client_max_size` of 1 MiB, but the auth verifier
+# must not rely on it: an operator who raises that ceiling for unrelated
+# reasons would unknowingly expand the DoS surface here. Scheduler control
+# requests are short JSON; 1 MiB is plenty.
+MAX_SIGNED_REQUEST_BODY_BYTES = 1 * 1024 * 1024
+
 
 def _parse_auth_params(auth_header: str) -> dict[str, str]:
     """Parse `Aleph-EIP191-V1 key=val,key=val` into a dict.
@@ -95,6 +102,11 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
     Returns True iff the signature is valid, recovers an authorized signer,
     binds the request, and beats the per-signer monotonic-iat floor. All
     failure modes return False (the dispatcher decides the response shape).
+
+    Side effect: calls `await request.read()`, which buffers the body into
+    aiohttp's request cache. Downstream handlers using `request.json()` or
+    `request.read()` get the same bytes; handlers streaming via
+    `request.content.iter_chunked()` would get an empty stream.
     """
     try:
         params = _parse_auth_params(auth_header)
@@ -127,6 +139,14 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         )
         authorized = {a.lower() for a in settings.AUTHORIZED_ALLOCATION_SIGNERS}
         if recovered.lower() not in authorized:
+            return False
+
+        # Bound body memory BEFORE reading — refuses to buffer an oversized
+        # body just to discover the hash doesn't match. Missing Content-Length
+        # (chunked encoding) is rejected: scheduler clients always send
+        # length-delimited JSON.
+        content_length = request.content_length
+        if content_length is None or content_length > MAX_SIGNED_REQUEST_BODY_BYTES:
             return False
 
         # Body hash binding.
