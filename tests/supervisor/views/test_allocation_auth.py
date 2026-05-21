@@ -736,3 +736,42 @@ async def test_verify_iat_just_past_upper_boundary_rejected(monkeypatch, mock_re
     auth = make_auth_header(authorize_signer, payload_bytes)
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
     assert await _verify_aleph_signature(request, auth) is False
+
+
+# --- M4: per-signer monotonic iat (no cross-signer interference) ---
+
+
+@pytest.mark.asyncio
+async def test_verify_per_signer_iat_floors_are_independent(mock_request, monkeypatch):
+    """Two authorized signers maintain independent iat floors.
+
+    A future "optimization" using a single global counter would silently
+    break cross-signer interleaving; this test pins down the per-key dict
+    semantics so that regression is caught.
+    """
+    signer_a = Account.create()
+    signer_b = Account.create()
+    monkeypatch.setattr(
+        settings, "AUTHORIZED_ALLOCATION_SIGNERS", [signer_a.address, signer_b.address]
+    )
+
+    now = int(time_module.time())
+
+    # Signer A: iat=N → succeeds; A's floor advances to N.
+    payload_a = make_signed_payload(body=b"{}", iat=now)
+    auth_a = make_auth_header(signer_a, payload_a)
+    request_a = mock_request(headers={"Authorization": auth_a}, body=b"{}")
+    assert await _verify_aleph_signature(request_a, auth_a) is True
+
+    # Signer B: iat=N-1 → still succeeds. B has its own floor; A's doesn't apply.
+    payload_b = make_signed_payload(body=b"{}", iat=now - 1)
+    auth_b = make_auth_header(signer_b, payload_b)
+    request_b = mock_request(headers={"Authorization": auth_b}, body=b"{}")
+    assert await _verify_aleph_signature(request_b, auth_b) is True
+
+    # Signer A: iat=N-1 → rejected. Below A's own floor (N) — replay for A
+    # even though B just accepted the same iat.
+    payload_a2 = make_signed_payload(body=b"{}", iat=now - 1)
+    auth_a2 = make_auth_header(signer_a, payload_a2)
+    request_a2 = mock_request(headers={"Authorization": auth_a2}, body=b"{}")
+    assert await _verify_aleph_signature(request_a2, auth_a2) is False
