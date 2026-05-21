@@ -204,9 +204,9 @@ async def authenticate_api_request(request: web.Request) -> bool:
     The presence of an `Authorization` header (any value) is authoritative —
     a malformed/invalid signature is rejected, with no fallback to the
     legacy `X-Auth-Signature` path. The scheme name is matched
-    case-insensitively (RFC 7235 §2.1). Otherwise, the legacy token is
-    checked and a deprecation warning is logged so operators can spot
-    un-migrated scheduler clients.
+    case-insensitively (RFC 7235 §2.1). Deprecation of the legacy path is
+    surfaced once at supervisor boot via `log_allocation_auth_config`, not
+    per-request, to keep production logs readable.
     """
     auth = request.headers.get("Authorization", "")
     if auth:
@@ -215,13 +215,37 @@ async def authenticate_api_request(request: web.Request) -> bool:
             return False
         return await _verify_aleph_signature(request, auth)
     if "X-Auth-Signature" in request.headers:
-        logger.warning(
-            "Allocation auth: legacy token path used by %s for %s",
-            request.remote,
-            request.path,
-        )
         return _verify_legacy_token(request)
     return False
+
+
+def log_allocation_auth_config() -> None:
+    """Emit a one-shot warning at supervisor boot if the legacy token path is
+    the only auth method configured. Operators see the deprecation notice
+    exactly once per process lifetime — not flooded per-request."""
+    has_signers = bool(settings.AUTHORIZED_ALLOCATION_SIGNERS)
+    has_legacy = bool(settings.ALLOCATION_TOKEN_HASH)
+    if has_signers:
+        logger.info(
+            "Allocation auth: Aleph-EIP191-V1 enabled with %d authorized signer(s)",
+            len(settings.AUTHORIZED_ALLOCATION_SIGNERS),
+        )
+        if has_legacy:
+            logger.warning(
+                "Allocation auth: legacy X-Auth-Signature path is still enabled "
+                "(ALLOCATION_TOKEN_HASH is set). Remove it once all schedulers "
+                "have migrated to Aleph-EIP191-V1.",
+            )
+    elif has_legacy:
+        logger.warning(
+            "Allocation auth: only the legacy X-Auth-Signature path is configured. "
+            "Set AUTHORIZED_ALLOCATION_SIGNERS to enable Aleph-EIP191-V1 (recommended).",
+        )
+    else:
+        logger.warning(
+            "Allocation auth: no auth method configured — all scheduler "
+            "endpoints will reject requests with 401.",
+        )
 
 
 def requires_allocation_auth(handler):

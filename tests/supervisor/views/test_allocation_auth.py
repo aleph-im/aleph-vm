@@ -17,6 +17,7 @@ from aleph.vm.orchestrator.views.allocation_auth import (
     _last_accepted_iat,
     _parse_auth_params,
     _verify_aleph_signature,
+    log_allocation_auth_config,
 )
 
 
@@ -348,8 +349,12 @@ async def test_dispatcher_invalid_signature_does_not_fall_back(mock_request, moc
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_falls_back_to_legacy_with_warning(mock_request, caplog, monkeypatch):
-    """No Aleph-EIP191-V1, valid legacy token → accept + warning logged."""
+async def test_dispatcher_falls_back_to_legacy_silently(mock_request, caplog, monkeypatch):
+    """No Aleph-EIP191-V1, valid legacy token → accept WITHOUT per-request log.
+
+    The deprecation notice is emitted once at boot via
+    `log_allocation_auth_config`; logging on every request would flood logs.
+    """
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
@@ -359,7 +364,7 @@ async def test_dispatcher_falls_back_to_legacy_with_warning(mock_request, caplog
 
     with caplog.at_level("WARNING"):
         assert await allocation_auth.authenticate_api_request(request) is True
-    assert any("legacy token path" in r.message for r in caplog.records)
+    assert not any("legacy" in r.message.lower() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -600,3 +605,56 @@ async def test_verify_failure_logs_at_warning(mock_request, caplog):
     with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
         assert await _verify_aleph_signature(request, auth) is False
     assert any("Aleph-EIP191-V1 verification failed" in r.message for r in caplog.records)
+
+
+# --- M2: boot-time auth-config summary ---
+
+
+def test_log_allocation_auth_config_signature_path_only(caplog, monkeypatch):
+    """Signers configured, legacy hash cleared → INFO summary, no warning."""
+    monkeypatch.setattr(
+        settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+    )
+    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
+
+    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+        log_allocation_auth_config()
+    assert any("Aleph-EIP191-V1 enabled" in r.message for r in caplog.records)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert not any("legacy" in r.message.lower() for r in warnings)
+
+
+def test_log_allocation_auth_config_both_enabled_warns(caplog, monkeypatch):
+    """Signers + legacy hash → both messages, including a warning to remove legacy."""
+    monkeypatch.setattr(
+        settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+    )
+    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
+
+    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+        log_allocation_auth_config()
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("legacy X-Auth-Signature path is still enabled" in m for m in warnings)
+
+
+def test_log_allocation_auth_config_legacy_only_warns(caplog, monkeypatch):
+    """No signers, legacy hash only → warning prompts operator to migrate."""
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
+
+    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+        log_allocation_auth_config()
+    assert any(
+        "only the legacy X-Auth-Signature path is configured" in r.message
+        for r in caplog.records
+    )
+
+
+def test_log_allocation_auth_config_nothing_configured_warns(caplog, monkeypatch):
+    """No signers and no legacy hash → warning that all scheduler calls will 401."""
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
+
+    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+        log_allocation_auth_config()
+    assert any("no auth method configured" in r.message for r in caplog.records)

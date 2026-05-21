@@ -1060,8 +1060,12 @@ async def test_allocation_aleph_eip191_v1_invalid_no_fallback(aiohttp_client, mo
 
 
 @pytest.mark.asyncio
-async def test_allocation_legacy_token_logs_deprecation_warning(aiohttp_client, monkeypatch, caplog):
-    """No Aleph-EIP191-V1 + valid legacy token → 200, warning logged."""
+async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkeypatch, caplog):
+    """No Aleph-EIP191-V1 + valid legacy token → 200, no per-request log.
+
+    Deprecation surfaces once at boot via `log_allocation_auth_config`,
+    not on every request — busy schedulers would otherwise flood logs.
+    """
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
@@ -1079,4 +1083,4 @@ async def test_allocation_legacy_token_logs_deprecation_warning(aiohttp_client, 
             headers={"X-Auth-Signature": "test"},
         )
     assert response.status == 200
-    assert any("legacy token path" in r.message for r in caplog.records)
+    assert not any("legacy" in r.message.lower() for r in caplog.records)
