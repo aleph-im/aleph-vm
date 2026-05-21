@@ -594,10 +594,7 @@ async def test_verify_rejects_unknown_auth_param(mock_request, authorize_signer)
     """End-to-end: an extra auth-param yields a 401 even with a valid sig+payload."""
     payload_bytes = make_signed_payload(body=b"{}")
     signed = authorize_signer.sign_message(encode_defunct(payload_bytes))
-    auth = (
-        f"Aleph-EIP191-V1 sig={signed.signature.hex()},"
-        f"payload={payload_bytes.hex()},extra=poison"
-    )
+    auth = f"Aleph-EIP191-V1 sig={signed.signature.hex()}," f"payload={payload_bytes.hex()},extra=poison"
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
 
     assert await _verify_aleph_signature(request, auth) is False
@@ -623,9 +620,7 @@ async def test_verify_failure_logs_at_warning(mock_request, caplog):
 
 def test_log_allocation_auth_config_signature_path_only(caplog, monkeypatch):
     """Signers configured, legacy hash cleared → INFO summary, no warning."""
-    monkeypatch.setattr(
-        settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"]
-    )
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
     with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
@@ -637,9 +632,7 @@ def test_log_allocation_auth_config_signature_path_only(caplog, monkeypatch):
 
 def test_log_allocation_auth_config_both_enabled_warns(caplog, monkeypatch):
     """Signers + legacy hash → both messages, including a warning to remove legacy."""
-    monkeypatch.setattr(
-        settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"]
-    )
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
 
     with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
@@ -655,10 +648,7 @@ def test_log_allocation_auth_config_legacy_only_warns(caplog, monkeypatch):
 
     with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
         log_allocation_auth_config()
-    assert any(
-        "only the legacy X-Auth-Signature path is configured" in r.message
-        for r in caplog.records
-    )
+    assert any("only the legacy X-Auth-Signature path is configured" in r.message for r in caplog.records)
 
 
 def test_log_allocation_auth_config_nothing_configured_warns(caplog, monkeypatch):
@@ -751,9 +741,7 @@ async def test_verify_per_signer_iat_floors_are_independent(mock_request, monkey
     """
     signer_a = Account.create()
     signer_b = Account.create()
-    monkeypatch.setattr(
-        settings, "AUTHORIZED_ALLOCATION_SIGNERS", [signer_a.address, signer_b.address]
-    )
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [signer_a.address, signer_b.address])
 
     now = int(time_module.time())
 

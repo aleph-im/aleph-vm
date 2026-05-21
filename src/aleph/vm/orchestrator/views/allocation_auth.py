@@ -246,8 +246,7 @@ def log_allocation_auth_config() -> None:
         )
     else:
         logger.warning(
-            "Allocation auth: no auth method configured — all scheduler "
-            "endpoints will reject requests with 401.",
+            "Allocation auth: no auth method configured — all scheduler " "endpoints will reject requests with 401.",
         )
 
 
