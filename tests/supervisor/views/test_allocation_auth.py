@@ -10,6 +10,12 @@ from eth_account.messages import encode_defunct
 from pydantic import ValidationError
 
 from aleph.vm.conf import Settings, settings
+from aleph.vm.orchestrator.views import allocation_auth
+from aleph.vm.orchestrator.views.allocation_auth import (
+    _last_accepted_iat,
+    _parse_auth_params,
+    _verify_aleph_signature,
+)
 
 
 def test_authorized_signers_default_empty():
@@ -56,16 +62,10 @@ def authorize_signer(signing_account, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_iat_cache():
-    """Clear the monotonic-iat dict between tests (added in Task 5)."""
-    # Imported lazily because the symbol doesn't exist until Task 5.
-    try:
-        from aleph.vm.orchestrator.views.allocation_auth import _last_accepted_iat
-
-        _last_accepted_iat.clear()
-        yield
-        _last_accepted_iat.clear()
-    except ImportError:
-        yield
+    """Clear the monotonic-iat dict between tests for isolation."""
+    _last_accepted_iat.clear()
+    yield
+    _last_accepted_iat.clear()
 
 
 def make_signed_payload(*, method="POST", path="/control/allocations", body=b"", iat=None) -> bytes:
@@ -102,15 +102,11 @@ def mock_request(mocker):
 
 
 def test_parse_auth_params_valid():
-    from aleph.vm.orchestrator.views.allocation_auth import _parse_auth_params
-
     params = _parse_auth_params("Aleph-EIP191-V1 sig=0xdead,payload=0xbeef")
     assert params == {"sig": "0xdead", "payload": "0xbeef"}
 
 
 def test_parse_auth_params_extra_whitespace_tolerated():
-    from aleph.vm.orchestrator.views.allocation_auth import _parse_auth_params
-
     params = _parse_auth_params("Aleph-EIP191-V1   sig=0xdead, payload=0xbeef")
     assert params == {"sig": "0xdead", "payload": "0xbeef"}
 
@@ -127,19 +123,12 @@ def test_parse_auth_params_extra_whitespace_tolerated():
     ],
 )
 def test_parse_auth_params_malformed(header):
-    from aleph.vm.orchestrator.views.allocation_auth import _parse_auth_params
-
     with pytest.raises(ValueError):
         _parse_auth_params(header)
 
 
 @pytest.mark.asyncio
 async def test_verify_aleph_signature_valid_request(mock_request, authorize_signer):
-    from aleph.vm.orchestrator.views.allocation_auth import (
-        _last_accepted_iat,
-        _verify_aleph_signature,
-    )
-
     payload_bytes = make_signed_payload(method="POST", path="/control/allocations", body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
     request = mock_request(
@@ -156,8 +145,6 @@ async def test_verify_aleph_signature_valid_request(mock_request, authorize_sign
 @pytest.mark.asyncio
 async def test_verify_rejects_non_integer_iat(mock_request, authorize_signer):
     """A signed payload with a non-integer iat (e.g., float or string) is rejected."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     # Hand-craft a payload with a string iat — must be signed with the same bytes
     # to bypass earlier checks and reach the type guard.
     bad_payload = json.dumps(
@@ -184,8 +171,6 @@ async def test_verify_rejects_non_integer_iat(mock_request, authorize_signer):
 @pytest.mark.asyncio
 async def test_verify_rejects_boolean_iat(mock_request, authorize_signer):
     """A boolean iat (which is technically int subclass) is rejected too."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     bad_payload = json.dumps(
         {
             "method": "POST",
@@ -209,8 +194,6 @@ async def test_verify_rejects_boolean_iat(mock_request, authorize_signer):
 
 @pytest.mark.asyncio
 async def test_verify_rejects_stale_iat(mock_request, authorize_signer):
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     stale = int(time_module.time()) - 600  # 10 minutes ago, default window is 5
     payload_bytes = make_signed_payload(body=b"{}", iat=stale)
     auth = make_auth_header(authorize_signer, payload_bytes)
@@ -221,8 +204,6 @@ async def test_verify_rejects_stale_iat(mock_request, authorize_signer):
 
 @pytest.mark.asyncio
 async def test_verify_rejects_far_future_iat(mock_request, authorize_signer):
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     future = int(time_module.time()) + 600
     payload_bytes = make_signed_payload(body=b"{}", iat=future)
     auth = make_auth_header(authorize_signer, payload_bytes)
@@ -233,8 +214,6 @@ async def test_verify_rejects_far_future_iat(mock_request, authorize_signer):
 
 @pytest.mark.asyncio
 async def test_verify_rejects_method_mismatch(mock_request, authorize_signer):
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     payload_bytes = make_signed_payload(method="POST", path="/control/allocations", body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
     # Request says GET but payload is signed for POST.
@@ -245,8 +224,6 @@ async def test_verify_rejects_method_mismatch(mock_request, authorize_signer):
 
 @pytest.mark.asyncio
 async def test_verify_rejects_path_mismatch(mock_request, authorize_signer):
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     payload_bytes = make_signed_payload(method="POST", path="/control/allocations", body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
     request = mock_request(method="POST", path="/control/migrate", headers={"Authorization": auth}, body=b"{}")
@@ -257,8 +234,6 @@ async def test_verify_rejects_path_mismatch(mock_request, authorize_signer):
 @pytest.mark.asyncio
 async def test_verify_rejects_unauthorized_signer(mock_request, monkeypatch):
     """Signer not in the authorized list is rejected."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
     rogue = Account.create()
     payload_bytes = make_signed_payload(body=b"{}")
@@ -272,8 +247,6 @@ async def test_verify_rejects_unauthorized_signer(mock_request, monkeypatch):
 async def test_verify_rejects_tampered_payload(mock_request, authorize_signer):
     """If the payload bytes are altered after signing, recovery yields a
     different address that isn't authorized."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     payload_bytes = make_signed_payload(body=b"{}")
     signed = authorize_signer.sign_message(encode_defunct(payload_bytes))
     # Tamper with payload after signing — flip one byte of iat.
@@ -290,8 +263,6 @@ async def test_verify_rejects_tampered_payload(mock_request, authorize_signer):
 @pytest.mark.asyncio
 async def test_verify_rejects_body_mismatch(mock_request, authorize_signer):
     """Signed body_sha256 doesn't match the actual body bytes → reject."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     # Signer signs for body=b"original".
     payload_bytes = make_signed_payload(body=b"original")
     auth = make_auth_header(authorize_signer, payload_bytes)
@@ -304,8 +275,6 @@ async def test_verify_rejects_body_mismatch(mock_request, authorize_signer):
 @pytest.mark.asyncio
 async def test_verify_rejects_replay(mock_request, authorize_signer):
     """Replaying a captured request (same iat) is rejected by monotonic-iat."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     payload_bytes = make_signed_payload(body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
 
@@ -319,8 +288,6 @@ async def test_verify_rejects_replay(mock_request, authorize_signer):
 @pytest.mark.asyncio
 async def test_verify_accepts_strictly_increasing_iat(mock_request, authorize_signer):
     """A subsequent request with a strictly greater iat is accepted."""
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     iat1 = int(time_module.time())
     payload1 = make_signed_payload(body=b"{}", iat=iat1)
     auth1 = make_auth_header(authorize_signer, payload1)
@@ -342,16 +309,12 @@ async def test_verify_accepts_strictly_increasing_iat(mock_request, authorize_si
     ],
 )
 async def test_verify_rejects_malformed_header(mock_request, authorize_signer, auth):  # noqa: ARG001 (authorize_signer is a fixture)
-    from aleph.vm.orchestrator.views.allocation_auth import _verify_aleph_signature
-
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
     assert await _verify_aleph_signature(request, auth) is False
 
 
 @pytest.mark.asyncio
 async def test_dispatcher_routes_to_signature_path(mock_request, authorize_signer, mocker):
-    from aleph.vm.orchestrator.views import allocation_auth
-
     payload_bytes = make_signed_payload(body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
@@ -365,8 +328,6 @@ async def test_dispatcher_routes_to_signature_path(mock_request, authorize_signe
 async def test_dispatcher_invalid_signature_does_not_fall_back(mock_request, mocker):
     """Garbage Aleph-EIP191-V1 + valid X-Auth-Signature → reject. The signature
     path is authoritative once chosen."""
-    from aleph.vm.orchestrator.views import allocation_auth
-
     request = mock_request(
         headers={
             "Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef",
@@ -382,8 +343,6 @@ async def test_dispatcher_invalid_signature_does_not_fall_back(mock_request, moc
 @pytest.mark.asyncio
 async def test_dispatcher_falls_back_to_legacy_with_warning(mock_request, caplog, monkeypatch):
     """No Aleph-EIP191-V1, valid legacy token → accept + warning logged."""
-    from aleph.vm.orchestrator.views import allocation_auth
-
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
@@ -398,8 +357,6 @@ async def test_dispatcher_falls_back_to_legacy_with_warning(mock_request, caplog
 
 @pytest.mark.asyncio
 async def test_dispatcher_no_auth_headers(mock_request):
-    from aleph.vm.orchestrator.views import allocation_auth
-
     request = mock_request(headers={}, body=b"{}")
     assert await allocation_auth.authenticate_api_request(request) is False
 
@@ -411,8 +368,6 @@ async def test_dispatcher_empty_legacy_token_returns_false(mock_request, monkeyp
     Otherwise the response message would differ from other rejections,
     leaking dispatch-path info.
     """
-    from aleph.vm.orchestrator.views import allocation_auth
-
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
@@ -426,8 +381,6 @@ async def test_dispatcher_empty_legacy_token_returns_false(mock_request, monkeyp
 async def test_dispatcher_unknown_scheme_does_not_fall_back(mock_request, mocker, monkeypatch):
     """Authorization with an unknown scheme + valid legacy → reject. The
     Authorization header's mere presence is authoritative."""
-    from aleph.vm.orchestrator.views import allocation_auth
-
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
@@ -450,8 +403,6 @@ async def test_dispatcher_eip191_scheme_without_params_does_not_fall_back(mock_r
     """Authorization: 'Aleph-EIP191-V1' (no trailing space, no params)
     + valid legacy → reject. Misconfigured client must not be rescued
     by legacy fallback."""
-    from aleph.vm.orchestrator.views import allocation_auth
-
     monkeypatch.setattr(
         settings,
         "ALLOCATION_TOKEN_HASH",
