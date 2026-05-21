@@ -179,8 +179,10 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         # Signature recovery, hex decoding, JSON parsing, and field type
         # coercion all raise different exception types. For an auth verifier,
         # "any unexpected input → reject" is the correct posture; raising
-        # would 500 the request instead of 401-ing it.
-        logger.debug("Aleph-EIP191-V1 verification failed: %s", exc)
+        # would 500 the request instead of 401-ing it. Logged at WARNING so
+        # operators don't need to enable debug logging globally to triage a
+        # misconfigured scheduler.
+        logger.warning("Aleph-EIP191-V1 verification failed: %s", exc)
         return False
 
 

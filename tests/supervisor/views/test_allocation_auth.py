@@ -585,3 +585,18 @@ async def test_verify_rejects_unknown_auth_param(mock_request, authorize_signer)
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
 
     assert await _verify_aleph_signature(request, auth) is False
+
+
+# --- M1: verification failures log at WARNING ---
+
+
+@pytest.mark.asyncio
+async def test_verify_failure_logs_at_warning(mock_request, caplog):
+    """A failed verification emits a WARNING (not DEBUG) so operators
+    triaging a misconfigured scheduler don't need debug logging globally."""
+    auth = "Aleph-EIP191-V1 sig=notHex,payload=0xbeef"
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+        assert await _verify_aleph_signature(request, auth) is False
+    assert any("Aleph-EIP191-V1 verification failed" in r.message for r in caplog.records)
