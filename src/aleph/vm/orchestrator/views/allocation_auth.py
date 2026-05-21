@@ -8,6 +8,7 @@ auth, key rotation, etc.) without touching the views package's `__init__`.
 """
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -257,7 +258,6 @@ def requires_allocation_auth(handler):
     `X-Auth-Signature` token. Apply BELOW any CORS decorator so OPTIONS
     preflights pass through unauthenticated.
     """
-    import functools
 
     @functools.wraps(handler)
     async def wrapper(request: web.Request) -> web.StreamResponse:
