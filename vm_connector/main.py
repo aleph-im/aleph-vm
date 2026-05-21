@@ -24,9 +24,9 @@ def read_root():
     return {"Server": "Aleph.im VM Connector"}
 
 
-async def get_latest_message_amend(ref: str, sender: str) -> dict | None:
+async def get_latest_message_amend(ref: str, owner: str) -> dict | None:
     async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={ref}&addresses={sender}"
+        url = f"{settings.API_SERVER}/api/v0/messages.json?msgType=STORE&sort_order=-1&refs={ref}&owners={owner}"
         resp = await session.get(url)
         resp.raise_for_status()
         resp_data = await resp.json()
@@ -134,11 +134,11 @@ async def compute_latest_amend(item_hash: str) -> str:
     msg = await get_message(hash_=item_hash)
     if not msg:
         raise HTTPException(status_code=404, detail="Hash not found")
-    sender = msg["sender"]
-    latest_amend = await get_latest_message_amend(ref=item_hash, sender=sender)
+    owner = msg["content"]["address"]
+    latest_amend = await get_latest_message_amend(ref=item_hash, owner=owner)
     if latest_amend:
         # Validation
-        assert latest_amend["sender"] == sender
+        assert latest_amend["content"]["address"] == owner
         assert latest_amend["content"]["ref"] == item_hash
 
         return latest_amend["item_hash"]
