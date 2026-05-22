@@ -487,11 +487,15 @@ async def update_allocations(request: web.Request):
     """Main entry for the start of persistence VM and instance, called by the Scheduler,
     POST /control/allocations
 
+    Auth via either:
+    - `Authorization: Aleph-EIP191-V1 sig=...,payload=...` (recommended)
+    - `X-Auth-Signature` matching `settings.ALLOCATION_TOKEN_HASH` (DEPRECATED)
 
-    auth via the SETTINGS.ALLOCATION_TOKEN_HASH  sent in header X-Auth-Signature.
-    Receive a list of vm and instance that should be present and then match that state by stopping and launching VMs
+    See :mod:`aleph.vm.orchestrator.views.allocation_auth` for the dispatcher.
+    Receive a list of vm and instance that should be present and then match
+    that state by stopping and launching VMs.
     """
-    if not authenticate_api_request(request):
+    if not await authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
     global allocation_lock
@@ -631,7 +635,7 @@ async def recreate_network(request: web.Request):
         - recreated_vms: List of VM hashes that were recreated
         - failed_vms: List of VM hashes and errors for failed recreations
     """
-    if not authenticate_api_request(request):
+    if not await authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
     global network_recreation_lock
@@ -743,7 +747,7 @@ async def regenerate_proxy(request: web.Request):
         - success: Boolean indicating if the operation completed successfully
         - message: Description of the operation result
     """
-    if not authenticate_api_request(request):
+    if not await authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
 
     global proxy_regeneration_lock

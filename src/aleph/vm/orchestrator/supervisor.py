@@ -273,6 +273,9 @@ async def _run_migration_reaper(app: web.Application) -> None:
 def run():
     """Run the VM Supervisor."""
     settings.check()
+    from aleph.vm.orchestrator.views.allocation_auth import log_allocation_auth_config
+
+    log_allocation_auth_config()
 
     pool = VmPool()
     asyncio.run(pool.setup())

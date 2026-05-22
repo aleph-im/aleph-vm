@@ -14,7 +14,8 @@ from typing import Any, Literal, NewType
 from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from dotenv import load_dotenv
-from pydantic import Field, HttpUrl
+from eth_utils import is_checksum_address
+from pydantic import Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
@@ -113,6 +114,19 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
 
 
 class Settings(BaseSettings):
+    @field_validator("AUTHORIZED_ALLOCATION_SIGNERS")
+    @classmethod
+    def _check_authorized_signers(cls, value: list[str]) -> list[str]:
+        for addr in value:
+            if not is_checksum_address(addr):
+                msg = (
+                    f"AUTHORIZED_ALLOCATION_SIGNERS contains an invalid or "
+                    f"non-checksummed ETH address: {addr!r}. Use the checksum "
+                    f"form (mixed case, EIP-55) to catch typos."
+                )
+                raise ValueError(msg)
+        return value
+
     SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
@@ -334,8 +348,23 @@ class Settings(BaseSettings):
         description="Snapshot compression algorithm.",
     )
 
-    # hashlib.sha256(b"secret-token").hexdigest()
     ALLOCATION_TOKEN_HASH: str = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
+    """DEPRECATED: SHA-256 of the shared bearer token used by the legacy
+    `X-Auth-Signature` allocation auth path. Slated for removal once all
+    schedulers migrate to AUTHORIZED_ALLOCATION_SIGNERS / Aleph-EIP191-V1."""
+
+    AUTHORIZED_ALLOCATION_SIGNERS: list[str] = []
+    """ETH addresses authorized to sign requests to scheduler-only endpoints
+    (Aleph-EIP191-V1 scheme). Empty list disables the signature path; only the
+    legacy ALLOCATION_TOKEN_HASH path is active.
+
+    Each entry must be a checksummed ETH address (e.g. 0xAbC...). Validated at
+    startup; invalid entries fail with a clear error.
+    """
+
+    ALLOCATION_SIGNATURE_MAX_AGE_SECONDS: int = 300
+    """Absolute time window (seconds) for the signed payload's `iat` relative
+    to the supervisor's wall clock. Used by the Aleph-EIP191-V1 verifier."""
 
     ENABLE_QEMU_SUPPORT: bool = Field(default=True)
     INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
