@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -1337,9 +1338,18 @@ async def _do_restore(
             else:
                 temp_file = await _parse_restore_json(request, backup_dir)
 
-            await verify_qemu_disk(temp_file)
+            # qemu-img rejects anything that isn't a valid QCOW2 image (e.g. a
+            # tar archive uploaded by mistake) with a non-zero exit code. That's
+            # a client error — surface it as a 400 rather than a generic 500.
+            try:
+                await verify_qemu_disk(temp_file)
+                new_size = await get_qemu_disk_virtual_size(temp_file)
+            except subprocess.CalledProcessError:
+                logger.info("Rejected restore upload for VM %s: not a valid QCOW2 image", vm_hash)
+                return web.HTTPBadRequest(
+                    body="Uploaded file is not a valid QCOW2 disk image",
+                )
 
-            new_size = await get_qemu_disk_virtual_size(temp_file)
             max_size = execution.message.rootfs.size_mib * 1024 * 1024
             if new_size > max_size:
                 return web.HTTPBadRequest(

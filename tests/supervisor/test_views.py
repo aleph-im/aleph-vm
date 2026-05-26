@@ -1086,3 +1086,51 @@ async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkey
         )
     assert response.status == 200
     assert not any("legacy" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
+    """Uploading a file that is not a valid QCOW2 image returns a 4xx, not a 500.
+
+    Regression: ``qemu-img check`` exits non-zero on e.g. a tar archive, so
+    ``verify_qemu_disk`` raises ``CalledProcessError``. Previously this fell
+    through to the generic handler and produced an HTTP 500.
+    """
+    import subprocess
+
+    from aleph.vm.controllers.qemu.instance import AlephQemuInstance
+    from aleph.vm.orchestrator.views import operator
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+    execution = mocker.Mock()
+    execution.message.rootfs.size_mib = 1000
+    execution.is_running = False
+    execution.vm = mocker.Mock()
+    # Make the AlephQemuInstance isinstance check pass.
+    execution.vm.__class__ = AlephQemuInstance
+    execution.vm.resources.rootfs_path = str(tmp_path / "rootfs.qcow2")
+
+    mocker.patch.object(operator, "get_execution_or_404", return_value=execution)
+    mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
+    mocker.patch.object(operator, "get_backup_directory", return_value=tmp_path)
+
+    uploaded = tmp_path / f"restore-{vm_hash}.qcow2"
+    uploaded.write_bytes(b"this is a tar archive, not a qcow2")
+    mocker.patch.object(operator, "_parse_restore_upload", new=mocker.AsyncMock(return_value=uploaded))
+
+    # qemu-img check exits non-zero on a non-QCOW2 file.
+    mocker.patch.object(
+        operator,
+        "verify_qemu_disk",
+        new=mocker.AsyncMock(side_effect=subprocess.CalledProcessError(2, "qemu-img", "not in qcow2 format")),
+    )
+
+    request = mocker.Mock()
+    request.app = {"vm_pool": mocker.Mock()}
+    request.content_length = None
+    request.content_type = "multipart/form-data"
+
+    response = await operator._do_restore(request, vm_hash, "0xSender")
+
+    assert 400 <= response.status < 500, f"expected a 4xx response, got {response.status}"
