@@ -263,7 +263,10 @@ message ListBackupsRequest { string vm_id = 1; }      // empty = all VMs
 message ListBackupsResponse { repeated BackupInfo backups = 1; }
 
 message DownloadBackupRequest { string vm_id = 1; string backup_id = 2; }
-message BackupChunk { bytes data = 1; uint64 offset = 2; }
+message BackupChunk {
+  bytes data = 1;
+  uint64 offset = 2;                 // byte offset of `data` in the backup; lets the client detect gaps and resume after a transient stream failure.
+}
 
 message DeleteBackupRequest { string vm_id = 1; string backup_id = 2; }
 message DeleteBackupResponse {}

@@ -894,6 +894,7 @@ class BackupChunk(google.protobuf.message.Message):
     OFFSET_FIELD_NUMBER: builtins.int
     data: builtins.bytes
     offset: builtins.int
+    """byte offset of `data` in the backup; lets the client detect gaps and resume after a transient stream failure."""
     def __init__(
         self,
         *,
