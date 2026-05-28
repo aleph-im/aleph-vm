@@ -12,6 +12,6 @@ backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 backport-design.md.
 """
 
-from google.protobuf import descriptor as _descriptor
+import google.protobuf.descriptor
 
-DESCRIPTOR: _descriptor.FileDescriptor
+DESCRIPTOR: google.protobuf.descriptor.FileDescriptor
