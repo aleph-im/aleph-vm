@@ -333,7 +333,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     vcpus: builtins.int
     memory_mib: builtins.int
     numa_node: builtins.int
-    """request: 0 = auto, 1+ = specific node (1-indexed). See VmInfo.numa_node for the effective placement."""
+    """requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement."""
     persistent: builtins.bool
     """hypervisor wraps in systemd if true"""
     @property
@@ -359,11 +359,12 @@ class CreateVmRequest(google.protobuf.message.Message):
         tee: global___TeeConfig | None = ...,
         network: global___NetworkConfig | None = ...,
         gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
-        numa_node: builtins.int = ...,
+        numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["network", b"network", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___CreateVmRequest = CreateVmRequest
 
@@ -514,7 +515,7 @@ class VmInfo(google.protobuf.message.Message):
     uptime_secs: builtins.int
     backend: global___Backend.ValueType
     numa_node: builtins.int
-    """effective placement (0-indexed). Only valid when status is BOOTING/RUNNING; 0 here means "placed on node 0", NOT "auto" (see CreateVmRequest.numa_node)."""
+    """effective placement (0-indexed). Unset until status is BOOTING/RUNNING."""
     status_message: builtins.str
     """human-readable, optional"""
     def __init__(
@@ -526,10 +527,12 @@ class VmInfo(google.protobuf.message.Message):
         ipv6: builtins.str = ...,
         uptime_secs: builtins.int = ...,
         backend: global___Backend.ValueType = ...,
-        numa_node: builtins.int = ...,
+        numa_node: builtins.int | None = ...,
         status_message: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "status", b"status", "status_message", b"status_message", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "status", b"status", "status_message", b"status_message", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___VmInfo = VmInfo
 
