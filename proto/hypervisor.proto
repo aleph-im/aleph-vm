@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+//
+// Aleph VM Hypervisor contract.
+//
+// This service is the infra-only boundary between the network-agent
+// (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
+// and the hypervisor (controllers, hypervisors, networking, systemd,
+// backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
+// backport-design.md.
+
+syntax = "proto3";
+
+package aleph.hypervisor.v1;
+
+service Hypervisor {
+  // RPCs added incrementally in Tasks 2-10.
+}
