@@ -1060,3 +1060,107 @@ class GetMigrationStatusRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["migration_id", b"migration_id", "vm_id", b"vm_id"]) -> None: ...
 
 global___GetMigrationStatusRequest = GetMigrationStatusRequest
+
+@typing.final
+class InitializeConfidentialRequest(google.protobuf.message.Message):
+    """── Confidential ─────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    SESSION_BYTES_FIELD_NUMBER: builtins.int
+    GODH_BYTES_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    session_bytes: builtins.bytes
+    """SEV session blob"""
+    godh_bytes: builtins.bytes
+    """SEV guest-owner DH key"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        session_bytes: builtins.bytes = ...,
+        godh_bytes: builtins.bytes = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["godh_bytes", b"godh_bytes", "session_bytes", b"session_bytes", "vm_id", b"vm_id"]) -> None: ...
+
+global___InitializeConfidentialRequest = InitializeConfidentialRequest
+
+@typing.final
+class InitializeConfidentialResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___InitializeConfidentialResponse = InitializeConfidentialResponse
+
+@typing.final
+class GetMeasurementRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___GetMeasurementRequest = GetMeasurementRequest
+
+@typing.final
+class Measurement(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    MEASUREMENT_BYTES_FIELD_NUMBER: builtins.int
+    TEE_BACKEND_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    measurement_bytes: builtins.bytes
+    """attestation report / SEV launch measure"""
+    tee_backend: builtins.str
+    """"sev-snp" | "tdx" | ..."""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        measurement_bytes: builtins.bytes = ...,
+        tee_backend: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
+
+global___Measurement = Measurement
+
+@typing.final
+class InjectSecretRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    SECRET_HEADER_BYTES_FIELD_NUMBER: builtins.int
+    SECRET_BYTES_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    secret_header_bytes: builtins.bytes
+    secret_bytes: builtins.bytes
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        secret_header_bytes: builtins.bytes = ...,
+        secret_bytes: builtins.bytes = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["secret_bytes", b"secret_bytes", "secret_header_bytes", b"secret_header_bytes", "vm_id", b"vm_id"]) -> None: ...
+
+global___InjectSecretRequest = InjectSecretRequest
+
+@typing.final
+class InjectSecretResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___InjectSecretResponse = InjectSecretResponse

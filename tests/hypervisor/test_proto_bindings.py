@@ -160,3 +160,24 @@ def test_migration_info_shape():
             "MIGRATION_PHASE_EXPORTING", "MIGRATION_PHASE_IMPORTING",
             "MIGRATION_PHASE_COMPLETE",
             "MIGRATION_PHASE_FAILED"} <= phases
+
+
+def test_confidential_rpcs_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert {"InitializeConfidential", "GetMeasurement",
+            "InjectSecret"} <= methods
+
+
+def test_confidential_message_shapes():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    init = {f.name for f in
+            hypervisor_pb2.InitializeConfidentialRequest.DESCRIPTOR.fields}
+    assert {"vm_id", "session_bytes", "godh_bytes"} <= init
+
+    meas = {f.name for f in hypervisor_pb2.Measurement.DESCRIPTOR.fields}
+    assert {"vm_id", "measurement_bytes", "tee_backend"} <= meas
+
+    inj = {f.name for f in hypervisor_pb2.InjectSecretRequest.DESCRIPTOR.fields}
+    assert {"vm_id", "secret_header_bytes", "secret_bytes"} <= inj

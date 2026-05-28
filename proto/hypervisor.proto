@@ -46,6 +46,11 @@ service Hypervisor {
   rpc ExportVm(ExportVmRequest) returns (MigrationInfo);
   rpc ImportVm(ImportVmRequest) returns (VmInfo);
   rpc GetMigrationStatus(GetMigrationStatusRequest) returns (MigrationInfo);
+
+  // ── Confidential ──
+  rpc InitializeConfidential(InitializeConfidentialRequest) returns (InitializeConfidentialResponse);
+  rpc GetMeasurement(GetMeasurementRequest) returns (Measurement);
+  rpc InjectSecret(InjectSecretRequest) returns (InjectSecretResponse);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -312,3 +317,29 @@ message GetMigrationStatusRequest {
   string vm_id = 1;
   string migration_id = 2;
 }
+
+// ── Confidential ─────────────────────────────────────────────────────────
+
+message InitializeConfidentialRequest {
+  string vm_id = 1;
+  bytes session_bytes = 2;           // SEV session blob
+  bytes godh_bytes = 3;              // SEV guest-owner DH key
+}
+
+message InitializeConfidentialResponse {}
+
+message GetMeasurementRequest { string vm_id = 1; }
+
+message Measurement {
+  string vm_id = 1;
+  bytes measurement_bytes = 2;       // attestation report / SEV launch measure
+  string tee_backend = 3;            // "sev-snp" | "tdx" | ...
+}
+
+message InjectSecretRequest {
+  string vm_id = 1;
+  bytes secret_header_bytes = 2;
+  bytes secret_bytes = 3;
+}
+
+message InjectSecretResponse {}

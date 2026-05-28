@@ -144,6 +144,21 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.MigrationInfo.FromString,
                 _registered_method=True)
+        self.InitializeConfidential = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/InitializeConfidential',
+                request_serializer=hypervisor__pb2.InitializeConfidentialRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.InitializeConfidentialResponse.FromString,
+                _registered_method=True)
+        self.GetMeasurement = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetMeasurement',
+                request_serializer=hypervisor__pb2.GetMeasurementRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.Measurement.FromString,
+                _registered_method=True)
+        self.InjectSecret = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/InjectSecret',
+                request_serializer=hypervisor__pb2.InjectSecretRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.InjectSecretResponse.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -287,6 +302,25 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def InitializeConfidential(self, request, context):
+        """── Confidential ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetMeasurement(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InjectSecret(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -399,6 +433,21 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.GetMigrationStatus,
                     request_deserializer=hypervisor__pb2.GetMigrationStatusRequest.FromString,
                     response_serializer=hypervisor__pb2.MigrationInfo.SerializeToString,
+            ),
+            'InitializeConfidential': grpc.unary_unary_rpc_method_handler(
+                    servicer.InitializeConfidential,
+                    request_deserializer=hypervisor__pb2.InitializeConfidentialRequest.FromString,
+                    response_serializer=hypervisor__pb2.InitializeConfidentialResponse.SerializeToString,
+            ),
+            'GetMeasurement': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMeasurement,
+                    request_deserializer=hypervisor__pb2.GetMeasurementRequest.FromString,
+                    response_serializer=hypervisor__pb2.Measurement.SerializeToString,
+            ),
+            'InjectSecret': grpc.unary_unary_rpc_method_handler(
+                    servicer.InjectSecret,
+                    request_deserializer=hypervisor__pb2.InjectSecretRequest.FromString,
+                    response_serializer=hypervisor__pb2.InjectSecretResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -995,6 +1044,87 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/GetMigrationStatus',
             hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
             hypervisor__pb2.MigrationInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InitializeConfidential(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/InitializeConfidential',
+            hypervisor__pb2.InitializeConfidentialRequest.SerializeToString,
+            hypervisor__pb2.InitializeConfidentialResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMeasurement(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetMeasurement',
+            hypervisor__pb2.GetMeasurementRequest.SerializeToString,
+            hypervisor__pb2.Measurement.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InjectSecret(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/InjectSecret',
+            hypervisor__pb2.InjectSecretRequest.SerializeToString,
+            hypervisor__pb2.InjectSecretResponse.FromString,
             options,
             channel_credentials,
             insecure,
