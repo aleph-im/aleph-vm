@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: MIT
+//
+// Aleph VM Hypervisor contract.
+//
+// This service is the infra-only boundary between the network-agent
+// (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
+// and the hypervisor (controllers, hypervisors, networking, systemd,
+// backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
+// backport-design.md.
+
+syntax = "proto3";
+
+package aleph.hypervisor.v1;
+
+service Hypervisor {
+  // ── Host ──
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
+
+  // ── VM lifecycle ──
+  rpc CreateVm(CreateVmRequest) returns (VmInfo);
+  rpc GetVm(GetVmRequest) returns (VmInfo);
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
+  rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
+  rpc RebootVm(RebootVmRequest) returns (VmInfo);
+  rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
+
+  // ── Port forwarding ──
+  rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
+  rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
+  rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
+
+  // ── Logs ──
+  rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogChunk);
+
+  // ── Backups ──
+  rpc StartBackup(StartBackupRequest) returns (BackupInfo);
+  rpc GetBackupStatus(GetBackupStatusRequest) returns (BackupInfo);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc DownloadBackup(DownloadBackupRequest) returns (stream BackupChunk);
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+  rpc RestoreBackup(RestoreBackupRequest) returns (VmInfo);
+
+  // ── Migration ──
+  rpc ExportVm(ExportVmRequest) returns (MigrationInfo);
+  rpc ImportVm(ImportVmRequest) returns (VmInfo);
+  rpc GetMigrationStatus(GetMigrationStatusRequest) returns (MigrationInfo);
+
+  // ── Confidential ──
+  rpc InitializeConfidential(InitializeConfidentialRequest) returns (InitializeConfidentialResponse);
+  rpc GetMeasurement(GetMeasurementRequest) returns (Measurement);
+  rpc InjectSecret(InjectSecretRequest) returns (InjectSecretResponse);
+}
+
+// ── Host ─────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;       // "ok" | "degraded"
+  uint32 vm_count = 2;
+}
+
+message GetHostInfoRequest {}
+
+message HostInfo {
+  // CPU
+  uint32 cpu_count = 1;
+  string cpu_architecture = 9;       // e.g. "x86_64", "aarch64"
+  string cpu_vendor = 10;            // e.g. "AuthenticAMD", "GenuineIntel"
+  string cpu_model = 11;             // e.g. "AMD EPYC 9354P"
+  uint32 cpu_frequency_mhz = 12;     // base clock
+
+  // Memory
+  uint64 memory_mib = 2;
+  string memory_type = 13;           // e.g. "DDR5"
+  uint32 memory_clock_mhz = 14;
+
+  // Topology
+  repeated NumaNode numa_nodes = 3;
+  repeated GpuDevice gpus = 4;
+
+  // TEE support
+  bool sev_supported = 15;           // SEV (base AMD memory encryption)
+  bool sev_es_supported = 16;        // SEV-ES (encrypted register state)
+  bool sev_snp_supported = 5;        // SEV-SNP (full attestation)
+  bool tdx_supported = 6;
+
+  // Identity
+  string hostname = 7;
+  string kernel_version = 8;
+}
+
+message NumaNode {
+  uint32 index = 1;
+  uint32 cpu_count = 2;
+  uint64 memory_mib = 3;
+}
+
+message GpuDevice {
+  string pci_host = 1;     // e.g. "0000:01:00.0"
+  string device_id = 2;    // vendor:device
+  string model = 3;
+  bool supports_x_vga = 4;
+}
+
+// ── Lifecycle ────────────────────────────────────────────────────────────
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_FIRECRACKER = 1;
+  BACKEND_QEMU = 2;
+  BACKEND_QEMU_SEV = 3;
+}
+
+enum VmStatus {
+  VM_STATUS_UNSPECIFIED = 0;
+  VM_STATUS_DEFINED = 1;
+  VM_STATUS_BOOTING = 2;
+  VM_STATUS_RUNNING = 3;
+  VM_STATUS_STOPPING = 4;
+  VM_STATUS_STOPPED = 5;
+  VM_STATUS_FAILED = 6;
+}
+
+message CreateVmRequest {
+  string vm_id = 1;                  // agent-issued id, opaque to hypervisor
+  Backend backend = 2;
+  string kernel_path = 3;            // empty for disk-boot
+  string initrd_path = 4;            // empty for disk-boot
+  repeated DiskConfig disks = 5;
+  uint32 vcpus = 6;
+  uint64 memory_mib = 7;
+  TeeConfig tee = 8;                 // only meaningful when backend is *_SEV
+  NetworkConfig network = 9;
+  repeated GpuConfig gpus = 10;
+  optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
+  bool persistent = 12;              // hypervisor wraps in systemd if true
+}
+
+message DiskConfig {
+  string path = 1;                   // absolute host path
+  bool readonly = 2;
+  Format format = 3;
+  DiskRole role = 4;
+
+  enum Format {
+    FORMAT_UNSPECIFIED = 0;
+    FORMAT_RAW = 1;
+    FORMAT_QCOW2 = 2;
+    FORMAT_SQUASHFS = 3;
+  }
+
+  enum DiskRole {
+    DISK_ROLE_UNSPECIFIED = 0;
+    DISK_ROLE_ROOTFS = 1;
+    DISK_ROLE_CODE = 2;
+    DISK_ROLE_RUNTIME = 3;
+    DISK_ROLE_DATA = 4;
+    DISK_ROLE_EXTRA = 5;
+  }
+}
+
+message TeeConfig {
+  string backend = 1;                // TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM).
+  string policy = 2;                 // empty = default
+  string session_dir = 3;            // confidential session files
+}
+
+message NetworkConfig {
+  bool internet_access = 1;
+  string requested_ipv6 = 2;         // empty = pool-assigned
+  uint32 ipv6_prefix_len = 3;        // 0 = /128
+}
+
+message GpuConfig {
+  string pci_host = 1;
+  bool supports_x_vga = 2;
+}
+
+message VmInfo {
+  string vm_id = 1;
+  VmStatus status = 2;
+  string ipv4 = 3;
+  string ipv6 = 4;
+  uint64 uptime_secs = 5;
+  Backend backend = 6;
+  optional uint32 numa_node = 7;     // effective placement (0-indexed). Unset until status is BOOTING/RUNNING.
+  string status_message = 8;         // human-readable, optional
+}
+
+message GetVmRequest      { string vm_id = 1; }
+message ListVmsRequest    {}
+message ListVmsResponse   { repeated VmInfo vms = 1; }
+message DeleteVmRequest   { string vm_id = 1; }
+message DeleteVmResponse  {}
+message RebootVmRequest {
+  string vm_id = 1;
+  // Note: aleph-vm performs soft reboot only today (systemd restart
+  // for persistent VMs, recreate for ephemeral). Firecracker has no
+  // reboot API. Add a `hard` option when a real implementation lands.
+}
+message ReinstallVmRequest { string vm_id = 1; }
+
+// ── Port forwarding ──────────────────────────────────────────────────────
+
+message AddPortForwardRequest {
+  string vm_id = 1;
+  uint32 host_port = 2;              // 0 = auto-allocate
+  uint32 vm_port = 3;
+  string protocol = 4;               // "tcp" | "udp"
+}
+
+message PortForwardInfo {
+  string vm_id = 1;
+  uint32 host_port = 2;
+  uint32 vm_port = 3;
+  string protocol = 4;
+}
+
+message RemovePortForwardRequest {
+  string vm_id = 1;
+  uint32 host_port = 2;
+  string protocol = 3;
+}
+
+message RemovePortForwardResponse {}
+
+message ListPortForwardsRequest {
+  string vm_id = 1;                  // empty = all VMs
+}
+
+message ListPortForwardsResponse {
+  repeated PortForwardInfo forwards = 1;
+}
+
+// ── Logs ─────────────────────────────────────────────────────────────────
+
+message GetLogsRequest {
+  string vm_id = 1;
+  uint32 max_lines = 2;              // 0 = unlimited (subject to server cap)
+  bool from_tail = 3;                // true = most recent lines
+}
+
+message GetLogsResponse {
+  repeated LogChunk lines = 1;
+}
+
+message StreamLogsRequest {
+  string vm_id = 1;
+  bool include_history = 2;          // false = only new lines from now
+}
+
+message LogChunk {
+  uint64 timestamp_ns = 1;           // unix ns at server-side capture time
+  string line = 2;                   // single log line, no trailing newline
+  LogSource source = 3;
+
+  enum LogSource {
+    LOG_SOURCE_UNSPECIFIED = 0;
+    LOG_SOURCE_SERIAL = 1;           // QEMU serial console
+    LOG_SOURCE_STDOUT = 2;           // Firecracker vm-stdout
+    LOG_SOURCE_SYSTEMD = 3;          // systemd journal for persistent VM unit
+  }
+}
+
+// ── Backups ──────────────────────────────────────────────────────────────
+
+enum BackupStatus {
+  BACKUP_STATUS_UNSPECIFIED = 0;
+  BACKUP_STATUS_PENDING = 1;
+  BACKUP_STATUS_RUNNING = 2;
+  BACKUP_STATUS_COMPLETE = 3;
+  BACKUP_STATUS_FAILED = 4;
+}
+
+message BackupInfo {
+  string vm_id = 1;
+  string backup_id = 2;              // hypervisor-issued
+  BackupStatus status = 3;
+  uint64 size_bytes = 4;             // 0 until COMPLETE
+  uint64 created_at_unix_secs = 5;
+  string error_message = 6;          // populated when status = FAILED
+}
+
+message StartBackupRequest {
+  string vm_id = 1;
+  bool quiesce_guest = 2;            // request guest fs-freeze if supported
+}
+
+message GetBackupStatusRequest { string vm_id = 1; string backup_id = 2; }
+
+message ListBackupsRequest { string vm_id = 1; }      // empty = all VMs
+message ListBackupsResponse { repeated BackupInfo backups = 1; }
+
+message DownloadBackupRequest { string vm_id = 1; string backup_id = 2; }
+message BackupChunk {
+  bytes data = 1;
+  uint64 offset = 2;                 // byte offset of `data` in the backup; lets the client detect gaps and resume after a transient stream failure.
+}
+
+message DeleteBackupRequest { string vm_id = 1; string backup_id = 2; }
+message DeleteBackupResponse {}
+
+message RestoreBackupRequest { string vm_id = 1; string backup_id = 2; }
+
+// ── Migration ────────────────────────────────────────────────────────────
+
+enum MigrationPhase {
+  MIGRATION_PHASE_UNSPECIFIED = 0;
+  MIGRATION_PHASE_PREPARING = 1;
+  MIGRATION_PHASE_EXPORTING = 2;
+  MIGRATION_PHASE_IMPORTING = 3;
+  MIGRATION_PHASE_COMPLETE = 4;
+  MIGRATION_PHASE_FAILED = 5;
+}
+
+message MigrationInfo {
+  string vm_id = 1;
+  string migration_id = 2;
+  MigrationPhase phase = 3;
+  uint64 bytes_transferred = 4;
+  uint64 bytes_total = 5;
+  string error_message = 6;
+}
+
+// NOTE (Plan 0.A): the directory-based shape below is provisional.
+// aleph-vm's current migration is HTTP-based (the source exposes
+// /control/machine/{ref}/migration/disk/... and the destination
+// fetches). The contract needs reshaping for host-to-host transport
+// before Plan 0.C wires real implementations. See design doc §9 open
+// questions.
+message ExportVmRequest {
+  string vm_id = 1;
+  string destination_dir = 2;        // PROVISIONAL: local path on the host
+}
+
+message ImportVmRequest {
+  string vm_id = 1;                  // id the new VM will be assigned post-import
+  string source_dir = 2;             // PROVISIONAL: see note on ExportVmRequest
+}
+
+message GetMigrationStatusRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+}
+
+// ── Confidential ─────────────────────────────────────────────────────────
+
+message InitializeConfidentialRequest {
+  string vm_id = 1;
+  bytes session_bytes = 2;           // SEV session blob
+  bytes godh_bytes = 3;              // SEV guest-owner DH key
+}
+
+message InitializeConfidentialResponse {}
+
+message GetMeasurementRequest { string vm_id = 1; }
+
+message Measurement {
+  string vm_id = 1;
+  bytes measurement_bytes = 2;       // attestation report / SEV launch measure
+  string tee_backend = 3;            // "sev-snp" | "tdx" | ...
+}
+
+message InjectSecretRequest {
+  string vm_id = 1;
+  bytes secret_header_bytes = 2;
+  bytes secret_bytes = 3;
+}
+
+message InjectSecretResponse {}
+
+// ── Wire error vocabulary ────────────────────────────────────────────────
+//
+// Closed enum of errors the hypervisor can return. Server side: map
+// backend exceptions (FileTooLargeError, VmSetupError,
+// MicroVMFailedInitError, ResourceDownloadError,
+// InsufficientResourcesError, HostNotFoundError, ...) into this enum
+// and attach an ErrorDetail in the gRPC status trailers. Agent side:
+// catch grpc.AioRpcError, read the trailer, translate to HTTP.
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+
+  // Lifecycle
+  ERROR_CODE_VM_NOT_FOUND = 1;
+  ERROR_CODE_VM_ALREADY_EXISTS = 2;
+  ERROR_CODE_INSUFFICIENT_RESOURCES = 3;
+
+  // Resource preparation
+  ERROR_CODE_RESOURCE_DOWNLOAD_FAILED = 4;
+  ERROR_CODE_FILE_TOO_LARGE = 5;
+
+  // Backend
+  ERROR_CODE_VM_SETUP_FAILED = 6;
+  ERROR_CODE_MICROVM_INIT_FAILED = 7;
+  ERROR_CODE_INVALID_BACKEND = 8;
+  ERROR_CODE_TEE_UNAVAILABLE = 9;
+
+  // Networking
+  ERROR_CODE_PORT_UNAVAILABLE = 10;
+  ERROR_CODE_HOST_NOT_FOUND = 11;
+
+  // Backup / migration
+  ERROR_CODE_BACKUP_NOT_FOUND = 12;
+  ERROR_CODE_MIGRATION_IN_PROGRESS = 13;
+
+  // Catch-all
+  ERROR_CODE_INTERNAL = 99;
+}
+
+message ErrorDetail {
+  ErrorCode code = 1;
+  string message = 2;                // human-readable, agent surfaces verbatim
+  string vm_id = 3;                  // optional context
+}
