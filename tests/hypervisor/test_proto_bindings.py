@@ -211,3 +211,32 @@ def test_error_detail_message_shape():
     from aleph.vm.hypervisor._pb import hypervisor_pb2
     fields = {f.name for f in hypervisor_pb2.ErrorDetail.DESCRIPTOR.fields}
     assert {"code", "message", "vm_id"} <= fields
+
+
+def test_full_service_surface_pinned():
+    """Whole-surface assertion. Update this list intentionally when the
+    contract changes (and bump the proto package version when breaking)."""
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    expected = {
+        # Host
+        "Health", "GetHostInfo",
+        # Lifecycle
+        "CreateVm", "GetVm", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm",
+        # Port forwarding
+        "AddPortForward", "RemovePortForward", "ListPortForwards",
+        # Logs
+        "GetLogs", "StreamLogs",
+        # Backups
+        "StartBackup", "GetBackupStatus", "ListBackups",
+        "DownloadBackup", "DeleteBackup", "RestoreBackup",
+        # Migration
+        "ExportVm", "ImportVm", "GetMigrationStatus",
+        # Confidential
+        "InitializeConfidential", "GetMeasurement", "InjectSecret",
+    }
+    actual = {m.name for m in
+              hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert actual == expected, (
+        f"unexpected drift: missing {expected - actual}, "
+        f"extra {actual - expected}"
+    )
