@@ -121,3 +121,23 @@ def test_log_rpcs_defined_with_streaming():
 
     fields = {f.name for f in hypervisor_pb2.LogChunk.DESCRIPTOR.fields}
     assert {"timestamp_ns", "line", "source"} <= fields
+
+
+def test_backup_rpcs_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name: m for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert {"StartBackup", "GetBackupStatus", "ListBackups",
+            "DownloadBackup", "DeleteBackup", "RestoreBackup"} <= set(methods)
+    assert methods["DownloadBackup"].server_streaming is True
+
+
+def test_backup_info_shape():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.BackupInfo.DESCRIPTOR.fields}
+    assert {"vm_id", "backup_id", "status", "size_bytes",
+            "created_at_unix_secs"} <= fields
+    statuses = {v.name for v in hypervisor_pb2.BackupStatus.DESCRIPTOR.values}
+    assert {"BACKUP_STATUS_UNSPECIFIED", "BACKUP_STATUS_PENDING",
+            "BACKUP_STATUS_RUNNING", "BACKUP_STATUS_COMPLETE",
+            "BACKUP_STATUS_FAILED"} <= statuses

@@ -33,6 +33,14 @@ service Hypervisor {
   // ── Logs ──
   rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
   rpc StreamLogs(StreamLogsRequest) returns (stream LogChunk);
+
+  // ── Backups ──
+  rpc StartBackup(StartBackupRequest) returns (BackupInfo);
+  rpc GetBackupStatus(GetBackupStatusRequest) returns (BackupInfo);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc DownloadBackup(DownloadBackupRequest) returns (stream BackupChunk);
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+  rpc RestoreBackup(RestoreBackupRequest) returns (VmInfo);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -224,3 +232,40 @@ message LogChunk {
     LOG_SOURCE_SYSTEMD = 3;          // systemd journal for persistent VM unit
   }
 }
+
+// ── Backups ──────────────────────────────────────────────────────────────
+
+enum BackupStatus {
+  BACKUP_STATUS_UNSPECIFIED = 0;
+  BACKUP_STATUS_PENDING = 1;
+  BACKUP_STATUS_RUNNING = 2;
+  BACKUP_STATUS_COMPLETE = 3;
+  BACKUP_STATUS_FAILED = 4;
+}
+
+message BackupInfo {
+  string vm_id = 1;
+  string backup_id = 2;              // hypervisor-issued
+  BackupStatus status = 3;
+  uint64 size_bytes = 4;             // 0 until COMPLETE
+  uint64 created_at_unix_secs = 5;
+  string error_message = 6;          // populated when status = FAILED
+}
+
+message StartBackupRequest {
+  string vm_id = 1;
+  bool quiesce_guest = 2;            // request guest fs-freeze if supported
+}
+
+message GetBackupStatusRequest { string vm_id = 1; string backup_id = 2; }
+
+message ListBackupsRequest { string vm_id = 1; }      // empty = all VMs
+message ListBackupsResponse { repeated BackupInfo backups = 1; }
+
+message DownloadBackupRequest { string vm_id = 1; string backup_id = 2; }
+message BackupChunk { bytes data = 1; uint64 offset = 2; }
+
+message DeleteBackupRequest { string vm_id = 1; string backup_id = 2; }
+message DeleteBackupResponse {}
+
+message RestoreBackupRequest { string vm_id = 1; string backup_id = 2; }

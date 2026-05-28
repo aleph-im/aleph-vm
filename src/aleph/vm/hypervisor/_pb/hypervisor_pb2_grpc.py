@@ -99,6 +99,36 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.StreamLogsRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.LogChunk.FromString,
                 _registered_method=True)
+        self.StartBackup = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/StartBackup',
+                request_serializer=hypervisor__pb2.StartBackupRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.BackupInfo.FromString,
+                _registered_method=True)
+        self.GetBackupStatus = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetBackupStatus',
+                request_serializer=hypervisor__pb2.GetBackupStatusRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.BackupInfo.FromString,
+                _registered_method=True)
+        self.ListBackups = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ListBackups',
+                request_serializer=hypervisor__pb2.ListBackupsRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.ListBackupsResponse.FromString,
+                _registered_method=True)
+        self.DownloadBackup = channel.unary_stream(
+                '/aleph.hypervisor.v1.Hypervisor/DownloadBackup',
+                request_serializer=hypervisor__pb2.DownloadBackupRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.BackupChunk.FromString,
+                _registered_method=True)
+        self.DeleteBackup = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/DeleteBackup',
+                request_serializer=hypervisor__pb2.DeleteBackupRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.DeleteBackupResponse.FromString,
+                _registered_method=True)
+        self.RestoreBackup = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/RestoreBackup',
+                request_serializer=hypervisor__pb2.RestoreBackupRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -186,6 +216,43 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def StartBackup(self, request, context):
+        """── Backups ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetBackupStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListBackups(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DownloadBackup(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteBackup(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RestoreBackup(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -253,6 +320,36 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.StreamLogs,
                     request_deserializer=hypervisor__pb2.StreamLogsRequest.FromString,
                     response_serializer=hypervisor__pb2.LogChunk.SerializeToString,
+            ),
+            'StartBackup': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartBackup,
+                    request_deserializer=hypervisor__pb2.StartBackupRequest.FromString,
+                    response_serializer=hypervisor__pb2.BackupInfo.SerializeToString,
+            ),
+            'GetBackupStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetBackupStatus,
+                    request_deserializer=hypervisor__pb2.GetBackupStatusRequest.FromString,
+                    response_serializer=hypervisor__pb2.BackupInfo.SerializeToString,
+            ),
+            'ListBackups': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListBackups,
+                    request_deserializer=hypervisor__pb2.ListBackupsRequest.FromString,
+                    response_serializer=hypervisor__pb2.ListBackupsResponse.SerializeToString,
+            ),
+            'DownloadBackup': grpc.unary_stream_rpc_method_handler(
+                    servicer.DownloadBackup,
+                    request_deserializer=hypervisor__pb2.DownloadBackupRequest.FromString,
+                    response_serializer=hypervisor__pb2.BackupChunk.SerializeToString,
+            ),
+            'DeleteBackup': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteBackup,
+                    request_deserializer=hypervisor__pb2.DeleteBackupRequest.FromString,
+                    response_serializer=hypervisor__pb2.DeleteBackupResponse.SerializeToString,
+            ),
+            'RestoreBackup': grpc.unary_unary_rpc_method_handler(
+                    servicer.RestoreBackup,
+                    request_deserializer=hypervisor__pb2.RestoreBackupRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -606,6 +703,168 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/StreamLogs',
             hypervisor__pb2.StreamLogsRequest.SerializeToString,
             hypervisor__pb2.LogChunk.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartBackup(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/StartBackup',
+            hypervisor__pb2.StartBackupRequest.SerializeToString,
+            hypervisor__pb2.BackupInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetBackupStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetBackupStatus',
+            hypervisor__pb2.GetBackupStatusRequest.SerializeToString,
+            hypervisor__pb2.BackupInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListBackups(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ListBackups',
+            hypervisor__pb2.ListBackupsRequest.SerializeToString,
+            hypervisor__pb2.ListBackupsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DownloadBackup(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/DownloadBackup',
+            hypervisor__pb2.DownloadBackupRequest.SerializeToString,
+            hypervisor__pb2.BackupChunk.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteBackup(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/DeleteBackup',
+            hypervisor__pb2.DeleteBackupRequest.SerializeToString,
+            hypervisor__pb2.DeleteBackupResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RestoreBackup(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/RestoreBackup',
+            hypervisor__pb2.RestoreBackupRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
