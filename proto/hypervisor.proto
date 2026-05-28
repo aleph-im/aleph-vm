@@ -13,5 +13,42 @@ syntax = "proto3";
 package aleph.hypervisor.v1;
 
 service Hypervisor {
-  // RPCs added incrementally in Tasks 2-10.
+  // ── Host ──
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
+}
+
+// ── Host ─────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;       // "ok" | "degraded"
+  uint32 vm_count = 2;
+}
+
+message GetHostInfoRequest {}
+
+message HostInfo {
+  uint32 cpu_count = 1;
+  uint64 memory_mib = 2;
+  repeated NumaNode numa_nodes = 3;
+  repeated GpuDevice gpus = 4;
+  bool sev_snp_supported = 5;
+  bool tdx_supported = 6;
+  string hostname = 7;
+  string kernel_version = 8;
+}
+
+message NumaNode {
+  uint32 index = 1;
+  uint32 cpu_count = 2;
+  uint64 memory_mib = 3;
+}
+
+message GpuDevice {
+  string pci_host = 1;     // e.g. "0000:01:00.0"
+  string device_id = 2;    // vendor:device
+  string model = 3;
+  bool supports_x_vga = 4;
 }

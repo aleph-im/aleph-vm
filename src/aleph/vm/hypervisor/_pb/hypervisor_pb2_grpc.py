@@ -3,6 +3,7 @@
 import grpc
 import warnings
 
+from . import hypervisor_pb2 as hypervisor__pb2
 
 GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
@@ -25,8 +26,7 @@ if _version_not_supported:
 
 
 class HypervisorStub(object):
-    """RPCs added incrementally in Tasks 2-10.
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -34,15 +34,47 @@ class HypervisorStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.Health = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/Health',
+                request_serializer=hypervisor__pb2.HealthRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.HealthResponse.FromString,
+                _registered_method=True)
+        self.GetHostInfo = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetHostInfo',
+                request_serializer=hypervisor__pb2.GetHostInfoRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.HostInfo.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
-    """RPCs added incrementally in Tasks 2-10.
-    """
+    """Missing associated documentation comment in .proto file."""
+
+    def Health(self, request, context):
+        """── Host ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHostInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'Health': grpc.unary_unary_rpc_method_handler(
+                    servicer.Health,
+                    request_deserializer=hypervisor__pb2.HealthRequest.FromString,
+                    response_serializer=hypervisor__pb2.HealthResponse.SerializeToString,
+            ),
+            'GetHostInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHostInfo,
+                    request_deserializer=hypervisor__pb2.GetHostInfoRequest.FromString,
+                    response_serializer=hypervisor__pb2.HostInfo.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'aleph.hypervisor.v1.Hypervisor', rpc_method_handlers)
@@ -52,5 +84,58 @@ def add_HypervisorServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class Hypervisor(object):
-    """RPCs added incrementally in Tasks 2-10.
-    """
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def Health(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/Health',
+            hypervisor__pb2.HealthRequest.SerializeToString,
+            hypervisor__pb2.HealthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHostInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetHostInfo',
+            hypervisor__pb2.GetHostInfoRequest.SerializeToString,
+            hypervisor__pb2.HostInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

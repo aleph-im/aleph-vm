@@ -16,3 +16,25 @@ def test_service_descriptor_present():
     assert hasattr(hypervisor_pb2_grpc, "HypervisorStub")
     assert hasattr(hypervisor_pb2_grpc, "HypervisorServicer")
     assert hasattr(hypervisor_pb2_grpc, "add_HypervisorServicer_to_server")
+
+
+def test_health_rpc_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2, hypervisor_pb2_grpc
+    # Request and response types exist
+    assert hasattr(hypervisor_pb2, "HealthRequest")
+    assert hasattr(hypervisor_pb2, "HealthResponse")
+    # Response fields
+    fields = {f.name for f in hypervisor_pb2.HealthResponse.DESCRIPTOR.fields}
+    assert {"status", "vm_count"} <= fields
+    # Service has the RPC
+    assert "Health" in hypervisor_pb2_grpc.HypervisorStub.__init__.__doc__ or \
+           any("Health" in m.name for m in hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods)
+
+
+def test_get_host_info_rpc_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    assert hasattr(hypervisor_pb2, "GetHostInfoRequest")
+    assert hasattr(hypervisor_pb2, "HostInfo")
+    fields = {f.name for f in hypervisor_pb2.HostInfo.DESCRIPTOR.fields}
+    assert {"cpu_count", "memory_mib", "numa_nodes", "gpus",
+            "sev_snp_supported", "tdx_supported"} <= fields

@@ -12,6 +12,137 @@ backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 backport-design.md.
 """
 
+import builtins
+import collections.abc
 import google.protobuf.descriptor
+import google.protobuf.internal.containers
+import google.protobuf.message
+import typing
 
 DESCRIPTOR: google.protobuf.descriptor.FileDescriptor
+
+@typing.final
+class HealthRequest(google.protobuf.message.Message):
+    """── Host ─────────────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___HealthRequest = HealthRequest
+
+@typing.final
+class HealthResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    STATUS_FIELD_NUMBER: builtins.int
+    VM_COUNT_FIELD_NUMBER: builtins.int
+    status: builtins.str
+    """"ok" | "degraded" """
+    vm_count: builtins.int
+    def __init__(
+        self,
+        *,
+        status: builtins.str = ...,
+        vm_count: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["status", b"status", "vm_count", b"vm_count"]) -> None: ...
+
+global___HealthResponse = HealthResponse
+
+@typing.final
+class GetHostInfoRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___GetHostInfoRequest = GetHostInfoRequest
+
+@typing.final
+class HostInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    CPU_COUNT_FIELD_NUMBER: builtins.int
+    MEMORY_MIB_FIELD_NUMBER: builtins.int
+    NUMA_NODES_FIELD_NUMBER: builtins.int
+    GPUS_FIELD_NUMBER: builtins.int
+    SEV_SNP_SUPPORTED_FIELD_NUMBER: builtins.int
+    TDX_SUPPORTED_FIELD_NUMBER: builtins.int
+    HOSTNAME_FIELD_NUMBER: builtins.int
+    KERNEL_VERSION_FIELD_NUMBER: builtins.int
+    cpu_count: builtins.int
+    memory_mib: builtins.int
+    sev_snp_supported: builtins.bool
+    tdx_supported: builtins.bool
+    hostname: builtins.str
+    kernel_version: builtins.str
+    @property
+    def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]: ...
+    @property
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]: ...
+    def __init__(
+        self,
+        *,
+        cpu_count: builtins.int = ...,
+        memory_mib: builtins.int = ...,
+        numa_nodes: collections.abc.Iterable[global___NumaNode] | None = ...,
+        gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
+        sev_snp_supported: builtins.bool = ...,
+        tdx_supported: builtins.bool = ...,
+        hostname: builtins.str = ...,
+        kernel_version: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["cpu_count", b"cpu_count", "gpus", b"gpus", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_mib", b"memory_mib", "numa_nodes", b"numa_nodes", "sev_snp_supported", b"sev_snp_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
+
+global___HostInfo = HostInfo
+
+@typing.final
+class NumaNode(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    INDEX_FIELD_NUMBER: builtins.int
+    CPU_COUNT_FIELD_NUMBER: builtins.int
+    MEMORY_MIB_FIELD_NUMBER: builtins.int
+    index: builtins.int
+    cpu_count: builtins.int
+    memory_mib: builtins.int
+    def __init__(
+        self,
+        *,
+        index: builtins.int = ...,
+        cpu_count: builtins.int = ...,
+        memory_mib: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["cpu_count", b"cpu_count", "index", b"index", "memory_mib", b"memory_mib"]) -> None: ...
+
+global___NumaNode = NumaNode
+
+@typing.final
+class GpuDevice(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    PCI_HOST_FIELD_NUMBER: builtins.int
+    DEVICE_ID_FIELD_NUMBER: builtins.int
+    MODEL_FIELD_NUMBER: builtins.int
+    SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
+    pci_host: builtins.str
+    """e.g. "0000:01:00.0" """
+    device_id: builtins.str
+    """vendor:device"""
+    model: builtins.str
+    supports_x_vga: builtins.bool
+    def __init__(
+        self,
+        *,
+        pci_host: builtins.str = ...,
+        device_id: builtins.str = ...,
+        model: builtins.str = ...,
+        supports_x_vga: builtins.bool = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+
+global___GpuDevice = GpuDevice
