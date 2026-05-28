@@ -37,6 +37,9 @@ jobs:
         run: |
           # virtualenv 21 brings a breaking change that's not supported by hatch 1.16
           python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
+          # Also install for root: subsequent steps (proto check, unit tests) use
+          # `sudo hatch ...`, and sudo's PATH doesn't see the runner's pip-installed hatch.
+          sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
 
       - name: Test style wth ruff, black and isort
         run: |
