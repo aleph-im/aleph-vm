@@ -91,7 +91,7 @@ message CreateVmRequest {
   TeeConfig tee = 8;                 // only meaningful when backend is *_SEV
   NetworkConfig network = 9;
   repeated GpuConfig gpus = 10;
-  uint32 numa_node = 11;             // 0 = auto, 1+ = specific (1-indexed)
+  uint32 numa_node = 11;             // request: 0 = auto, 1+ = specific node (1-indexed). See VmInfo.numa_node for the effective placement.
   bool persistent = 12;              // hypervisor wraps in systemd if true
 }
 
@@ -119,7 +119,7 @@ message DiskConfig {
 }
 
 message TeeConfig {
-  string backend = 1;                // "sev-snp", "tdx", "nvidia-cc" or ""
+  string backend = 1;                // TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM).
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
 }
@@ -142,7 +142,7 @@ message VmInfo {
   string ipv6 = 4;
   uint64 uptime_secs = 5;
   Backend backend = 6;
-  uint32 numa_node = 7;              // 0-indexed effective placement
+  uint32 numa_node = 7;              // effective placement (0-indexed). Only valid when status is BOOTING/RUNNING; 0 here means "placed on node 0", NOT "auto" (see CreateVmRequest.numa_node).
   string status_message = 8;         // human-readable, optional
 }
 
@@ -152,4 +152,4 @@ message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest   { string vm_id = 1; }
 message DeleteVmResponse  {}
 message RebootVmRequest   { string vm_id = 1; bool hard = 2; }
-message ReinstallVmRequest{ string vm_id = 1; }
+message ReinstallVmRequest { string vm_id = 1; }

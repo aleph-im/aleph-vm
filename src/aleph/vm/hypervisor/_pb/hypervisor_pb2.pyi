@@ -225,7 +225,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     vcpus: builtins.int
     memory_mib: builtins.int
     numa_node: builtins.int
-    """0 = auto, 1+ = specific (1-indexed)"""
+    """request: 0 = auto, 1+ = specific node (1-indexed). See VmInfo.numa_node for the effective placement."""
     persistent: builtins.bool
     """hypervisor wraps in systemd if true"""
     @property
@@ -330,7 +330,7 @@ class TeeConfig(google.protobuf.message.Message):
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
     backend: builtins.str
-    """"sev-snp", "tdx", "nvidia-cc" or "" """
+    """TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM)."""
     policy: builtins.str
     """empty = default"""
     session_dir: builtins.str
@@ -406,7 +406,7 @@ class VmInfo(google.protobuf.message.Message):
     uptime_secs: builtins.int
     backend: global___Backend.ValueType
     numa_node: builtins.int
-    """0-indexed effective placement"""
+    """effective placement (0-indexed). Only valid when status is BOOTING/RUNNING; 0 here means "placed on node 0", NOT "auto" (see CreateVmRequest.numa_node)."""
     status_message: builtins.str
     """human-readable, optional"""
     def __init__(
