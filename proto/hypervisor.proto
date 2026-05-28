@@ -41,6 +41,11 @@ service Hypervisor {
   rpc DownloadBackup(DownloadBackupRequest) returns (stream BackupChunk);
   rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
   rpc RestoreBackup(RestoreBackupRequest) returns (VmInfo);
+
+  // ── Migration ──
+  rpc ExportVm(ExportVmRequest) returns (MigrationInfo);
+  rpc ImportVm(ImportVmRequest) returns (VmInfo);
+  rpc GetMigrationStatus(GetMigrationStatusRequest) returns (MigrationInfo);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -272,3 +277,38 @@ message DeleteBackupRequest { string vm_id = 1; string backup_id = 2; }
 message DeleteBackupResponse {}
 
 message RestoreBackupRequest { string vm_id = 1; string backup_id = 2; }
+
+// ── Migration ────────────────────────────────────────────────────────────
+
+enum MigrationPhase {
+  MIGRATION_PHASE_UNSPECIFIED = 0;
+  MIGRATION_PHASE_PREPARING = 1;
+  MIGRATION_PHASE_EXPORTING = 2;
+  MIGRATION_PHASE_IMPORTING = 3;
+  MIGRATION_PHASE_COMPLETE = 4;
+  MIGRATION_PHASE_FAILED = 5;
+}
+
+message MigrationInfo {
+  string vm_id = 1;
+  string migration_id = 2;
+  MigrationPhase phase = 3;
+  uint64 bytes_transferred = 4;
+  uint64 bytes_total = 5;
+  string error_message = 6;
+}
+
+message ExportVmRequest {
+  string vm_id = 1;
+  string destination_dir = 2;        // local path on the host
+}
+
+message ImportVmRequest {
+  string vm_id = 1;                  // agent-issued; same id post-restore
+  string source_dir = 2;
+}
+
+message GetMigrationStatusRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+}

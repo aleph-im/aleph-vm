@@ -129,6 +129,21 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.RestoreBackupRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
+        self.ExportVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ExportVm',
+                request_serializer=hypervisor__pb2.ExportVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.MigrationInfo.FromString,
+                _registered_method=True)
+        self.ImportVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ImportVm',
+                request_serializer=hypervisor__pb2.ImportVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.GetMigrationStatus = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetMigrationStatus',
+                request_serializer=hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.MigrationInfo.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -253,6 +268,25 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ExportVm(self, request, context):
+        """── Migration ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ImportVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetMigrationStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -350,6 +384,21 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.RestoreBackup,
                     request_deserializer=hypervisor__pb2.RestoreBackupRequest.FromString,
                     response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'ExportVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExportVm,
+                    request_deserializer=hypervisor__pb2.ExportVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.MigrationInfo.SerializeToString,
+            ),
+            'ImportVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.ImportVm,
+                    request_deserializer=hypervisor__pb2.ImportVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'GetMigrationStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMigrationStatus,
+                    request_deserializer=hypervisor__pb2.GetMigrationStatusRequest.FromString,
+                    response_serializer=hypervisor__pb2.MigrationInfo.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -865,6 +914,87 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/RestoreBackup',
             hypervisor__pb2.RestoreBackupRequest.SerializeToString,
             hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExportVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ExportVm',
+            hypervisor__pb2.ExportVmRequest.SerializeToString,
+            hypervisor__pb2.MigrationInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ImportVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ImportVm',
+            hypervisor__pb2.ImportVmRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMigrationStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetMigrationStatus',
+            hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
+            hypervisor__pb2.MigrationInfo.FromString,
             options,
             channel_credentials,
             insecure,

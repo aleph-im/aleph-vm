@@ -141,3 +141,22 @@ def test_backup_info_shape():
     assert {"BACKUP_STATUS_UNSPECIFIED", "BACKUP_STATUS_PENDING",
             "BACKUP_STATUS_RUNNING", "BACKUP_STATUS_COMPLETE",
             "BACKUP_STATUS_FAILED"} <= statuses
+
+
+def test_migration_rpcs_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert {"ExportVm", "ImportVm", "GetMigrationStatus"} <= methods
+
+
+def test_migration_info_shape():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.MigrationInfo.DESCRIPTOR.fields}
+    assert {"vm_id", "migration_id", "phase", "bytes_transferred",
+            "bytes_total"} <= fields
+    phases = {v.name for v in hypervisor_pb2.MigrationPhase.DESCRIPTOR.values}
+    assert {"MIGRATION_PHASE_UNSPECIFIED", "MIGRATION_PHASE_PREPARING",
+            "MIGRATION_PHASE_EXPORTING", "MIGRATION_PHASE_IMPORTING",
+            "MIGRATION_PHASE_COMPLETE",
+            "MIGRATION_PHASE_FAILED"} <= phases

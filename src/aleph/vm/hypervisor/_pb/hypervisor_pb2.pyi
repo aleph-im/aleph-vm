@@ -95,6 +95,30 @@ BACKUP_STATUS_COMPLETE: BackupStatus.ValueType  # 3
 BACKUP_STATUS_FAILED: BackupStatus.ValueType  # 4
 global___BackupStatus = BackupStatus
 
+class _MigrationPhase:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _MigrationPhaseEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_MigrationPhase.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    MIGRATION_PHASE_UNSPECIFIED: _MigrationPhase.ValueType  # 0
+    MIGRATION_PHASE_PREPARING: _MigrationPhase.ValueType  # 1
+    MIGRATION_PHASE_EXPORTING: _MigrationPhase.ValueType  # 2
+    MIGRATION_PHASE_IMPORTING: _MigrationPhase.ValueType  # 3
+    MIGRATION_PHASE_COMPLETE: _MigrationPhase.ValueType  # 4
+    MIGRATION_PHASE_FAILED: _MigrationPhase.ValueType  # 5
+
+class MigrationPhase(_MigrationPhase, metaclass=_MigrationPhaseEnumTypeWrapper):
+    """── Migration ────────────────────────────────────────────────────────────"""
+
+MIGRATION_PHASE_UNSPECIFIED: MigrationPhase.ValueType  # 0
+MIGRATION_PHASE_PREPARING: MigrationPhase.ValueType  # 1
+MIGRATION_PHASE_EXPORTING: MigrationPhase.ValueType  # 2
+MIGRATION_PHASE_IMPORTING: MigrationPhase.ValueType  # 3
+MIGRATION_PHASE_COMPLETE: MigrationPhase.ValueType  # 4
+MIGRATION_PHASE_FAILED: MigrationPhase.ValueType  # 5
+global___MigrationPhase = MigrationPhase
+
 @typing.final
 class HealthRequest(google.protobuf.message.Message):
     """── Host ─────────────────────────────────────────────────────────────────"""
@@ -950,3 +974,89 @@ class RestoreBackupRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
 
 global___RestoreBackupRequest = RestoreBackupRequest
+
+@typing.final
+class MigrationInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    MIGRATION_ID_FIELD_NUMBER: builtins.int
+    PHASE_FIELD_NUMBER: builtins.int
+    BYTES_TRANSFERRED_FIELD_NUMBER: builtins.int
+    BYTES_TOTAL_FIELD_NUMBER: builtins.int
+    ERROR_MESSAGE_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    migration_id: builtins.str
+    phase: global___MigrationPhase.ValueType
+    bytes_transferred: builtins.int
+    bytes_total: builtins.int
+    error_message: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        migration_id: builtins.str = ...,
+        phase: global___MigrationPhase.ValueType = ...,
+        bytes_transferred: builtins.int = ...,
+        bytes_total: builtins.int = ...,
+        error_message: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["bytes_total", b"bytes_total", "bytes_transferred", b"bytes_transferred", "error_message", b"error_message", "migration_id", b"migration_id", "phase", b"phase", "vm_id", b"vm_id"]) -> None: ...
+
+global___MigrationInfo = MigrationInfo
+
+@typing.final
+class ExportVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    DESTINATION_DIR_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    destination_dir: builtins.str
+    """local path on the host"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        destination_dir: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["destination_dir", b"destination_dir", "vm_id", b"vm_id"]) -> None: ...
+
+global___ExportVmRequest = ExportVmRequest
+
+@typing.final
+class ImportVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    SOURCE_DIR_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    """agent-issued; same id post-restore"""
+    source_dir: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        source_dir: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["source_dir", b"source_dir", "vm_id", b"vm_id"]) -> None: ...
+
+global___ImportVmRequest = ImportVmRequest
+
+@typing.final
+class GetMigrationStatusRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    MIGRATION_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    migration_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        migration_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["migration_id", b"migration_id", "vm_id", b"vm_id"]) -> None: ...
+
+global___GetMigrationStatusRequest = GetMigrationStatusRequest
