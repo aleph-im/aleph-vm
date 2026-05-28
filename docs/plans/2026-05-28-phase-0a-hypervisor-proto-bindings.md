@@ -1,5 +1,14 @@
 # Phase 0.A: `hypervisor.proto` and Python Bindings: Implementation Plan
 
+> **Historical note:** the `hypervisor` boundary was renamed to `supervisor`
+> shortly after this phase shipped (QEMU/Firecracker are the actual
+> hypervisors; this layer is a supervisor/orchestrator). Paths and
+> identifiers below (`proto/hypervisor.proto`, `aleph.vm.hypervisor`,
+> service `Hypervisor`, branch `od/hypervisor-boundary`) reflect the
+> original 0.A naming and are preserved for historical accuracy. Current
+> names: `proto/supervisor.proto`, `aleph.vm.supervisor`, service
+> `Supervisor`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Define the full `hypervisor.proto` contract (Hypervisor service surface + closed wire error enum) and ship the generated Python bindings, with no behavioural change to aleph-vm yet. This is the linchpin deliverable that unblocks the rest of Phase 0.

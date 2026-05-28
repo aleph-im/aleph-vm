@@ -160,7 +160,7 @@ line-length = 120
 target-version = "py310"
 line-length = 120
 src = [ "src" ]
-extend-exclude = [ "src/aleph/vm/hypervisor/_pb" ]
+extend-exclude = [ "src/aleph/vm/supervisor/_pb" ]
 lint.select = [
   "A",
   "ARG",
@@ -215,7 +215,7 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 [tool.isort]
 profile = "black"
 extra_standard_library = [ "packaging" ]
-skip_glob = [ "src/aleph/vm/hypervisor/_pb/*" ]
+skip_glob = [ "src/aleph/vm/supervisor/_pb/*" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -255,7 +255,7 @@ non_interactive = true
 ignore_missing_imports = true
 explicit_package_bases = true
 check_untyped_defs = true
-exclude = [ "src/aleph/vm/hypervisor/_pb/" ]
+exclude = [ "src/aleph/vm/supervisor/_pb/" ]
 
 [tool.yamlfix]
 sequence_style = "keep_style"
