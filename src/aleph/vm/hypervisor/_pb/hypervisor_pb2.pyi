@@ -1073,13 +1073,21 @@ global___MigrationInfo = MigrationInfo
 
 @typing.final
 class ExportVmRequest(google.protobuf.message.Message):
+    """NOTE (Plan 0.A): the directory-based shape below is provisional.
+    aleph-vm's current migration is HTTP-based (the source exposes
+    /control/machine/{ref}/migration/disk/... and the destination
+    fetches). The contract needs reshaping for host-to-host transport
+    before Plan 0.C wires real implementations. See design doc §9 open
+    questions.
+    """
+
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
     DESTINATION_DIR_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     destination_dir: builtins.str
-    """local path on the host"""
+    """PROVISIONAL: local path on the host"""
     def __init__(
         self,
         *,
@@ -1097,8 +1105,9 @@ class ImportVmRequest(google.protobuf.message.Message):
     VM_ID_FIELD_NUMBER: builtins.int
     SOURCE_DIR_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    """agent-issued; same id post-restore"""
+    """id the new VM will be assigned post-import"""
     source_dir: builtins.str
+    """PROVISIONAL: see note on ExportVmRequest"""
     def __init__(
         self,
         *,

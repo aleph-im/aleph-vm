@@ -308,14 +308,20 @@ message MigrationInfo {
   string error_message = 6;
 }
 
+// NOTE (Plan 0.A): the directory-based shape below is provisional.
+// aleph-vm's current migration is HTTP-based (the source exposes
+// /control/machine/{ref}/migration/disk/... and the destination
+// fetches). The contract needs reshaping for host-to-host transport
+// before Plan 0.C wires real implementations. See design doc §9 open
+// questions.
 message ExportVmRequest {
   string vm_id = 1;
-  string destination_dir = 2;        // local path on the host
+  string destination_dir = 2;        // PROVISIONAL: local path on the host
 }
 
 message ImportVmRequest {
-  string vm_id = 1;                  // agent-issued; same id post-restore
-  string source_dir = 2;
+  string vm_id = 1;                  // id the new VM will be assigned post-import
+  string source_dir = 2;             // PROVISIONAL: see note on ExportVmRequest
 }
 
 message GetMigrationStatusRequest {
