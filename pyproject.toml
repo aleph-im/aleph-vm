@@ -97,7 +97,7 @@ system-packages = true
 dependencies = [
   "eth_typing==4.3.1",      # Temp fix for bug in CI with 5.0.0
   "grpcio-tools>=1.66,<1.71",
-  "mypy-protobuf>=3.6",
+  "mypy-protobuf>=3.6,<4",  # 4.x+ requires protobuf 6.x; we pin protobuf==5.29.6
   "pytest==8.2.1",
   "pytest-cov==5.0.0",
   "pytest-mock==3.14.0",
