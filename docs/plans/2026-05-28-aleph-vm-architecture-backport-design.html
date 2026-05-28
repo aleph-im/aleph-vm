@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backporting the aleph-cvm Architecture to aleph-vm</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', flowchart: { curve: 'basis' } });</script>
+<style>
+  :root {
+    --fg: #1c1c1c;
+    --muted: #5e5e5e;
+    --accent: #2a4d8f;
+    --accent-soft: #eaf0fa;
+    --rule: #d8d8d8;
+    --code-bg: #f4f4f6;
+    --hyp: #f0e6d6;
+    --hyp-bd: #c8a866;
+    --agt: #dde9da;
+    --agt-bd: #6a9e6c;
+    --risk-bd: #b8732e;
+    --risk-bg: #fbf2e8;
+    --nongoal-bd: #8a8a8a;
+    --nongoal-bg: #f3f3f3;
+    --max: 880px;
+  }
+  html { background: #fafafa; }
+  body {
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 2rem 1.5rem 4rem;
+    background: #fafafa;
+  }
+  main { max-width: var(--max); margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 0.5rem; }
+  h2 { font-size: 1.4rem; margin-top: 2.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); color: var(--accent); }
+  h3 { font-size: 1.1rem; margin-top: 1.6rem; }
+  p { margin: 0.7rem 0; }
+  code { font: 13.5px/1.5 "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  pre { background: var(--code-bg); padding: 0.8rem 1rem; border-radius: 6px; overflow-x: auto; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafafa; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.25rem 0; }
+
+  .meta {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  .meta b { color: var(--fg); font-weight: 600; }
+
+  .toc {
+    background: var(--accent-soft);
+    border-radius: 6px;
+    padding: 0.8rem 1.2rem;
+    margin: 1.5rem 0 2rem;
+    font-size: 0.95rem;
+  }
+  .toc ol { margin: 0.4rem 0; padding-left: 1.5rem; }
+  .toc li { margin: 0.15rem 0; }
+
+  /* Architecture two-pane diagram */
+  .arch {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 1rem;
+    align-items: stretch;
+    margin: 1.5rem 0;
+  }
+  .arch .pane {
+    padding: 1rem 1.1rem;
+    border-radius: 8px;
+    border: 1.5px solid;
+  }
+  .arch .pane.agent { background: var(--agt); border-color: var(--agt-bd); }
+  .arch .pane.hyp { background: var(--hyp); border-color: var(--hyp-bd); }
+  .arch .pane h4 { margin: 0 0 0.5rem; font-size: 1rem; }
+  .arch .pane h4 .role { font-weight: normal; color: var(--muted); font-size: 0.85rem; }
+  .arch .pane ul { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.9rem; }
+  .arch .pane li { margin: 0.15rem 0; }
+  .arch .pane .grpc { margin-top: 0.6rem; font-weight: 600; font-size: 0.8rem; letter-spacing: 0.5px; text-transform: uppercase; }
+  .arch .arrow { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; }
+  .arch .arrow .line { font-size: 1.6rem; color: var(--accent); }
+
+  /* Mermaid containers */
+  .mermaid {
+    margin: 1.2rem 0;
+    text-align: center;
+    background: white;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 0.8rem;
+  }
+
+  /* Callouts */
+  .callout { border-left: 4px solid; padding: 0.6rem 1rem; margin: 0.6rem 0; border-radius: 0 4px 4px 0; }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout.note { background: var(--accent-soft); border-color: var(--accent); }
+  .callout.warn { background: var(--risk-bg); border-color: var(--risk-bd); }
+
+  .side-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .side-badge.hyp { background: var(--hyp); color: #6b4d18; border: 1px solid var(--hyp-bd); }
+  .side-badge.agt { background: var(--agt); color: #2f5b32; border: 1px solid var(--agt-bd); }
+  .side-badge.split { background: #ecd9ef; color: #5a2a64; border: 1px solid #b070ba; }
+
+  .phase {
+    margin: 1rem 0;
+    padding: 0.8rem 1.1rem;
+    border-left: 4px solid var(--accent);
+    background: white;
+    border-radius: 0 6px 6px 0;
+  }
+  .phase h3 { margin: 0 0 0.3rem; color: var(--accent); }
+  .phase .label { color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); text-align: center; }
+
+  /* Annex */
+  .annex-divider { margin: 3rem 0 1rem; border: 0; border-top: 2px solid var(--accent); }
+  .exhibit { margin: 1.5rem 0 1.8rem; }
+  .exhibit h3 { color: var(--accent); margin-bottom: 0.4rem; font-size: 1.05rem; }
+  .exhibit .ref { color: var(--muted); font-family: "SF Mono", Menlo, monospace; font-size: 0.85rem; }
+  .exhibit pre { font-size: 12.5px; line-height: 1.45; }
+  .after { background: #eef5ec; border-left: 4px solid var(--agt-bd); padding: 0.55rem 0.9rem; margin: 0.6rem 0 0; border-radius: 0 4px 4px 0; font-size: 0.95rem; }
+  .after b { color: #2f5b32; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Backporting the aleph-cvm Architecture to aleph-vm</h1>
+<div class="meta">
+  <b>Status:</b> Design / roadmap &middot;
+  <b>Date:</b> 2026-05-28 &middot;
+  <b>Owner:</b> Olivier Desenfans<br>
+  <b>Subject repo:</b> <code>aleph-im/aleph-vm</code> (drafted in <code>aleph-cvm</code>; will move when implementation begins) &middot;
+  <b>Reference:</b> this repo (<code>aleph-cvm</code>) already realises the target shape in Rust.
+</div>
+
+<nav class="toc">
+  <b>Contents</b>
+  <ol>
+    <li><a href="#context">Context</a></li>
+    <li><a href="#target">Target architecture</a></li>
+    <li><a href="#seam">Mapping the seam onto aleph-vm</a></li>
+    <li><a href="#detangle">The detangling work</a></li>
+    <li><a href="#contract">The contract (Phase 0 sketch)</a></li>
+    <li><a href="#phases">Phases</a></li>
+    <li><a href="#nongoals">Non-goals</a></li>
+    <li><a href="#risks">Risks &amp; mitigations</a></li>
+    <li><a href="#open">Open questions</a></li>
+    <li><a href="#next">Next steps</a></li>
+  </ol>
+  <div style="margin-top:0.6rem"><b>Annex</b>
+    <ol style="margin:0.4rem 0; padding-left:1.5rem">
+      <li><a href="#annex-a">Concrete entanglements</a> (6 exhibits + pattern)</li>
+    </ol>
+  </div>
+</nav>
+
+<h2 id="context">1. Context</h2>
+<p><code>aleph-cvm</code> was built from scratch as a clean architecture for confidential VMs: a hypervisor-agnostic compute node exposing gRPC, a separate Aleph-network adapter (the network agent) acting as gRPC client, and a thin contract (<code>compute.proto</code>) between them. The split has proven out, but it is too sharp a break to drop onto production CRNs.</p>
+<p><code>aleph-vm</code> is the production Aleph Cloud compute node: a Python monolith (aiohttp) running Firecracker microVMs (on-demand programs), QEMU instances (persistent VPS), and a partially-wired QEMU+SEV path. Its orchestration, networking, payment, message handling, and VM lifecycle are braided through <code>VmExecution</code> (<code>models.py</code>) and <code>VmPool</code> (<code>pool.py</code>), and its HTTP control views call hypervisor code directly.</p>
+<p>The goal of this work is to <b>evolve aleph-vm in place toward aleph-cvm's architecture</b>: same shape (hypervisor service ⇄ gRPC ⇄ Aleph agent), without merging repos, without breaking CRNs, and without changing the public CRN HTTP API. <code>aleph-cvm</code> serves as the proven reference; the Rust crates here will eventually replace aleph-vm's Python services, starting with the hypervisor (Phase 2) and then the agent (Phase 3).</p>
+
+<h2 id="target">2. Target architecture</h2>
+<p>Per CRN, two daemons communicating over a Unix-domain-socket gRPC link:</p>
+
+<div class="arch">
+  <div class="pane agent">
+    <h4>network-agent <span class="role">(Aleph-only)</span></h4>
+    <ul>
+      <li><code>orchestrator/views</code>: public CRN HTTP API (unchanged for clients)</li>
+      <li>messages / tasks / reactor</li>
+      <li>payment / PAYG / allocations</li>
+      <li><code>storage.py</code>: download → local paths</li>
+      <li>node identity, aggregate settings</li>
+      <li>port-redirect <i>policy</i></li>
+      <li>on-demand program HTTP proxy + idle teardown</li>
+    </ul>
+    <div class="grpc">gRPC client</div>
+  </div>
+  <div class="arrow">
+    <div class="line">⟶</div>
+    <div>gRPC<br>over UDS</div>
+  </div>
+  <div class="pane hyp">
+    <h4>hypervisor <span class="role">(infra-only)</span></h4>
+    <ul>
+      <li><code>controllers/</code> (firecracker, qemu, qemu-sev)</li>
+      <li><code>hypervisors/</code> drivers</li>
+      <li>TAP create + IP assign</li>
+      <li>systemd supervision (persistent)</li>
+      <li>GPU passthrough, NUMA, hugepages</li>
+      <li>backups, snapshots, reboot, logs</li>
+      <li>confidential session <i>(phase 3)</i></li>
+    </ul>
+    <div class="grpc">gRPC server</div>
+  </div>
+</div>
+
+<p><b>Vocabulary on the wire is infra-only.</b> A <code>CreateVm</code> carries <code>vm_id</code>, <code>backend</code> (firecracker / qemu / qemu-sev), <code>kernel/initrd/rootfs</code> <i>paths</i>, <code>disks</code>, <code>vcpus</code>, <code>memory</code>, <code>tee</code>, <code>gpu</code>, <code>ipv6</code>, requested port-forwards. An Aleph <code>ExecutableMessage</code> never crosses the wire. The agent downloads code/runtime/data volumes (via <code>storage.py</code>) and hands the hypervisor local paths, exactly the pattern <code>aleph-cvm</code>'s <code>VolumeCache</code> + <code>adapter.rs</code> already implement.</p>
+
+<p><b>Sources of truth.</b> Hypervisor owns <i>what IS running</i> (process, TAP, mapped ports, backup files). Agent owns <i>what SHOULD be running</i> (allocation, message, payment status, expiry). Reconciliation = compare <code>ListVms</code> against the allocation, the same loop <code>aleph-network-agent</code> already does.</p>
+
+<div class="callout note"><p><b>The public CRN HTTP API does not change.</b> The split is internal; the scheduler, front-end, and operator tooling see no difference.</p></div>
+
+<h2 id="seam">3. Mapping the seam onto aleph-vm</h2>
+<p>From the audit of <code>aleph-im/aleph-vm</code> <code>src/aleph/vm/</code>:</p>
+
+<table>
+  <thead><tr><th>Today (aleph-vm)</th><th style="width:6em">Side</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>controllers/</code> (fc, qemu, qemu_confidential)</td><td><span class="side-badge hyp">hyp</span></td><td>Wrapped behind the gRPC server. Existing code, minimal rewrite.</td></tr>
+    <tr><td><code>hypervisors/</code> drivers</td><td><span class="side-badge hyp">hyp</span></td><td>Unchanged, internal to the hypervisor daemon.</td></tr>
+    <tr><td><code>network/interfaces.py</code> (TAP, IP)</td><td><span class="side-badge hyp">hyp</span></td><td>Pure infra: create TAP, assign IP.</td></tr>
+    <tr><td><code>network/firewall.py</code> (nft NAT, port forwards)</td><td><span class="side-badge hyp">hyp</span></td><td>Mechanism only: <i>which</i> ports to forward comes from the agent.</td></tr>
+    <tr><td><code>network/ndp_proxy.py</code>, <code>hostnetwork.py</code></td><td><span class="side-badge hyp">hyp</span></td><td>Bridge / NDP / IPv6; host-network setup is infra.</td></tr>
+    <tr><td><code>sevclient.py</code></td><td><span class="side-badge hyp">hyp</span></td><td>Platform certificate export; merges into hypervisor's TEE module.</td></tr>
+    <tr><td><code>orchestrator/views/</code></td><td><span class="side-badge agt">agt</span></td><td>Public HTTP API surface stays here; calls hypervisor over gRPC.</td></tr>
+    <tr><td><code>orchestrator/messages.py</code>, <code>tasks.py</code>, <code>reactor</code></td><td><span class="side-badge agt">agt</span></td><td>Aleph message subscription, status reactor.</td></tr>
+    <tr><td><code>orchestrator/payment.py</code></td><td><span class="side-badge agt">agt</span></td><td>Superfluid + credits + PAYG.</td></tr>
+    <tr><td><code>orchestrator/run.py</code>, <code>node_identity.py</code></td><td><span class="side-badge agt">agt</span></td><td>Execution dispatcher, node identity.</td></tr>
+    <tr><td><code>orchestrator/resources.py</code> (<code>about_capability</code>)</td><td><span class="side-badge agt">agt</span></td><td>But sources data via a new <code>GetHostInfo</code> RPC from the hypervisor.</td></tr>
+    <tr><td><code>storage.py</code></td><td><span class="side-badge agt">agt</span></td><td>Volume / code / runtime download → local paths.</td></tr>
+    <tr><td><code>migration/</code></td><td><span class="side-badge hyp">hyp</span></td><td>Disk export/import is a VM-management operation.</td></tr>
+    <tr><td><code>haproxy.py</code></td><td><span class="side-badge agt">agt</span></td><td>Domain routing is an Aleph-network policy concern.</td></tr>
+    <tr><td><code>guest_api/</code></td><td><span class="side-badge agt">agt</span></td><td>In-VM agent API endpoint; not hypervisor business.</td></tr>
+    <tr><td><code>models.py::VmExecution</code></td><td><span class="side-badge split">split</span></td><td>The hardest piece. See §4.</td></tr>
+    <tr><td><code>pool.py::VmPool</code></td><td><span class="side-badge split">split</span></td><td>Same. See §4.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="detangle">4. The detangling work (language-independent)</h2>
+<p>Most of the cost of Phase 1 is here. It must happen regardless of whether the hypervisor stays Python or becomes Rust.</p>
+
+<div class="mermaid">
+classDiagram
+  direction LR
+  class VmExecution_TODAY {
+    +controller
+    +message (Aleph)
+    +mapped_ports policy
+    +persistent : bool
+    +systemd_manager
+    +payment record
+    +tap_interface
+    +port_redirect_config_and_setup()
+  }
+  class Vm_HYPERVISOR_SIDE {
+    +vm_id
+    +process handle
+    +tap_interface
+    +ips
+    +status
+    +actually_mapped_ports
+    +backup_files
+  }
+  class Execution_AGENT_SIDE {
+    +vm_id : ItemHash
+    +message
+    +allocation
+    +payment
+    +expiry
+    +desired_port_forwards
+  }
+  VmExecution_TODAY ..> Vm_HYPERVISOR_SIDE : split (hypervisor side)
+  VmExecution_TODAY ..> Execution_AGENT_SIDE : split (agent side)
+</div>
+
+<p><b>Split <code>VmExecution</code>.</b> Today it holds both the controller instance <i>and</i> Aleph state (message, mapped_ports policy, persistent flag, systemd manager, payment record). Cleave into:</p>
+<ul>
+  <li><i>Hypervisor-side <code>Vm</code> record</i>: process handle, TAP, IPs, status, actually-mapped ports, backup files.</li>
+  <li><i>Agent-side <code>Execution</code> record</i>: Aleph message, allocation, payment, expiry, the desired port-forward set.</li>
+</ul>
+<p>Tie them by <code>vm_id</code> only.</p>
+
+<p><b>Split <code>VmPool</code>.</b> The pool currently does resource admission, TAP allocation, systemd supervision, and Aleph message caching. After the split:</p>
+<ul>
+  <li>Hypervisor owns the inventory of running VMs (queryable by <code>ListVms</code>), local resource admission (memory/CPU/GPU buckets, NUMA placement), systemd supervision.</li>
+  <li>Agent owns the <i>desired state</i> set indexed by <code>ItemHash</code>, and the reconcile loop that maps it to <code>CreateVm</code>/<code>DeleteVm</code> calls.</li>
+</ul>
+
+<p><b>Move volume download out of <code>controllers.setup()</code>.</b> Today the Firecracker controller's <code>setup()</code> fetches code/runtime/data from Aleph storage. That belongs in the agent: agent downloads, caches under <code>/var/cache/aleph-vm/...</code>, then passes local paths in <code>CreateVmRequest.disks[]</code>. (Matches aleph-cvm exactly.)</p>
+
+<p><b>Move port-redirect policy to the agent.</b> Today <code>VmExecution.fetch_port_redirect_config_and_setup()</code> fetches the user's aggregate settings <i>and</i> writes nft rules. After the split: agent reads aggregate settings and computes the desired forwards; hypervisor applies them via <code>AddPortForward</code>/<code>RemovePortForward</code>. Mechanism vs policy.</p>
+
+<p><b>Lift the on-demand program path.</b> When a request arrives at <code>/vm/{ref}</code> or <code>/{suffix}</code>, the agent: looks up or creates a VM (<code>CreateVm</code> if not present), waits for ready, proxies HTTP, applies idle teardown. The hypervisor sees nothing program-specific; it just gets <code>CreateVm</code>/<code>DeleteVm</code> like any other lifecycle event. Idle policy is an agent concern.</p>
+
+<h2 id="contract">5. The contract (Phase 0 deliverable, sketched here)</h2>
+<p><code>hypervisor.proto</code> extends aleph-cvm's <code>compute.proto</code> to cover aleph-vm's full surface. RPC list (final shape TBD in the Phase 0 spec):</p>
+
+<ul>
+  <li><b>Lifecycle:</b> <code>CreateVm</code>, <code>GetVm</code>, <code>ListVms</code>, <code>DeleteVm</code>, <code>RebootVm</code>, <code>ReinstallVm</code> (note: expiry/TTL is an <i>agent</i> concern; timer fires → eventual <code>DeleteVm</code>; the hypervisor stays unaware).</li>
+  <li><b>Port forwarding</b> (already in <code>compute.proto</code>): <code>AddPortForward</code>, <code>RemovePortForward</code>, <code>ListPortForwards</code>.</li>
+  <li><b>Logs:</b> <code>GetLogs</code> (paginated), <code>StreamLogs</code> (server-streaming).</li>
+  <li><b>Backup / snapshot:</b> <code>StartBackup</code>, <code>GetBackupStatus</code>, <code>ListBackups</code>, <code>DownloadBackup</code> (server-streaming bytes), <code>DeleteBackup</code>, <code>RestoreBackup</code>.</li>
+  <li><b>Migration:</b> <code>ExportVm</code>, <code>ImportVm</code>, <code>GetMigrationStatus</code>.</li>
+  <li><b>Confidential</b> (Phase 3): <code>InitializeConfidential</code>, <code>GetMeasurement</code>, <code>InjectSecret</code>.</li>
+  <li><b>Host info:</b> <code>Health</code>, <code>GetHostInfo</code> (CPU, NUMA, memory, GPUs, SEV/TDX support, which feeds <code>/about/capability</code>).</li>
+</ul>
+
+<p><code>CreateVm</code> grows fields aleph-cvm doesn't have today: <code>backend</code> enum (firecracker | qemu | qemu-sev), program-mode flags, GPU requests, runtime/code/data disk semantics.</p>
+
+<p>The contract must avoid backend leakage. Two examples to watch:</p>
+<ul>
+  <li><b>Snapshots/backups</b> differ semantically between Firecracker and QEMU. The proto should expose a single backup operation per VM with backend-neutral semantics; hypervisor picks the mechanism.</li>
+  <li><b><code>StreamLogs</code></b> must work for both Firecracker (file-tail of vm-stdout) and QEMU (serial console / systemd journal). One RPC, hypervisor abstracts.</li>
+</ul>
+
+<h2 id="phases">6. Phases</h2>
+
+<div class="mermaid">
+flowchart LR
+  P0["<b>Phase 0</b><br/>Contract +<br/>in-process boundary"]
+  P1["<b>Phase 1</b><br/>Carve hypervisor process<br/>(still Python)<br/><br/>1. persistent QEMU<br/>2. microVMs / programs<br/>3. confidential (stub)"]
+  P2["<b>Phase 2</b><br/>Swap hypervisor → Rust<br/>(aleph-compute-node)<br/>A/B per CRN"]
+  P3["<b>Phase 3</b><br/>Agent → Rust<br/>+ real SEV-SNP<br/>attestation"]
+  P0 --> P1 --> P2 --> P3
+  classDef phase fill:#eaf0fa,stroke:#2a4d8f,color:#1c1c1c,stroke-width:1.5px;
+  class P0,P1,P2,P3 phase;
+</div>
+
+<div class="phase">
+  <div class="label">Phase 0</div>
+  <h3>Contract &amp; in-process boundary</h3>
+  <p><b>Deliverable:</b> the finalised <code>hypervisor.proto</code>; a Python <code>Hypervisor</code> abstraction (ABC) inside aleph-vm with two implementations: in-process (wraps current <code>VmPool</code> / controllers) and gRPC client (stub for now). <code>orchestrator/views</code> and <code>orchestrator/run.py</code> are migrated to call the abstraction. No process split yet.</p>
+  <p><b>Exit criteria:</b> every call into hypervisor functionality from agent code goes through the abstraction; the in-process implementation passes the existing test suite; the gRPC client compiles.</p>
+  <p><b>Validates:</b> the contract is expressible without leaking Aleph types into the hypervisor side.</p>
+</div>
+
+<div class="phase">
+  <div class="label">Phase 1</div>
+  <h3>Carve out the hypervisor process, still Python</h3>
+  <p>Strangler-fig, one capability at a time. For each capability: stand up the corresponding gRPC server-side handler in the hypervisor daemon, switch the <code>Hypervisor</code> abstraction to use the gRPC implementation for that capability, ship a release, monitor, move on.</p>
+  <p><b>Order (decided 2026-05-28):</b></p>
+  <ol>
+    <li><b>Persistent QEMU instances</b>: closest match to aleph-cvm's proven flow.</li>
+    <li><b>Firecracker microVMs / programs</b>: the on-demand HTTP path, hardest entanglement.</li>
+    <li><b>Confidential (stub-level)</b>: wire the existing <code>sevctl</code> cert export and the stub endpoints; full attestation deferred to Phase 3.</li>
+  </ol>
+  <p>In parallel with (1)–(3), detangle <code>VmExecution</code>/<code>VmPool</code> (§4). Backups, migration, logs, reboot/reinstall/expire migrate as they become needed by the carved-out paths.</p>
+  <p><b>Exit criteria:</b> each CRN runs two Python daemons (<code>aleph-vm-agent</code>, <code>aleph-vm-hypervisor</code>) talking over UDS gRPC; no agent code reaches into hypervisor internals; the in-process implementation of <code>Hypervisor</code> is deleted.</p>
+</div>
+
+<div class="phase">
+  <div class="label">Phase 2</div>
+  <h3>Swap hypervisor to Rust</h3>
+  <p>Drop in aleph-cvm's <code>aleph-compute-node</code> as a replacement for the Python hypervisor daemon. Same socket, same proto, no agent changes. A/B per CRN: an operator can run the Python or Rust hypervisor under the same agent.</p>
+  <p>Work mostly inside this repo: extend <code>aleph-compute-node</code> to cover the firecracker backend, program semantics, backups, logs, migration, i.e. catch up to whatever the Python hypervisor exposed at end of Phase 1.</p>
+  <p><b>Exit criteria:</b> the Rust hypervisor is the default on at least one production tier; the Python hypervisor codepath is removed from aleph-vm.</p>
+</div>
+
+<div class="phase">
+  <div class="label">Phase 3</div>
+  <h3>Agent to Rust + real SEV-SNP</h3>
+  <p>Port <code>aleph-vm-agent</code> to Rust, borrowing from <code>aleph-network-agent</code>. Wire genuine SEV-SNP attestation using <code>aleph-tee</code> + <code>aleph-attest-agent</code> + measured OVMF/kernel/initrd from this repo's Nix build. The contract gains <code>InitializeConfidential</code>/<code>GetMeasurement</code>/<code>InjectSecret</code> (or these become real implementations of the stubs).</p>
+  <p><b>Exit criteria:</b> confidential VMs on aleph-vm provide remote attestation comparable to aleph-cvm; the Python agent is removed.</p>
+</div>
+
+<h2 id="nongoals">7. Non-goals</h2>
+<ul>
+  <li><b>Merging the aleph-cvm and aleph-vm repos.</b> They stay independent. Code travels by being moved/published, not by repo merger.</li>
+  <li><b>Changing the public CRN HTTP API.</b> Clients (scheduler, front-end, CLIs) see no change at any phase.</li>
+  <li><b>Replacing Firecracker with QEMU (or vice versa).</b> Backend selection stays where it is today.</li>
+  <li><b>Adding new VM-shaped product features</b> (new TEE backends, new disk types) during the carve-out. The migration is structural; features land before or after.</li>
+  <li><b>Distributed/multi-host hypervisor.</b> Each CRN runs its own agent + hypervisor pair locally over UDS.</li>
+</ul>
+
+<h2 id="risks">8. Risks &amp; mitigations</h2>
+<table>
+  <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr><td>Contract leaks backend specifics (FC vs QEMU vs SEV), bleeds Aleph concepts back in</td><td>Review the proto against aleph-cvm's <code>compute.proto</code> discipline; reject any field that names an Aleph message type</td></tr>
+    <tr><td>The strangler intermediate state (some capabilities via gRPC, some in-process) leaks</td><td>The <code>Hypervisor</code> abstraction is the <i>only</i> call path from agent → hypervisor; transport is implementation-detail</td></tr>
+    <tr><td>Python gRPC server adds latency on the program cold-start path</td><td>Persistent first; profile microVM cold-start before carving; gRPC over UDS adds sub-ms vs the multi-100ms cold start</td></tr>
+    <tr><td>Detangling <code>VmExecution</code>/<code>VmPool</code> becomes an open-ended yak shave</td><td>Bound each carve-out to a single capability; defer non-blocking cleanup; accept temporary ugliness behind the abstraction</td></tr>
+    <tr><td>Backups/migration semantics diverge per backend, contract becomes two parallel surfaces</td><td>Design the backup/migration RPCs from the agent's point of view, not the backend's; hypervisor adapts</td></tr>
+    <tr><td>The Python hypervisor daemon is throwaway; effort wasted</td><td>It is, but its purpose is to battle-test the contract under real RPC conditions, <i>before</i> the Rust swap. Worth it.</td></tr>
+    <tr><td>Aleph aggregate-settings semantics drift mid-migration</td><td>Agent owns aggregate-settings reads; freeze the shape the hypervisor sees (just <code>port_forwards</code>) on day one</td></tr>
+  </tbody>
+</table>
+
+<h2 id="open">9. Open questions</h2>
+<p>These are deliberately deferred to the Phase 0 contract spec:</p>
+<ul>
+  <li>Exact shape of <code>CreateVm</code> for firecracker-program mode (code/runtime/data as <code>DiskConfig</code> with roles, or distinct fields?).</li>
+  <li>Backup/snapshot RPC granularity (one operation vs. per-backend variants behind a discriminator).</li>
+  <li>Log streaming protocol (server-streaming bytes vs. line-oriented messages with timestamps).</li>
+  <li>Reconciliation cadence and idempotency: does the agent push allocations imperatively (today's model) or move to a desired-state diff loop driven by <code>ListVms</code>?</li>
+  <li>GPU reservation semantics: does the agent reserve, or does the hypervisor own the GPU bucket?</li>
+  <li>How <code>vm_id</code> is assigned: stays the Aleph <code>ItemHash</code> (today's identity) or becomes hypervisor-issued? (Recommendation: keep <code>ItemHash</code> as the agent's key, allow the hypervisor to be agnostic.)</li>
+  <li><b>Wire error vocabulary.</b> Today the HTTP views catch hypervisor-internal exception types directly (see <a href="#a6">Annex A.6</a>). The proto needs a closed error enum covering at least <code>FileTooLargeError</code>, <code>VmSetupError</code>, <code>MicroVMFailedInitError</code>, <code>ResourceDownloadError</code>, <code>InsufficientResourcesError</code>, plus QEMU/SEV cases. Mapping happens at the gRPC server; views translate <code>status.code()</code> → HTTP response.</li>
+</ul>
+
+<h2 id="next">10. Next steps</h2>
+<ol>
+  <li>User review of this design.</li>
+  <li>Write <b>Phase 0 spec</b>: detailed <code>hypervisor.proto</code> (every RPC, every field), the Python <code>Hypervisor</code> ABC, the test strategy for the in-process implementation.</li>
+  <li>Implementation plan for Phase 0 (followed by per-capability plans for Phase 1).</li>
+</ol>
+
+<hr class="annex-divider">
+
+<h2 id="annex-a">Annex A: Concrete entanglements</h2>
+<p>References are to <code>aleph-im/aleph-vm@main</code>. The point of this annex is to make §4 ("detangling work") inspectable: each exhibit is a concrete piece of code today, what's tangled in it, and what it becomes after the split.</p>
+
+<div class="exhibit" id="a1">
+  <h3>A.1: <code>VmExecution</code>'s import list</h3>
+  <p class="ref">src/aleph/vm/models.py:11-46</p>
+<pre><code>from aleph_message.models import ExecutableContent, InstanceContent, ItemHash, ProgramContent
+from aleph_message.models.execution.environment import GpuProperties, HypervisorType
+from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
+from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
+from aleph.vm.controllers.firecracker.program import AlephFirecrackerProgram, AlephProgramResources
+from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
+from aleph.vm.controllers.qemu_confidential.instance import AlephQemuConfidentialInstance, AlephQemuConfidentialResources
+from aleph.vm.network.firewall import add_port_redirect_rule, build_port_redirect_entities, ...
+from aleph.vm.network.interfaces import TapInterface</code></pre>
+  <p>A single "execution" class imports Aleph message types, four concrete VM backends, and raw nftables operations. There is no abstraction in between. The first thing the gRPC seam does is delete most of these imports from the agent side.</p>
+</div>
+
+<div class="exhibit" id="a2">
+  <h3>A.2: One method touches five conceptual layers</h3>
+  <p class="ref">models.py:133-160, function <code>fetch_port_redirect_config_and_setup</code></p>
+<pre><code>async def fetch_port_redirect_config_and_setup(self):
+    if not self.is_instance:                                              # ① Aleph type predicate
+        return
+    if not self.mapped_ports:
+        self.mapped_ports = await get_port_mappings(self.vm_hash)         # ② Aleph DB
+        if self.mapped_ports:
+            await self.recreate_port_redirect_rules()                     # ⑤ nft writes
+
+    port_forwarding_settings = await get_user_settings(                   # ③ Aleph aggregate API
+        message.address, "port-forwarding")
+    vm_port_forwarding = port_forwarding_settings.get(self.vm_hash, {}) or {}
+    ports_requests = {int(k): v for k, v in vm_port_forwarding.get("ports", {}).items()}
+    if not ports_requests.get(22, None):                                  # ④ Aleph product policy
+        ports_requests[22] = {"tcp": True, "udp": False}
+    await self.update_port_redirects(ports_requests)                      # ⑤ nft writes</code></pre>
+  <p>In one method: Aleph type system + Aleph DB schema + Aleph aggregate-settings HTTP API + Aleph product policy ("port 22 is sacred") + nftables. No transport boundary can be drawn through this without rewriting it.</p>
+  <div class="after"><b>After:</b> agent reads aggregate settings, computes desired forwards, calls <code>AddPortForward(vm_id, host_port=0 /* auto */, vm_port, protocol)</code> per entry. Hypervisor allocates <code>host_port</code>, writes nft rules, returns the assignment. The "always forward port 22" rule lives in the agent.</div>
+</div>
+
+<div class="exhibit" id="a3">
+  <h3>A.3: The "model" hand-constructs concrete backends</h3>
+  <p class="ref">models.py:480-540, function <code>VmExecution.create</code></p>
+<pre><code>def create(self, vm_id, tap_interface=None, prepare=True):
+    if self.is_program:
+        self.vm = AlephFirecrackerProgram(vm_id=vm_id, ..., persistent=self.persistent)
+    elif self.is_instance:
+        if self.hypervisor == HypervisorType.firecracker:
+            self.vm = AlephFirecrackerInstance(vm_id=vm_id, ...)
+        elif self.hypervisor == HypervisorType.qemu:
+            if self.is_confidential:
+                self.vm = AlephQemuConfidentialInstance(vm_id=vm_id, ...)
+            else:
+                self.vm = AlephQemuInstance(vm_id=vm_id, ...)</code></pre>
+  <p>The "model" is the backend selector: it reads Aleph predicates (<code>is_program</code>, <code>is_confidential</code>, <code>hypervisor</code>) and constructs the matching controller class by direct import.</p>
+  <div class="after"><b>After:</b> the whole ladder moves to the hypervisor side, behind <code>CreateVm</code>. The agent sends <code>{backend: "qemu" | "qemu-sev" | "firecracker", program_mode: bool, ...}</code>; the hypervisor picks the class. <code>VmExecution.create</code> ceases to exist; the agent's <code>Execution</code> record just holds the <code>vm_id</code> returned by <code>CreateVm</code>.</div>
+</div>
+
+<div class="exhibit" id="a4">
+  <h3>A.4: <code>VmExecution.start</code> interleaves four subsystems</h3>
+  <p class="ref">models.py:542-587 (excerpt)</p>
+<pre><code>async def start(self):
+    await self.vm.setup()                                                  # controller
+    if not self.persistent:
+        await self.vm.start()                                              # ephemeral
+    await self.vm.configure()                                              # controller
+    await self.vm.start_guest_api()                                        # Aleph guest API
+    if self.persistent and not self.is_confidential and self.systemd_manager:
+        await self.systemd_manager.enable_and_start(self.controller_service)   # systemd
+        if self.is_program:
+            await self.wait_for_init()                                     # program wait
+            await self.vm.load_configuration()
+        else:
+            if not await self.non_blocking_wait_for_boot():                # instance wait
+                raise RuntimeError(...)
+        if self.vm.support_snapshot and self.snapshot_manager:
+            await self.snapshot_manager.start_for(vm=self.vm)              # snapshots</code></pre>
+  <p>Hypervisor lifecycle + Aleph guest-API plumbing + systemd + program/instance branch + snapshot subsystem, all driven from one method, communicating via mutable state on <code>self</code>.</p>
+  <div class="after"><b>After:</b> this whole method lives inside the hypervisor service, called from the <code>CreateVm</code> handler. The agent issues <code>CreateVm</code> and then waits for status via <code>GetVm</code> or a streaming <code>WatchVm</code>.</div>
+</div>
+
+<div class="exhibit" id="a5">
+  <h3>A.5: <code>VmPool</code> is a god-object</h3>
+  <p class="ref">pool.py:77-104 (constructor)</p>
+<pre><code>def __init__(self):
+    self.executions: dict[ItemHash, VmExecution] = {}      # Aleph-keyed registry
+    self.message_cache: dict[str, ExecutableMessage] = {}  # Aleph message cache
+    self.reservations = {}                                 # GPU reservation policy
+    self.gpus = []
+    self.creation_lock = asyncio.Lock()
+    self.network = Network(                                # nftables + IP allocators
+        vm_ipv4_address_pool_range=settings.IPV4_ADDRESS_POOL,
+        ipv6_allocator=make_ipv6_allocator(...), use_ndp_proxy=settings.USE_NDP_PROXY,
+        ipv6_forwarding_enabled=settings.IPV6_FORWARDING_ENABLED,
+    ) if settings.ALLOW_VM_NETWORKING else None
+    self.systemd_manager = SystemDManager()                # host systemd via dbus
+    if settings.SNAPSHOT_FREQUENCY > 0:
+        self.snapshot_manager = SnapshotManager()          # background thread</code></pre>
+  <p>A "pool" owns the Aleph message cache, the Aleph execution registry, the Aleph GPU reservation policy, the IPv4/IPv6 allocators, the nftables host setup, host-systemd, and the snapshot thread.</p>
+  <p><code>pool.py:309-398</code>: <code>create_a_vm</code> orchestrates the entire stack in 90 lines: admission against an Aleph message → GPU reservation (<code>find_resources_available_for_user(message, message.address)</code>) → volume download (<code>execution.prepare()</code>) → TAP allocation → controller construction (<code>execution.create</code>) → controller start (<code>execution.start</code>) → port forwards (<code>execution.fetch_port_redirect_config_and_setup</code>).</p>
+  <div class="after"><b>After:</b>
+    <ul style="margin:0.3rem 0 0">
+      <li>Hypervisor keeps <code>Network</code>, <code>SystemDManager</code>, <code>SnapshotManager</code>, <code>executions: dict[vm_id, Vm]</code>, local admission, NUMA placement.</li>
+      <li>Agent keeps <code>message_cache</code>, <code>executions: dict[ItemHash, Execution]</code>, reservations, the reconcile loop.</li>
+      <li><code>create_a_vm</code> becomes: agent prepares local paths → <code>CreateVm</code> → <code>AddPortForward</code>. Three RPCs replace 90 lines of orchestration.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="exhibit" id="a6">
+  <h3>A.6: HTTP views catch hypervisor-internal exception types <i>(the hardest tangle)</i></h3>
+  <p class="ref">orchestrator/views/__init__.py:22-70 (imports), :541-557 &amp; :936-950 (uses)</p>
+<pre><code>from aleph.vm.controllers.firecracker.executable import ResourceDownloadError, VmSetupError
+from aleph.vm.controllers.firecracker.program import FileTooLargeError
+from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
+from aleph.vm.models import VmExecution
+from aleph.vm.network.firewall import initialize_nftables, recreate_network_for_vms
+from aleph.vm.pool import VmPool
+...
+# inside notify_allocation:
+vm_creation_exceptions = (FileTooLargeError, VmSetupError, MicroVMFailedInitError,
+                          HostNotFoundError, InsufficientResourcesError)
+try:
+    await start_persistent_vm(item_hash, pubsub, pool)
+except vm_creation_exceptions as error:
+    ...</code></pre>
+  <p><code>views/operator.py</code> is similar: it imports <code>controllers.qemu.backup.*</code>, <code>controllers.qemu.client.QemuVmClient</code>, <code>controllers.qemu.instance.AlephQemuInstance</code>, <code>controllers.qemu_confidential.instance.AlephQemuConfidentialInstance</code> and uses them by concrete type.</p>
+  <div class="callout warn"><p><b>Why this is the most important entanglement for the seam:</b> exceptions cannot cross gRPC. They become status codes. Before any of this can be lifted, those backend-internal exception types must map to a small wire-error vocabulary; views must catch only <code>grpc.AioRpcError</code> and translate <code>status.code()</code> to HTTP. Today they don't even pretend; backend exception messages are surfaced straight to API responses.</p>
+  <p>This is the open question added to §9.</p></div>
+</div>
+
+<h3>Pattern</h3>
+<table>
+  <thead><tr><th style="width:34%">Tangle</th><th style="width:20%">Where</th><th>Cleanup</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>VmExecution</code> mixes Aleph state + controller state</td>
+      <td><code>models.py</code></td>
+      <td>Split into agent <code>Execution</code> (vm_hash, message, payment, expiry, desired_forwards) and hypervisor <code>Vm</code> (vm_id, process, tap, status). Link by <code>vm_id</code>.</td>
+    </tr>
+    <tr>
+      <td><code>VmPool</code> owns infra collaborators + Aleph caches</td>
+      <td><code>pool.py</code></td>
+      <td>Hypervisor keeps <code>Network</code>, <code>SystemDManager</code>, <code>SnapshotManager</code>, <code>executions: dict[vm_id, Vm]</code>. Agent keeps <code>message_cache</code>, <code>Execution</code> map, reservations, reconcile loop.</td>
+    </tr>
+    <tr>
+      <td>Views catch hypervisor exception types</td>
+      <td><code>views/__init__.py</code>, <code>views/operator.py</code></td>
+      <td>Closed error enum on the wire. Map backend exceptions → enum at the gRPC server. Views catch only <code>grpc.AioRpcError</code>.</td>
+    </tr>
+  </tbody>
+</table>
+<p>The first two are mostly <b>moving code</b>. The third is <b>designing the wire error vocabulary</b>, the single most underestimated piece of Phase 0.</p>
+
+<footer>
+  Companion markdown source: <code>2026-05-28-aleph-vm-architecture-backport-design.md</code>
+</footer>
+
+</main>
+</body>
+</html>

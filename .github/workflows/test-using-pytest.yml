@@ -4,10 +4,10 @@ name: "py.test and linting"
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [main]
+    branches: [main, dev]
 
 
 jobs:
@@ -37,6 +37,9 @@ jobs:
         run: |
           # virtualenv 21 brings a breaking change that's not supported by hatch 1.16
           python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
+          # Also install for root: subsequent steps (proto check, unit tests) use
+          # `sudo hatch ...`, and sudo's PATH doesn't see the runner's pip-installed hatch.
+          sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
 
       - name: Test style wth ruff, black and isort
         run: |
@@ -75,6 +78,14 @@ jobs:
       - name: "Build example volume"
         run: |
           cd examples/volumes && bash build_squashfs.sh
+
+      - name: Verify proto bindings are up to date
+        # Run with sudo so hatch creates the testing env as root — matching the
+        # "Run unit tests" step below (which also uses sudo).  Without this, the
+        # non-sudo invocation here creates the env under /home/runner/... and the
+        # sudo invocation later creates a *separate* root env that races to
+        # install deps fast enough, causing import failures (e.g. redis).
+        run: sudo hatch run testing:bash scripts/check_proto_clean.sh
 
       # Unit tests create and delete network interfaces, and therefore require to run as root
       - name: Run unit tests
