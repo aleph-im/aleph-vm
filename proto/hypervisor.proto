@@ -24,6 +24,11 @@ service Hypervisor {
   rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
+
+  // ── Port forwarding ──
+  rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
+  rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
+  rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -153,3 +158,35 @@ message DeleteVmRequest   { string vm_id = 1; }
 message DeleteVmResponse  {}
 message RebootVmRequest   { string vm_id = 1; bool hard = 2; }
 message ReinstallVmRequest { string vm_id = 1; }
+
+// ── Port forwarding ──────────────────────────────────────────────────────
+
+message AddPortForwardRequest {
+  string vm_id = 1;
+  uint32 host_port = 2;              // 0 = auto-allocate
+  uint32 vm_port = 3;
+  string protocol = 4;               // "tcp" | "udp"
+}
+
+message PortForwardInfo {
+  string vm_id = 1;
+  uint32 host_port = 2;
+  uint32 vm_port = 3;
+  string protocol = 4;
+}
+
+message RemovePortForwardRequest {
+  string vm_id = 1;
+  uint32 host_port = 2;
+  string protocol = 3;
+}
+
+message RemovePortForwardResponse {}
+
+message ListPortForwardsRequest {
+  string vm_id = 1;                  // empty = all VMs
+}
+
+message ListPortForwardsResponse {
+  repeated PortForwardInfo forwards = 1;
+}

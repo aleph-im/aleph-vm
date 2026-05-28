@@ -92,3 +92,19 @@ def test_vm_info_has_status_enum_and_core_fields():
     assert {"VM_STATUS_UNSPECIFIED", "VM_STATUS_DEFINED", "VM_STATUS_BOOTING",
             "VM_STATUS_RUNNING", "VM_STATUS_STOPPING", "VM_STATUS_STOPPED",
             "VM_STATUS_FAILED"} <= statuses
+
+
+def test_port_forwarding_rpcs_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert {"AddPortForward", "RemovePortForward",
+            "ListPortForwards"} <= methods
+
+
+def test_port_forward_info_shape():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.PortForwardInfo.DESCRIPTOR.fields}
+    assert {"vm_id", "host_port", "vm_port", "protocol"} <= fields
+    fields = {f.name for f in hypervisor_pb2.AddPortForwardRequest.DESCRIPTOR.fields}
+    assert {"vm_id", "host_port", "vm_port", "protocol"} <= fields

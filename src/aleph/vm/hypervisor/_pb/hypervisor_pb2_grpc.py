@@ -74,6 +74,21 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.ReinstallVmRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
+        self.AddPortForward = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/AddPortForward',
+                request_serializer=hypervisor__pb2.AddPortForwardRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.PortForwardInfo.FromString,
+                _registered_method=True)
+        self.RemovePortForward = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/RemovePortForward',
+                request_serializer=hypervisor__pb2.RemovePortForwardRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.RemovePortForwardResponse.FromString,
+                _registered_method=True)
+        self.ListPortForwards = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ListPortForwards',
+                request_serializer=hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.ListPortForwardsResponse.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -129,6 +144,25 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AddPortForward(self, request, context):
+        """── Port forwarding ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RemovePortForward(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListPortForwards(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -171,6 +205,21 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.ReinstallVm,
                     request_deserializer=hypervisor__pb2.ReinstallVmRequest.FromString,
                     response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'AddPortForward': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddPortForward,
+                    request_deserializer=hypervisor__pb2.AddPortForwardRequest.FromString,
+                    response_serializer=hypervisor__pb2.PortForwardInfo.SerializeToString,
+            ),
+            'RemovePortForward': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemovePortForward,
+                    request_deserializer=hypervisor__pb2.RemovePortForwardRequest.FromString,
+                    response_serializer=hypervisor__pb2.RemovePortForwardResponse.SerializeToString,
+            ),
+            'ListPortForwards': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPortForwards,
+                    request_deserializer=hypervisor__pb2.ListPortForwardsRequest.FromString,
+                    response_serializer=hypervisor__pb2.ListPortForwardsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -389,6 +438,87 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/ReinstallVm',
             hypervisor__pb2.ReinstallVmRequest.SerializeToString,
             hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddPortForward(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/AddPortForward',
+            hypervisor__pb2.AddPortForwardRequest.SerializeToString,
+            hypervisor__pb2.PortForwardInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RemovePortForward(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/RemovePortForward',
+            hypervisor__pb2.RemovePortForwardRequest.SerializeToString,
+            hypervisor__pb2.RemovePortForwardResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPortForwards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ListPortForwards',
+            hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
+            hypervisor__pb2.ListPortForwardsResponse.FromString,
             options,
             channel_credentials,
             insecure,

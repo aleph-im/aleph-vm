@@ -523,3 +523,118 @@ class ReinstallVmRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
 global___ReinstallVmRequest = ReinstallVmRequest
+
+@typing.final
+class AddPortForwardRequest(google.protobuf.message.Message):
+    """── Port forwarding ──────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    HOST_PORT_FIELD_NUMBER: builtins.int
+    VM_PORT_FIELD_NUMBER: builtins.int
+    PROTOCOL_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    host_port: builtins.int
+    """0 = auto-allocate"""
+    vm_port: builtins.int
+    protocol: builtins.str
+    """"tcp" | "udp" """
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        host_port: builtins.int = ...,
+        vm_port: builtins.int = ...,
+        protocol: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
+
+global___AddPortForwardRequest = AddPortForwardRequest
+
+@typing.final
+class PortForwardInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    HOST_PORT_FIELD_NUMBER: builtins.int
+    VM_PORT_FIELD_NUMBER: builtins.int
+    PROTOCOL_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    host_port: builtins.int
+    vm_port: builtins.int
+    protocol: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        host_port: builtins.int = ...,
+        vm_port: builtins.int = ...,
+        protocol: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
+
+global___PortForwardInfo = PortForwardInfo
+
+@typing.final
+class RemovePortForwardRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    HOST_PORT_FIELD_NUMBER: builtins.int
+    PROTOCOL_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    host_port: builtins.int
+    protocol: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        host_port: builtins.int = ...,
+        protocol: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id"]) -> None: ...
+
+global___RemovePortForwardRequest = RemovePortForwardRequest
+
+@typing.final
+class RemovePortForwardResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___RemovePortForwardResponse = RemovePortForwardResponse
+
+@typing.final
+class ListPortForwardsRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    """empty = all VMs"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___ListPortForwardsRequest = ListPortForwardsRequest
+
+@typing.final
+class ListPortForwardsResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    FORWARDS_FIELD_NUMBER: builtins.int
+    @property
+    def forwards(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___PortForwardInfo]: ...
+    def __init__(
+        self,
+        *,
+        forwards: collections.abc.Iterable[global___PortForwardInfo] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["forwards", b"forwards"]) -> None: ...
+
+global___ListPortForwardsResponse = ListPortForwardsResponse
