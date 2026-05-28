@@ -607,16 +607,17 @@ class RebootVmRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
-    HARD_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    hard: builtins.bool
+    """Note: aleph-vm performs soft reboot only today (systemd restart
+    for persistent VMs, recreate for ephemeral). Firecracker has no
+    reboot API. Add a `hard` option when a real implementation lands.
+    """
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        hard: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["hard", b"hard", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
 global___RebootVmRequest = RebootVmRequest
 

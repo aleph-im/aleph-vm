@@ -178,7 +178,12 @@ message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest   { string vm_id = 1; }
 message DeleteVmResponse  {}
-message RebootVmRequest   { string vm_id = 1; bool hard = 2; }
+message RebootVmRequest {
+  string vm_id = 1;
+  // Note: aleph-vm performs soft reboot only today (systemd restart
+  // for persistent VMs, recreate for ephemeral). Firecracker has no
+  // reboot API. Add a `hard` option when a real implementation lands.
+}
 message ReinstallVmRequest { string vm_id = 1; }
 
 // ── Port forwarding ──────────────────────────────────────────────────────
