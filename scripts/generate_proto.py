@@ -22,7 +22,6 @@ def main() -> int:
         print(f"proto file not found: {PROTO_FILE}", file=sys.stderr)
         return 1
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / "__init__.py").touch(exist_ok=True)
 
     cmd = [
         sys.executable, "-m", "grpc_tools.protoc",
