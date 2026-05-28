@@ -65,12 +65,29 @@ message HealthResponse {
 message GetHostInfoRequest {}
 
 message HostInfo {
+  // CPU
   uint32 cpu_count = 1;
+  string cpu_architecture = 9;       // e.g. "x86_64", "aarch64"
+  string cpu_vendor = 10;            // e.g. "AuthenticAMD", "GenuineIntel"
+  string cpu_model = 11;             // e.g. "AMD EPYC 9354P"
+  uint32 cpu_frequency_mhz = 12;     // base clock
+
+  // Memory
   uint64 memory_mib = 2;
+  string memory_type = 13;           // e.g. "DDR5"
+  uint32 memory_clock_mhz = 14;
+
+  // Topology
   repeated NumaNode numa_nodes = 3;
   repeated GpuDevice gpus = 4;
-  bool sev_snp_supported = 5;
+
+  // TEE support
+  bool sev_supported = 15;           // SEV (base AMD memory encryption)
+  bool sev_es_supported = 16;        // SEV-ES (encrypted register state)
+  bool sev_snp_supported = 5;        // SEV-SNP (full attestation)
   bool tdx_supported = 6;
+
+  // Identity
   string hostname = 7;
   string kernel_version = 8;
 }

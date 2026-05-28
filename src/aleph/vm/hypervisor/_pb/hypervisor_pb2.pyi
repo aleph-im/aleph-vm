@@ -227,36 +227,75 @@ class HostInfo(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     CPU_COUNT_FIELD_NUMBER: builtins.int
+    CPU_ARCHITECTURE_FIELD_NUMBER: builtins.int
+    CPU_VENDOR_FIELD_NUMBER: builtins.int
+    CPU_MODEL_FIELD_NUMBER: builtins.int
+    CPU_FREQUENCY_MHZ_FIELD_NUMBER: builtins.int
     MEMORY_MIB_FIELD_NUMBER: builtins.int
+    MEMORY_TYPE_FIELD_NUMBER: builtins.int
+    MEMORY_CLOCK_MHZ_FIELD_NUMBER: builtins.int
     NUMA_NODES_FIELD_NUMBER: builtins.int
     GPUS_FIELD_NUMBER: builtins.int
+    SEV_SUPPORTED_FIELD_NUMBER: builtins.int
+    SEV_ES_SUPPORTED_FIELD_NUMBER: builtins.int
     SEV_SNP_SUPPORTED_FIELD_NUMBER: builtins.int
     TDX_SUPPORTED_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     KERNEL_VERSION_FIELD_NUMBER: builtins.int
     cpu_count: builtins.int
+    """CPU"""
+    cpu_architecture: builtins.str
+    """e.g. "x86_64", "aarch64" """
+    cpu_vendor: builtins.str
+    """e.g. "AuthenticAMD", "GenuineIntel" """
+    cpu_model: builtins.str
+    """e.g. "AMD EPYC 9354P" """
+    cpu_frequency_mhz: builtins.int
+    """base clock"""
     memory_mib: builtins.int
+    """Memory"""
+    memory_type: builtins.str
+    """e.g. "DDR5" """
+    memory_clock_mhz: builtins.int
+    sev_supported: builtins.bool
+    """TEE support
+    SEV (base AMD memory encryption)
+    """
+    sev_es_supported: builtins.bool
+    """SEV-ES (encrypted register state)"""
     sev_snp_supported: builtins.bool
+    """SEV-SNP (full attestation)"""
     tdx_supported: builtins.bool
     hostname: builtins.str
+    """Identity"""
     kernel_version: builtins.str
     @property
-    def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]: ...
+    def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]:
+        """Topology"""
+
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]: ...
     def __init__(
         self,
         *,
         cpu_count: builtins.int = ...,
+        cpu_architecture: builtins.str = ...,
+        cpu_vendor: builtins.str = ...,
+        cpu_model: builtins.str = ...,
+        cpu_frequency_mhz: builtins.int = ...,
         memory_mib: builtins.int = ...,
+        memory_type: builtins.str = ...,
+        memory_clock_mhz: builtins.int = ...,
         numa_nodes: collections.abc.Iterable[global___NumaNode] | None = ...,
         gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
+        sev_supported: builtins.bool = ...,
+        sev_es_supported: builtins.bool = ...,
         sev_snp_supported: builtins.bool = ...,
         tdx_supported: builtins.bool = ...,
         hostname: builtins.str = ...,
         kernel_version: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["cpu_count", b"cpu_count", "gpus", b"gpus", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_mib", b"memory_mib", "numa_nodes", b"numa_nodes", "sev_snp_supported", b"sev_snp_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpus", b"gpus", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
 
 global___HostInfo = HostInfo
 

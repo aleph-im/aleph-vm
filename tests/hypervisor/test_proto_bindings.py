@@ -39,8 +39,11 @@ def test_get_host_info_rpc_defined():
     fields = {f.name for f in hypervisor_pb2.HostInfo.DESCRIPTOR.fields}
     assert {"cpu_count", "memory_mib", "numa_nodes", "gpus",
             "sev_snp_supported", "tdx_supported",
-            "hostname", "kernel_version"} <= fields
-    # Service has the RPC
+            "hostname", "kernel_version",
+            # extended for /about/capability coverage
+            "cpu_architecture", "cpu_vendor", "cpu_model", "cpu_frequency_mhz",
+            "memory_type", "memory_clock_mhz",
+            "sev_supported", "sev_es_supported"} <= fields
     methods = {m.name for m in
                hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
     assert "GetHostInfo" in methods
