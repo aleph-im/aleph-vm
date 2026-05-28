@@ -24,7 +24,9 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, "-m", "grpc_tools.protoc",
+        sys.executable,
+        "-m",
+        "grpc_tools.protoc",
         f"--proto_path={PROTO_DIR}",
         f"--python_out={OUT_DIR}",
         f"--grpc_python_out={OUT_DIR}",
