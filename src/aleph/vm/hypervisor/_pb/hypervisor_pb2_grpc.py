@@ -89,6 +89,16 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.ListPortForwardsResponse.FromString,
                 _registered_method=True)
+        self.GetLogs = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetLogs',
+                request_serializer=hypervisor__pb2.GetLogsRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.GetLogsResponse.FromString,
+                _registered_method=True)
+        self.StreamLogs = channel.unary_stream(
+                '/aleph.hypervisor.v1.Hypervisor/StreamLogs',
+                request_serializer=hypervisor__pb2.StreamLogsRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.LogChunk.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -163,6 +173,19 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetLogs(self, request, context):
+        """── Logs ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamLogs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -220,6 +243,16 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.ListPortForwards,
                     request_deserializer=hypervisor__pb2.ListPortForwardsRequest.FromString,
                     response_serializer=hypervisor__pb2.ListPortForwardsResponse.SerializeToString,
+            ),
+            'GetLogs': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLogs,
+                    request_deserializer=hypervisor__pb2.GetLogsRequest.FromString,
+                    response_serializer=hypervisor__pb2.GetLogsResponse.SerializeToString,
+            ),
+            'StreamLogs': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamLogs,
+                    request_deserializer=hypervisor__pb2.StreamLogsRequest.FromString,
+                    response_serializer=hypervisor__pb2.LogChunk.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -519,6 +552,60 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/ListPortForwards',
             hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
             hypervisor__pb2.ListPortForwardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLogs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetLogs',
+            hypervisor__pb2.GetLogsRequest.SerializeToString,
+            hypervisor__pb2.GetLogsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamLogs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/StreamLogs',
+            hypervisor__pb2.StreamLogsRequest.SerializeToString,
+            hypervisor__pb2.LogChunk.FromString,
             options,
             channel_credentials,
             insecure,

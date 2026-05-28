@@ -108,3 +108,16 @@ def test_port_forward_info_shape():
     assert {"vm_id", "host_port", "vm_port", "protocol"} <= fields
     fields = {f.name for f in hypervisor_pb2.AddPortForwardRequest.DESCRIPTOR.fields}
     assert {"vm_id", "host_port", "vm_port", "protocol"} <= fields
+
+
+def test_log_rpcs_defined_with_streaming():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name: m for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert "GetLogs" in methods
+    assert "StreamLogs" in methods
+    assert methods["StreamLogs"].server_streaming is True
+    assert methods["GetLogs"].server_streaming is False
+
+    fields = {f.name for f in hypervisor_pb2.LogChunk.DESCRIPTOR.fields}
+    assert {"timestamp_ns", "line", "source"} <= fields

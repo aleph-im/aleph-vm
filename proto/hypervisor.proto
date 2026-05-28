@@ -29,6 +29,10 @@ service Hypervisor {
   rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
   rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
+
+  // ── Logs ──
+  rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogChunk);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -189,4 +193,34 @@ message ListPortForwardsRequest {
 
 message ListPortForwardsResponse {
   repeated PortForwardInfo forwards = 1;
+}
+
+// ── Logs ─────────────────────────────────────────────────────────────────
+
+message GetLogsRequest {
+  string vm_id = 1;
+  uint32 max_lines = 2;              // 0 = unlimited (subject to server cap)
+  bool from_tail = 3;                // true = most recent lines
+}
+
+message GetLogsResponse {
+  repeated LogChunk lines = 1;
+}
+
+message StreamLogsRequest {
+  string vm_id = 1;
+  bool include_history = 2;          // false = only new lines from now
+}
+
+message LogChunk {
+  uint64 timestamp_ns = 1;           // unix ns at server-side capture time
+  string line = 2;                   // single log line, no trailing newline
+  LogSource source = 3;
+
+  enum LogSource {
+    LOG_SOURCE_UNSPECIFIED = 0;
+    LOG_SOURCE_SERIAL = 1;           // QEMU serial console
+    LOG_SOURCE_STDOUT = 2;           // Firecracker vm-stdout
+    LOG_SOURCE_SYSTEMD = 3;          // systemd journal for persistent VM unit
+  }
 }
