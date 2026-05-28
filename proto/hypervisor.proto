@@ -16,6 +16,14 @@ service Hypervisor {
   // ── Host ──
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
+
+  // ── VM lifecycle ──
+  rpc CreateVm(CreateVmRequest) returns (VmInfo);
+  rpc GetVm(GetVmRequest) returns (VmInfo);
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
+  rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
+  rpc RebootVm(RebootVmRequest) returns (VmInfo);
+  rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -52,3 +60,96 @@ message GpuDevice {
   string model = 3;
   bool supports_x_vga = 4;
 }
+
+// ── Lifecycle ────────────────────────────────────────────────────────────
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_FIRECRACKER = 1;
+  BACKEND_QEMU = 2;
+  BACKEND_QEMU_SEV = 3;
+}
+
+enum VmStatus {
+  VM_STATUS_UNSPECIFIED = 0;
+  VM_STATUS_DEFINED = 1;
+  VM_STATUS_BOOTING = 2;
+  VM_STATUS_RUNNING = 3;
+  VM_STATUS_STOPPING = 4;
+  VM_STATUS_STOPPED = 5;
+  VM_STATUS_FAILED = 6;
+}
+
+message CreateVmRequest {
+  string vm_id = 1;                  // agent-issued id, opaque to hypervisor
+  Backend backend = 2;
+  string kernel_path = 3;            // empty for disk-boot
+  string initrd_path = 4;            // empty for disk-boot
+  repeated DiskConfig disks = 5;
+  uint32 vcpus = 6;
+  uint64 memory_mib = 7;
+  TeeConfig tee = 8;                 // only meaningful when backend is *_SEV
+  NetworkConfig network = 9;
+  repeated GpuConfig gpus = 10;
+  uint32 numa_node = 11;             // 0 = auto, 1+ = specific (1-indexed)
+  bool persistent = 12;              // hypervisor wraps in systemd if true
+}
+
+message DiskConfig {
+  string path = 1;                   // absolute host path
+  bool readonly = 2;
+  Format format = 3;
+  DiskRole role = 4;
+
+  enum Format {
+    FORMAT_UNSPECIFIED = 0;
+    FORMAT_RAW = 1;
+    FORMAT_QCOW2 = 2;
+    FORMAT_SQUASHFS = 3;
+  }
+
+  enum DiskRole {
+    DISK_ROLE_UNSPECIFIED = 0;
+    DISK_ROLE_ROOTFS = 1;
+    DISK_ROLE_CODE = 2;
+    DISK_ROLE_RUNTIME = 3;
+    DISK_ROLE_DATA = 4;
+    DISK_ROLE_EXTRA = 5;
+  }
+}
+
+message TeeConfig {
+  string backend = 1;                // "sev-snp", "tdx", "nvidia-cc" or ""
+  string policy = 2;                 // empty = default
+  string session_dir = 3;            // confidential session files
+}
+
+message NetworkConfig {
+  bool internet_access = 1;
+  string requested_ipv6 = 2;         // empty = pool-assigned
+  uint32 ipv6_prefix_len = 3;        // 0 = /128
+}
+
+message GpuConfig {
+  string pci_host = 1;
+  bool supports_x_vga = 2;
+}
+
+message VmInfo {
+  string vm_id = 1;
+  VmStatus status = 2;
+  string ipv4 = 3;
+  string ipv6 = 4;
+  uint64 uptime_secs = 5;
+  Backend backend = 6;
+  uint32 numa_node = 7;              // 0-indexed effective placement
+  string status_message = 8;         // human-readable, optional
+}
+
+message GetVmRequest      { string vm_id = 1; }
+message ListVmsRequest    {}
+message ListVmsResponse   { repeated VmInfo vms = 1; }
+message DeleteVmRequest   { string vm_id = 1; }
+message DeleteVmResponse  {}
+message RebootVmRequest   { string vm_id = 1; bool hard = 2; }
+message ReinstallVmRequest{ string vm_id = 1; }

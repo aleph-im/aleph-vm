@@ -44,3 +44,51 @@ def test_get_host_info_rpc_defined():
     methods = {m.name for m in
                hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
     assert "GetHostInfo" in methods
+
+
+def test_lifecycle_rpcs_defined():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    methods = {m.name for m in
+               hypervisor_pb2.DESCRIPTOR.services_by_name["Hypervisor"].methods}
+    assert {"CreateVm", "GetVm", "ListVms", "DeleteVm",
+            "RebootVm", "ReinstallVm"} <= methods
+
+
+def test_backend_enum_complete():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    values = {v.name for v in hypervisor_pb2.Backend.DESCRIPTOR.values}
+    assert values == {"BACKEND_UNSPECIFIED", "BACKEND_FIRECRACKER",
+                      "BACKEND_QEMU", "BACKEND_QEMU_SEV"}
+
+
+def test_create_vm_request_shape():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.CreateVmRequest.DESCRIPTOR.fields}
+    expected = {"vm_id", "backend", "kernel_path", "initrd_path", "disks",
+                "vcpus", "memory_mib", "tee", "network", "gpus",
+                "numa_node", "persistent"}
+    missing = expected - fields
+    assert not missing, f"missing fields: {missing}"
+
+
+def test_disk_config_has_role_and_format_enums():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    disk_fields = {f.name for f in hypervisor_pb2.DiskConfig.DESCRIPTOR.fields}
+    assert {"path", "readonly", "format", "role"} <= disk_fields
+    formats = {v.name for v in hypervisor_pb2.DiskConfig.Format.DESCRIPTOR.values}
+    assert {"FORMAT_UNSPECIFIED", "FORMAT_RAW", "FORMAT_QCOW2",
+            "FORMAT_SQUASHFS"} <= formats
+    roles = {v.name for v in hypervisor_pb2.DiskConfig.DiskRole.DESCRIPTOR.values}
+    assert {"DISK_ROLE_UNSPECIFIED", "DISK_ROLE_ROOTFS", "DISK_ROLE_CODE",
+            "DISK_ROLE_RUNTIME", "DISK_ROLE_DATA", "DISK_ROLE_EXTRA"} <= roles
+
+
+def test_vm_info_has_status_enum_and_core_fields():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.VmInfo.DESCRIPTOR.fields}
+    assert {"vm_id", "status", "ipv4", "ipv6", "uptime_secs",
+            "backend", "numa_node"} <= fields
+    statuses = {v.name for v in hypervisor_pb2.VmStatus.DESCRIPTOR.values}
+    assert {"VM_STATUS_UNSPECIFIED", "VM_STATUS_DEFINED", "VM_STATUS_BOOTING",
+            "VM_STATUS_RUNNING", "VM_STATUS_STOPPING", "VM_STATUS_STOPPED",
+            "VM_STATUS_FAILED"} <= statuses

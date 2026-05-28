@@ -24,13 +24,17 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10hypervisor.proto\x12\x13\x61leph.hypervisor.v1\"\x0f\n\rHealthRequest\"2\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x10\n\x08vm_count\x18\x02 \x01(\r\"\x14\n\x12GetHostInfoRequest\"\xee\x01\n\x08HostInfo\x12\x11\n\tcpu_count\x18\x01 \x01(\r\x12\x12\n\nmemory_mib\x18\x02 \x01(\x04\x12\x31\n\nnuma_nodes\x18\x03 \x03(\x0b\x32\x1d.aleph.hypervisor.v1.NumaNode\x12,\n\x04gpus\x18\x04 \x03(\x0b\x32\x1e.aleph.hypervisor.v1.GpuDevice\x12\x19\n\x11sev_snp_supported\x18\x05 \x01(\x08\x12\x15\n\rtdx_supported\x18\x06 \x01(\x08\x12\x10\n\x08hostname\x18\x07 \x01(\t\x12\x16\n\x0ekernel_version\x18\x08 \x01(\t\"@\n\x08NumaNode\x12\r\n\x05index\x18\x01 \x01(\r\x12\x11\n\tcpu_count\x18\x02 \x01(\r\x12\x12\n\nmemory_mib\x18\x03 \x01(\x04\"W\n\tGpuDevice\x12\x10\n\x08pci_host\x18\x01 \x01(\t\x12\x11\n\tdevice_id\x18\x02 \x01(\t\x12\r\n\x05model\x18\x03 \x01(\t\x12\x16\n\x0esupports_x_vga\x18\x04 \x01(\x08\x32\xb6\x01\n\nHypervisor\x12Q\n\x06Health\x12\".aleph.hypervisor.v1.HealthRequest\x1a#.aleph.hypervisor.v1.HealthResponse\x12U\n\x0bGetHostInfo\x12\'.aleph.hypervisor.v1.GetHostInfoRequest\x1a\x1d.aleph.hypervisor.v1.HostInfob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10hypervisor.proto\x12\x13\x61leph.hypervisor.v1\"\x0f\n\rHealthRequest\"2\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x10\n\x08vm_count\x18\x02 \x01(\r\"\x14\n\x12GetHostInfoRequest\"\xee\x01\n\x08HostInfo\x12\x11\n\tcpu_count\x18\x01 \x01(\r\x12\x12\n\nmemory_mib\x18\x02 \x01(\x04\x12\x31\n\nnuma_nodes\x18\x03 \x03(\x0b\x32\x1d.aleph.hypervisor.v1.NumaNode\x12,\n\x04gpus\x18\x04 \x03(\x0b\x32\x1e.aleph.hypervisor.v1.GpuDevice\x12\x19\n\x11sev_snp_supported\x18\x05 \x01(\x08\x12\x15\n\rtdx_supported\x18\x06 \x01(\x08\x12\x10\n\x08hostname\x18\x07 \x01(\t\x12\x16\n\x0ekernel_version\x18\x08 \x01(\t\"@\n\x08NumaNode\x12\r\n\x05index\x18\x01 \x01(\r\x12\x11\n\tcpu_count\x18\x02 \x01(\r\x12\x12\n\nmemory_mib\x18\x03 \x01(\x04\"W\n\tGpuDevice\x12\x10\n\x08pci_host\x18\x01 \x01(\t\x12\x11\n\tdevice_id\x18\x02 \x01(\t\x12\r\n\x05model\x18\x03 \x01(\t\x12\x16\n\x0esupports_x_vga\x18\x04 \x01(\x08\"\x83\x03\n\x0f\x43reateVmRequest\x12\r\n\x05vm_id\x18\x01 \x01(\t\x12-\n\x07\x62\x61\x63kend\x18\x02 \x01(\x0e\x32\x1c.aleph.hypervisor.v1.Backend\x12\x13\n\x0bkernel_path\x18\x03 \x01(\t\x12\x13\n\x0binitrd_path\x18\x04 \x01(\t\x12.\n\x05\x64isks\x18\x05 \x03(\x0b\x32\x1f.aleph.hypervisor.v1.DiskConfig\x12\r\n\x05vcpus\x18\x06 \x01(\r\x12\x12\n\nmemory_mib\x18\x07 \x01(\x04\x12+\n\x03tee\x18\x08 \x01(\x0b\x32\x1e.aleph.hypervisor.v1.TeeConfig\x12\x33\n\x07network\x18\t \x01(\x0b\x32\".aleph.hypervisor.v1.NetworkConfig\x12,\n\x04gpus\x18\n \x03(\x0b\x32\x1e.aleph.hypervisor.v1.GpuConfig\x12\x11\n\tnuma_node\x18\x0b \x01(\r\x12\x12\n\npersistent\x18\x0c \x01(\x08\"\x87\x03\n\nDiskConfig\x12\x0c\n\x04path\x18\x01 \x01(\t\x12\x10\n\x08readonly\x18\x02 \x01(\x08\x12\x36\n\x06\x66ormat\x18\x03 \x01(\x0e\x32&.aleph.hypervisor.v1.DiskConfig.Format\x12\x36\n\x04role\x18\x04 \x01(\x0e\x32(.aleph.hypervisor.v1.DiskConfig.DiskRole\"W\n\x06\x46ormat\x12\x16\n\x12\x46ORMAT_UNSPECIFIED\x10\x00\x12\x0e\n\nFORMAT_RAW\x10\x01\x12\x10\n\x0c\x46ORMAT_QCOW2\x10\x02\x12\x13\n\x0f\x46ORMAT_SQUASHFS\x10\x03\"\x8f\x01\n\x08\x44iskRole\x12\x19\n\x15\x44ISK_ROLE_UNSPECIFIED\x10\x00\x12\x14\n\x10\x44ISK_ROLE_ROOTFS\x10\x01\x12\x12\n\x0e\x44ISK_ROLE_CODE\x10\x02\x12\x15\n\x11\x44ISK_ROLE_RUNTIME\x10\x03\x12\x12\n\x0e\x44ISK_ROLE_DATA\x10\x04\x12\x13\n\x0f\x44ISK_ROLE_EXTRA\x10\x05\"A\n\tTeeConfig\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x0e\n\x06policy\x18\x02 \x01(\t\x12\x13\n\x0bsession_dir\x18\x03 \x01(\t\"Y\n\rNetworkConfig\x12\x17\n\x0finternet_access\x18\x01 \x01(\x08\x12\x16\n\x0erequested_ipv6\x18\x02 \x01(\t\x12\x17\n\x0fipv6_prefix_len\x18\x03 \x01(\r\"5\n\tGpuConfig\x12\x10\n\x08pci_host\x18\x01 \x01(\t\x12\x16\n\x0esupports_x_vga\x18\x02 \x01(\x08\"\xd1\x01\n\x06VmInfo\x12\r\n\x05vm_id\x18\x01 \x01(\t\x12-\n\x06status\x18\x02 \x01(\x0e\x32\x1d.aleph.hypervisor.v1.VmStatus\x12\x0c\n\x04ipv4\x18\x03 \x01(\t\x12\x0c\n\x04ipv6\x18\x04 \x01(\t\x12\x13\n\x0buptime_secs\x18\x05 \x01(\x04\x12-\n\x07\x62\x61\x63kend\x18\x06 \x01(\x0e\x32\x1c.aleph.hypervisor.v1.Backend\x12\x11\n\tnuma_node\x18\x07 \x01(\r\x12\x16\n\x0estatus_message\x18\x08 \x01(\t\"\x1d\n\x0cGetVmRequest\x12\r\n\x05vm_id\x18\x01 \x01(\t\"\x10\n\x0eListVmsRequest\";\n\x0fListVmsResponse\x12(\n\x03vms\x18\x01 \x03(\x0b\x32\x1b.aleph.hypervisor.v1.VmInfo\" \n\x0f\x44\x65leteVmRequest\x12\r\n\x05vm_id\x18\x01 \x01(\t\"\x12\n\x10\x44\x65leteVmResponse\".\n\x0fRebootVmRequest\x12\r\n\x05vm_id\x18\x01 \x01(\t\x12\x0c\n\x04hard\x18\x02 \x01(\x08\"#\n\x12ReinstallVmRequest\x12\r\n\x05vm_id\x18\x01 \x01(\t*c\n\x07\x42\x61\x63kend\x12\x17\n\x13\x42\x41\x43KEND_UNSPECIFIED\x10\x00\x12\x17\n\x13\x42\x41\x43KEND_FIRECRACKER\x10\x01\x12\x10\n\x0c\x42\x41\x43KEND_QEMU\x10\x02\x12\x14\n\x10\x42\x41\x43KEND_QEMU_SEV\x10\x03*\xaf\x01\n\x08VmStatus\x12\x19\n\x15VM_STATUS_UNSPECIFIED\x10\x00\x12\x15\n\x11VM_STATUS_DEFINED\x10\x01\x12\x15\n\x11VM_STATUS_BOOTING\x10\x02\x12\x15\n\x11VM_STATUS_RUNNING\x10\x03\x12\x16\n\x12VM_STATUS_STOPPING\x10\x04\x12\x15\n\x11VM_STATUS_STOPPED\x10\x05\x12\x14\n\x10VM_STATUS_FAILED\x10\x06\x32\xa1\x05\n\nHypervisor\x12Q\n\x06Health\x12\".aleph.hypervisor.v1.HealthRequest\x1a#.aleph.hypervisor.v1.HealthResponse\x12U\n\x0bGetHostInfo\x12\'.aleph.hypervisor.v1.GetHostInfoRequest\x1a\x1d.aleph.hypervisor.v1.HostInfo\x12M\n\x08\x43reateVm\x12$.aleph.hypervisor.v1.CreateVmRequest\x1a\x1b.aleph.hypervisor.v1.VmInfo\x12G\n\x05GetVm\x12!.aleph.hypervisor.v1.GetVmRequest\x1a\x1b.aleph.hypervisor.v1.VmInfo\x12T\n\x07ListVms\x12#.aleph.hypervisor.v1.ListVmsRequest\x1a$.aleph.hypervisor.v1.ListVmsResponse\x12W\n\x08\x44\x65leteVm\x12$.aleph.hypervisor.v1.DeleteVmRequest\x1a%.aleph.hypervisor.v1.DeleteVmResponse\x12M\n\x08RebootVm\x12$.aleph.hypervisor.v1.RebootVmRequest\x1a\x1b.aleph.hypervisor.v1.VmInfo\x12S\n\x0bReinstallVm\x12\'.aleph.hypervisor.v1.ReinstallVmRequest\x1a\x1b.aleph.hypervisor.v1.VmInfob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'hypervisor_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
+  _globals['_BACKEND']._serialized_start=1986
+  _globals['_BACKEND']._serialized_end=2085
+  _globals['_VMSTATUS']._serialized_start=2088
+  _globals['_VMSTATUS']._serialized_end=2263
   _globals['_HEALTHREQUEST']._serialized_start=41
   _globals['_HEALTHREQUEST']._serialized_end=56
   _globals['_HEALTHRESPONSE']._serialized_start=58
@@ -43,6 +47,36 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_NUMANODE']._serialized_end=437
   _globals['_GPUDEVICE']._serialized_start=439
   _globals['_GPUDEVICE']._serialized_end=526
-  _globals['_HYPERVISOR']._serialized_start=529
-  _globals['_HYPERVISOR']._serialized_end=711
+  _globals['_CREATEVMREQUEST']._serialized_start=529
+  _globals['_CREATEVMREQUEST']._serialized_end=916
+  _globals['_DISKCONFIG']._serialized_start=919
+  _globals['_DISKCONFIG']._serialized_end=1310
+  _globals['_DISKCONFIG_FORMAT']._serialized_start=1077
+  _globals['_DISKCONFIG_FORMAT']._serialized_end=1164
+  _globals['_DISKCONFIG_DISKROLE']._serialized_start=1167
+  _globals['_DISKCONFIG_DISKROLE']._serialized_end=1310
+  _globals['_TEECONFIG']._serialized_start=1312
+  _globals['_TEECONFIG']._serialized_end=1377
+  _globals['_NETWORKCONFIG']._serialized_start=1379
+  _globals['_NETWORKCONFIG']._serialized_end=1468
+  _globals['_GPUCONFIG']._serialized_start=1470
+  _globals['_GPUCONFIG']._serialized_end=1523
+  _globals['_VMINFO']._serialized_start=1526
+  _globals['_VMINFO']._serialized_end=1735
+  _globals['_GETVMREQUEST']._serialized_start=1737
+  _globals['_GETVMREQUEST']._serialized_end=1766
+  _globals['_LISTVMSREQUEST']._serialized_start=1768
+  _globals['_LISTVMSREQUEST']._serialized_end=1784
+  _globals['_LISTVMSRESPONSE']._serialized_start=1786
+  _globals['_LISTVMSRESPONSE']._serialized_end=1845
+  _globals['_DELETEVMREQUEST']._serialized_start=1847
+  _globals['_DELETEVMREQUEST']._serialized_end=1879
+  _globals['_DELETEVMRESPONSE']._serialized_start=1881
+  _globals['_DELETEVMRESPONSE']._serialized_end=1899
+  _globals['_REBOOTVMREQUEST']._serialized_start=1901
+  _globals['_REBOOTVMREQUEST']._serialized_end=1947
+  _globals['_REINSTALLVMREQUEST']._serialized_start=1949
+  _globals['_REINSTALLVMREQUEST']._serialized_end=1984
+  _globals['_HYPERVISOR']._serialized_start=2266
+  _globals['_HYPERVISOR']._serialized_end=2939
 # @@protoc_insertion_point(module_scope)

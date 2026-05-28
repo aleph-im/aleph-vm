@@ -16,10 +16,62 @@ import builtins
 import collections.abc
 import google.protobuf.descriptor
 import google.protobuf.internal.containers
+import google.protobuf.internal.enum_type_wrapper
 import google.protobuf.message
+import sys
 import typing
 
+if sys.version_info >= (3, 10):
+    import typing as typing_extensions
+else:
+    import typing_extensions
+
 DESCRIPTOR: google.protobuf.descriptor.FileDescriptor
+
+class _Backend:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _BackendEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_Backend.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    BACKEND_UNSPECIFIED: _Backend.ValueType  # 0
+    BACKEND_FIRECRACKER: _Backend.ValueType  # 1
+    BACKEND_QEMU: _Backend.ValueType  # 2
+    BACKEND_QEMU_SEV: _Backend.ValueType  # 3
+
+class Backend(_Backend, metaclass=_BackendEnumTypeWrapper):
+    """── Lifecycle ────────────────────────────────────────────────────────────"""
+
+BACKEND_UNSPECIFIED: Backend.ValueType  # 0
+BACKEND_FIRECRACKER: Backend.ValueType  # 1
+BACKEND_QEMU: Backend.ValueType  # 2
+BACKEND_QEMU_SEV: Backend.ValueType  # 3
+global___Backend = Backend
+
+class _VmStatus:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _VmStatusEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_VmStatus.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    VM_STATUS_UNSPECIFIED: _VmStatus.ValueType  # 0
+    VM_STATUS_DEFINED: _VmStatus.ValueType  # 1
+    VM_STATUS_BOOTING: _VmStatus.ValueType  # 2
+    VM_STATUS_RUNNING: _VmStatus.ValueType  # 3
+    VM_STATUS_STOPPING: _VmStatus.ValueType  # 4
+    VM_STATUS_STOPPED: _VmStatus.ValueType  # 5
+    VM_STATUS_FAILED: _VmStatus.ValueType  # 6
+
+class VmStatus(_VmStatus, metaclass=_VmStatusEnumTypeWrapper): ...
+
+VM_STATUS_UNSPECIFIED: VmStatus.ValueType  # 0
+VM_STATUS_DEFINED: VmStatus.ValueType  # 1
+VM_STATUS_BOOTING: VmStatus.ValueType  # 2
+VM_STATUS_RUNNING: VmStatus.ValueType  # 3
+VM_STATUS_STOPPING: VmStatus.ValueType  # 4
+VM_STATUS_STOPPED: VmStatus.ValueType  # 5
+VM_STATUS_FAILED: VmStatus.ValueType  # 6
+global___VmStatus = VmStatus
 
 @typing.final
 class HealthRequest(google.protobuf.message.Message):
@@ -146,3 +198,328 @@ class GpuDevice(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
 global___GpuDevice = GpuDevice
+
+@typing.final
+class CreateVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    BACKEND_FIELD_NUMBER: builtins.int
+    KERNEL_PATH_FIELD_NUMBER: builtins.int
+    INITRD_PATH_FIELD_NUMBER: builtins.int
+    DISKS_FIELD_NUMBER: builtins.int
+    VCPUS_FIELD_NUMBER: builtins.int
+    MEMORY_MIB_FIELD_NUMBER: builtins.int
+    TEE_FIELD_NUMBER: builtins.int
+    NETWORK_FIELD_NUMBER: builtins.int
+    GPUS_FIELD_NUMBER: builtins.int
+    NUMA_NODE_FIELD_NUMBER: builtins.int
+    PERSISTENT_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    """agent-issued id, opaque to hypervisor"""
+    backend: global___Backend.ValueType
+    kernel_path: builtins.str
+    """empty for disk-boot"""
+    initrd_path: builtins.str
+    """empty for disk-boot"""
+    vcpus: builtins.int
+    memory_mib: builtins.int
+    numa_node: builtins.int
+    """0 = auto, 1+ = specific (1-indexed)"""
+    persistent: builtins.bool
+    """hypervisor wraps in systemd if true"""
+    @property
+    def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
+    @property
+    def tee(self) -> global___TeeConfig:
+        """only meaningful when backend is *_SEV"""
+
+    @property
+    def network(self) -> global___NetworkConfig: ...
+    @property
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]: ...
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        backend: global___Backend.ValueType = ...,
+        kernel_path: builtins.str = ...,
+        initrd_path: builtins.str = ...,
+        disks: collections.abc.Iterable[global___DiskConfig] | None = ...,
+        vcpus: builtins.int = ...,
+        memory_mib: builtins.int = ...,
+        tee: global___TeeConfig | None = ...,
+        network: global___NetworkConfig | None = ...,
+        gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
+        numa_node: builtins.int = ...,
+        persistent: builtins.bool = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["network", b"network", "tee", b"tee"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+
+global___CreateVmRequest = CreateVmRequest
+
+@typing.final
+class DiskConfig(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    class _Format:
+        ValueType = typing.NewType("ValueType", builtins.int)
+        V: typing_extensions.TypeAlias = ValueType
+
+    class _FormatEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[DiskConfig._Format.ValueType], builtins.type):
+        DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+        FORMAT_UNSPECIFIED: DiskConfig._Format.ValueType  # 0
+        FORMAT_RAW: DiskConfig._Format.ValueType  # 1
+        FORMAT_QCOW2: DiskConfig._Format.ValueType  # 2
+        FORMAT_SQUASHFS: DiskConfig._Format.ValueType  # 3
+
+    class Format(_Format, metaclass=_FormatEnumTypeWrapper): ...
+    FORMAT_UNSPECIFIED: DiskConfig.Format.ValueType  # 0
+    FORMAT_RAW: DiskConfig.Format.ValueType  # 1
+    FORMAT_QCOW2: DiskConfig.Format.ValueType  # 2
+    FORMAT_SQUASHFS: DiskConfig.Format.ValueType  # 3
+
+    class _DiskRole:
+        ValueType = typing.NewType("ValueType", builtins.int)
+        V: typing_extensions.TypeAlias = ValueType
+
+    class _DiskRoleEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[DiskConfig._DiskRole.ValueType], builtins.type):
+        DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+        DISK_ROLE_UNSPECIFIED: DiskConfig._DiskRole.ValueType  # 0
+        DISK_ROLE_ROOTFS: DiskConfig._DiskRole.ValueType  # 1
+        DISK_ROLE_CODE: DiskConfig._DiskRole.ValueType  # 2
+        DISK_ROLE_RUNTIME: DiskConfig._DiskRole.ValueType  # 3
+        DISK_ROLE_DATA: DiskConfig._DiskRole.ValueType  # 4
+        DISK_ROLE_EXTRA: DiskConfig._DiskRole.ValueType  # 5
+
+    class DiskRole(_DiskRole, metaclass=_DiskRoleEnumTypeWrapper): ...
+    DISK_ROLE_UNSPECIFIED: DiskConfig.DiskRole.ValueType  # 0
+    DISK_ROLE_ROOTFS: DiskConfig.DiskRole.ValueType  # 1
+    DISK_ROLE_CODE: DiskConfig.DiskRole.ValueType  # 2
+    DISK_ROLE_RUNTIME: DiskConfig.DiskRole.ValueType  # 3
+    DISK_ROLE_DATA: DiskConfig.DiskRole.ValueType  # 4
+    DISK_ROLE_EXTRA: DiskConfig.DiskRole.ValueType  # 5
+
+    PATH_FIELD_NUMBER: builtins.int
+    READONLY_FIELD_NUMBER: builtins.int
+    FORMAT_FIELD_NUMBER: builtins.int
+    ROLE_FIELD_NUMBER: builtins.int
+    path: builtins.str
+    """absolute host path"""
+    readonly: builtins.bool
+    format: global___DiskConfig.Format.ValueType
+    role: global___DiskConfig.DiskRole.ValueType
+    def __init__(
+        self,
+        *,
+        path: builtins.str = ...,
+        readonly: builtins.bool = ...,
+        format: global___DiskConfig.Format.ValueType = ...,
+        role: global___DiskConfig.DiskRole.ValueType = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["format", b"format", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
+
+global___DiskConfig = DiskConfig
+
+@typing.final
+class TeeConfig(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    BACKEND_FIELD_NUMBER: builtins.int
+    POLICY_FIELD_NUMBER: builtins.int
+    SESSION_DIR_FIELD_NUMBER: builtins.int
+    backend: builtins.str
+    """"sev-snp", "tdx", "nvidia-cc" or "" """
+    policy: builtins.str
+    """empty = default"""
+    session_dir: builtins.str
+    """confidential session files"""
+    def __init__(
+        self,
+        *,
+        backend: builtins.str = ...,
+        policy: builtins.str = ...,
+        session_dir: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+
+global___TeeConfig = TeeConfig
+
+@typing.final
+class NetworkConfig(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    INTERNET_ACCESS_FIELD_NUMBER: builtins.int
+    REQUESTED_IPV6_FIELD_NUMBER: builtins.int
+    IPV6_PREFIX_LEN_FIELD_NUMBER: builtins.int
+    internet_access: builtins.bool
+    requested_ipv6: builtins.str
+    """empty = pool-assigned"""
+    ipv6_prefix_len: builtins.int
+    """0 = /128"""
+    def __init__(
+        self,
+        *,
+        internet_access: builtins.bool = ...,
+        requested_ipv6: builtins.str = ...,
+        ipv6_prefix_len: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["internet_access", b"internet_access", "ipv6_prefix_len", b"ipv6_prefix_len", "requested_ipv6", b"requested_ipv6"]) -> None: ...
+
+global___NetworkConfig = NetworkConfig
+
+@typing.final
+class GpuConfig(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    PCI_HOST_FIELD_NUMBER: builtins.int
+    SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
+    pci_host: builtins.str
+    supports_x_vga: builtins.bool
+    def __init__(
+        self,
+        *,
+        pci_host: builtins.str = ...,
+        supports_x_vga: builtins.bool = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+
+global___GpuConfig = GpuConfig
+
+@typing.final
+class VmInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    STATUS_FIELD_NUMBER: builtins.int
+    IPV4_FIELD_NUMBER: builtins.int
+    IPV6_FIELD_NUMBER: builtins.int
+    UPTIME_SECS_FIELD_NUMBER: builtins.int
+    BACKEND_FIELD_NUMBER: builtins.int
+    NUMA_NODE_FIELD_NUMBER: builtins.int
+    STATUS_MESSAGE_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    status: global___VmStatus.ValueType
+    ipv4: builtins.str
+    ipv6: builtins.str
+    uptime_secs: builtins.int
+    backend: global___Backend.ValueType
+    numa_node: builtins.int
+    """0-indexed effective placement"""
+    status_message: builtins.str
+    """human-readable, optional"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        status: global___VmStatus.ValueType = ...,
+        ipv4: builtins.str = ...,
+        ipv6: builtins.str = ...,
+        uptime_secs: builtins.int = ...,
+        backend: global___Backend.ValueType = ...,
+        numa_node: builtins.int = ...,
+        status_message: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "status", b"status", "status_message", b"status_message", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+
+global___VmInfo = VmInfo
+
+@typing.final
+class GetVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___GetVmRequest = GetVmRequest
+
+@typing.final
+class ListVmsRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ListVmsRequest = ListVmsRequest
+
+@typing.final
+class ListVmsResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VMS_FIELD_NUMBER: builtins.int
+    @property
+    def vms(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___VmInfo]: ...
+    def __init__(
+        self,
+        *,
+        vms: collections.abc.Iterable[global___VmInfo] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vms", b"vms"]) -> None: ...
+
+global___ListVmsResponse = ListVmsResponse
+
+@typing.final
+class DeleteVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___DeleteVmRequest = DeleteVmRequest
+
+@typing.final
+class DeleteVmResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___DeleteVmResponse = DeleteVmResponse
+
+@typing.final
+class RebootVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    HARD_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    hard: builtins.bool
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        hard: builtins.bool = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["hard", b"hard", "vm_id", b"vm_id"]) -> None: ...
+
+global___RebootVmRequest = RebootVmRequest
+
+@typing.final
+class ReinstallVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___ReinstallVmRequest = ReinstallVmRequest

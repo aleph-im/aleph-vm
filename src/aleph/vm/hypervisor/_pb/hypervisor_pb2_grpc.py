@@ -44,6 +44,36 @@ class HypervisorStub(object):
                 request_serializer=hypervisor__pb2.GetHostInfoRequest.SerializeToString,
                 response_deserializer=hypervisor__pb2.HostInfo.FromString,
                 _registered_method=True)
+        self.CreateVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/CreateVm',
+                request_serializer=hypervisor__pb2.CreateVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.GetVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/GetVm',
+                request_serializer=hypervisor__pb2.GetVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.ListVms = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ListVms',
+                request_serializer=hypervisor__pb2.ListVmsRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.ListVmsResponse.FromString,
+                _registered_method=True)
+        self.DeleteVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/DeleteVm',
+                request_serializer=hypervisor__pb2.DeleteVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.DeleteVmResponse.FromString,
+                _registered_method=True)
+        self.RebootVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/RebootVm',
+                request_serializer=hypervisor__pb2.RebootVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.ReinstallVm = channel.unary_unary(
+                '/aleph.hypervisor.v1.Hypervisor/ReinstallVm',
+                request_serializer=hypervisor__pb2.ReinstallVmRequest.SerializeToString,
+                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
 
 
 class HypervisorServicer(object):
@@ -62,6 +92,43 @@ class HypervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CreateVm(self, request, context):
+        """── VM lifecycle ──
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListVms(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RebootVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReinstallVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HypervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -74,6 +141,36 @@ def add_HypervisorServicer_to_server(servicer, server):
                     servicer.GetHostInfo,
                     request_deserializer=hypervisor__pb2.GetHostInfoRequest.FromString,
                     response_serializer=hypervisor__pb2.HostInfo.SerializeToString,
+            ),
+            'CreateVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateVm,
+                    request_deserializer=hypervisor__pb2.CreateVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'GetVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetVm,
+                    request_deserializer=hypervisor__pb2.GetVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'ListVms': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListVms,
+                    request_deserializer=hypervisor__pb2.ListVmsRequest.FromString,
+                    response_serializer=hypervisor__pb2.ListVmsResponse.SerializeToString,
+            ),
+            'DeleteVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteVm,
+                    request_deserializer=hypervisor__pb2.DeleteVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.DeleteVmResponse.SerializeToString,
+            ),
+            'RebootVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.RebootVm,
+                    request_deserializer=hypervisor__pb2.RebootVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'ReinstallVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReinstallVm,
+                    request_deserializer=hypervisor__pb2.ReinstallVmRequest.FromString,
+                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -130,6 +227,168 @@ class Hypervisor(object):
             '/aleph.hypervisor.v1.Hypervisor/GetHostInfo',
             hypervisor__pb2.GetHostInfoRequest.SerializeToString,
             hypervisor__pb2.HostInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/CreateVm',
+            hypervisor__pb2.CreateVmRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/GetVm',
+            hypervisor__pb2.GetVmRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListVms(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ListVms',
+            hypervisor__pb2.ListVmsRequest.SerializeToString,
+            hypervisor__pb2.ListVmsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/DeleteVm',
+            hypervisor__pb2.DeleteVmRequest.SerializeToString,
+            hypervisor__pb2.DeleteVmResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RebootVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/RebootVm',
+            hypervisor__pb2.RebootVmRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReinstallVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.hypervisor.v1.Hypervisor/ReinstallVm',
+            hypervisor__pb2.ReinstallVmRequest.SerializeToString,
+            hypervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
