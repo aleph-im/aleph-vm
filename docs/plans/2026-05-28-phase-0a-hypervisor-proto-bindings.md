@@ -1,4 +1,4 @@
-# Phase 0.A — `hypervisor.proto` and Python Bindings — Implementation Plan
+# Phase 0.A: `hypervisor.proto` and Python Bindings: Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -18,7 +18,7 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `proto/hypervisor.proto` | The contract — single source of truth |
+| `proto/hypervisor.proto` | The contract: single source of truth |
 | `proto/README.md` | How to regenerate; what's checked in vs. generated |
 | `scripts/generate_proto.py` | Invokes `grpcio-tools` to produce `_pb` modules |
 | `src/aleph/vm/hypervisor/__init__.py` | Empty package marker for the new module tree |
@@ -53,7 +53,7 @@
 ### Task 1: Bootstrap the proto toolchain and an empty hypervisor.proto
 
 **Files:**
-- Create: `proto/hypervisor.proto` (minimal — `syntax`, `package`, empty `service Hypervisor {}`)
+- Create: `proto/hypervisor.proto` (minimal: `syntax`, `package`, empty `service Hypervisor {}`)
 - Create: `scripts/generate_proto.py`
 - Create: `src/aleph/vm/hypervisor/__init__.py` (empty)
 - Create: `src/aleph/vm/hypervisor/_pb/__init__.py`
@@ -88,7 +88,7 @@ def test_service_descriptor_present():
 - [ ] **Step 2: Run the test, confirm failure**
 
 Run: `pytest tests/hypervisor/test_proto_bindings.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'aleph.vm.hypervisor'`
+Expected: FAIL (`ModuleNotFoundError: No module named 'aleph.vm.hypervisor'`)
 
 - [ ] **Step 3: Add the runtime + dev dependencies in `pyproject.toml`**
 
@@ -1039,7 +1039,7 @@ Expected: 2 new failures.
 
 - [ ] **Step 3: Extend the proto**
 
-Append (no new RPCs — these are only used in status trailers):
+Append (no new RPCs; these are only used in status trailers):
 
 ```proto
 // ── Wire error vocabulary ────────────────────────────────────────────────
@@ -1103,7 +1103,7 @@ git commit -m "feat(hypervisor): add closed wire error enum (ErrorCode + ErrorDe
 
 ---
 
-### Task 10: Sanity sweep — service has the full RPC list
+### Task 10: Sanity sweep: service has the full RPC list
 
 A single test that pins the full RPC count and names so future drift is loud. This is the contract's "table of contents."
 
@@ -1315,11 +1315,11 @@ Expected: all PASS (21 tests).
 - [ ] **Step 3: Run the full aleph-vm test suite to confirm no regressions**
 
 Run: `pytest -x`
-Expected: same number of passing tests as `origin/main` (this plan adds tests, does not change behaviour). If any pre-existing tests fail, capture the output and investigate — they should not be related to this plan's changes.
+Expected: same number of passing tests as `origin/main` (this plan adds tests, does not change behaviour). If any pre-existing tests fail, capture the output and investigate; they should not be related to this plan's changes.
 
 - [ ] **Step 4: Final review**
 
-Eyeball `proto/hypervisor.proto` against §5 of the design doc. The RPC list should match exactly. Eyeball `tests/hypervisor/test_proto_bindings.py::test_full_service_surface_pinned` — the same list, alphabetised by category.
+Eyeball `proto/hypervisor.proto` against §5 of the design doc. The RPC list should match exactly. Eyeball `tests/hypervisor/test_proto_bindings.py::test_full_service_surface_pinned`: the same list, alphabetised by category.
 
 - [ ] **Step 5: Push and open PR**
 

@@ -4,15 +4,15 @@
 **Date:** 2026-05-28
 **Owner:** Olivier Desenfans
 **Subject repo:** `aleph-im/aleph-vm` (this design lives in `aleph-cvm` for drafting; will move to aleph-vm when implementation begins)
-**Reference architecture:** this repo (`aleph-cvm`) — already realises the target shape in Rust
+**Reference architecture:** this repo (`aleph-cvm`), which already realises the target shape in Rust
 
 ## 1. Context
 
-aleph-cvm was built from scratch as a clean architecture for confidential VMs: a hypervisor-agnostic compute node exposing gRPC, a separate Aleph-network adapter (the network agent) acting as gRPC client, and a thin contract (`compute.proto`) between them. The split has proven out — but it is too sharp a break to drop onto production CRNs.
+aleph-cvm was built from scratch as a clean architecture for confidential VMs: a hypervisor-agnostic compute node exposing gRPC, a separate Aleph-network adapter (the network agent) acting as gRPC client, and a thin contract (`compute.proto`) between them. The split has proven out, but it is too sharp a break to drop onto production CRNs.
 
-aleph-vm is the production Aleph Cloud compute node — a Python monolith (aiohttp) running Firecracker microVMs (on-demand programs), QEMU instances (persistent VPS), and a partially-wired QEMU+SEV path. Its orchestration, networking, payment, message handling, and VM lifecycle are braided through `VmExecution` (`models.py`) and `VmPool` (`pool.py`), and its HTTP control views call hypervisor code directly.
+aleph-vm is the production Aleph Cloud compute node: a Python monolith (aiohttp) running Firecracker microVMs (on-demand programs), QEMU instances (persistent VPS), and a partially-wired QEMU+SEV path. Its orchestration, networking, payment, message handling, and VM lifecycle are braided through `VmExecution` (`models.py`) and `VmPool` (`pool.py`), and its HTTP control views call hypervisor code directly.
 
-The goal of this work is to **evolve aleph-vm in place toward aleph-cvm's architecture** — same shape (hypervisor service ⇄ gRPC ⇄ Aleph agent), without merging repos, without breaking CRNs, and without changing the public CRN HTTP API. aleph-cvm serves as the proven reference; the Rust crates here will eventually replace aleph-vm's Python services — hypervisor first (Phase 2), then agent (Phase 3).
+The goal of this work is to **evolve aleph-vm in place toward aleph-cvm's architecture**: same shape (hypervisor service ⇄ gRPC ⇄ Aleph agent), without merging repos, without breaking CRNs, and without changing the public CRN HTTP API. aleph-cvm serves as the proven reference; the Rust crates here will eventually replace aleph-vm's Python services, starting with the hypervisor (Phase 2) and then the agent (Phase 3).
 
 ## 2. Target architecture
 
@@ -22,11 +22,11 @@ Per CRN, two daemons communicating over a Unix-domain-socket gRPC link:
 ┌──────────────────────────────────────────┐       ┌──────────────────────────────────────┐
 │  network-agent  (Aleph-only)              │       │  hypervisor  (infra-only)             │
 │                                           │       │                                       │
-│  • orchestrator/views — public CRN HTTP   │       │  • controllers/ (fc, qemu, qemu-sev)  │
+│  • orchestrator/views: public CRN HTTP    │       │  • controllers/ (fc, qemu, qemu-sev)  │
 │    API (unchanged for clients)             │  gRPC │  • hypervisors/ drivers               │
 │  • messages / tasks / reactor             │ ───►  │  • TAP create + IP assign             │
 │  • payment / PAYG / allocations           │  UDS  │  • systemd supervision (persistent)   │
-│  • storage.py — download → local paths    │       │  • GPU passthrough, NUMA, hugepages   │
+│  • storage.py: download → local paths     │       │  • GPU passthrough, NUMA, hugepages   │
 │  • node identity, aggregate settings      │       │  • backups, snapshots, reboot, logs   │
 │  • port-redirect *policy*                 │       │  • confidential session (phase 3)     │
 │  • on-demand program HTTP proxy + idle    │       │                                       │
@@ -35,7 +35,7 @@ Per CRN, two daemons communicating over a Unix-domain-socket gRPC link:
 └──────────────────────────────────────────┘       └──────────────────────────────────────┘
 ```
 
-**Vocabulary on the wire is infra-only.** A `CreateVm` carries `vm_id`, `backend` (firecracker / qemu / qemu-sev), `kernel/initrd/rootfs` *paths*, `disks`, `vcpus`, `memory`, `tee`, `gpu`, `ipv6`, requested port-forwards. An Aleph `ExecutableMessage` never crosses the wire. The agent downloads code/runtime/data volumes (via `storage.py`) and hands the hypervisor local paths — exactly the pattern aleph-cvm's `VolumeCache` + `adapter.rs` already implement.
+**Vocabulary on the wire is infra-only.** A `CreateVm` carries `vm_id`, `backend` (firecracker / qemu / qemu-sev), `kernel/initrd/rootfs` *paths*, `disks`, `vcpus`, `memory`, `tee`, `gpu`, `ipv6`, requested port-forwards. An Aleph `ExecutableMessage` never crosses the wire. The agent downloads code/runtime/data volumes (via `storage.py`) and hands the hypervisor local paths, exactly the pattern aleph-cvm's `VolumeCache` + `adapter.rs` already implement.
 
 **Sources of truth.** Hypervisor owns *what IS running* (process, TAP, mapped ports, backup files). Agent owns *what SHOULD be running* (allocation, message, payment status, expiry). Reconciliation = compare `ListVms` against the allocation, the same loop `aleph-network-agent` already does.
 
@@ -50,8 +50,8 @@ From the audit of `aleph-im/aleph-vm` `src/aleph/vm/`:
 | `controllers/` (fc, qemu, qemu_confidential)      | **hypervisor** | Wrapped behind the gRPC server. Existing code, minimal rewrite.       |
 | `hypervisors/` drivers                            | **hypervisor** | Unchanged, internal to the hypervisor daemon.                         |
 | `network/interfaces.py` (TAP, IP)                 | **hypervisor** | Pure infra: create TAP, assign IP.                                    |
-| `network/firewall.py` (nft NAT, port forwards)    | **hypervisor** | Mechanism only — *which* ports to forward comes from the agent.       |
-| `network/ndp_proxy.py`, `network/hostnetwork.py`  | **hypervisor** | Bridge / NDP / IPv6 — host-network setup is infra.                    |
+| `network/firewall.py` (nft NAT, port forwards)    | **hypervisor** | Mechanism only: *which* ports to forward comes from the agent.        |
+| `network/ndp_proxy.py`, `network/hostnetwork.py`  | **hypervisor** | Bridge / NDP / IPv6; host-network setup is infra.                     |
 | `sevclient.py`                                    | **hypervisor** | Platform certificate export; merges into hypervisor's TEE module.     |
 | `orchestrator/views/`                             | **agent**      | Public HTTP API surface stays here; calls hypervisor over gRPC.       |
 | `orchestrator/messages.py`, `tasks.py`, `reactor` | **agent**      | Aleph message subscription, status reactor.                           |
@@ -70,8 +70,8 @@ From the audit of `aleph-im/aleph-vm` `src/aleph/vm/`:
 Most of the cost of Phase 1 is here. It must happen regardless of whether the hypervisor stays Python or becomes Rust.
 
 **Split `VmExecution`.** Today it holds both the controller instance *and* Aleph state (message, mapped_ports policy, persistent flag, systemd manager, payment record). Cleave into:
-- *Hypervisor-side `Vm` record* — process handle, TAP, IPs, status, actually-mapped ports, backup files.
-- *Agent-side `Execution` record* — Aleph message, allocation, payment, expiry, the desired port-forward set.
+- *Hypervisor-side `Vm` record*: process handle, TAP, IPs, status, actually-mapped ports, backup files.
+- *Agent-side `Execution` record*: Aleph message, allocation, payment, expiry, the desired port-forward set.
 Tie them by `vm_id` only.
 
 **Split `VmPool`.** The pool currently does resource admission, TAP allocation, systemd supervision, and Aleph message caching. After the split:
@@ -82,19 +82,19 @@ Tie them by `vm_id` only.
 
 **Move port-redirect policy to the agent.** Today `VmExecution.fetch_port_redirect_config_and_setup()` fetches the user's aggregate settings *and* writes nft rules. After the split: agent reads aggregate settings and computes the desired forwards; hypervisor applies them via `AddPortForward`/`RemovePortForward`. Mechanism vs policy.
 
-**Lift the on-demand program path.** When a request arrives at `/vm/{ref}` or `/{suffix}`, the agent: looks up or creates a VM (`CreateVm` if not present), waits for ready, proxies HTTP, applies idle teardown. The hypervisor sees nothing program-specific — it just gets `CreateVm`/`DeleteVm` like any other lifecycle event. Idle policy is an agent concern.
+**Lift the on-demand program path.** When a request arrives at `/vm/{ref}` or `/{suffix}`, the agent: looks up or creates a VM (`CreateVm` if not present), waits for ready, proxies HTTP, applies idle teardown. The hypervisor sees nothing program-specific; it just gets `CreateVm`/`DeleteVm` like any other lifecycle event. Idle policy is an agent concern.
 
 ## 5. The contract (Phase 0 deliverable, sketched here)
 
 `hypervisor.proto` extends aleph-cvm's `compute.proto` to cover aleph-vm's full surface. RPC list (final shape TBD in the Phase 0 spec):
 
-- **Lifecycle**: `CreateVm`, `GetVm`, `ListVms`, `DeleteVm`, `RebootVm`, `ReinstallVm` — note: expiry/TTL is an *agent* concern (timer → eventual `DeleteVm`); the hypervisor stays unaware
+- **Lifecycle**: `CreateVm`, `GetVm`, `ListVms`, `DeleteVm`, `RebootVm`, `ReinstallVm` (note: expiry/TTL is an *agent* concern; timer fires → eventual `DeleteVm`; the hypervisor stays unaware)
 - **Port forwarding** (already in `compute.proto`): `AddPortForward`, `RemovePortForward`, `ListPortForwards`
 - **Logs**: `GetLogs` (paginated), `StreamLogs` (server-streaming)
 - **Backup / snapshot**: `StartBackup`, `GetBackupStatus`, `ListBackups`, `DownloadBackup` (server-streaming bytes), `DeleteBackup`, `RestoreBackup`
 - **Migration**: `ExportVm`, `ImportVm`, `GetMigrationStatus`
 - **Confidential** (Phase 3): `InitializeConfidential`, `GetMeasurement`, `InjectSecret`
-- **Host info**: `Health`, `GetHostInfo` (CPU, NUMA, memory, GPUs, SEV/TDX support — feeds `/about/capability`)
+- **Host info**: `Health`, `GetHostInfo` (CPU, NUMA, memory, GPUs, SEV/TDX support, which feeds `/about/capability`)
 
 `CreateVm` grows fields aleph-cvm doesn't have today: `backend` enum (firecracker | qemu | qemu-sev), program-mode flags, GPU requests, runtime/code/data disk semantics.
 
@@ -104,31 +104,31 @@ The contract must avoid backend leakage. Two examples to watch:
 
 ## 6. Phases
 
-### Phase 0 — Contract & in-process boundary
+### Phase 0: Contract and in-process boundary
 **Deliverable:** the finalised `hypervisor.proto`; a Python `Hypervisor` abstraction (ABC) inside aleph-vm with two implementations: in-process (wraps current `VmPool` / controllers) and gRPC client (stub for now). `orchestrator/views` and `orchestrator/run.py` are migrated to call the abstraction. No process split yet.
 **Exit criteria:** every call into hypervisor functionality from agent code goes through the abstraction; the in-process implementation passes the existing test suite; the gRPC client compiles.
 **Validates:** the contract is expressible without leaking Aleph types into the hypervisor side.
 
-### Phase 1 — Carve out the hypervisor process, still Python
+### Phase 1: Carve out the hypervisor process, still Python
 Strangler-fig, one capability at a time. For each capability: stand up the corresponding gRPC server-side handler in the hypervisor daemon, switch the `Hypervisor` abstraction to use the gRPC implementation for that capability, ship a release, monitor, move on.
 
 **Order (decided 2026-05-28):**
-1. **Persistent QEMU instances** — closest match to aleph-cvm's proven flow.
-2. **Firecracker microVMs / programs** — the on-demand HTTP path, hardest entanglement.
-3. **Confidential (stub-level)** — wire the existing `sevctl` cert export and the stub endpoints; full attestation deferred to Phase 3.
+1. **Persistent QEMU instances**: closest match to aleph-cvm's proven flow.
+2. **Firecracker microVMs / programs**: the on-demand HTTP path, hardest entanglement.
+3. **Confidential (stub-level)**: wire the existing `sevctl` cert export and the stub endpoints; full attestation deferred to Phase 3.
 
 In parallel with (1)–(3), detangle `VmExecution`/`VmPool` (§4). Backups, migration, logs, reboot/reinstall/expire migrate as they become needed by the carved-out paths.
 
 **Exit criteria:** each CRN runs two Python daemons (`aleph-vm-agent`, `aleph-vm-hypervisor`) talking over UDS gRPC; no agent code reaches into hypervisor internals; the in-process implementation of `Hypervisor` is deleted.
 
-### Phase 2 — Swap hypervisor to Rust
+### Phase 2: Swap hypervisor to Rust
 Drop in aleph-cvm's `aleph-compute-node` as a replacement for the Python hypervisor daemon. Same socket, same proto, no agent changes. A/B per CRN: an operator can run the Python or Rust hypervisor under the same agent.
 
-Work mostly inside this repo: extend `aleph-compute-node` to cover the firecracker backend, program semantics, backups, logs, migration — i.e. catch up to whatever the Python hypervisor exposed at end of Phase 1.
+Work mostly inside this repo: extend `aleph-compute-node` to cover the firecracker backend, program semantics, backups, logs, migration, i.e. catch up to whatever the Python hypervisor exposed at end of Phase 1.
 
 **Exit criteria:** the Rust hypervisor is the default on at least one production tier; the Python hypervisor codepath is removed from aleph-vm.
 
-### Phase 3 — Agent to Rust + real SEV-SNP
+### Phase 3: Agent to Rust and real SEV-SNP
 Port `aleph-vm-agent` to Rust, borrowing from `aleph-network-agent`. Wire genuine SEV-SNP attestation using `aleph-tee` + `aleph-attest-agent` + measured OVMF/kernel/initrd from this repo's Nix build. The contract gains `InitializeConfidential`/`GetMeasurement`/`InjectSecret` (or these become real implementations of the stubs).
 
 **Exit criteria:** confidential VMs on aleph-vm provide remote attestation comparable to aleph-cvm; the Python agent is removed.
@@ -150,7 +150,7 @@ Port `aleph-vm-agent` to Rust, borrowing from `aleph-network-agent`. Wire genuin
 | Python gRPC server adds latency on the program cold-start path                          | Persistent first; profile microVM cold-start before carving; gRPC over UDS adds sub-ms vs the multi-100ms cold start      |
 | Detangling `VmExecution`/`VmPool` becomes an open-ended yak shave                       | Bound each carve-out to a single capability; defer non-blocking cleanup; accept temporary ugliness behind the abstraction |
 | Backups/migration semantics diverge per backend, contract becomes two parallel surfaces | Design the backup/migration RPCs from the agent's point of view, not the backend's; hypervisor adapts                     |
-| The Python hypervisor daemon is throwaway; effort wasted                                | It is — but its purpose is to battle-test the contract under real RPC conditions, *before* the Rust swap. Worth it.       |
+| The Python hypervisor daemon is throwaway; effort wasted                                | It is, but its purpose is to battle-test the contract under real RPC conditions, *before* the Rust swap. Worth it.        |
 | Aleph aggregate-settings semantics drift mid-migration                                  | Agent owns aggregate-settings reads; freeze the shape the hypervisor sees (just `port_forwards`) on day one               |
 
 ## 9. Open questions
@@ -173,13 +173,13 @@ These are deliberately deferred to the Phase 0 contract spec:
 
 ---
 
-## Annex A — Concrete entanglements
+## Annex A: Concrete entanglements
 
 References are to `aleph-im/aleph-vm@main`. The point of this annex is to make §4 ("detangling work") inspectable: each exhibit is a concrete piece of code today, what's tangled in it, and what it becomes after the split.
 
 ### A.1 `VmExecution`'s import list
 
-`src/aleph/vm/models.py:11-46` — one file pulls from every layer:
+`src/aleph/vm/models.py:11-46`: one file pulls from every layer:
 
 ```python
 from aleph_message.models import ExecutableContent, InstanceContent, ItemHash, ProgramContent
@@ -198,7 +198,7 @@ A single "execution" class imports Aleph message types, four concrete VM backend
 
 ### A.2 One method touches five conceptual layers
 
-`models.py:133-160` — `fetch_port_redirect_config_and_setup`:
+`models.py:133-160`, function `fetch_port_redirect_config_and_setup`:
 
 ```python
 async def fetch_port_redirect_config_and_setup(self):
@@ -224,7 +224,7 @@ In one method: Aleph type system + Aleph DB schema + Aleph aggregate-settings HT
 
 ### A.3 The "model" hand-constructs concrete backends
 
-`models.py:480-540` — `VmExecution.create`:
+`models.py:480-540`, function `VmExecution.create`:
 
 ```python
 def create(self, vm_id, tap_interface=None, prepare=True):
@@ -240,7 +240,7 @@ def create(self, vm_id, tap_interface=None, prepare=True):
                 self.vm = AlephQemuInstance(vm_id=vm_id, ...)
 ```
 
-The "model" is the backend selector — it reads Aleph predicates (`is_program`, `is_confidential`, `hypervisor`) and constructs the matching controller class by direct import.
+The "model" is the backend selector: it reads Aleph predicates (`is_program`, `is_confidential`, `hypervisor`) and constructs the matching controller class by direct import.
 
 **After:** this whole ladder moves to the hypervisor side, behind `CreateVm`. The agent sends `{backend: "qemu" | "qemu-sev" | "firecracker", program_mode: bool, ...}`; the hypervisor picks the class. `VmExecution.create` ceases to exist; the agent's `Execution` record just holds the `vm_id` returned by `CreateVm`.
 
@@ -273,7 +273,7 @@ Hypervisor lifecycle + Aleph guest-API plumbing + systemd + program/instance bra
 
 ### A.5 `VmPool` is a god-object
 
-`pool.py:77-104` — the constructor:
+`pool.py:77-104`, the constructor:
 
 ```python
 def __init__(self):
@@ -294,14 +294,14 @@ def __init__(self):
 
 A "pool" owns the Aleph message cache, the Aleph execution registry, the Aleph GPU reservation policy, the IPv4/IPv6 allocators, the nftables host setup, host-systemd, and the snapshot thread.
 
-`pool.py:309-398` — `create_a_vm` orchestrates the entire stack in 90 lines: admission against an Aleph message → GPU reservation (`find_resources_available_for_user(message, message.address)`) → volume download (`execution.prepare()`) → TAP allocation → controller construction (`execution.create`) → controller start (`execution.start`) → port forwards (`execution.fetch_port_redirect_config_and_setup`).
+`pool.py:309-398`: `create_a_vm` orchestrates the entire stack in 90 lines: admission against an Aleph message → GPU reservation (`find_resources_available_for_user(message, message.address)`) → volume download (`execution.prepare()`) → TAP allocation → controller construction (`execution.create`) → controller start (`execution.start`) → port forwards (`execution.fetch_port_redirect_config_and_setup`).
 
 **After:**
 - Hypervisor keeps `Network`, `SystemDManager`, `SnapshotManager`, `executions: dict[vm_id, Vm]`, local admission, NUMA placement.
 - Agent keeps `message_cache`, `executions: dict[ItemHash, Execution]`, reservations, the reconcile loop.
 - `create_a_vm` becomes: agent prepares local paths → `CreateVm` → `AddPortForward`. Three RPCs replace 90 lines of orchestration.
 
-### A.6 HTTP views catch hypervisor-internal exception types — the hardest tangle
+### A.6 HTTP views catch hypervisor-internal exception types (the hardest tangle)
 
 `orchestrator/views/__init__.py:22-70` (imports) and `:541-557, 936-950` (uses):
 
@@ -322,9 +322,9 @@ except vm_creation_exceptions as error:
     ...
 ```
 
-`views/operator.py` is similar — it imports `controllers.qemu.backup.*`, `controllers.qemu.client.QemuVmClient`, `controllers.qemu.instance.AlephQemuInstance`, `controllers.qemu_confidential.instance.AlephQemuConfidentialInstance` and uses them by concrete type.
+`views/operator.py` is similar: it imports `controllers.qemu.backup.*`, `controllers.qemu.client.QemuVmClient`, `controllers.qemu.instance.AlephQemuInstance`, `controllers.qemu_confidential.instance.AlephQemuConfidentialInstance` and uses them by concrete type.
 
-**Why this is the most important entanglement for the seam:** exceptions cannot cross gRPC. They become status codes. Before any of this can be lifted, those backend-internal exception types must map to a small wire-error vocabulary; views must catch only `grpc.AioRpcError` and translate `status.code()` to HTTP. Today they don't even pretend — backend exception messages are surfaced straight to API responses.
+**Why this is the most important entanglement for the seam:** exceptions cannot cross gRPC. They become status codes. Before any of this can be lifted, those backend-internal exception types must map to a small wire-error vocabulary; views must catch only `grpc.AioRpcError` and translate `status.code()` to HTTP. Today they don't even pretend; backend exception messages are surfaced straight to API responses.
 
 This is the open question added to §9.
 
@@ -336,4 +336,4 @@ This is the open question added to §9.
 | `VmPool` owns infra collaborators + Aleph caches      | `pool.py`                            | Hypervisor keeps `Network`, `SystemDManager`, `SnapshotManager`, `executions: dict[vm_id, Vm]`. Agent keeps `message_cache`, `Execution` map, reservations, reconcile loop. |
 | Views catch hypervisor exception types                | `views/__init__.py`, `views/operator.py` | Closed error enum on the wire. Map backend exceptions → enum at the gRPC server. Views catch only `grpc.AioRpcError`.                              |
 
-The first two are mostly **moving code**. The third is **designing the wire error vocabulary** — the single most underestimated piece of Phase 0.
+The first two are mostly **moving code**. The third is **designing the wire error vocabulary**, the single most underestimated piece of Phase 0.
