@@ -181,3 +181,33 @@ def test_confidential_message_shapes():
 
     inj = {f.name for f in hypervisor_pb2.InjectSecretRequest.DESCRIPTOR.fields}
     assert {"vm_id", "secret_header_bytes", "secret_bytes"} <= inj
+
+
+def test_error_code_enum_covers_design_doc_cases():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    values = {v.name for v in hypervisor_pb2.ErrorCode.DESCRIPTOR.values}
+    required = {
+        "ERROR_CODE_UNSPECIFIED",
+        "ERROR_CODE_VM_NOT_FOUND",
+        "ERROR_CODE_VM_ALREADY_EXISTS",
+        "ERROR_CODE_INSUFFICIENT_RESOURCES",
+        "ERROR_CODE_RESOURCE_DOWNLOAD_FAILED",
+        "ERROR_CODE_VM_SETUP_FAILED",
+        "ERROR_CODE_MICROVM_INIT_FAILED",
+        "ERROR_CODE_FILE_TOO_LARGE",
+        "ERROR_CODE_INVALID_BACKEND",
+        "ERROR_CODE_TEE_UNAVAILABLE",
+        "ERROR_CODE_PORT_UNAVAILABLE",
+        "ERROR_CODE_BACKUP_NOT_FOUND",
+        "ERROR_CODE_MIGRATION_IN_PROGRESS",
+        "ERROR_CODE_HOST_NOT_FOUND",
+        "ERROR_CODE_INTERNAL",
+    }
+    missing = required - values
+    assert not missing, f"missing error codes: {missing}"
+
+
+def test_error_detail_message_shape():
+    from aleph.vm.hypervisor._pb import hypervisor_pb2
+    fields = {f.name for f in hypervisor_pb2.ErrorDetail.DESCRIPTOR.fields}
+    assert {"code", "message", "vm_id"} <= fields

@@ -119,6 +119,68 @@ MIGRATION_PHASE_COMPLETE: MigrationPhase.ValueType  # 4
 MIGRATION_PHASE_FAILED: MigrationPhase.ValueType  # 5
 global___MigrationPhase = MigrationPhase
 
+class _ErrorCode:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _ErrorCodeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_ErrorCode.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    ERROR_CODE_UNSPECIFIED: _ErrorCode.ValueType  # 0
+    ERROR_CODE_VM_NOT_FOUND: _ErrorCode.ValueType  # 1
+    """Lifecycle"""
+    ERROR_CODE_VM_ALREADY_EXISTS: _ErrorCode.ValueType  # 2
+    ERROR_CODE_INSUFFICIENT_RESOURCES: _ErrorCode.ValueType  # 3
+    ERROR_CODE_RESOURCE_DOWNLOAD_FAILED: _ErrorCode.ValueType  # 4
+    """Resource preparation"""
+    ERROR_CODE_FILE_TOO_LARGE: _ErrorCode.ValueType  # 5
+    ERROR_CODE_VM_SETUP_FAILED: _ErrorCode.ValueType  # 6
+    """Backend"""
+    ERROR_CODE_MICROVM_INIT_FAILED: _ErrorCode.ValueType  # 7
+    ERROR_CODE_INVALID_BACKEND: _ErrorCode.ValueType  # 8
+    ERROR_CODE_TEE_UNAVAILABLE: _ErrorCode.ValueType  # 9
+    ERROR_CODE_PORT_UNAVAILABLE: _ErrorCode.ValueType  # 10
+    """Networking"""
+    ERROR_CODE_HOST_NOT_FOUND: _ErrorCode.ValueType  # 11
+    ERROR_CODE_BACKUP_NOT_FOUND: _ErrorCode.ValueType  # 12
+    """Backup / migration"""
+    ERROR_CODE_MIGRATION_IN_PROGRESS: _ErrorCode.ValueType  # 13
+    ERROR_CODE_INTERNAL: _ErrorCode.ValueType  # 99
+    """Catch-all"""
+
+class ErrorCode(_ErrorCode, metaclass=_ErrorCodeEnumTypeWrapper):
+    """── Wire error vocabulary ────────────────────────────────────────────────
+
+    Closed enum of errors the hypervisor can return. Server side: map
+    backend exceptions (FileTooLargeError, VmSetupError,
+    MicroVMFailedInitError, ResourceDownloadError,
+    InsufficientResourcesError, HostNotFoundError, ...) into this enum
+    and attach an ErrorDetail in the gRPC status trailers. Agent side:
+    catch grpc.AioRpcError, read the trailer, translate to HTTP.
+    """
+
+ERROR_CODE_UNSPECIFIED: ErrorCode.ValueType  # 0
+ERROR_CODE_VM_NOT_FOUND: ErrorCode.ValueType  # 1
+"""Lifecycle"""
+ERROR_CODE_VM_ALREADY_EXISTS: ErrorCode.ValueType  # 2
+ERROR_CODE_INSUFFICIENT_RESOURCES: ErrorCode.ValueType  # 3
+ERROR_CODE_RESOURCE_DOWNLOAD_FAILED: ErrorCode.ValueType  # 4
+"""Resource preparation"""
+ERROR_CODE_FILE_TOO_LARGE: ErrorCode.ValueType  # 5
+ERROR_CODE_VM_SETUP_FAILED: ErrorCode.ValueType  # 6
+"""Backend"""
+ERROR_CODE_MICROVM_INIT_FAILED: ErrorCode.ValueType  # 7
+ERROR_CODE_INVALID_BACKEND: ErrorCode.ValueType  # 8
+ERROR_CODE_TEE_UNAVAILABLE: ErrorCode.ValueType  # 9
+ERROR_CODE_PORT_UNAVAILABLE: ErrorCode.ValueType  # 10
+"""Networking"""
+ERROR_CODE_HOST_NOT_FOUND: ErrorCode.ValueType  # 11
+ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
+"""Backup / migration"""
+ERROR_CODE_MIGRATION_IN_PROGRESS: ErrorCode.ValueType  # 13
+ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
+"""Catch-all"""
+global___ErrorCode = ErrorCode
+
 @typing.final
 class HealthRequest(google.protobuf.message.Message):
     """── Host ─────────────────────────────────────────────────────────────────"""
@@ -1164,3 +1226,26 @@ class InjectSecretResponse(google.protobuf.message.Message):
     ) -> None: ...
 
 global___InjectSecretResponse = InjectSecretResponse
+
+@typing.final
+class ErrorDetail(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    CODE_FIELD_NUMBER: builtins.int
+    MESSAGE_FIELD_NUMBER: builtins.int
+    VM_ID_FIELD_NUMBER: builtins.int
+    code: global___ErrorCode.ValueType
+    message: builtins.str
+    """human-readable, agent surfaces verbatim"""
+    vm_id: builtins.str
+    """optional context"""
+    def __init__(
+        self,
+        *,
+        code: global___ErrorCode.ValueType = ...,
+        message: builtins.str = ...,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["code", b"code", "message", b"message", "vm_id", b"vm_id"]) -> None: ...
+
+global___ErrorDetail = ErrorDetail
