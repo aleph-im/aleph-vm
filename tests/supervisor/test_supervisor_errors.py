@@ -1,11 +1,7 @@
 import pytest
 
-from aleph.vm.supervisor.errors import (
-    FileTooLargeError as SupFileTooLargeError,
-)
-from aleph.vm.supervisor.errors import (
-    HostNotFoundError as SupHostNotFoundError,
-)
+from aleph.vm.supervisor.errors import FileTooLargeError as SupFileTooLargeError
+from aleph.vm.supervisor.errors import HostNotFoundError as SupHostNotFoundError
 from aleph.vm.supervisor.errors import (
     InsufficientResourcesError as SupInsufficientResourcesError,
 )
@@ -32,9 +28,7 @@ def test_not_implemented_maps_to_internal_code():
 def test_translate_known_internal_exceptions():
     from aleph.vm.resources import InsufficientResourcesError
 
-    translated = translate_exception(
-        InsufficientResourcesError("no ram", required={"mem": 1}, available={"mem": 0})
-    )
+    translated = translate_exception(InsufficientResourcesError("no ram", required={"mem": 1}, available={"mem": 0}))
     assert isinstance(translated, SupInsufficientResourcesError)
     assert translated.code is ErrorCode.INSUFFICIENT_RESOURCES
 

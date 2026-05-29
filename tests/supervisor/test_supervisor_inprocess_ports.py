@@ -2,12 +2,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import PortForwardSpec, Protocol
-
-from test_supervisor_inprocess_query import FakePool
 
 
 def make_execution_with_ports(mapped_ports=None):

@@ -1,11 +1,10 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-
-from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
 
 @pytest.mark.asyncio

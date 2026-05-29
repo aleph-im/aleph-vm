@@ -14,11 +14,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import psutil
-
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import NotImplementedSupervisorError, VmNotFoundError, translating_errors
+from aleph.vm.supervisor.errors import (
+    NotImplementedSupervisorError,
+    VmNotFoundError,
+    translating_errors,
+)
 from aleph.vm.supervisor.types import (
     Backend,
     BackupChunk,
@@ -136,8 +139,7 @@ class InProcessSupervisor(Supervisor):
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
             return [
-                _to_vm_info(execution, _is_running(execution, self.pool))
-                for execution in self.pool.executions.values()
+                _to_vm_info(execution, _is_running(execution, self.pool)) for execution in self.pool.executions.values()
             ]
 
     def _require(self, vm_id: str):

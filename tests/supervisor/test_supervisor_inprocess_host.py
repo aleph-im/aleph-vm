@@ -1,9 +1,8 @@
 import pytest
+from test_supervisor_inprocess_query import FakePool, make_execution
 
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import HealthInfo, HostInfo
-
-from test_supervisor_inprocess_query import FakePool, make_execution
 
 
 @pytest.mark.asyncio

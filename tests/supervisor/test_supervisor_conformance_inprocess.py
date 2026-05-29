@@ -1,5 +1,4 @@
 import pytest
-
 from conformance import SupervisorContractTests
 
 from aleph.vm.supervisor.inprocess import InProcessSupervisor

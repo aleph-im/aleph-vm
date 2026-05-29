@@ -2,16 +2,15 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import LogChunk, LogSource
 
-from test_supervisor_inprocess_query import FakePool
-
 
 def make_execution_with_logs(lines):
-    queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue()
     for entry in lines:
         queue.put_nowait(entry)
     unregistered = {"called": False}
