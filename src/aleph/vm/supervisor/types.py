@@ -10,6 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import NewType
+
+VmId = NewType("VmId", str)
+BackupId = NewType("BackupId", str)
+MigrationId = NewType("MigrationId", str)
+PciAddress = NewType("PciAddress", str)
+HostPort = NewType("HostPort", int)
+GuestPort = NewType("GuestPort", int)
+DirectoryPath = NewType("DirectoryPath", Path)
 
 
 class Backend(Enum):
@@ -86,9 +96,21 @@ class ErrorCode(Enum):
     INTERNAL = "internal"
 
 
+class TeeBackend(Enum):
+    NONE = ""
+    SEV_SNP = "sev-snp"
+    TDX = "tdx"
+    NVIDIA_CC = "nvidia-cc"
+
+
+class HealthStatus(Enum):
+    OK = "ok"
+    DEGRADED = "degraded"
+
+
 @dataclass(frozen=True)
 class DiskSpec:
-    path: str
+    path: Path
     readonly: bool
     format: DiskFormat
     role: DiskRole
@@ -96,9 +118,9 @@ class DiskSpec:
 
 @dataclass(frozen=True)
 class TeeConfig:
-    backend: str
+    backend: TeeBackend
     policy: str
-    session_dir: str
+    session_dir: DirectoryPath
 
 
 @dataclass(frozen=True)
@@ -110,16 +132,16 @@ class NetworkConfig:
 
 @dataclass(frozen=True)
 class GpuSpec:
-    pci_host: str
+    pci_host: PciAddress
     supports_x_vga: bool
 
 
 @dataclass(frozen=True)
 class CreateVmSpec:
-    vm_id: str
+    vm_id: VmId
     backend: Backend
-    kernel_path: str
-    initrd_path: str
+    kernel_path: Path
+    initrd_path: Path
     disks: list[DiskSpec]
     vcpus: int
     memory_mib: int
@@ -132,7 +154,7 @@ class CreateVmSpec:
 
 @dataclass(frozen=True)
 class VmInfo:
-    vm_id: str
+    vm_id: VmId
     status: VmStatus
     ipv4: str
     ipv6: str
@@ -144,17 +166,17 @@ class VmInfo:
 
 @dataclass(frozen=True)
 class PortForwardSpec:
-    vm_id: str
-    host_port: int
-    vm_port: int
+    vm_id: VmId
+    host_port: HostPort
+    vm_port: GuestPort
     protocol: Protocol
 
 
 @dataclass(frozen=True)
 class PortForwardInfo:
-    vm_id: str
-    host_port: int
-    vm_port: int
+    vm_id: VmId
+    host_port: HostPort
+    vm_port: GuestPort
     protocol: Protocol
 
 
@@ -167,8 +189,8 @@ class LogChunk:
 
 @dataclass(frozen=True)
 class BackupInfo:
-    vm_id: str
-    backup_id: str
+    vm_id: VmId
+    backup_id: BackupId
     status: BackupStatus
     size_bytes: int
     created_at_unix_secs: int
@@ -183,8 +205,8 @@ class BackupChunk:
 
 @dataclass(frozen=True)
 class MigrationInfo:
-    vm_id: str
-    migration_id: str
+    vm_id: VmId
+    migration_id: MigrationId
     phase: MigrationPhase
     bytes_transferred: int
     bytes_total: int
@@ -193,9 +215,9 @@ class MigrationInfo:
 
 @dataclass(frozen=True)
 class Measurement:
-    vm_id: str
+    vm_id: VmId
     measurement_bytes: bytes
-    tee_backend: str
+    tee_backend: TeeBackend
 
 
 @dataclass(frozen=True)
@@ -207,7 +229,7 @@ class NumaNodeInfo:
 
 @dataclass(frozen=True)
 class GpuDevice:
-    pci_host: str
+    pci_host: PciAddress
     device_id: str
     model: str
     supports_x_vga: bool
@@ -215,7 +237,7 @@ class GpuDevice:
 
 @dataclass(frozen=True)
 class HealthInfo:
-    status: str
+    status: HealthStatus
     vm_count: int
 
 

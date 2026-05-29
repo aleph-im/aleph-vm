@@ -6,6 +6,7 @@ collected directly (its class name does not start with Test).
 """
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -46,13 +47,18 @@ class SupervisorContractTests:
     @pytest.mark.asyncio
     async def test_stub_methods_raise_not_implemented(self, supervisor):
         if "create_vm" in STUB_METHODS:
-            from aleph.vm.supervisor.types import Backend, CreateVmSpec, NetworkConfig
+            from aleph.vm.supervisor.types import (
+                Backend,
+                CreateVmSpec,
+                NetworkConfig,
+                VmId,
+            )
 
             spec = CreateVmSpec(
-                vm_id="x",
+                vm_id=VmId("x"),
                 backend=Backend.QEMU,
-                kernel_path="",
-                initrd_path="",
+                kernel_path=Path(""),
+                initrd_path=Path(""),
                 disks=[],
                 vcpus=1,
                 memory_mib=512,

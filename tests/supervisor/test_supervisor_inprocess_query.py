@@ -6,7 +6,7 @@ from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import Backend, VmStatus
+from aleph.vm.supervisor.types import Backend, VmId, VmStatus
 
 
 def make_execution(
@@ -62,7 +62,7 @@ async def test_get_vm_maps_a_running_qemu_instance():
     )
     sup = InProcessSupervisor(pool=pool)
 
-    info = await sup.get_vm("itemhash123")
+    info = await sup.get_vm(VmId("itemhash123"))
 
     assert info.vm_id == "itemhash123"
     assert info.status is VmStatus.RUNNING
@@ -76,7 +76,7 @@ async def test_get_vm_maps_a_running_qemu_instance():
 async def test_get_vm_unknown_raises_vm_not_found():
     sup = InProcessSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
-        await sup.get_vm("nope")
+        await sup.get_vm(VmId("nope"))
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_confidential_instance_reports_qemu_sev_backend():
         systemd=FakeSystemd({"aleph-vm-controller@itemhash123.service": True}),
     )
     sup = InProcessSupervisor(pool=pool)
-    info = await sup.get_vm("itemhash123")
+    info = await sup.get_vm(VmId("itemhash123"))
     assert info.backend is Backend.QEMU_SEV
 
 

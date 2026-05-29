@@ -6,7 +6,13 @@ from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import PortForwardSpec, Protocol
+from aleph.vm.supervisor.types import (
+    GuestPort,
+    HostPort,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+)
 
 
 def make_execution_with_ports(mapped_ports=None):
@@ -30,7 +36,9 @@ async def test_add_port_forward_calls_update_and_returns_info():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    info = await sup.add_port_forward(PortForwardSpec(vm_id="vm1", host_port=0, vm_port=8080, protocol=Protocol.TCP))
+    info = await sup.add_port_forward(
+        PortForwardSpec(vm_id=VmId("vm1"), host_port=HostPort(0), vm_port=GuestPort(8080), protocol=Protocol.TCP)
+    )
 
     execution.update_port_redirects.assert_awaited_once()
     assert info.vm_id == "vm1"
@@ -45,7 +53,7 @@ async def test_list_port_forwards_for_one_vm():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    forwards = await sup.list_port_forwards("vm1")
+    forwards = await sup.list_port_forwards(VmId("vm1"))
 
     assert len(forwards) == 1
     assert forwards[0].host_port == 34000
@@ -73,7 +81,7 @@ async def test_remove_port_forward_updates_redirects():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    await sup.remove_port_forward("vm1", host_port=34000, protocol=Protocol.TCP)
+    await sup.remove_port_forward(VmId("vm1"), host_port=HostPort(34000), protocol=Protocol.TCP)
 
     execution.update_port_redirects.assert_awaited_once()
 
@@ -82,7 +90,9 @@ async def test_remove_port_forward_updates_redirects():
 async def test_port_forward_unknown_vm_raises():
     sup = InProcessSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
-        await sup.add_port_forward(PortForwardSpec(vm_id="nope", host_port=0, vm_port=80, protocol=Protocol.TCP))
+        await sup.add_port_forward(
+            PortForwardSpec(vm_id=VmId("nope"), host_port=HostPort(0), vm_port=GuestPort(80), protocol=Protocol.TCP)
+        )
 
 
 @pytest.mark.asyncio
@@ -91,7 +101,7 @@ async def test_remove_one_protocol_keeps_sibling():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    await sup.remove_port_forward("vm1", host_port=34000, protocol=Protocol.TCP)
+    await sup.remove_port_forward(VmId("vm1"), host_port=HostPort(34000), protocol=Protocol.TCP)
 
     requested = execution.update_port_redirects.await_args.args[0]
     assert requested[8080] == {"tcp": False, "udp": True}
@@ -103,7 +113,7 @@ async def test_list_port_forwards_emits_one_info_per_protocol():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    forwards = await sup.list_port_forwards("vm1")
+    forwards = await sup.list_port_forwards(VmId("vm1"))
 
     assert len(forwards) == 2
     assert {f.protocol for f in forwards} == {Protocol.TCP, Protocol.UDP}
@@ -121,7 +131,9 @@ async def test_add_port_forward_udp():
     pool = FakePool(executions={"vm1": execution})
     sup = InProcessSupervisor(pool=pool)
 
-    info = await sup.add_port_forward(PortForwardSpec(vm_id="vm1", host_port=0, vm_port=53, protocol=Protocol.UDP))
+    info = await sup.add_port_forward(
+        PortForwardSpec(vm_id=VmId("vm1"), host_port=HostPort(0), vm_port=GuestPort(53), protocol=Protocol.UDP)
+    )
 
     assert info.protocol is Protocol.UDP
     assert info.host_port == 34002

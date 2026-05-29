@@ -1,22 +1,28 @@
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
+    DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
     ErrorCode,
     GpuSpec,
     HealthInfo,
+    HealthStatus,
     HostInfo,
     LogChunk,
     LogSource,
     NetworkConfig,
+    PciAddress,
     Protocol,
+    TeeBackend,
     TeeConfig,
+    VmId,
     VmInfo,
     VmStatus,
 )
@@ -42,7 +48,7 @@ def test_enums_have_expected_members():
 
 def test_vm_info_is_frozen_dataclass():
     info = VmInfo(
-        vm_id="abc",
+        vm_id=VmId("abc"),
         status=VmStatus.RUNNING,
         ipv4="10.0.0.2",
         ipv6="",
@@ -58,11 +64,11 @@ def test_vm_info_is_frozen_dataclass():
 
 def test_create_vm_spec_constructs_with_nested_dtos():
     spec = CreateVmSpec(
-        vm_id="abc",
+        vm_id=VmId("abc"),
         backend=Backend.QEMU,
-        kernel_path="",
-        initrd_path="",
-        disks=[DiskSpec(path="/var/lib/x.qcow2", readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)],
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=[DiskSpec(path=Path("/var/lib/x.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)],
         vcpus=2,
         memory_mib=2048,
         tee=None,
@@ -76,8 +82,11 @@ def test_create_vm_spec_constructs_with_nested_dtos():
 
 
 def test_supporting_dtos_construct():
-    assert TeeConfig(backend="sev-snp", policy="", session_dir="/x").backend == "sev-snp"
-    assert GpuSpec(pci_host="0000:01:00.0", supports_x_vga=True).supports_x_vga is True
+    assert (
+        TeeConfig(backend=TeeBackend.SEV_SNP, policy="", session_dir=DirectoryPath(Path("/x"))).backend
+        is TeeBackend.SEV_SNP
+    )
+    assert GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True).supports_x_vga is True
     assert LogChunk(timestamp_ns=1, line="hello", source=LogSource.SERIAL).line == "hello"
-    assert HealthInfo(status="ok", vm_count=3).vm_count == 3
+    assert HealthInfo(status=HealthStatus.OK, vm_count=3).vm_count == 3
     assert HostInfo(cpu_count=8, memory_mib=16000).cpu_count == 8

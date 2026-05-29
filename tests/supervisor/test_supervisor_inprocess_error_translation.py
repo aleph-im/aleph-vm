@@ -10,7 +10,7 @@ from aleph.vm.supervisor.errors import (
     InsufficientResourcesError as SupInsufficientResources,
 )
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import ErrorCode
+from aleph.vm.supervisor.types import ErrorCode, VmId
 
 
 @pytest.mark.asyncio
@@ -22,6 +22,6 @@ async def test_internal_exception_in_delete_is_translated():
     sup = InProcessSupervisor(pool=pool)
 
     with pytest.raises(SupInsufficientResources) as excinfo:
-        await sup.delete_vm("itemhash123")
+        await sup.delete_vm(VmId("itemhash123"))
 
     assert excinfo.value.code is ErrorCode.INSUFFICIENT_RESOURCES

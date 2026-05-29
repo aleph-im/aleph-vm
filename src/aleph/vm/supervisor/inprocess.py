@@ -25,17 +25,24 @@ from aleph.vm.supervisor.errors import (
 from aleph.vm.supervisor.types import (
     Backend,
     BackupChunk,
+    BackupId,
     BackupInfo,
     CreateVmSpec,
+    DirectoryPath,
+    GuestPort,
     HealthInfo,
+    HealthStatus,
     HostInfo,
+    HostPort,
     LogChunk,
     LogSource,
     Measurement,
+    MigrationId,
     MigrationInfo,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmId,
     VmInfo,
     VmStatus,
 )
@@ -87,7 +94,7 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
     ipv4 = str(tap.guest_ip.ip) if tap else ""
     ipv6 = str(tap.guest_ipv6.ip) if tap else ""
     return VmInfo(
-        vm_id=str(execution.vm_hash),
+        vm_id=VmId(str(execution.vm_hash)),
         status=_status_of(execution, running),
         ipv4=ipv4,
         ipv6=ipv6,
@@ -114,7 +121,7 @@ class InProcessSupervisor(Supervisor):
     # Host
     async def health(self) -> HealthInfo:
         with translating_errors():
-            return HealthInfo(status="ok", vm_count=len(self.pool.executions))
+            return HealthInfo(status=HealthStatus.OK, vm_count=len(self.pool.executions))
 
     async def get_host_info(self) -> HostInfo:
         with translating_errors():
@@ -129,7 +136,7 @@ class InProcessSupervisor(Supervisor):
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
         raise NotImplementedSupervisorError("create_vm is deferred to a later phase")
 
-    async def get_vm(self, vm_id: str) -> VmInfo:
+    async def get_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self.pool.executions.get(vm_id)
             if execution is None:
@@ -142,19 +149,19 @@ class InProcessSupervisor(Supervisor):
                 _to_vm_info(execution, _is_running(execution, self.pool)) for execution in self.pool.executions.values()
             ]
 
-    def _require(self, vm_id: str):
+    def _require(self, vm_id: VmId):
         execution = self.pool.executions.get(vm_id)
         if execution is None:
             raise VmNotFoundError(vm_id)
         return execution
 
-    async def delete_vm(self, vm_id: str) -> None:
+    async def delete_vm(self, vm_id: VmId) -> None:
         with translating_errors():
             self._require(vm_id)
             await self.pool.stop_vm(vm_id)
             self.pool.forget_vm(vm_id)
 
-    async def reboot_vm(self, vm_id: str) -> VmInfo:
+    async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
             if execution.persistent and getattr(execution, "systemd_manager", None):
@@ -164,7 +171,7 @@ class InProcessSupervisor(Supervisor):
                 self.pool.forget_vm(vm_id)
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
-    async def reinstall_vm(self, vm_id: str) -> VmInfo:
+    async def reinstall_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
@@ -178,14 +185,13 @@ class InProcessSupervisor(Supervisor):
     def _mapped_to_infos(self, execution) -> list[PortForwardInfo]:
         infos: list[PortForwardInfo] = []
         for vm_port, mapping in execution.mapped_ports.items():
-            host_port = int(mapping["host"])
             for proto in (Protocol.TCP, Protocol.UDP):
                 if mapping.get(proto.value):
                     infos.append(
                         PortForwardInfo(
-                            vm_id=str(execution.vm_hash),
-                            host_port=host_port,
-                            vm_port=int(vm_port),
+                            vm_id=VmId(str(execution.vm_hash)),
+                            host_port=HostPort(int(mapping["host"])),
+                            vm_port=GuestPort(int(vm_port)),
                             protocol=proto,
                         )
                     )
@@ -197,18 +203,18 @@ class InProcessSupervisor(Supervisor):
             requested: dict[int, dict[str, bool]] = {}
             for vm_port, mapping in execution.mapped_ports.items():
                 requested[int(vm_port)] = {"tcp": bool(mapping.get("tcp")), "udp": bool(mapping.get("udp"))}
-            entry = requested.setdefault(spec.vm_port, {"tcp": False, "udp": False})
+            entry = requested.setdefault(int(spec.vm_port), {"tcp": False, "udp": False})
             entry[spec.protocol.value] = True
             await execution.update_port_redirects(requested)
-            mapping = execution.mapped_ports[spec.vm_port]
+            mapping = execution.mapped_ports[int(spec.vm_port)]
             return PortForwardInfo(
                 vm_id=spec.vm_id,
-                host_port=int(mapping["host"]),
+                host_port=HostPort(int(mapping["host"])),
                 vm_port=spec.vm_port,
                 protocol=spec.protocol,
             )
 
-    async def remove_port_forward(self, vm_id: str, host_port: int, protocol: Protocol) -> None:
+    async def remove_port_forward(self, vm_id: VmId, host_port: HostPort, protocol: Protocol) -> None:
         with translating_errors():
             execution = self._require(vm_id)
             requested: dict[int, dict[str, bool]] = {}
@@ -218,7 +224,7 @@ class InProcessSupervisor(Supervisor):
                     requested[int(vm_port)][protocol.value] = False
             await execution.update_port_redirects(requested)
 
-    async def list_port_forwards(self, vm_id: str | None = None) -> list[PortForwardInfo]:
+    async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]:
         with translating_errors():
             if vm_id is not None:
                 return self._mapped_to_infos(self._require(vm_id))
@@ -228,7 +234,7 @@ class InProcessSupervisor(Supervisor):
             return infos
 
     # Logs
-    async def get_logs(self, vm_id: str, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
+    async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
         with translating_errors():
             execution = self._require(vm_id)
             if not execution.vm:
@@ -246,7 +252,7 @@ class InProcessSupervisor(Supervisor):
                 chunks = chunks[-max_lines:] if from_tail else chunks[:max_lines]
             return chunks
 
-    async def stream_logs(self, vm_id: str, include_history: bool = False) -> AsyncIterator[LogChunk]:
+    async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]:
         execution = self._require(vm_id)
         if not execution.vm:
             return
@@ -260,41 +266,41 @@ class InProcessSupervisor(Supervisor):
             execution.vm.unregister_queue(queue)
 
     # Backups
-    async def start_backup(self, vm_id: str, quiesce_guest: bool = False) -> BackupInfo:
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
         raise NotImplementedSupervisorError("start_backup")
 
-    async def get_backup_status(self, vm_id: str, backup_id: str) -> BackupInfo:
+    async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo:
         raise NotImplementedSupervisorError("get_backup_status")
 
-    async def list_backups(self, vm_id: str | None = None) -> list[BackupInfo]:
+    async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]:
         raise NotImplementedSupervisorError("list_backups")
 
-    async def download_backup(self, vm_id: str, backup_id: str) -> AsyncIterator[BackupChunk]:
+    async def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]:
         raise NotImplementedSupervisorError("download_backup")
         yield  # pragma: no cover - makes this an async generator
 
-    async def delete_backup(self, vm_id: str, backup_id: str) -> None:
+    async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None:
         raise NotImplementedSupervisorError("delete_backup")
 
-    async def restore_backup(self, vm_id: str, backup_id: str) -> VmInfo:
+    async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo:
         raise NotImplementedSupervisorError("restore_backup")
 
     # Migration
-    async def export_vm(self, vm_id: str, destination_dir: str) -> MigrationInfo:
+    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
         raise NotImplementedSupervisorError("export_vm")
 
-    async def import_vm(self, vm_id: str, source_dir: str) -> VmInfo:
+    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
         raise NotImplementedSupervisorError("import_vm")
 
-    async def get_migration_status(self, vm_id: str, migration_id: str) -> MigrationInfo:
+    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
         raise NotImplementedSupervisorError("get_migration_status")
 
     # Confidential
-    async def initialize_confidential(self, vm_id: str, session_bytes: bytes, godh_bytes: bytes) -> None:
+    async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
         raise NotImplementedSupervisorError("initialize_confidential")
 
-    async def get_measurement(self, vm_id: str) -> Measurement:
+    async def get_measurement(self, vm_id: VmId) -> Measurement:
         raise NotImplementedSupervisorError("get_measurement")
 
-    async def inject_secret(self, vm_id: str, secret_header_bytes: bytes, secret_bytes: bytes) -> None:
+    async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None:
         raise NotImplementedSupervisorError("inject_secret")
