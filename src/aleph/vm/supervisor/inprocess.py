@@ -24,6 +24,7 @@ from aleph.vm.supervisor.types import (
     HealthInfo,
     HostInfo,
     LogChunk,
+    LogSource,
     Measurement,
     MigrationInfo,
     PortForwardInfo,
@@ -89,6 +90,15 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         numa_node=None,
         status_message="",
     )
+
+
+def _log_source(log_type: str) -> LogSource:
+    if log_type == "stdout":
+        return LogSource.STDOUT
+    if log_type == "stderr":
+        # stderr is delivered on the same journal path; map to STDOUT for now.
+        return LogSource.STDOUT
+    return LogSource.SERIAL
 
 
 class InProcessSupervisor(Supervisor):
@@ -207,11 +217,35 @@ class InProcessSupervisor(Supervisor):
 
     # Logs
     async def get_logs(self, vm_id: str, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
-        raise NotImplementedSupervisorError("get_logs")
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not execution.vm:
+                return []
+            queue = execution.vm.get_log_queue()
+            chunks: list[LogChunk] = []
+            try:
+                while not queue.empty():
+                    log_type, message = queue.get_nowait()
+                    chunks.append(LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type)))
+                    queue.task_done()
+            finally:
+                execution.vm.unregister_queue(queue)
+            if max_lines:
+                chunks = chunks[-max_lines:] if from_tail else chunks[:max_lines]
+            return chunks
 
     async def stream_logs(self, vm_id: str, include_history: bool = False) -> AsyncIterator[LogChunk]:
-        raise NotImplementedSupervisorError("stream_logs")
-        yield  # pragma: no cover - makes this an async generator
+        execution = self._require(vm_id)
+        if not execution.vm:
+            return
+        queue = execution.vm.get_log_queue()
+        try:
+            while True:
+                log_type, message = await queue.get()
+                yield LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type))
+                queue.task_done()
+        finally:
+            execution.vm.unregister_queue(queue)
 
     # Backups
     async def start_backup(self, vm_id: str, quiesce_guest: bool = False) -> BackupInfo:
