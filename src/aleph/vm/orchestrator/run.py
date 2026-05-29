@@ -11,7 +11,8 @@ from aiohttp.web_exceptions import (
     HTTPInternalServerError,
     HTTPServiceUnavailable,
 )
-from aleph_message.models import ItemHash
+from aleph_message.models import InstanceContent, ItemHash
+from aleph_message.models.execution.environment import HypervisorType
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
@@ -25,6 +26,7 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.utils import HostNotFoundError
 
 from .messages import load_updated_message
@@ -54,15 +56,52 @@ async def build_event_scope(event) -> dict[str, Any]:
     }
 
 
+def _is_spec_eligible(content) -> bool:
+    """True when the supervisor's message-free create path can handle this message.
+
+    Gates which messages reach build_create_vm_spec, mirroring its validation:
+    a non-confidential QEMU instance. The GPU exclusion below is an extra
+    conservatism of this gate — build_create_vm_spec itself accepts GPUs (via
+    its ``gpus`` argument), so GPU instances are filtered here, not there. Keep
+    the two in sync. Everything else keeps the legacy path.
+    """
+    if not isinstance(content, InstanceContent):
+        return False
+    hypervisor = content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
+    if hypervisor != HypervisorType.qemu:
+        return False
+    if getattr(content.environment, "trusted_execution", None) is not None:
+        return False
+    if content.requirements and content.requirements.gpu:
+        return False
+    return True
+
+
 async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
     pool.message_cache[vm_hash] = message
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
 
+    content = message.content
+    if _is_spec_eligible(content):
+        # `persistent` is moot on this branch: eligibility requires an instance
+        # (see _is_spec_eligible) and instances are always persistent. The only
+        # persistent=False callers carry programs, which never reach here.
+        spec = await build_create_vm_spec(vm_hash, content)
+        execution = await pool.create_vm_from_spec(spec)
+        # Agent territory: attach the message so the operator API (owner auth),
+        # port forwarding and billing keep working. The supervisor machinery
+        # that just created the VM never read these.
+        execution.message = content
+        execution.original = original_message.content
+        if execution.is_instance:
+            await execution.fetch_port_redirect_config_and_setup()
+        return execution
+
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
-        message=message.content,
+        message=content,
         original=original_message.content,
         persistent=persistent,
     )
