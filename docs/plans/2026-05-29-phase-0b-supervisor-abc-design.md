@@ -164,3 +164,14 @@ Risks:
 1. `HostInfo` / `HealthInfo` content: how much host detail to populate in 0.B versus stub now and enrich when the host-status view migrates (0.E). Leaning: populate what is trivially available (VM count, basic capacity), defer the rest.
 2. Should `reboot_vm` / `reinstall_vm` reuse the eventual `create_vm` spec path, or keep their current systemd-level mechanics? Leaning keep-as-is, since create is deferred anyway.
 3. Faked `VmPool` vs a real instance in tests: a real `VmPool()` constructs a `Network` and `SystemDManager` (side effects). Leaning: a small fake exposing only the attributes the methods touch, to keep unit tests hermetic.
+
+## 12. Carry-forward to 0.E (from the 0.B final review)
+
+These are correct-as-built for a dormant phase but become observable when the methods go live behind real views in 0.E. They are recorded here so they are not lost:
+
+1. `get_logs` reads a freshly created live journal queue and drains only what is already buffered, so in production it returns near-empty and ignores `max_lines`/`from_tail`. When it goes live, switch to the history path the current view uses (`get_past_vm_logs()` / `seek_head()`).
+2. `stream_logs` is the one real method not wrapped in `translating_errors()` (its `_require` already raises a `SupervisorError`, but errors from `queue.get()` during streaming would escape untranslated). Wrapping an async generator's `yield` in the sync context manager has `aclose`/`GeneratorExit` subtleties, so this was deferred rather than risked in 0.B. Wrap it (carefully, with an explicit per-iteration translate) when it goes live.
+3. `add_port_forward` always auto-allocates the host port (the underlying `update_port_redirects` uses `fast_get_available_host_port`), so `spec.host_port` is ignored. Either honor it or document it as auto-only at the agent boundary.
+4. `LogChunk.timestamp_ns` is always 0, and `LogSource.SYSTEMD` is never emitted (`_log_source` maps stdout/stderr to STDOUT, else SERIAL). Enrich when the persistent-VM journal path is wired.
+5. `reboot_vm` / `reinstall_vm` return a `VmInfo` computed from the pre-restart in-memory execution, so the status can be momentarily stale.
+6. The repo configures several `ruff` lint rules (EM, ARG, FBT, S, PLR) but CI's `linting:style` only runs `ruff format` + `isort`, not `ruff check`. The 0.B code carries some of those (unenforced) warnings, consistent with the rest of the tree.
