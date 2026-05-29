@@ -137,6 +137,7 @@ message CreateVmRequest {
   repeated GpuConfig gpus = 10;
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
   bool persistent = 12;              // supervisor wraps in systemd if true
+  repeated string ssh_authorized_keys = 13; // guest cloud-init SSH keys (agent-provided)
 }
 
 message DiskConfig {
@@ -144,6 +145,7 @@ message DiskConfig {
   bool readonly = 2;
   Format format = 3;
   DiskRole role = 4;
+  string mount = 5;                  // guest mount point (empty for rootfs); preserves the Aleph volume mount
 
   enum Format {
     FORMAT_UNSPECIFIED = 0;

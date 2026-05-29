@@ -1,12 +1,30 @@
 import logging
 from enum import Enum
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
 
 from aleph.vm.conf import Settings, settings
+from aleph.vm.sizes import MiB
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_mib(value: object) -> MiB:
+    if isinstance(value, MiB):
+        return value
+    if not isinstance(value, (int, float, str)):
+        raise TypeError(f"Cannot coerce {type(value)!r} to MiB")
+    return MiB(int(value))
+
+
+# A memory size that serializes to/from a plain integer number of MiB.
+MemSizeMib = Annotated[
+    MiB,
+    BeforeValidator(_coerce_mib),
+    PlainSerializer(lambda m: m.count, return_type=int),
+]
 
 
 class VMConfiguration(BaseModel):
@@ -29,6 +47,8 @@ class QemuGPU(BaseModel):
 
 
 class QemuVMConfiguration(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     qemu_bin_path: str
     cloud_init_drive_path: str | None = None
     image_path: str
@@ -36,13 +56,15 @@ class QemuVMConfiguration(BaseModel):
     qmp_socket_path: Path
     qga_socket_path: Path | None = None
     vcpu_count: int
-    mem_size_mb: int
+    mem_size_mb: MemSizeMib
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
 
 
 class QemuConfidentialVMConfiguration(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     qemu_bin_path: str
     cloud_init_drive_path: str | None = None
     image_path: str
@@ -50,7 +72,7 @@ class QemuConfidentialVMConfiguration(BaseModel):
     qmp_socket_path: Path
     qga_socket_path: Path | None = None
     vcpu_count: int
-    mem_size_mb: int
+    mem_size_mb: MemSizeMib
     interface_name: str | None = None
     host_volumes: list[QemuVMHostVolume]
     gpus: list[QemuGPU]
