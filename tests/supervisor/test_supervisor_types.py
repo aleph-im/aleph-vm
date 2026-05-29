@@ -1,0 +1,83 @@
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from aleph.vm.supervisor.types import (
+    Backend,
+    CreateVmSpec,
+    DiskFormat,
+    DiskRole,
+    DiskSpec,
+    ErrorCode,
+    GpuSpec,
+    HealthInfo,
+    HostInfo,
+    LogChunk,
+    LogSource,
+    NetworkConfig,
+    Protocol,
+    TeeConfig,
+    VmInfo,
+    VmStatus,
+)
+
+
+def test_enums_have_expected_members():
+    assert {b.name for b in Backend} == {"FIRECRACKER", "QEMU", "QEMU_SEV"}
+    assert {s.name for s in VmStatus} == {
+        "DEFINED",
+        "BOOTING",
+        "RUNNING",
+        "STOPPING",
+        "STOPPED",
+        "FAILED",
+    }
+    assert {f.name for f in DiskFormat} == {"RAW", "QCOW2", "SQUASHFS"}
+    assert {r.name for r in DiskRole} == {"ROOTFS", "CODE", "RUNTIME", "DATA", "EXTRA"}
+    assert {p.name for p in Protocol} == {"TCP", "UDP"}
+    assert {s.name for s in LogSource} == {"SERIAL", "STDOUT", "SYSTEMD"}
+    assert "INTERNAL" in {c.name for c in ErrorCode}
+    assert "VM_NOT_FOUND" in {c.name for c in ErrorCode}
+
+
+def test_vm_info_is_frozen_dataclass():
+    info = VmInfo(
+        vm_id="abc",
+        status=VmStatus.RUNNING,
+        ipv4="10.0.0.2",
+        ipv6="",
+        uptime_secs=42,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+    )
+    assert info.vm_id == "abc"
+    with pytest.raises(FrozenInstanceError):
+        info.vm_id = "other"  # type: ignore[misc]
+
+
+def test_create_vm_spec_constructs_with_nested_dtos():
+    spec = CreateVmSpec(
+        vm_id="abc",
+        backend=Backend.QEMU,
+        kernel_path="",
+        initrd_path="",
+        disks=[DiskSpec(path="/var/lib/x.qcow2", readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)],
+        vcpus=2,
+        memory_mib=2048,
+        tee=None,
+        network=NetworkConfig(internet_access=True, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=True,
+    )
+    assert spec.disks[0].role is DiskRole.ROOTFS
+    assert spec.network.internet_access is True
+
+
+def test_supporting_dtos_construct():
+    assert TeeConfig(backend="sev-snp", policy="", session_dir="/x").backend == "sev-snp"
+    assert GpuSpec(pci_host="0000:01:00.0", supports_x_vga=True).supports_x_vga is True
+    assert LogChunk(timestamp_ns=1, line="hello", source=LogSource.SERIAL).line == "hello"
+    assert HealthInfo(status="ok", vm_count=3).vm_count == 3
+    assert HostInfo(cpu_count=8, memory_mib=16000).cpu_count == 8
