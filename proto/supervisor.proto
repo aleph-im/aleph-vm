@@ -145,6 +145,7 @@ message DiskConfig {
   bool readonly = 2;
   Format format = 3;
   DiskRole role = 4;
+  string mount = 5;                  // guest mount point (empty for rootfs); preserves the Aleph volume mount
 
   enum Format {
     FORMAT_UNSPECIFIED = 0;

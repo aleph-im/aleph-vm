@@ -459,11 +459,14 @@ class DiskConfig(google.protobuf.message.Message):
     READONLY_FIELD_NUMBER: builtins.int
     FORMAT_FIELD_NUMBER: builtins.int
     ROLE_FIELD_NUMBER: builtins.int
+    MOUNT_FIELD_NUMBER: builtins.int
     path: builtins.str
     """absolute host path"""
     readonly: builtins.bool
     format: Global___DiskConfig.Format.ValueType
     role: Global___DiskConfig.DiskRole.ValueType
+    mount: builtins.str
+    """guest mount point (empty for rootfs); preserves the Aleph volume mount"""
     def __init__(
         self,
         *,
@@ -471,8 +474,9 @@ class DiskConfig(google.protobuf.message.Message):
         readonly: builtins.bool = ...,
         format: Global___DiskConfig.Format.ValueType = ...,
         role: Global___DiskConfig.DiskRole.ValueType = ...,
+        mount: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["format", b"format", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["format", b"format", "mount", b"mount", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
 
 Global___DiskConfig: typing_extensions.TypeAlias = DiskConfig
 

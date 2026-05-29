@@ -114,6 +114,7 @@ class DiskSpec:
     readonly: bool
     format: DiskFormat
     role: DiskRole
+    mount: str = ""  # guest mount point; empty for rootfs. Preserves the Aleph volume mount.
 
 
 @dataclass(frozen=True)
