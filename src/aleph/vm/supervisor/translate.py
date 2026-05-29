@@ -68,6 +68,7 @@ async def build_create_vm_spec(
             readonly=False,
             format=DiskFormat.QCOW2,
             role=DiskRole.ROOTFS,
+            mount="",
         )
     ] + [
         DiskSpec(
@@ -75,6 +76,7 @@ async def build_create_vm_spec(
             readonly=v.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
+            mount=v.mount,
         )
         for v in resources.volumes
     ]

@@ -70,6 +70,7 @@ def _make_spec(
                 readonly=True,
                 format=DiskFormat.RAW,
                 role=DiskRole.EXTRA,
+                mount="/mnt/data",
             )
         )
 
@@ -152,7 +153,7 @@ async def test_build_qemu_configuration_happy_path(monkeypatch: pytest.MonkeyPat
     assert len(vm_cfg.host_volumes) == 1
     assert vm_cfg.host_volumes[0].path_on_host == Path("/data/extra.img")
     assert vm_cfg.host_volumes[0].read_only is True
-    assert vm_cfg.host_volumes[0].mount == "/mnt/extra"
+    assert vm_cfg.host_volumes[0].mount == "/mnt/data"
 
     # vcpu_count
     assert vm_cfg.vcpu_count == 4
@@ -178,8 +179,8 @@ async def test_build_qemu_configuration_happy_path(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_memory_formula_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The memory formula int(memory_mib / 1024 / 1024 * 1000 * 1000) == 1953 for 2048."""
+async def test_memory_mib_passed_correctly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2048 MiB is passed to QEMU as 2048, not the prior under-allocated 1953."""
 
     async def fake_cloud_init(*args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         pass
@@ -196,7 +197,7 @@ async def test_memory_formula_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     config = await build_qemu_configuration(spec, vm_id=1, tap_interface=tap)
 
     assert isinstance(config.vm_configuration, QemuVMConfiguration)
-    assert config.vm_configuration.mem_size_mb == 1953
+    assert config.vm_configuration.mem_size_mb == 2048
 
 
 @pytest.mark.asyncio

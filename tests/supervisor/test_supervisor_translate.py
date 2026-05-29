@@ -116,11 +116,13 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
     assert len(rootfs_disks) == 1
     assert rootfs_disks[0].path == rootfs
     assert rootfs_disks[0].readonly is False
+    assert rootfs_disks[0].mount == ""
 
     extra_disks = [d for d in spec.disks if d.role is DiskRole.EXTRA]
     assert len(extra_disks) == 1
     assert extra_disks[0].path == Path("/data/vol.img")
     assert extra_disks[0].readonly is True
+    assert extra_disks[0].mount == "/mnt/x"
 
     # gpus default to empty
     assert spec.gpus == []

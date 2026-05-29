@@ -26,6 +26,7 @@ from aleph.vm.controllers.qemu.cloudinit import (
     create_cloud_init_drive_image,
     get_hostname_from_hash,
 )
+from aleph.vm.sizes import MemorySize
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import Backend, CreateVmSpec, DiskRole
 
@@ -100,11 +101,10 @@ async def build_qemu_configuration(
     image_path = str(rootfs_disks[0].path)
 
     # Extra / data volumes become host volumes.
-    # DiskSpec carries no mount string; the stem is derived here as a placeholder.
-    # QemuVM uses only path_on_host and read_only at launch, so mount is inert today.
+    # The real mount point is carried from the DiskSpec.
     host_volumes = [
         QemuVMHostVolume(
-            mount=f"/mnt/{disk.path.stem}",
+            mount=disk.mount,
             path_on_host=disk.path,
             read_only=disk.readonly,
         )
@@ -114,9 +114,9 @@ async def build_qemu_configuration(
 
     vcpu_count = spec.vcpus
 
-    # Replicate the live arithmetic verbatim: converts MiB to an int MB value.
-    # The live code passes str(int(...)) and pydantic coerces; we pass int directly.
-    mem_size_mb: int = int(spec.memory_mib / 1024 / 1024 * 1000 * 1000)
+    # QEMU's -m flag takes a value in MiB; spec.memory_mib is already MiB.
+    # Pass it through via a typed size to avoid unit-mixing under-allocation.
+    mem_size_mb: int = MemorySize.from_mebibytes(spec.memory_mib).to_mebibytes()
 
     gpus = [QemuGPU(pci_host=g.pci_host, supports_x_vga=g.supports_x_vga) for g in spec.gpus]
 
