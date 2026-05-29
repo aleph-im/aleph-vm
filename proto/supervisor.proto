@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT
 //
-// Aleph VM Hypervisor contract.
+// Aleph VM Supervisor contract.
 //
 // This service is the infra-only boundary between the network-agent
 // (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
-// and the hypervisor (controllers, hypervisors, networking, systemd,
+// and the supervisor (controllers, hypervisors, networking, systemd,
 // backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 // backport-design.md.
 
 syntax = "proto3";
 
-package aleph.hypervisor.v1;
+package aleph.supervisor.v1;
 
-service Hypervisor {
+service Supervisor {
   // ── Host ──
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
@@ -125,7 +125,7 @@ enum VmStatus {
 }
 
 message CreateVmRequest {
-  string vm_id = 1;                  // agent-issued id, opaque to hypervisor
+  string vm_id = 1;                  // agent-issued id, opaque to supervisor
   Backend backend = 2;
   string kernel_path = 3;            // empty for disk-boot
   string initrd_path = 4;            // empty for disk-boot
@@ -136,7 +136,7 @@ message CreateVmRequest {
   NetworkConfig network = 9;
   repeated GpuConfig gpus = 10;
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
-  bool persistent = 12;              // hypervisor wraps in systemd if true
+  bool persistent = 12;              // supervisor wraps in systemd if true
 }
 
 message DiskConfig {
@@ -277,7 +277,7 @@ enum BackupStatus {
 
 message BackupInfo {
   string vm_id = 1;
-  string backup_id = 2;              // hypervisor-issued
+  string backup_id = 2;              // supervisor-issued
   BackupStatus status = 3;
   uint64 size_bytes = 4;             // 0 until COMPLETE
   uint64 created_at_unix_secs = 5;
@@ -374,7 +374,7 @@ message InjectSecretResponse {}
 
 // ── Wire error vocabulary ────────────────────────────────────────────────
 //
-// Closed enum of errors the hypervisor can return. Server side: map
+// Closed enum of errors the supervisor can return. Server side: map
 // backend exceptions (FileTooLargeError, VmSetupError,
 // MicroVMFailedInitError, ResourceDownloadError,
 // InsufficientResourcesError, HostNotFoundError, ...) into this enum
