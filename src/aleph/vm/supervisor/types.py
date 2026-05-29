@@ -150,6 +150,7 @@ class CreateVmSpec:
     gpus: list[GpuSpec]
     numa_node: int | None
     persistent: bool
+    ssh_authorized_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
