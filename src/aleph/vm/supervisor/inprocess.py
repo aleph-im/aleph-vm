@@ -9,11 +9,15 @@ NotImplementedSupervisorError.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from aleph_message.models.execution.environment import HypervisorType
+
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+from aleph.vm.supervisor.errors import NotImplementedSupervisorError, VmNotFoundError, translating_errors
 from aleph.vm.supervisor.types import (
+    Backend,
     BackupChunk,
     BackupInfo,
     CreateVmSpec,
@@ -26,10 +30,65 @@ from aleph.vm.supervisor.types import (
     PortForwardSpec,
     Protocol,
     VmInfo,
+    VmStatus,
 )
 
 if TYPE_CHECKING:
     from aleph.vm.pool import VmPool
+
+
+def _backend_of(execution) -> Backend:
+    if execution.is_program:
+        return Backend.FIRECRACKER
+    if execution.is_confidential:
+        return Backend.QEMU_SEV
+    if execution.hypervisor == HypervisorType.firecracker:
+        return Backend.FIRECRACKER
+    return Backend.QEMU
+
+
+def _is_running(execution, pool) -> bool:
+    if execution.persistent and getattr(execution, "systemd_manager", None) and getattr(pool, "systemd_manager", None):
+        states = pool.systemd_manager.get_services_active_states([execution.controller_service])
+        return states.get(execution.controller_service, False)
+    times = execution.times
+    return bool(times.starting_at and not times.stopping_at)
+
+
+def _status_of(execution, running: bool) -> VmStatus:
+    times = execution.times
+    if times.stopped_at:
+        return VmStatus.STOPPED
+    if times.stopping_at:
+        return VmStatus.STOPPING
+    if running:
+        return VmStatus.RUNNING
+    if times.starting_at:
+        return VmStatus.BOOTING
+    return VmStatus.DEFINED
+
+
+def _uptime_secs(execution, running: bool) -> int:
+    started = execution.times.started_at
+    if running and started:
+        return int((datetime.now(tz=timezone.utc) - started).total_seconds())
+    return 0
+
+
+def _to_vm_info(execution, running: bool) -> VmInfo:
+    tap = execution.vm.tap_interface if execution.vm else None
+    ipv4 = str(tap.guest_ip.ip) if tap else ""
+    ipv6 = str(tap.guest_ipv6.ip) if tap else ""
+    return VmInfo(
+        vm_id=str(execution.vm_hash),
+        status=_status_of(execution, running),
+        ipv4=ipv4,
+        ipv6=ipv6,
+        uptime_secs=_uptime_secs(execution, running),
+        backend=_backend_of(execution),
+        numa_node=None,
+        status_message="",
+    )
 
 
 class InProcessSupervisor(Supervisor):
@@ -48,10 +107,18 @@ class InProcessSupervisor(Supervisor):
         raise NotImplementedSupervisorError("create_vm is deferred to a later phase")
 
     async def get_vm(self, vm_id: str) -> VmInfo:
-        raise NotImplementedSupervisorError("get_vm")
+        with translating_errors():
+            execution = self.pool.executions.get(vm_id)
+            if execution is None:
+                raise VmNotFoundError(vm_id)
+            return _to_vm_info(execution, _is_running(execution, self.pool))
 
     async def list_vms(self) -> list[VmInfo]:
-        raise NotImplementedSupervisorError("list_vms")
+        with translating_errors():
+            return [
+                _to_vm_info(execution, _is_running(execution, self.pool))
+                for execution in self.pool.executions.values()
+            ]
 
     async def delete_vm(self, vm_id: str) -> None:
         raise NotImplementedSupervisorError("delete_vm")
