@@ -235,7 +235,11 @@ async def list_executions(request: web.Request) -> web.Response:
                     "ipv4": execution.vm.tap_interface.ip_network,
                     "ipv6": execution.vm.tap_interface.ipv6_network,
                 },
-                "vm_type": VmType.from_message_content(execution.message).name,
+                "vm_type": (
+                    VmType.from_message_content(execution.message).name
+                    if execution.message is not None
+                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
+                ),
             }
             for item_hash, execution in pool.executions.items()
             if running_states.get(item_hash, False)
@@ -269,7 +273,11 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": execution.times,
                 "running": running_states.get(item_hash, False),
-                "vm_type": VmType.from_message_content(execution.message).name,
+                "vm_type": (
+                    VmType.from_message_content(execution.message).name
+                    if execution.message is not None
+                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
+                ),
             }
             for item_hash, execution in pool.executions.items()
         },

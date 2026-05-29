@@ -192,7 +192,7 @@ async def _handle_port_forwarding_aggregate(message: AggregateMessage, pool: VmP
     affected = [
         execution
         for execution in pool.executions.values()
-        if execution.is_instance and execution.vm and execution.message.address == address
+        if execution.is_instance and execution.vm and execution.message and execution.message.address == address
     ]
     if not affected:
         return
@@ -226,7 +226,7 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
     # This covers both additions (new domain pointing to local instance)
     # and deletions (domain removed — need to clean up the map).
     has_local_instance = any(
-        execution.is_instance and execution.vm and execution.message.address == address
+        execution.is_instance and execution.vm and execution.message and execution.message.address == address
         for execution in pool.executions.values()
     )
     if not has_local_instance:

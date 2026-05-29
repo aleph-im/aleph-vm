@@ -160,7 +160,7 @@ class VmPool:
         ``creation_lock``). Reading ``self.executions`` is safe without
         locking because this method does not ``await``.
 
-        The message-free spec path (:meth:`create_a_vm_from_spec`) does not
+        The message-free spec path (:meth:`create_vm_from_spec`) does not
         call this method: admission for spec-built VMs is the agent's
         responsibility, enforced before it asks the supervisor to create.
         Spec-built executions still contribute to the committed tally here
