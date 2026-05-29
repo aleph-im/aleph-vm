@@ -153,14 +153,57 @@ class InProcessSupervisor(Supervisor):
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
     # Port forwarding
+    def _mapped_to_infos(self, execution) -> list[PortForwardInfo]:
+        infos: list[PortForwardInfo] = []
+        for vm_port, mapping in execution.mapped_ports.items():
+            host_port = int(mapping["host"])
+            for proto in (Protocol.TCP, Protocol.UDP):
+                if mapping.get(proto.value):
+                    infos.append(
+                        PortForwardInfo(
+                            vm_id=str(execution.vm_hash),
+                            host_port=host_port,
+                            vm_port=int(vm_port),
+                            protocol=proto,
+                        )
+                    )
+        return infos
+
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
-        raise NotImplementedSupervisorError("add_port_forward")
+        with translating_errors():
+            execution = self._require(spec.vm_id)
+            requested: dict[int, dict[str, bool]] = {}
+            for vm_port, mapping in execution.mapped_ports.items():
+                requested[int(vm_port)] = {"tcp": bool(mapping.get("tcp")), "udp": bool(mapping.get("udp"))}
+            entry = requested.setdefault(spec.vm_port, {"tcp": False, "udp": False})
+            entry[spec.protocol.value] = True
+            await execution.update_port_redirects(requested)
+            mapping = execution.mapped_ports[spec.vm_port]
+            return PortForwardInfo(
+                vm_id=spec.vm_id,
+                host_port=int(mapping["host"]),
+                vm_port=spec.vm_port,
+                protocol=spec.protocol,
+            )
 
     async def remove_port_forward(self, vm_id: str, host_port: int, protocol: Protocol) -> None:
-        raise NotImplementedSupervisorError("remove_port_forward")
+        with translating_errors():
+            execution = self._require(vm_id)
+            requested: dict[int, dict[str, bool]] = {}
+            for vm_port, mapping in execution.mapped_ports.items():
+                requested[int(vm_port)] = {"tcp": bool(mapping.get("tcp")), "udp": bool(mapping.get("udp"))}
+                if int(mapping["host"]) == host_port:
+                    requested[int(vm_port)][protocol.value] = False
+            await execution.update_port_redirects(requested)
 
     async def list_port_forwards(self, vm_id: str | None = None) -> list[PortForwardInfo]:
-        raise NotImplementedSupervisorError("list_port_forwards")
+        with translating_errors():
+            if vm_id is not None:
+                return self._mapped_to_infos(self._require(vm_id))
+            infos: list[PortForwardInfo] = []
+            for execution in self.pool.executions.values():
+                infos.extend(self._mapped_to_infos(execution))
+            return infos
 
     # Logs
     async def get_logs(self, vm_id: str, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
