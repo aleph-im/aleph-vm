@@ -8,9 +8,12 @@ NotImplementedSupervisorError.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+import psutil
 
 from aleph_message.models.execution.environment import HypervisorType
 
@@ -107,10 +110,17 @@ class InProcessSupervisor(Supervisor):
 
     # Host
     async def health(self) -> HealthInfo:
-        raise NotImplementedSupervisorError("health")
+        with translating_errors():
+            return HealthInfo(status="ok", vm_count=len(self.pool.executions))
 
     async def get_host_info(self) -> HostInfo:
-        raise NotImplementedSupervisorError("get_host_info")
+        with translating_errors():
+            return HostInfo(
+                cpu_count=os.cpu_count() or 0,
+                memory_mib=int(psutil.virtual_memory().total / (1024 * 1024)),
+                kernel_version=os.uname().release,
+                hostname=os.uname().nodename,
+            )
 
     # Lifecycle
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
