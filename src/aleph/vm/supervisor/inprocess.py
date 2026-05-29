@@ -120,14 +120,37 @@ class InProcessSupervisor(Supervisor):
                 for execution in self.pool.executions.values()
             ]
 
+    def _require(self, vm_id: str):
+        execution = self.pool.executions.get(vm_id)
+        if execution is None:
+            raise VmNotFoundError(vm_id)
+        return execution
+
     async def delete_vm(self, vm_id: str) -> None:
-        raise NotImplementedSupervisorError("delete_vm")
+        with translating_errors():
+            self._require(vm_id)
+            await self.pool.stop_vm(vm_id)
+            self.pool.forget_vm(vm_id)
 
     async def reboot_vm(self, vm_id: str) -> VmInfo:
-        raise NotImplementedSupervisorError("reboot_vm")
+        with translating_errors():
+            execution = self._require(vm_id)
+            if execution.persistent and getattr(execution, "systemd_manager", None):
+                self.pool.systemd_manager.restart(execution.controller_service)
+            else:
+                await self.pool.stop_vm(vm_id)
+                self.pool.forget_vm(vm_id)
+            return _to_vm_info(execution, _is_running(execution, self.pool))
 
     async def reinstall_vm(self, vm_id: str) -> VmInfo:
-        raise NotImplementedSupervisorError("reinstall_vm")
+        with translating_errors():
+            execution = self._require(vm_id)
+            await self.pool.stop_vm(vm_id)
+            if execution.persistent and getattr(execution, "systemd_manager", None):
+                self.pool.systemd_manager.restart(execution.controller_service)
+            else:
+                self.pool.forget_vm(vm_id)
+            return _to_vm_info(execution, _is_running(execution, self.pool))
 
     # Port forwarding
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
