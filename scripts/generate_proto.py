@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Python bindings for proto/hypervisor.proto.
+"""Generate Python bindings for proto/supervisor.proto.
 
 Idempotent. Run from the repo root: `python scripts/generate_proto.py`.
 """
@@ -13,8 +13,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PROTO_DIR = REPO / "proto"
-OUT_DIR = REPO / "src" / "aleph" / "vm" / "hypervisor" / "_pb"
-PROTO_FILE = PROTO_DIR / "hypervisor.proto"
+OUT_DIR = REPO / "src" / "aleph" / "vm" / "supervisor" / "_pb"
+PROTO_FILE = PROTO_DIR / "supervisor.proto"
 
 
 def main() -> int:
@@ -43,14 +43,14 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # The grpc plugin emits a `from hypervisor_pb2 import ...` line that
+    # The grpc plugin emits a `from supervisor_pb2 import ...` line that
     # breaks when the package is imported via its dotted name. Rewrite
     # to a relative import.
-    grpc_file = OUT_DIR / "hypervisor_pb2_grpc.py"
+    grpc_file = OUT_DIR / "supervisor_pb2_grpc.py"
     text = grpc_file.read_text()
     text = text.replace(
-        "import hypervisor_pb2 as hypervisor__pb2",
-        "from . import hypervisor_pb2 as hypervisor__pb2",
+        "import supervisor_pb2 as supervisor__pb2",
+        "from . import supervisor_pb2 as supervisor__pb2",
     )
     grpc_file.write_text(text)
     print(f"rewrote {grpc_file} to use relative import")
