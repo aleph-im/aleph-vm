@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import hypervisor_pb2 as hypervisor__pb2
+from . import supervisor_pb2 as supervisor__pb2
 
 GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in hypervisor_pb2_grpc.py depends on'
+        + f' but the generated code in supervisor_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class HypervisorStub(object):
+class SupervisorStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -35,133 +35,133 @@ class HypervisorStub(object):
             channel: A grpc.Channel.
         """
         self.Health = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/Health',
-                request_serializer=hypervisor__pb2.HealthRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.HealthResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/Health',
+                request_serializer=supervisor__pb2.HealthRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.HealthResponse.FromString,
                 _registered_method=True)
         self.GetHostInfo = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetHostInfo',
-                request_serializer=hypervisor__pb2.GetHostInfoRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.HostInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetHostInfo',
+                request_serializer=supervisor__pb2.GetHostInfoRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.HostInfo.FromString,
                 _registered_method=True)
         self.CreateVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/CreateVm',
-                request_serializer=hypervisor__pb2.CreateVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/CreateVm',
+                request_serializer=supervisor__pb2.CreateVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.GetVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetVm',
-                request_serializer=hypervisor__pb2.GetVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetVm',
+                request_serializer=supervisor__pb2.GetVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.ListVms = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ListVms',
-                request_serializer=hypervisor__pb2.ListVmsRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.ListVmsResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/ListVms',
+                request_serializer=supervisor__pb2.ListVmsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.ListVmsResponse.FromString,
                 _registered_method=True)
         self.DeleteVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/DeleteVm',
-                request_serializer=hypervisor__pb2.DeleteVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.DeleteVmResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/DeleteVm',
+                request_serializer=supervisor__pb2.DeleteVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.DeleteVmResponse.FromString,
                 _registered_method=True)
         self.RebootVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/RebootVm',
-                request_serializer=hypervisor__pb2.RebootVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/RebootVm',
+                request_serializer=supervisor__pb2.RebootVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.ReinstallVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ReinstallVm',
-                request_serializer=hypervisor__pb2.ReinstallVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/ReinstallVm',
+                request_serializer=supervisor__pb2.ReinstallVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.AddPortForward = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/AddPortForward',
-                request_serializer=hypervisor__pb2.AddPortForwardRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.PortForwardInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/AddPortForward',
+                request_serializer=supervisor__pb2.AddPortForwardRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.PortForwardInfo.FromString,
                 _registered_method=True)
         self.RemovePortForward = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/RemovePortForward',
-                request_serializer=hypervisor__pb2.RemovePortForwardRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.RemovePortForwardResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/RemovePortForward',
+                request_serializer=supervisor__pb2.RemovePortForwardRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.RemovePortForwardResponse.FromString,
                 _registered_method=True)
         self.ListPortForwards = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ListPortForwards',
-                request_serializer=hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.ListPortForwardsResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/ListPortForwards',
+                request_serializer=supervisor__pb2.ListPortForwardsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.ListPortForwardsResponse.FromString,
                 _registered_method=True)
         self.GetLogs = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetLogs',
-                request_serializer=hypervisor__pb2.GetLogsRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.GetLogsResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetLogs',
+                request_serializer=supervisor__pb2.GetLogsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.GetLogsResponse.FromString,
                 _registered_method=True)
         self.StreamLogs = channel.unary_stream(
-                '/aleph.hypervisor.v1.Hypervisor/StreamLogs',
-                request_serializer=hypervisor__pb2.StreamLogsRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.LogChunk.FromString,
+                '/aleph.supervisor.v1.Supervisor/StreamLogs',
+                request_serializer=supervisor__pb2.StreamLogsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.LogChunk.FromString,
                 _registered_method=True)
         self.StartBackup = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/StartBackup',
-                request_serializer=hypervisor__pb2.StartBackupRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.BackupInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/StartBackup',
+                request_serializer=supervisor__pb2.StartBackupRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.BackupInfo.FromString,
                 _registered_method=True)
         self.GetBackupStatus = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetBackupStatus',
-                request_serializer=hypervisor__pb2.GetBackupStatusRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.BackupInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetBackupStatus',
+                request_serializer=supervisor__pb2.GetBackupStatusRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.BackupInfo.FromString,
                 _registered_method=True)
         self.ListBackups = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ListBackups',
-                request_serializer=hypervisor__pb2.ListBackupsRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.ListBackupsResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/ListBackups',
+                request_serializer=supervisor__pb2.ListBackupsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.ListBackupsResponse.FromString,
                 _registered_method=True)
         self.DownloadBackup = channel.unary_stream(
-                '/aleph.hypervisor.v1.Hypervisor/DownloadBackup',
-                request_serializer=hypervisor__pb2.DownloadBackupRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.BackupChunk.FromString,
+                '/aleph.supervisor.v1.Supervisor/DownloadBackup',
+                request_serializer=supervisor__pb2.DownloadBackupRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.BackupChunk.FromString,
                 _registered_method=True)
         self.DeleteBackup = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/DeleteBackup',
-                request_serializer=hypervisor__pb2.DeleteBackupRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.DeleteBackupResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/DeleteBackup',
+                request_serializer=supervisor__pb2.DeleteBackupRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.DeleteBackupResponse.FromString,
                 _registered_method=True)
         self.RestoreBackup = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/RestoreBackup',
-                request_serializer=hypervisor__pb2.RestoreBackupRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/RestoreBackup',
+                request_serializer=supervisor__pb2.RestoreBackupRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.ExportVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ExportVm',
-                request_serializer=hypervisor__pb2.ExportVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.MigrationInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/ExportVm',
+                request_serializer=supervisor__pb2.ExportVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.MigrationInfo.FromString,
                 _registered_method=True)
         self.ImportVm = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/ImportVm',
-                request_serializer=hypervisor__pb2.ImportVmRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.VmInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/ImportVm',
+                request_serializer=supervisor__pb2.ImportVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.GetMigrationStatus = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetMigrationStatus',
-                request_serializer=hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.MigrationInfo.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetMigrationStatus',
+                request_serializer=supervisor__pb2.GetMigrationStatusRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.MigrationInfo.FromString,
                 _registered_method=True)
         self.InitializeConfidential = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/InitializeConfidential',
-                request_serializer=hypervisor__pb2.InitializeConfidentialRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.InitializeConfidentialResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/InitializeConfidential',
+                request_serializer=supervisor__pb2.InitializeConfidentialRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.InitializeConfidentialResponse.FromString,
                 _registered_method=True)
         self.GetMeasurement = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/GetMeasurement',
-                request_serializer=hypervisor__pb2.GetMeasurementRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.Measurement.FromString,
+                '/aleph.supervisor.v1.Supervisor/GetMeasurement',
+                request_serializer=supervisor__pb2.GetMeasurementRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.Measurement.FromString,
                 _registered_method=True)
         self.InjectSecret = channel.unary_unary(
-                '/aleph.hypervisor.v1.Hypervisor/InjectSecret',
-                request_serializer=hypervisor__pb2.InjectSecretRequest.SerializeToString,
-                response_deserializer=hypervisor__pb2.InjectSecretResponse.FromString,
+                '/aleph.supervisor.v1.Supervisor/InjectSecret',
+                request_serializer=supervisor__pb2.InjectSecretRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.InjectSecretResponse.FromString,
                 _registered_method=True)
 
 
-class HypervisorServicer(object):
+class SupervisorServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Health(self, request, context):
@@ -322,142 +322,142 @@ class HypervisorServicer(object):
         raise NotImplementedError('Method not implemented!')
 
 
-def add_HypervisorServicer_to_server(servicer, server):
+def add_SupervisorServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
-                    request_deserializer=hypervisor__pb2.HealthRequest.FromString,
-                    response_serializer=hypervisor__pb2.HealthResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.HealthRequest.FromString,
+                    response_serializer=supervisor__pb2.HealthResponse.SerializeToString,
             ),
             'GetHostInfo': grpc.unary_unary_rpc_method_handler(
                     servicer.GetHostInfo,
-                    request_deserializer=hypervisor__pb2.GetHostInfoRequest.FromString,
-                    response_serializer=hypervisor__pb2.HostInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetHostInfoRequest.FromString,
+                    response_serializer=supervisor__pb2.HostInfo.SerializeToString,
             ),
             'CreateVm': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateVm,
-                    request_deserializer=hypervisor__pb2.CreateVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.CreateVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'GetVm': grpc.unary_unary_rpc_method_handler(
                     servicer.GetVm,
-                    request_deserializer=hypervisor__pb2.GetVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'ListVms': grpc.unary_unary_rpc_method_handler(
                     servicer.ListVms,
-                    request_deserializer=hypervisor__pb2.ListVmsRequest.FromString,
-                    response_serializer=hypervisor__pb2.ListVmsResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.ListVmsRequest.FromString,
+                    response_serializer=supervisor__pb2.ListVmsResponse.SerializeToString,
             ),
             'DeleteVm': grpc.unary_unary_rpc_method_handler(
                     servicer.DeleteVm,
-                    request_deserializer=hypervisor__pb2.DeleteVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.DeleteVmResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.DeleteVmRequest.FromString,
+                    response_serializer=supervisor__pb2.DeleteVmResponse.SerializeToString,
             ),
             'RebootVm': grpc.unary_unary_rpc_method_handler(
                     servicer.RebootVm,
-                    request_deserializer=hypervisor__pb2.RebootVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.RebootVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'ReinstallVm': grpc.unary_unary_rpc_method_handler(
                     servicer.ReinstallVm,
-                    request_deserializer=hypervisor__pb2.ReinstallVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.ReinstallVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'AddPortForward': grpc.unary_unary_rpc_method_handler(
                     servicer.AddPortForward,
-                    request_deserializer=hypervisor__pb2.AddPortForwardRequest.FromString,
-                    response_serializer=hypervisor__pb2.PortForwardInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.AddPortForwardRequest.FromString,
+                    response_serializer=supervisor__pb2.PortForwardInfo.SerializeToString,
             ),
             'RemovePortForward': grpc.unary_unary_rpc_method_handler(
                     servicer.RemovePortForward,
-                    request_deserializer=hypervisor__pb2.RemovePortForwardRequest.FromString,
-                    response_serializer=hypervisor__pb2.RemovePortForwardResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.RemovePortForwardRequest.FromString,
+                    response_serializer=supervisor__pb2.RemovePortForwardResponse.SerializeToString,
             ),
             'ListPortForwards': grpc.unary_unary_rpc_method_handler(
                     servicer.ListPortForwards,
-                    request_deserializer=hypervisor__pb2.ListPortForwardsRequest.FromString,
-                    response_serializer=hypervisor__pb2.ListPortForwardsResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.ListPortForwardsRequest.FromString,
+                    response_serializer=supervisor__pb2.ListPortForwardsResponse.SerializeToString,
             ),
             'GetLogs': grpc.unary_unary_rpc_method_handler(
                     servicer.GetLogs,
-                    request_deserializer=hypervisor__pb2.GetLogsRequest.FromString,
-                    response_serializer=hypervisor__pb2.GetLogsResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetLogsRequest.FromString,
+                    response_serializer=supervisor__pb2.GetLogsResponse.SerializeToString,
             ),
             'StreamLogs': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamLogs,
-                    request_deserializer=hypervisor__pb2.StreamLogsRequest.FromString,
-                    response_serializer=hypervisor__pb2.LogChunk.SerializeToString,
+                    request_deserializer=supervisor__pb2.StreamLogsRequest.FromString,
+                    response_serializer=supervisor__pb2.LogChunk.SerializeToString,
             ),
             'StartBackup': grpc.unary_unary_rpc_method_handler(
                     servicer.StartBackup,
-                    request_deserializer=hypervisor__pb2.StartBackupRequest.FromString,
-                    response_serializer=hypervisor__pb2.BackupInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.StartBackupRequest.FromString,
+                    response_serializer=supervisor__pb2.BackupInfo.SerializeToString,
             ),
             'GetBackupStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetBackupStatus,
-                    request_deserializer=hypervisor__pb2.GetBackupStatusRequest.FromString,
-                    response_serializer=hypervisor__pb2.BackupInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetBackupStatusRequest.FromString,
+                    response_serializer=supervisor__pb2.BackupInfo.SerializeToString,
             ),
             'ListBackups': grpc.unary_unary_rpc_method_handler(
                     servicer.ListBackups,
-                    request_deserializer=hypervisor__pb2.ListBackupsRequest.FromString,
-                    response_serializer=hypervisor__pb2.ListBackupsResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.ListBackupsRequest.FromString,
+                    response_serializer=supervisor__pb2.ListBackupsResponse.SerializeToString,
             ),
             'DownloadBackup': grpc.unary_stream_rpc_method_handler(
                     servicer.DownloadBackup,
-                    request_deserializer=hypervisor__pb2.DownloadBackupRequest.FromString,
-                    response_serializer=hypervisor__pb2.BackupChunk.SerializeToString,
+                    request_deserializer=supervisor__pb2.DownloadBackupRequest.FromString,
+                    response_serializer=supervisor__pb2.BackupChunk.SerializeToString,
             ),
             'DeleteBackup': grpc.unary_unary_rpc_method_handler(
                     servicer.DeleteBackup,
-                    request_deserializer=hypervisor__pb2.DeleteBackupRequest.FromString,
-                    response_serializer=hypervisor__pb2.DeleteBackupResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.DeleteBackupRequest.FromString,
+                    response_serializer=supervisor__pb2.DeleteBackupResponse.SerializeToString,
             ),
             'RestoreBackup': grpc.unary_unary_rpc_method_handler(
                     servicer.RestoreBackup,
-                    request_deserializer=hypervisor__pb2.RestoreBackupRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.RestoreBackupRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'ExportVm': grpc.unary_unary_rpc_method_handler(
                     servicer.ExportVm,
-                    request_deserializer=hypervisor__pb2.ExportVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.MigrationInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.ExportVmRequest.FromString,
+                    response_serializer=supervisor__pb2.MigrationInfo.SerializeToString,
             ),
             'ImportVm': grpc.unary_unary_rpc_method_handler(
                     servicer.ImportVm,
-                    request_deserializer=hypervisor__pb2.ImportVmRequest.FromString,
-                    response_serializer=hypervisor__pb2.VmInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.ImportVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'GetMigrationStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetMigrationStatus,
-                    request_deserializer=hypervisor__pb2.GetMigrationStatusRequest.FromString,
-                    response_serializer=hypervisor__pb2.MigrationInfo.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetMigrationStatusRequest.FromString,
+                    response_serializer=supervisor__pb2.MigrationInfo.SerializeToString,
             ),
             'InitializeConfidential': grpc.unary_unary_rpc_method_handler(
                     servicer.InitializeConfidential,
-                    request_deserializer=hypervisor__pb2.InitializeConfidentialRequest.FromString,
-                    response_serializer=hypervisor__pb2.InitializeConfidentialResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.InitializeConfidentialRequest.FromString,
+                    response_serializer=supervisor__pb2.InitializeConfidentialResponse.SerializeToString,
             ),
             'GetMeasurement': grpc.unary_unary_rpc_method_handler(
                     servicer.GetMeasurement,
-                    request_deserializer=hypervisor__pb2.GetMeasurementRequest.FromString,
-                    response_serializer=hypervisor__pb2.Measurement.SerializeToString,
+                    request_deserializer=supervisor__pb2.GetMeasurementRequest.FromString,
+                    response_serializer=supervisor__pb2.Measurement.SerializeToString,
             ),
             'InjectSecret': grpc.unary_unary_rpc_method_handler(
                     servicer.InjectSecret,
-                    request_deserializer=hypervisor__pb2.InjectSecretRequest.FromString,
-                    response_serializer=hypervisor__pb2.InjectSecretResponse.SerializeToString,
+                    request_deserializer=supervisor__pb2.InjectSecretRequest.FromString,
+                    response_serializer=supervisor__pb2.InjectSecretResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'aleph.hypervisor.v1.Hypervisor', rpc_method_handlers)
+            'aleph.supervisor.v1.Supervisor', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('aleph.hypervisor.v1.Hypervisor', rpc_method_handlers)
+    server.add_registered_method_handlers('aleph.supervisor.v1.Supervisor', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class Hypervisor(object):
+class Supervisor(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -474,9 +474,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/Health',
-            hypervisor__pb2.HealthRequest.SerializeToString,
-            hypervisor__pb2.HealthResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/Health',
+            supervisor__pb2.HealthRequest.SerializeToString,
+            supervisor__pb2.HealthResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -501,9 +501,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetHostInfo',
-            hypervisor__pb2.GetHostInfoRequest.SerializeToString,
-            hypervisor__pb2.HostInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetHostInfo',
+            supervisor__pb2.GetHostInfoRequest.SerializeToString,
+            supervisor__pb2.HostInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -528,9 +528,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/CreateVm',
-            hypervisor__pb2.CreateVmRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/CreateVm',
+            supervisor__pb2.CreateVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -555,9 +555,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetVm',
-            hypervisor__pb2.GetVmRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetVm',
+            supervisor__pb2.GetVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -582,9 +582,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ListVms',
-            hypervisor__pb2.ListVmsRequest.SerializeToString,
-            hypervisor__pb2.ListVmsResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/ListVms',
+            supervisor__pb2.ListVmsRequest.SerializeToString,
+            supervisor__pb2.ListVmsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -609,9 +609,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/DeleteVm',
-            hypervisor__pb2.DeleteVmRequest.SerializeToString,
-            hypervisor__pb2.DeleteVmResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/DeleteVm',
+            supervisor__pb2.DeleteVmRequest.SerializeToString,
+            supervisor__pb2.DeleteVmResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -636,9 +636,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/RebootVm',
-            hypervisor__pb2.RebootVmRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/RebootVm',
+            supervisor__pb2.RebootVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -663,9 +663,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ReinstallVm',
-            hypervisor__pb2.ReinstallVmRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/ReinstallVm',
+            supervisor__pb2.ReinstallVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -690,9 +690,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/AddPortForward',
-            hypervisor__pb2.AddPortForwardRequest.SerializeToString,
-            hypervisor__pb2.PortForwardInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/AddPortForward',
+            supervisor__pb2.AddPortForwardRequest.SerializeToString,
+            supervisor__pb2.PortForwardInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -717,9 +717,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/RemovePortForward',
-            hypervisor__pb2.RemovePortForwardRequest.SerializeToString,
-            hypervisor__pb2.RemovePortForwardResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/RemovePortForward',
+            supervisor__pb2.RemovePortForwardRequest.SerializeToString,
+            supervisor__pb2.RemovePortForwardResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -744,9 +744,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ListPortForwards',
-            hypervisor__pb2.ListPortForwardsRequest.SerializeToString,
-            hypervisor__pb2.ListPortForwardsResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/ListPortForwards',
+            supervisor__pb2.ListPortForwardsRequest.SerializeToString,
+            supervisor__pb2.ListPortForwardsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -771,9 +771,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetLogs',
-            hypervisor__pb2.GetLogsRequest.SerializeToString,
-            hypervisor__pb2.GetLogsResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetLogs',
+            supervisor__pb2.GetLogsRequest.SerializeToString,
+            supervisor__pb2.GetLogsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -798,9 +798,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/StreamLogs',
-            hypervisor__pb2.StreamLogsRequest.SerializeToString,
-            hypervisor__pb2.LogChunk.FromString,
+            '/aleph.supervisor.v1.Supervisor/StreamLogs',
+            supervisor__pb2.StreamLogsRequest.SerializeToString,
+            supervisor__pb2.LogChunk.FromString,
             options,
             channel_credentials,
             insecure,
@@ -825,9 +825,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/StartBackup',
-            hypervisor__pb2.StartBackupRequest.SerializeToString,
-            hypervisor__pb2.BackupInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/StartBackup',
+            supervisor__pb2.StartBackupRequest.SerializeToString,
+            supervisor__pb2.BackupInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -852,9 +852,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetBackupStatus',
-            hypervisor__pb2.GetBackupStatusRequest.SerializeToString,
-            hypervisor__pb2.BackupInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetBackupStatus',
+            supervisor__pb2.GetBackupStatusRequest.SerializeToString,
+            supervisor__pb2.BackupInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -879,9 +879,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ListBackups',
-            hypervisor__pb2.ListBackupsRequest.SerializeToString,
-            hypervisor__pb2.ListBackupsResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/ListBackups',
+            supervisor__pb2.ListBackupsRequest.SerializeToString,
+            supervisor__pb2.ListBackupsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -906,9 +906,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/DownloadBackup',
-            hypervisor__pb2.DownloadBackupRequest.SerializeToString,
-            hypervisor__pb2.BackupChunk.FromString,
+            '/aleph.supervisor.v1.Supervisor/DownloadBackup',
+            supervisor__pb2.DownloadBackupRequest.SerializeToString,
+            supervisor__pb2.BackupChunk.FromString,
             options,
             channel_credentials,
             insecure,
@@ -933,9 +933,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/DeleteBackup',
-            hypervisor__pb2.DeleteBackupRequest.SerializeToString,
-            hypervisor__pb2.DeleteBackupResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/DeleteBackup',
+            supervisor__pb2.DeleteBackupRequest.SerializeToString,
+            supervisor__pb2.DeleteBackupResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -960,9 +960,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/RestoreBackup',
-            hypervisor__pb2.RestoreBackupRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/RestoreBackup',
+            supervisor__pb2.RestoreBackupRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -987,9 +987,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ExportVm',
-            hypervisor__pb2.ExportVmRequest.SerializeToString,
-            hypervisor__pb2.MigrationInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/ExportVm',
+            supervisor__pb2.ExportVmRequest.SerializeToString,
+            supervisor__pb2.MigrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1014,9 +1014,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/ImportVm',
-            hypervisor__pb2.ImportVmRequest.SerializeToString,
-            hypervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/ImportVm',
+            supervisor__pb2.ImportVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1041,9 +1041,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetMigrationStatus',
-            hypervisor__pb2.GetMigrationStatusRequest.SerializeToString,
-            hypervisor__pb2.MigrationInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetMigrationStatus',
+            supervisor__pb2.GetMigrationStatusRequest.SerializeToString,
+            supervisor__pb2.MigrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1068,9 +1068,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/InitializeConfidential',
-            hypervisor__pb2.InitializeConfidentialRequest.SerializeToString,
-            hypervisor__pb2.InitializeConfidentialResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/InitializeConfidential',
+            supervisor__pb2.InitializeConfidentialRequest.SerializeToString,
+            supervisor__pb2.InitializeConfidentialResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1095,9 +1095,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/GetMeasurement',
-            hypervisor__pb2.GetMeasurementRequest.SerializeToString,
-            hypervisor__pb2.Measurement.FromString,
+            '/aleph.supervisor.v1.Supervisor/GetMeasurement',
+            supervisor__pb2.GetMeasurementRequest.SerializeToString,
+            supervisor__pb2.Measurement.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1122,9 +1122,9 @@ class Hypervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.hypervisor.v1.Hypervisor/InjectSecret',
-            hypervisor__pb2.InjectSecretRequest.SerializeToString,
-            hypervisor__pb2.InjectSecretResponse.FromString,
+            '/aleph.supervisor.v1.Supervisor/InjectSecret',
+            supervisor__pb2.InjectSecretRequest.SerializeToString,
+            supervisor__pb2.InjectSecretResponse.FromString,
             options,
             channel_credentials,
             insecure,
