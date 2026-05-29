@@ -79,7 +79,9 @@ Streaming methods return `AsyncIterator[...]`, so the same signature works for t
 
 Frozen dataclasses and local enums mirroring the proto messages. Enums use plain `enum.Enum` with the proto's semantic names (without the proto `*_UNSPECIFIED` and prefix noise). The mapping to and from the proto wire enums lives only in the gRPC implementation (0.D), never here.
 
-Enums: `Backend{FIRECRACKER, QEMU, QEMU_SEV}`, `VmStatus{DEFINED, BOOTING, RUNNING, STOPPING, STOPPED, FAILED}`, `DiskFormat{RAW, QCOW2, SQUASHFS}`, `DiskRole{ROOTFS, CODE, RUNTIME, DATA, EXTRA}`, `Protocol{TCP, UDP}`, `LogSource{SERIAL, STDOUT, SYSTEMD}`, `BackupStatus{PENDING, RUNNING, COMPLETE, FAILED}`, `MigrationPhase{PREPARING, EXPORTING, IMPORTING, COMPLETE, FAILED}`.
+Enums: `Backend{FIRECRACKER, QEMU, QEMU_SEV}`, `VmStatus{DEFINED, BOOTING, RUNNING, STOPPING, STOPPED, FAILED}`, `DiskFormat{RAW, QCOW2, SQUASHFS}`, `DiskRole{ROOTFS, CODE, RUNTIME, DATA, EXTRA}`, `Protocol{TCP, UDP}`, `LogSource{SERIAL, STDOUT, SYSTEMD}`, `BackupStatus{PENDING, RUNNING, COMPLETE, FAILED}`, `MigrationPhase{PREPARING, EXPORTING, IMPORTING, COMPLETE, FAILED}`, `TeeBackend{NONE, SEV_SNP, TDX, NVIDIA_CC}`, `HealthStatus{OK, DEGRADED}`.
+
+Domain types (`typing.NewType`, zero runtime cost, still `str`/`int` at runtime but distinct to the type checker so call sites must wrap explicitly): `VmId`, `BackupId`, `MigrationId`, `PciAddress` over `str`; `HostPort`, `GuestPort` over `int` (deliberately separate, since a host-side allocated port and an in-guest port are never interchangeable). Paths use `pathlib.Path` for files and `DirectoryPath = NewType(..., Path)` for directories (stdlib has no directory-specific type; this marks intent without runtime validation). The field types below use these where applicable (`vm_id: VmId`, `backup_id: BackupId`, `host_port: HostPort`, `vm_port: GuestPort`, `*_dir: DirectoryPath`, etc.).
 
 Carriers (field set mirrors the proto messages of 0.A):
 
