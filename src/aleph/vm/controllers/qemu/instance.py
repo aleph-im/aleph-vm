@@ -30,7 +30,7 @@ from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
-from aleph.vm.sizes import MemorySize
+from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.utils import run_in_subprocess
 
@@ -181,7 +181,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         vcpu_count = self.hardware_resources.vcpus
         # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
         # through via a typed size to avoid the prior unit-mixing under-allocation.
-        mem_size_mb = MemorySize.from_mebibytes(self.hardware_resources.memory).to_mebibytes()
+        mem_size_mb = MiB(self.hardware_resources.memory).count
 
         qemu_bin_path = shutil.which("qemu-system-x86_64")
         interface_name = None

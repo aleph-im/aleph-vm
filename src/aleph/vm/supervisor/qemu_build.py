@@ -26,7 +26,7 @@ from aleph.vm.controllers.qemu.cloudinit import (
     create_cloud_init_drive_image,
     get_hostname_from_hash,
 )
-from aleph.vm.sizes import MemorySize
+from aleph.vm.sizes import MiB
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import Backend, CreateVmSpec, DiskRole
 
@@ -116,7 +116,7 @@ async def build_qemu_configuration(
 
     # QEMU's -m flag takes a value in MiB; spec.memory_mib is already MiB.
     # Pass it through via a typed size to avoid unit-mixing under-allocation.
-    mem_size_mb: int = MemorySize.from_mebibytes(spec.memory_mib).to_mebibytes()
+    mem_size_mb: int = MiB(spec.memory_mib).count
 
     gpus = [QemuGPU(pci_host=g.pci_host, supports_x_vga=g.supports_x_vga) for g in spec.gpus]
 
