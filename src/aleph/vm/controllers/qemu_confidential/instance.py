@@ -92,7 +92,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         vcpu_count = self.hardware_resources.vcpus
         # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
         # through via a typed size to avoid the prior unit-mixing under-allocation.
-        mem_size_mb = MiB(self.hardware_resources.memory).count
+        mem_size_mb = MiB(self.hardware_resources.memory)
 
         vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / self.vm_hash
         session_file_path = vm_session_path / "vm_session.b64"

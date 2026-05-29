@@ -181,7 +181,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         vcpu_count = self.hardware_resources.vcpus
         # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
         # through via a typed size to avoid the prior unit-mixing under-allocation.
-        mem_size_mb = MiB(self.hardware_resources.memory).count
+        mem_size_mb = MiB(self.hardware_resources.memory)
 
         qemu_bin_path = shutil.which("qemu-system-x86_64")
         interface_name = None

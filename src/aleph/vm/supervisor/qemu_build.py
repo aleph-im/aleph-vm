@@ -116,7 +116,7 @@ async def build_qemu_configuration(
 
     # QEMU's -m flag takes a value in MiB; spec.memory_mib is already MiB.
     # Pass it through via a typed size to avoid unit-mixing under-allocation.
-    mem_size_mb: int = MiB(spec.memory_mib).count
+    mem_size_mb = MiB(spec.memory_mib)
 
     gpus = [QemuGPU(pci_host=g.pci_host, supports_x_vga=g.supports_x_vga) for g in spec.gpus]
 

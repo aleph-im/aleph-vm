@@ -9,8 +9,13 @@ from typing import cast
 
 import pytest
 
-from aleph.vm.controllers.configuration import HypervisorType, QemuVMConfiguration
+from aleph.vm.controllers.configuration import (
+    Configuration,
+    HypervisorType,
+    QemuVMConfiguration,
+)
 from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
+from aleph.vm.sizes import MiB
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.qemu_build import build_qemu_configuration
 from aleph.vm.supervisor.types import (
@@ -197,7 +202,8 @@ async def test_memory_mib_passed_correctly(monkeypatch: pytest.MonkeyPatch) -> N
     config = await build_qemu_configuration(spec, vm_id=1, tap_interface=tap)
 
     assert isinstance(config.vm_configuration, QemuVMConfiguration)
-    assert config.vm_configuration.mem_size_mb == 2048
+    assert config.vm_configuration.mem_size_mb == MiB(2048)
+    assert config.vm_configuration.mem_size_mb.count == 2048
 
 
 @pytest.mark.asyncio
@@ -255,3 +261,51 @@ async def test_no_rootfs_disk_raises() -> None:
 
     with pytest.raises(InvalidBackendError, match="ROOTFS"):
         await build_qemu_configuration(spec, vm_id=9, tap_interface=None)
+
+
+# ---------------------------------------------------------------------------
+# Serialization round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_mem_size_json_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """mem_size_mb serializes to a plain int (MiB) and reloads as MiB."""
+    import json
+
+    from aleph.vm.conf import settings as real_settings
+
+    two_gib_mib = MiB(2048)
+
+    vm_configuration = QemuVMConfiguration(
+        qemu_bin_path="/usr/bin/qemu-system-x86_64",
+        image_path="/data/rootfs.qcow2",
+        monitor_socket_path=Path("/run/monitor.socket"),
+        qmp_socket_path=Path("/run/qmp.socket"),
+        vcpu_count=2,
+        mem_size_mb=two_gib_mib,
+        host_volumes=[],
+        gpus=[],
+    )
+
+    cfg = Configuration(
+        vm_id=42,
+        vm_hash="deadbeef" * 8,
+        settings=real_settings,
+        vm_configuration=vm_configuration,
+        hypervisor=HypervisorType.qemu,
+    )
+
+    json_str = cfg.model_dump_json(by_alias=True, exclude_none=True, indent=4)
+    parsed = json.loads(json_str)
+    vm_cfg_json = parsed["vm_configuration"]
+
+    assert "mem_size_mb" in vm_cfg_json, "mem_size_mb key missing from JSON"
+    assert isinstance(
+        vm_cfg_json["mem_size_mb"], int
+    ), f"mem_size_mb should be an int, got {type(vm_cfg_json['mem_size_mb'])}"
+    assert vm_cfg_json["mem_size_mb"] == 2048, f"expected 2048, got {vm_cfg_json['mem_size_mb']}"
+
+    reloaded = Configuration.model_validate_json(json_str)
+    assert isinstance(reloaded.vm_configuration, QemuVMConfiguration)
+    assert isinstance(reloaded.vm_configuration.mem_size_mb, MiB)
+    assert reloaded.vm_configuration.mem_size_mb.count == 2048
