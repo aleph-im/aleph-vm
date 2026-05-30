@@ -851,10 +851,19 @@ class VmExecution:
             logger.info("%s stopped", self)
 
     def start_watching_for_updates(self, pubsub: PubSub):
+        if not isinstance(self.spec, MessageSpec):
+            # Message-free (spec-built / reattached) executions have no Aleph
+            # message to watch for updates. After a reboot the agent re-fetches
+            # the allocation and re-establishes watching; the supervisor's own
+            # reattach does not. No-op rather than scheduling a task that fails.
+            return
         if not self.update_task:
             self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
+        # Message-only entrypoint. start_watching_for_updates already no-ops for
+        # spec-built / reattached executions, so reaching here with one is a
+        # programming error: fail loud rather than silently watching nothing.
         if not isinstance(self.spec, MessageSpec):
             raise TypeError("watch_for_updates is message-only; spec-built executions have no message to update")
         original = self.spec.original
