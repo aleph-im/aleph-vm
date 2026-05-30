@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import pathlib
 import shutil
@@ -18,25 +17,22 @@ from aleph_message.models import (
     Payment,
     PaymentType,
 )
-from pydantic import TypeAdapter
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
     Configuration,
+    load_controller_configuration,
     save_controller_configuration,
 )
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import (
-    ExecutionRecord,
-    get_execution_records,
     get_port_mappings,
 )
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import (
     GpuDevice,
-    HostGPU,
     InsufficientResourcesError,
     get_gpu_devices,
 )
@@ -44,7 +40,6 @@ from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.qemu_build import build_qemu_configuration, spec_from_controller_configuration
 from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
 
 from .haproxy import fetch_list_and_update
@@ -538,116 +533,68 @@ class VmPool:
         execution._forget_task = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
     async def load_persistent_executions(self):
-        """Load persistent executions from the database.
+        """Reattach VMs whose controllers survived a supervisor restart.
 
-        For each saved execution whose systemd controller is still active,
-        rebuild the in-memory state (network, ports, snapshots). For dead
-        executions, record usage and clean up the stale controller service.
-        After loading, remove any orphan host resources (nft rules, chains,
-        tap interfaces) left behind by previous crashes.
-
-        Uses batch D-Bus calls to check service states (1 call for all VMs
-        instead of 3+ per VM).
+        Scans EXECUTION_ROOT for <hash>-controller.json files, checks which
+        aleph-vm-controller@<hash>.service units are active (one batch D-Bus
+        call), and rebuilds in-memory state from each active config. Dead
+        controllers are stopped; their orphan configs are removed by
+        _cleanup_orphan_resources. Entirely message-free: nothing is read
+        from the database.
         """
-        saved_executions = await get_execution_records()
+        try:
+            config_paths = sorted(settings.EXECUTION_ROOT.glob("*-controller.json"))
+        except Exception:
+            logger.warning("Failed to enumerate controller configs", exc_info=True)
+            config_paths = []
 
-        # Filter to persistent executions not already loaded
-        persistent_saved = [
-            se for se in saved_executions if se.persistent and ItemHash(se.vm_hash) not in self.executions
-        ]
+        configs: list[Configuration] = []
+        for config_path in config_paths:
+            vm_hash = config_path.name[: -len("-controller.json")]
+            if ItemHash(vm_hash) in self.executions:
+                continue
+            config = load_controller_configuration(vm_hash)
+            if config is None:
+                continue
+            configs.append(config)
 
-        # Batch-fetch active states: 1 D-Bus ListUnits() call for all VMs
-        all_services = [f"aleph-vm-controller@{ItemHash(se.vm_hash)}.service" for se in persistent_saved]
+        # Batch-fetch active states: 1 D-Bus ListUnits() call for all VMs.
+        all_services = [f"aleph-vm-controller@{config.vm_hash}.service" for config in configs]
         service_active_states = self.systemd_manager.get_services_active_states(all_services)
 
-        # Track claimed vm_ids to detect duplicates in the DB.
-        # Multiple records can share a vm_id (stale records from old
-        # executions). Only the first active one should be restored —
-        # others are treated as dead to avoid tap interface conflicts.
+        # Track claimed vm_ids to detect duplicates across configs. A stale
+        # config can reuse a vm_id; only the first active one is restored to
+        # avoid two VMs sharing a tap interface.
         claimed_vm_ids: set[int] = set()
 
-        for saved_execution in persistent_saved:
-            vm_hash = ItemHash(saved_execution.vm_hash)
-            vm_id = saved_execution.vm_id
-            logger.info(f"Loading execution {vm_hash} for VM {vm_id}")
+        for config in configs:
+            vm_hash = ItemHash(str(config.vm_hash))
+            vm_id = config.vm_id
+            service_name = f"aleph-vm-controller@{config.vm_hash}.service"
+            is_active = service_active_states.get(service_name, False)
 
-            # Skip if another execution already claimed this vm_id.
-            # This prevents two instances from sharing the same tap
-            # interface, which causes network loss when one is cleaned up.
+            if not is_active:
+                await self._handle_dead_controller(config)
+                continue
+
             if vm_id in claimed_vm_ids:
                 logger.warning(
-                    "Skipping execution %s: vm_id %d already claimed by another execution",
+                    "Skipping reattach of %s: vm_id %d already claimed by another config",
                     vm_hash,
                     vm_id,
                 )
-                # Clean up the stale DB record
-                execution = VmExecution(
-                    vm_hash=vm_hash,
-                    message=get_message_executable_content(json.loads(saved_execution.message)),
-                    original=get_message_executable_content(json.loads(saved_execution.original_message)),
-                    snapshot_manager=self.snapshot_manager,
-                    systemd_manager=self.systemd_manager,
-                    persistent=saved_execution.persistent,
-                )
-                await self._handle_dead_execution(execution, saved_execution)
+                await self._handle_dead_controller(config)
                 continue
 
-            execution = VmExecution(
-                vm_hash=vm_hash,
-                message=get_message_executable_content(json.loads(saved_execution.message)),
-                original=get_message_executable_content(json.loads(saved_execution.original_message)),
-                snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-                persistent=saved_execution.persistent,
-            )
-
-            service_name = execution.controller_service
-            is_active = service_active_states.get(service_name, False)
-
-            if is_active:
-                claimed_vm_ids.add(vm_id)
-                await self._restore_running_execution(execution, saved_execution, vm_id, vm_hash)
-            else:
-                await self._handle_dead_execution(execution, saved_execution)
+            logger.info("Reattaching execution %s for VM %d", vm_hash, vm_id)
+            claimed_vm_ids.add(vm_id)
+            await self._restore_running_execution_from_config(config, vm_id, vm_hash)
 
         self._cleanup_orphan_resources()
 
         if self.executions:
             await self.update_domain_mapping(force_update=True)
-        logger.info(f"Loaded {len(self.executions)} executions")
-
-    async def _restore_running_execution(
-        self, execution: VmExecution, saved_execution: ExecutionRecord, vm_id: int, vm_hash: ItemHash
-    ) -> None:
-        """Rebuild in-memory state for a persistent execution whose controller is active."""
-        execution.gpus = (
-            TypeAdapter(list[HostGPU]).validate_python(json.loads(saved_execution.gpus)) if saved_execution.gpus else []
-        )
-
-        execution.mapped_ports = await get_port_mappings(vm_hash)
-        logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
-
-        await execution.prepare()
-        tap_interface = await self._restore_network(execution, vm_id, vm_hash)
-
-        vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
-        await vm.start_guest_api()
-        execution.ready_event.set()
-        execution.times.started_at = datetime.now(tz=timezone.utc)
-        execution.times.starting_at = saved_execution.time_prepared
-        execution.times.prepared_at = saved_execution.time_defined
-
-        self._schedule_forget_on_stop(execution)
-
-        if vm.support_snapshot and self.snapshot_manager:
-            await self.snapshot_manager.start_for(vm=execution.vm)
-
-        if execution.mapped_ports:
-            await execution.recreate_port_redirect_rules()
-        await execution.fetch_port_redirect_config_and_setup()
-
-        self.executions[vm_hash] = execution
-        execution.record = saved_execution
+        logger.info("Loaded %d executions", len(self.executions))
 
     async def _restore_network(self, _execution: VmExecution, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
@@ -719,19 +666,6 @@ class VmPool:
             logger.info("Stopped and disabled stale controller service %s", service_name)
         except Exception:
             logger.warning("Failed to stop/disable stale controller %s", service_name, exc_info=True)
-
-    async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
-        """Record usage for a dead execution and stop its controller service."""
-        execution.uuid = saved_execution.uuid
-        try:
-            await execution.record_usage()
-        except Exception:
-            logger.warning("Failed to record usage for %s", execution.vm_hash, exc_info=True)
-        try:
-            self.systemd_manager.stop_and_disable(execution.controller_service)
-            logger.info("Stopped and disabled stale controller service %s", execution.controller_service)
-        except Exception:
-            logger.warning("Failed to stop/disable stale controller %s", execution.controller_service, exc_info=True)
 
     def _cleanup_orphan_resources(self):
         """Remove orphan nft rules, nft chains, tap interfaces, and controller configs.
