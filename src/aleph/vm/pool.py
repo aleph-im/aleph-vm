@@ -21,7 +21,10 @@ from aleph_message.models import (
 from pydantic import TypeAdapter
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import save_controller_configuration
+from aleph.vm.controllers.configuration import (
+    Configuration,
+    save_controller_configuration,
+)
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
@@ -38,7 +41,7 @@ from aleph.vm.resources import (
     get_gpu_devices,
 )
 from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.qemu_build import build_qemu_configuration
+from aleph.vm.supervisor.qemu_build import build_qemu_configuration, spec_from_controller_configuration
 from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
@@ -646,12 +649,13 @@ class VmPool:
         self.executions[vm_hash] = execution
         execution.record = saved_execution
 
-    async def _restore_network(self, execution: VmExecution, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
+    async def _restore_network(self, _execution: VmExecution, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
 
-        vm_type = VmType.from_message_content(execution.message)
+        # Reattach is QEMU-instance only; the message is gone by design.
+        vm_type = VmType.instance
         tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
 
         if not self.network.interface_exists(vm_id):
@@ -667,6 +671,54 @@ class VmPool:
 
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
+
+    async def _restore_running_execution_from_config(
+        self, config: Configuration, vm_id: int, vm_hash: ItemHash
+    ) -> None:
+        """Rebuild in-memory state for a VM whose controller is still active.
+
+        Sourced entirely from the on-disk controller config -- message-free.
+        """
+        spec = spec_from_controller_configuration(config)
+        execution = VmExecution.from_spec(
+            spec,
+            snapshot_manager=self.snapshot_manager,
+            systemd_manager=self.systemd_manager,
+        )
+
+        execution.mapped_ports = await get_port_mappings(vm_hash)
+        logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
+
+        await execution.prepare()  # builds resources from the spec; no download
+        tap_interface = await self._restore_network(execution, vm_id, vm_hash)
+
+        vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
+        await vm.start_guest_api()
+        execution.ready_event.set()
+        execution.times.started_at = datetime.now(tz=timezone.utc)
+
+        self._schedule_forget_on_stop(execution)
+
+        if vm.support_snapshot and self.snapshot_manager:
+            await self.snapshot_manager.start_for(vm=execution.vm)
+
+        if execution.mapped_ports:
+            await execution.recreate_port_redirect_rules()
+
+        self.executions[vm_hash] = execution
+
+    async def _handle_dead_controller(self, config: Configuration) -> None:
+        """Stop the stale controller service for a VM that is no longer active.
+
+        The orphan controller config is removed by _cleanup_orphan_resources
+        once the VM is absent from self.executions.
+        """
+        service_name = f"aleph-vm-controller@{config.vm_hash}.service"
+        try:
+            self.systemd_manager.stop_and_disable(service_name)
+            logger.info("Stopped and disabled stale controller service %s", service_name)
+        except Exception:
+            logger.warning("Failed to stop/disable stale controller %s", service_name, exc_info=True)
 
     async def _handle_dead_execution(self, execution: VmExecution, saved_execution: ExecutionRecord) -> None:
         """Record usage for a dead execution and stop its controller service."""
