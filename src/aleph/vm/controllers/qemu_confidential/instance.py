@@ -20,6 +20,7 @@ from aleph.vm.controllers.configuration import (
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.controllers.qemu.instance import AlephQemuResources, ConfigurationType
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_existing_file
 
 logger = logging.getLogger(__name__)
@@ -89,8 +90,9 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         image_path = str(self.resources.rootfs_path)
         firmware_path = str(self.resources.firmware_path)
         vcpu_count = self.hardware_resources.vcpus
-        mem_size_mib = self.hardware_resources.memory
-        mem_size_mb = str(int(mem_size_mib / 1024 / 1024 * 1000 * 1000))
+        # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
+        # through via a typed size to avoid the prior unit-mixing under-allocation.
+        mem_size_mb = MiB(self.hardware_resources.memory)
 
         vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / self.vm_hash
         session_file_path = vm_session_path / "vm_session.b64"
