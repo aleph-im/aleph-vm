@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import yaml
-from aleph_message.models import ItemHash
+from aleph_message.models import InstanceContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 class AlephInstanceResources(AlephFirecrackerResources):
+    # A Firecracker instance is always driven by an InstanceContent.
+    message_content: InstanceContent
+
     async def download_runtime(self):
         self.rootfs_path = await create_devmapper(self.message_content.rootfs, self.namespace)
         assert self.rootfs_path.is_block_device(), f"Runtime not found on {self.rootfs_path}"

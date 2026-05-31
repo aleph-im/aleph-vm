@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import psutil
-from aleph_message.models import ItemHash
+from aleph_message.models import InstanceContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
@@ -21,12 +21,14 @@ from aleph.vm.controllers.configuration import (
     QemuVMHostVolume,
     save_controller_configuration,
 )
-from aleph.vm.controllers.firecracker.executable import (
-    AlephFirecrackerResources,
-    VmSetupError,
-)
+from aleph.vm.controllers.firecracker.executable import VmSetupError
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
+from aleph.vm.controllers.resources import (
+    VmResources,
+    disk_usage_delta,
+    host_volumes_from_message,
+)
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
@@ -37,13 +39,32 @@ from aleph.vm.utils import run_in_subprocess
 logger = logging.getLogger(__name__)
 
 
-class AlephQemuResources(AlephFirecrackerResources):
+class AlephQemuResources(VmResources):
+    """Resources required to start a QEMU VM.
+
+    Shares host-resource mechanics with Firecracker via ``VmResources`` but
+    deliberately does *not* inherit from ``AlephFirecrackerResources``: QEMU
+    is a different hypervisor, not a kind of Firecracker VM.
+    """
+
+    # QEMU only ever runs instances, so the content is strongly typed.
+    message_content: InstanceContent
     gpus: list[HostGPU] = []
+
+    def __init__(self, message_content: InstanceContent, namespace: str):
+        super().__init__(namespace)
+        self.message_content = message_content
+
+    def get_disk_usage_delta(self) -> int:
+        return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
 
     async def download_runtime(self) -> None:
         volume = self.message_content.rootfs
         parent_image_path = await get_rootfs_base_path(volume.parent.ref)
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
+
+    async def download_volumes(self) -> None:
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
 
     async def download_all(self):
         await asyncio.gather(
