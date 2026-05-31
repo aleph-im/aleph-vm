@@ -18,7 +18,7 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
-from aleph.vm.controllers.firecracker.executable import HostVolume
+from aleph.vm.controllers.resources import HostVolume
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import Backend, DiskRole

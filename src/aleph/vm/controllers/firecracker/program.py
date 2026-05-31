@@ -11,7 +11,7 @@ from pathlib import Path
 
 import msgpack
 from aiohttp import ClientResponseError
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import MachineResources
 
@@ -195,6 +195,9 @@ class AlephProgramResources(AlephFirecrackerResources):
     """Resources required by the virtual machine in order to launch the program.
     Extends the resources required by all Firecracker VMs."""
 
+    # A Firecracker program is always driven by a ProgramContent.
+    message_content: ProgramContent
+
     code_path: Path
     code_encoding: Encoding
     code_entrypoint: str
@@ -202,7 +205,7 @@ class AlephProgramResources(AlephFirecrackerResources):
     code_interface: Interface
     data_path: Path | None
 
-    def __init__(self, message_content: ExecutableContent, namespace: str):
+    def __init__(self, message_content: ProgramContent, namespace: str):
         super().__init__(message_content, namespace)
         self.code_encoding = message_content.code.encoding
         self.code_entrypoint = message_content.code.entrypoint

@@ -6,14 +6,13 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from multiprocessing import Process, set_start_method
-from os.path import exists, isfile
+from os.path import exists
 from pathlib import Path
 from typing import Generic, TypeVar
 
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.environment import MachineResources
-from aleph_message.models.execution.volume import MachineVolume, PersistentVolume
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -23,11 +22,16 @@ from aleph.vm.controllers.configuration import (
 )
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
+from aleph.vm.controllers.resources import (
+    VmResources,
+    disk_usage_delta,
+    host_volumes_from_message,
+)
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.storage import chown_to_jailman, get_volume_path
+from aleph.vm.storage import chown_to_jailman
 
 try:
     import psutil  # type: ignore [no-redef]
@@ -67,14 +71,6 @@ class Volume:
 
 
 @dataclass
-class HostVolume:
-    mount: str
-    path_on_host: Path
-    read_only: bool
-    size_mib: int | None
-
-
-@dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
     ip: str | None = None
@@ -91,77 +87,25 @@ class ConfigurationResponse:
     traceback: str | None = None
 
 
-class AlephFirecrackerResources:
-    """Resources required to start a Firecracker VM"""
+class AlephFirecrackerResources(VmResources):
+    """Resources required to start a Firecracker VM.
+
+    Firecracker executions are always driven by an Aleph message, so
+    ``message_content`` is required here (contrast ``AlephQemuResources``,
+    which may be built message-free from a spec).
+    """
 
     message_content: ExecutableContent
 
-    kernel_image_path: Path
-    rootfs_path: Path
-    volumes: list[HostVolume]
-    namespace: str
+    def __init__(self, message_content: ExecutableContent, namespace: str):
+        super().__init__(namespace)
+        self.message_content = message_content
 
     def get_disk_usage_delta(self) -> int:
-        """Difference between the size requested and what is currently used on disk.
-
-        Count rootfs and volumes.
-        Used to calculate an estimate of space resource available for use.
-        Value in bytes and is negative"""
-
-        total_delta = 0
-        # Root fs
-        if hasattr(self.message_content, "rootfs"):
-            volume = self.message_content.rootfs
-            used_size = self.rootfs_path.stat().st_size if self.rootfs_path.exists() else 0
-            requested_size = int(volume.size_mib * 1024 * 1024)
-            size_delta = used_size - requested_size
-            total_delta += size_delta
-
-        # Count each extra volume
-        for volume in self.volumes:
-            if not volume.size_mib:
-                # planned size not set on immutable volume
-                size_delta = 0
-            else:
-                used_size = volume.path_on_host.stat().st_size if volume.path_on_host.exists() else 0
-                requested_size = int(volume.size_mib * 1024 * 1024)
-
-                size_delta = used_size - requested_size
-            total_delta += size_delta
-        return total_delta
-
-    def __init__(self, message_content: ExecutableContent, namespace: str):
-        self.message_content = message_content
-        self.namespace = namespace
-
-    def to_dict(self):
-        return self.__dict__
-
-    async def download_kernel(self):
-        # Assumes kernel is already present on the host
-        self.kernel_image_path = Path(settings.LINUX_PATH)
-        assert isfile(self.kernel_image_path)
+        return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
 
     async def download_volumes(self):
-        volumes = []
-        # TODO: Download in parallel and prevent duplicated volume names
-        volume: MachineVolume
-        for i, volume in enumerate(self.message_content.volumes):
-            # only persistent volume has name and mount
-            if isinstance(volume, PersistentVolume):
-                if not volume.name:
-                    volume.name = f"unamed_volume_{i}"
-                if not volume.mount:
-                    volume.mount = f"/mnt/{volume.name}"
-            volumes.append(
-                HostVolume(
-                    mount=volume.mount,
-                    path_on_host=(await get_volume_path(volume=volume, namespace=self.namespace)),
-                    read_only=volume.is_read_only(),
-                    size_mib=getattr(volume, "size_mib", None),
-                )
-            )
-        self.volumes = volumes
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
 
     async def download_all(self):
         await asyncio.gather(
