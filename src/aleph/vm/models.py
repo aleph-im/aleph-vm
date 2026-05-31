@@ -419,6 +419,29 @@ class VmExecution:
         return bool(message and message.payment and message.payment.is_credit)
 
     @property
+    def allocated_memory_mib(self) -> int:
+        """Requested memory in MiB, from the spec or the message."""
+        if isinstance(self.spec, CreateVmSpec):
+            return self.spec.memory_mib
+        resources = self.spec.message.resources
+        if resources is None:
+            # resources is a required field on InstanceContent / ProgramContent,
+            # so this only happens on a malformed execution. Fail loud rather
+            # than under-reporting committed resources to the admission check.
+            raise ValueError(f"{self}: message has no resources to derive allocated memory from")
+        return resources.memory
+
+    @property
+    def allocated_vcpus(self) -> int:
+        """Requested vCPUs, from the spec or the message."""
+        if isinstance(self.spec, CreateVmSpec):
+            return self.spec.vcpus
+        resources = self.spec.message.resources
+        if resources is None:
+            raise ValueError(f"{self}: message has no resources to derive allocated vCPUs from")
+        return resources.vcpus
+
+    @property
     def has_resources(self) -> bool:
         assert self.vm, "The VM attribute has to be set before calling has_resources()"
         if isinstance(self.vm, AlephFirecrackerExecutable):
