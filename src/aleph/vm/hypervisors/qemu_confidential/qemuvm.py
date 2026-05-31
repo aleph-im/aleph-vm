@@ -72,7 +72,7 @@ class QemuConfidentialVM(QemuVM):
             "-enable-kvm",
             "-nodefaults",
             "-m",
-            str(self.mem_size_mb),
+            str(self.mem_size_mb.count),
             "-smp",
             str(self.vcpu_count),
             "-drive",

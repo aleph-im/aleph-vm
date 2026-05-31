@@ -114,6 +114,7 @@ class DiskSpec:
     readonly: bool
     format: DiskFormat
     role: DiskRole
+    mount: str = ""  # guest mount point; empty for rootfs. Preserves the Aleph volume mount.
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,7 @@ class CreateVmSpec:
     gpus: list[GpuSpec]
     numa_node: int | None
     persistent: bool
+    ssh_authorized_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
