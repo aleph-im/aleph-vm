@@ -27,7 +27,6 @@ from aleph.vm.controllers.qemu.cloudinit import (
     get_hostname_from_hash,
 )
 from aleph.vm.sizes import MiB
-from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import Backend, CreateVmSpec, DiskRole
 
 if TYPE_CHECKING:
@@ -94,11 +93,7 @@ async def build_qemu_configuration(
     Mirrors AlephQemuInstance.configure() exactly. The memory formula is
     reproduced verbatim -- do not "fix" it; this is a deliberate decouple.
     """
-    # Locate the rootfs disk.
-    rootfs_disks = [d for d in spec.disks if d.role is DiskRole.ROOTFS]
-    if not rootfs_disks:
-        raise InvalidBackendError("CreateVmSpec has no ROOTFS disk")
-    image_path = str(rootfs_disks[0].path)
+    image_path = str(spec.require_rootfs().path)
 
     # Extra / data volumes become host volumes.
     # The real mount point is carried from the DiskSpec.

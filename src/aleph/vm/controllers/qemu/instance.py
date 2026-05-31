@@ -4,7 +4,7 @@ import logging
 import shutil
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import psutil
 from aleph_message.models import InstanceContent, ItemHash
@@ -25,6 +25,7 @@ from aleph.vm.controllers.firecracker.executable import VmSetupError
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.controllers.resources import (
+    HostVolume,
     VmResources,
     disk_usage_delta,
     host_volumes_from_message,
@@ -36,22 +37,28 @@ from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.utils import run_in_subprocess
 
+if TYPE_CHECKING:
+    from aleph.vm.supervisor.types import CreateVmSpec
+
 logger = logging.getLogger(__name__)
 
 
 class AlephQemuResources(VmResources):
     """Resources required to start a QEMU VM.
 
-    Shares host-resource mechanics with Firecracker via ``VmResources`` but
-    deliberately does *not* inherit from ``AlephFirecrackerResources``: QEMU
-    is a different hypervisor, not a kind of Firecracker VM.
+    A QEMU execution may be driven by an Aleph message or built message-free
+    from a :class:`CreateVmSpec` (see :meth:`from_spec`), so ``message_content``
+    is optional. It deliberately does *not* inherit from
+    ``AlephFirecrackerResources``: the two hypervisors share host-resource
+    mechanics (see ``VmResources``) but not the message contract.
     """
 
-    # QEMU only ever runs instances, so the content is strongly typed.
-    message_content: InstanceContent
+    # QEMU only ever runs instances, so the content is strongly typed. It is
+    # optional because the holder may be built message-free from a CreateVmSpec.
+    message_content: InstanceContent | None
     gpus: list[HostGPU] = []
 
-    def __init__(self, message_content: InstanceContent, namespace: str):
+    def __init__(self, message_content: InstanceContent | None, namespace: str):
         super().__init__(namespace)
         self.message_content = message_content
 
@@ -59,11 +66,16 @@ class AlephQemuResources(VmResources):
         return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
 
     async def download_runtime(self) -> None:
+        if self.message_content is None:
+            msg = "download_runtime called on a spec-built resources holder (no message to download from)"
+            raise VmSetupError(msg)
         volume = self.message_content.rootfs
         parent_image_path = await get_rootfs_base_path(volume.parent.ref)
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
 
     async def download_volumes(self) -> None:
+        if self.message_content is None:
+            return
         self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
 
     async def download_all(self):
@@ -115,6 +127,31 @@ class AlephQemuResources(VmResources):
             ]
         )
         return dest_path
+
+    @classmethod
+    def from_spec(cls, spec: "CreateVmSpec", namespace: str) -> "AlephQemuResources":
+        """Build a message-free resources holder from a CreateVmSpec.
+
+        No download is performed: every path comes from the spec, which the
+        agent already resolved on disk. The holder satisfies the attribute
+        surface the QEMU controller and pool read (rootfs_path, volumes,
+        gpus, kernel_image_path), with message_content left None.
+        """
+        # Local import keeps the supervisor.* dependency out of module load order.
+        from aleph.vm.supervisor.types import DiskRole
+
+        resources = cls(None, namespace)
+        resources.kernel_image_path = Path(settings.LINUX_PATH)
+
+        resources.rootfs_path = spec.require_rootfs().path
+
+        resources.volumes = [
+            HostVolume(mount=d.mount, path_on_host=d.path, read_only=d.readonly, size_mib=None)
+            for d in spec.disks
+            if d.role in {DiskRole.EXTRA, DiskRole.DATA}
+        ]
+        resources.gpus = [HostGPU(pci_host=g.pci_host, supports_x_vga=g.supports_x_vga) for g in spec.gpus]
+        return resources
 
 
 ConfigurationType = TypeVar("ConfigurationType")
