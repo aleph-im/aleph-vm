@@ -426,9 +426,9 @@ class VmExecution:
             resources: (
                 AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance
             )
-            if self.is_program:
+            if isinstance(self.message, ProgramContent):
                 resources = AlephProgramResources(self.message, namespace=self.vm_hash)
-            elif self.is_instance:
+            elif isinstance(self.message, InstanceContent):
                 if self.hypervisor == HypervisorType.firecracker:
                     resources = AlephInstanceResources(self.message, namespace=self.vm_hash)
                 elif self.hypervisor == HypervisorType.qemu:
