@@ -16,6 +16,7 @@ from aleph_message.models.execution.environment import (
 )
 from test_supervisor_translate import _make_qemu_instance_message
 
+from aleph.vm.models import MessageSpec
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.supervisor.types import (
     Backend,
@@ -65,7 +66,7 @@ async def test_eligible_instance_routed_through_spec(monkeypatch):
     spec = _spec()
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
 
-    created = SimpleNamespace(message=None, original=None, is_instance=True)
+    created = SimpleNamespace(spec=None, is_instance=True)
     created.fetch_port_redirect_config_and_setup = AsyncMock()
     pool = SimpleNamespace(
         message_cache={},
@@ -78,9 +79,8 @@ async def test_eligible_instance_routed_through_spec(monkeypatch):
     run_module.build_create_vm_spec.assert_awaited_once()
     pool.create_vm_from_spec.assert_awaited_once_with(spec)
     pool.create_a_vm.assert_not_awaited()
-    # Agent re-attached the message for its own consumers.
-    assert execution.message is content
-    assert execution.original is original_content
+    # Agent re-sourced the execution as message-driven for its own consumers.
+    assert execution.spec == MessageSpec(message=content, original=original_content)
     created.fetch_port_redirect_config_and_setup.assert_awaited_once()
 
 

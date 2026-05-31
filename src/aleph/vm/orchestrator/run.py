@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     VmSetupError,
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import VmExecution
+from aleph.vm.models import MessageSpec, VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.translate import build_create_vm_spec
@@ -90,11 +90,10 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
         # persistent=False callers carry programs, which never reach here.
         spec = await build_create_vm_spec(vm_hash, content)
         execution = await pool.create_vm_from_spec(spec)
-        # Agent territory: attach the message so the operator API (owner auth),
-        # port forwarding and billing keep working. The supervisor machinery
-        # that just created the VM never read these.
-        execution.message = content
-        execution.original = original_message.content
+        # Agent territory: re-source the execution as message-driven so the
+        # operator API (owner auth), port forwarding and billing keep working.
+        # The supervisor machinery that just created the VM never read this.
+        execution.spec = MessageSpec(message=content, original=original_message.content)
         if execution.is_instance:
             await execution.fetch_port_redirect_config_and_setup()
         return execution
