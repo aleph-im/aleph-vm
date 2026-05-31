@@ -9,6 +9,7 @@ import qmp
 from systemd import journal
 
 from aleph.vm.controllers.configuration import QemuGPU, QemuVMConfiguration
+from aleph.vm.sizes import MiB
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class QemuVM:
     qmp_socket_path: Path
     qga_socket_path: Path
     vcpu_count: int
-    mem_size_mb: int
+    mem_size_mb: MiB
     interface_name: str
     qemu_process: Process | None = None
     host_volumes: list[HostVolume]
@@ -100,7 +101,7 @@ class QemuVM:
             "-enable-kvm",
             "-nodefaults",
             "-m",
-            str(self.mem_size_mb),
+            str(self.mem_size_mb.count),
             "-smp",
             str(self.vcpu_count),
             "-drive",
