@@ -60,9 +60,7 @@ async def test_eligible_instance_routed_through_spec(monkeypatch):
     original_content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
     original_message = MagicMock(content=original_content)
-    monkeypatch.setattr(
-        run_module, "load_updated_message", AsyncMock(return_value=(message, original_message))
-    )
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
 
     spec = _spec()
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
@@ -91,9 +89,7 @@ async def test_ineligible_firecracker_falls_back_to_legacy(monkeypatch):
     content = _make_qemu_instance_message(hypervisor=HypervisorType.firecracker)
     message = MagicMock(content=content)
     original_message = MagicMock(content=_make_qemu_instance_message())
-    monkeypatch.setattr(
-        run_module, "load_updated_message", AsyncMock(return_value=(message, original_message))
-    )
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
 
     legacy = SimpleNamespace()
