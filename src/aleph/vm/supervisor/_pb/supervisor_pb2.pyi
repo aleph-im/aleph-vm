@@ -362,6 +362,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     GPUS_FIELD_NUMBER: builtins.int
     NUMA_NODE_FIELD_NUMBER: builtins.int
     PERSISTENT_FIELD_NUMBER: builtins.int
+    SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: Global___Backend.ValueType
@@ -385,6 +386,10 @@ class CreateVmRequest(google.protobuf.message.Message):
     def network(self) -> Global___NetworkConfig: ...
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___GpuConfig]: ...
+    @property
+    def ssh_authorized_keys(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
+        """guest cloud-init SSH keys (agent-provided)"""
+
     def __init__(
         self,
         *,
@@ -400,9 +405,10 @@ class CreateVmRequest(google.protobuf.message.Message):
         gpus: collections.abc.Iterable[Global___GpuConfig] | None = ...,
         numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
+        ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 Global___CreateVmRequest: typing_extensions.TypeAlias = CreateVmRequest
@@ -453,11 +459,14 @@ class DiskConfig(google.protobuf.message.Message):
     READONLY_FIELD_NUMBER: builtins.int
     FORMAT_FIELD_NUMBER: builtins.int
     ROLE_FIELD_NUMBER: builtins.int
+    MOUNT_FIELD_NUMBER: builtins.int
     path: builtins.str
     """absolute host path"""
     readonly: builtins.bool
     format: Global___DiskConfig.Format.ValueType
     role: Global___DiskConfig.DiskRole.ValueType
+    mount: builtins.str
+    """guest mount point (empty for rootfs); preserves the Aleph volume mount"""
     def __init__(
         self,
         *,
@@ -465,8 +474,9 @@ class DiskConfig(google.protobuf.message.Message):
         readonly: builtins.bool = ...,
         format: Global___DiskConfig.Format.ValueType = ...,
         role: Global___DiskConfig.DiskRole.ValueType = ...,
+        mount: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["format", b"format", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["format", b"format", "mount", b"mount", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
 
 Global___DiskConfig: typing_extensions.TypeAlias = DiskConfig
 
