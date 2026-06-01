@@ -160,6 +160,13 @@ class VmPool:
         ``creation_lock``). Reading ``self.executions`` is safe without
         locking because this method does not ``await``.
 
+        The message-free spec path (:meth:`create_a_vm_from_spec`) does not
+        call this method: admission for spec-built VMs is the agent's
+        responsibility, enforced before it asks the supervisor to create.
+        Spec-built executions still contribute to the committed tally here
+        (via ``allocated_memory_mib`` / ``allocated_vcpus``), so they are
+        counted against any later message-driven admission check.
+
         Args:
             message: The executable content being evaluated for admission.
             current_vm_hash: When a caller re-evaluates an already-known VM
@@ -203,14 +210,15 @@ class VmPool:
         for execution in tuple(self.executions.values()):
             if current_vm_hash is not None and execution.vm_hash == current_vm_hash:
                 continue
-            resources = execution.message.resources
-            if not resources:
+            memory = execution.allocated_memory_mib
+            vcpus = execution.allocated_vcpus
+            if not memory and not vcpus:
                 continue
             if execution.is_instance:
-                committed_instance_memory_mib += resources.memory
+                committed_instance_memory_mib += memory
             else:
-                committed_program_memory_mib += resources.memory
-            committed_vcpus += resources.vcpus
+                committed_program_memory_mib += memory
+            committed_vcpus += vcpus
 
         physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
         physical_cores = psutil.cpu_count() or 1
@@ -820,6 +828,11 @@ class VmPool:
         """Return all executions of the given type, grouped by sender and by chain."""
         executions_by_address: dict[str, dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
+            message = execution.message
+            if message is None:
+                # Spec-built (supervisor-owned) executions carry no message;
+                # payment grouping is an agent concern.
+                continue
             if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
                 # Ignore Diagnostic VM execution
                 continue
@@ -830,13 +843,9 @@ class VmPool:
             if execution.vm_hash == settings.CHECK_FASTAPI_VM_ID:
                 # Ignore Diagnostic VM execution
                 continue
-            execution_payment = (
-                execution.message.payment
-                if execution.message.payment
-                else Payment(chain=Chain.ETH, type=PaymentType.hold)
-            )
+            execution_payment = message.payment if message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
             if execution_payment.type == payment_type:
-                address = execution.message.address
+                address = message.address
                 chain = execution_payment.chain
                 executions_by_address.setdefault(address, {})
                 executions_by_address[address].setdefault(chain, []).append(execution)

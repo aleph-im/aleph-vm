@@ -30,6 +30,8 @@ class AlephQemuConfidentialResources(AlephQemuResources):
     firmware_path: Path
 
     async def download_firmware(self):
+        # Confidential VMs are always message-driven; there is no spec path for them.
+        assert self.message_content is not None
         firmware = self.message_content.environment.trusted_execution.firmware
         self.firmware_path = await get_existing_file(firmware)
 
