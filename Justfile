@@ -3,15 +3,15 @@
 # Requires `just` (https://github.com/casey/just). Run `just` to list recipes.
 #
 # Quick start (Debian/Ubuntu):
-#   just system-deps   # once: apt packages + build headers (sudo)
-#   just venv          # create .testvenv, install the project + test deps
-#   just test          # run the suite without root
+#   just install-system-deps   # once: apt packages + build headers (sudo)
+#   just setup-venv            # create .testvenv, install the project + test deps
+#   just test                  # run the suite without root
 #
-# `system-deps` installs the apt python3-* bindings (nftables, dbus, systemd,
-# ...) and the dev headers pip compiles dbus-python / systemd-python against,
-# mirroring .github/workflows/test-using-pytest.yml. `venv` then creates a
-# --system-site-packages virtualenv (so those bindings are visible, matching
-# CI's hatch `testing` env) and installs the rest with pip.
+# `install-system-deps` installs the apt python3-* bindings (nftables, dbus,
+# systemd, ...) and the dev headers pip compiles dbus-python / systemd-python
+# against, mirroring .github/workflows/test-using-pytest.yml. `setup-venv` then
+# creates a --system-site-packages virtualenv (so those bindings are visible,
+# matching CI's hatch `testing` env) and installs the rest with pip.
 #
 # A handful of tests still require root + network + qemu/firecracker (network
 # interfaces, VM creation, runtime downloads); those only pass in CI under sudo.
@@ -30,7 +30,7 @@ _default:
     @just --list
 
 # Install the apt packages and build headers the test suite needs (sudo).
-system-deps:
+install-system-deps:
     sudo apt-get update
     sudo apt-get install -y \
         python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns \
@@ -39,8 +39,8 @@ system-deps:
         python3-jwcrypto nftables redis acl curl systemd-container squashfs-tools \
         debootstrap libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw
 
-# Create .testvenv and install the project + test/lint deps (run system-deps first).
-venv:
+# Create .testvenv and install the project + test/lint deps (run install-system-deps first).
+setup-venv:
     python3 -m venv --system-site-packages {{ venv }}
     {{ venv }}/bin/pip install --upgrade pip
     {{ venv }}/bin/pip install -e . \
@@ -57,13 +57,18 @@ test *args="tests":
         {{ py }} -m pytest {{ args }}
 
 # Whole-package type check (the CI mypy gate).
-mypy:
+check-typing:
     {{ py }} -m mypy src/aleph/vm/
 
 # Style checks (ruff format + isort), matching CI's linting env.
 lint:
     {{ py }} -m ruff format --check .
     {{ py }} -m isort --check-only --profile black .
+
+# Apply formatting in place (ruff format + isort).
+format:
+    {{ py }} -m ruff format .
+    {{ py }} -m isort --profile black .
 
 # Remove the local test virtualenv and writable roots.
 clean:
