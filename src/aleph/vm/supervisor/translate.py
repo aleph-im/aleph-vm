@@ -42,6 +42,11 @@ async def build_create_vm_spec(
     - non-instance messages
     - non-QEMU hypervisor
     - confidential (trusted_execution set) instances
+
+    The routing gate ``run._is_spec_eligible`` mirrors these checks to decide
+    which messages reach this path; keep the two in sync. That gate is
+    additionally conservative about GPUs, which this function accepts (via
+    ``gpus``), so GPU instances are filtered upstream, not here.
     """
     # --- Validate before any I/O ---
 
