@@ -105,8 +105,10 @@ def _make_program_execution(hash_: str, memory_mib: int, vcpus: int):
     execution = mock.MagicMock()
     execution.is_instance = False
     execution.vm_hash = hash_
-    execution.message.resources.memory = memory_mib
-    execution.message.resources.vcpus = vcpus
+    # check_admission tallies committed resources via these accessors, which
+    # resolve from either the spec or the message.
+    execution.allocated_memory_mib = memory_mib
+    execution.allocated_vcpus = vcpus
     return execution
 
 
@@ -115,8 +117,10 @@ def _make_instance_execution(hash_: str, memory_mib: int, vcpus: int):
     execution = mock.MagicMock()
     execution.is_instance = True
     execution.vm_hash = hash_
-    execution.message.resources.memory = memory_mib
-    execution.message.resources.vcpus = vcpus
+    # check_admission tallies committed resources via these accessors, which
+    # resolve from either the spec or the message.
+    execution.allocated_memory_mib = memory_mib
+    execution.allocated_vcpus = vcpus
     return execution
 
 
