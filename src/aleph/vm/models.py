@@ -167,7 +167,8 @@ class VmExecution:
         # Precondition: this is an agent-responsibility entrypoint. The agent
         # attaches the message before calling it (see orchestrator/run.py); a
         # message-free supervisor execution never reaches here.
-        assert isinstance(self.spec, MessageSpec)
+        if not isinstance(self.spec, MessageSpec):
+            raise TypeError("port forwarding is message-only; spec-built executions are driven by the agent")
         message = self.spec.message
         ports_requests: dict[int, dict] = {}
         try:
@@ -562,7 +563,8 @@ class VmExecution:
             self.resources = resources
 
     def prepare_gpus(self, available_gpus: list[GpuDevice]) -> None:
-        assert isinstance(self.spec, MessageSpec)
+        if not isinstance(self.spec, MessageSpec):
+            raise TypeError("prepare_gpus is message-only; GPU assignment is baked into CreateVmSpec")
         message = self.spec.message
         gpus: list[HostGPU] = []
         assigned_pci_hosts: set[str] = set()
@@ -853,7 +855,8 @@ class VmExecution:
             self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
 
     async def watch_for_updates(self, pubsub: PubSub):
-        assert isinstance(self.spec, MessageSpec)
+        if not isinstance(self.spec, MessageSpec):
+            raise TypeError("watch_for_updates is message-only; spec-built executions have no message to update")
         original = self.spec.original
         if self.is_instance:
             await pubsub.msubscribe(

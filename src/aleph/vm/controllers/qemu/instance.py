@@ -63,6 +63,9 @@ class AlephQemuResources(VmResources):
         self.message_content = message_content
 
     def get_disk_usage_delta(self) -> int:
+        # Intentionally 0 for the spec path: message_content is None and the
+        # spec-built volumes carry no size_mib, so nothing is counted. Spec VMs
+        # do not reserve disk through the pool; the agent sizes them upfront.
         return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
 
     async def download_runtime(self) -> None:
