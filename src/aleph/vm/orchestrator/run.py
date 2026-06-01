@@ -46,6 +46,10 @@ from .pubsub import PubSub
 
 logger = logging.getLogger(__name__)
 
+# Readiness poll for the spec create path (replaces execution.becomes_ready()).
+_START_POLL_TIMEOUT_SECONDS = 120.0
+_START_POLL_INTERVAL_SECONDS = 0.5
+
 
 async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
     # ASGI mandates lowercase header names
@@ -122,6 +126,33 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
                     )
                 )
     return forwards
+
+
+async def _wait_until_running(
+    supervisor: Supervisor,
+    vm_id: VmId,
+    *,
+    timeout: float = _START_POLL_TIMEOUT_SECONDS,
+    interval: float = _START_POLL_INTERVAL_SECONDS,
+) -> VmInfo:
+    """Poll get_vm until the VM reports RUNNING.
+
+    In-process the first poll already reports RUNNING (create_vm blocked until
+    boot); across a future gRPC boundary this does real work. Raises on a
+    terminal status or after `timeout` seconds.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        info = await supervisor.get_vm(vm_id)
+        if info.status is VmStatus.RUNNING:
+            return info
+        if info.status in (VmStatus.STOPPED, VmStatus.FAILED):
+            msg = f"VM {vm_id} entered status {info.status.value} while waiting to start"
+            raise RuntimeError(msg)
+        if asyncio.get_running_loop().time() >= deadline:
+            msg = f"VM {vm_id} did not reach RUNNING within {timeout}s"
+            raise asyncio.TimeoutError(msg)
+        await asyncio.sleep(interval)
 
 
 async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
