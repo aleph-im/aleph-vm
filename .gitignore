@@ -3,6 +3,10 @@
 *.pyc
 __pycache__
 
+# Local test virtualenv and writable roots created by the Justfile
+.testvenv/
+.test-roots/
+
 *.sqlite3
 *.bin
 *.ext4
