@@ -134,7 +134,9 @@ class InProcessSupervisor(Supervisor):
 
     # Lifecycle
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
-        raise NotImplementedSupervisorError("create_vm is deferred to a later phase")
+        with translating_errors():
+            execution = await self.pool.create_vm_from_spec(spec)
+            return _to_vm_info(execution, _is_running(execution, self.pool))
 
     async def get_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():

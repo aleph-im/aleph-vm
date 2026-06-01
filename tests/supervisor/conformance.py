@@ -6,7 +6,6 @@ collected directly (its class name does not start with Test).
 """
 
 import inspect
-from pathlib import Path
 
 import pytest
 
@@ -14,7 +13,6 @@ from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import NotImplementedSupervisorError
 
 STUB_METHODS = {
-    "create_vm",
     "start_backup",
     "get_backup_status",
     "list_backups",
@@ -46,30 +44,22 @@ class SupervisorContractTests:
 
     @pytest.mark.asyncio
     async def test_stub_methods_raise_not_implemented(self, supervisor):
-        if "create_vm" in STUB_METHODS:
-            from aleph.vm.supervisor.types import (
-                Backend,
-                CreateVmSpec,
-                NetworkConfig,
-                VmId,
-            )
-
-            spec = CreateVmSpec(
-                vm_id=VmId("x"),
-                backend=Backend.QEMU,
-                kernel_path=Path(""),
-                initrd_path=Path(""),
-                disks=[],
-                vcpus=1,
-                memory_mib=512,
-                tee=None,
-                network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
-                gpus=[],
-                numa_node=None,
-                persistent=True,
-            )
+        for name in STUB_METHODS:
+            method = getattr(supervisor, name)
+            sig = inspect.signature(method)
+            # Stubs raise before touching their arguments, so dummy values suffice.
+            dummy_args = [
+                None
+                for p in sig.parameters.values()
+                if p.default is inspect.Parameter.empty
+                and p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
             with pytest.raises(NotImplementedSupervisorError):
-                await supervisor.create_vm(spec)
+                if inspect.isasyncgenfunction(method):
+                    async for _ in method(*dummy_args):
+                        pass
+                else:
+                    await method(*dummy_args)
 
     def test_streaming_methods_return_async_iterators(self, supervisor):
         for name in ("stream_logs", "download_backup"):

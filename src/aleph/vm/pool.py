@@ -21,6 +21,7 @@ from aleph_message.models import (
 from pydantic import TypeAdapter
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import save_controller_configuration
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
@@ -36,6 +37,9 @@ from aleph.vm.resources import (
     InsufficientResourcesError,
     get_gpu_devices,
 )
+from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.qemu_build import build_qemu_configuration
+from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import get_message_executable_content
 from aleph.vm.vm_type import VmType
@@ -160,7 +164,7 @@ class VmPool:
         ``creation_lock``). Reading ``self.executions`` is safe without
         locking because this method does not ``await``.
 
-        The message-free spec path (:meth:`create_a_vm_from_spec`) does not
+        The message-free spec path (:meth:`create_vm_from_spec`) does not
         call this method: admission for spec-built VMs is the agent's
         responsibility, enforced before it asks the supervisor to create.
         Spec-built executions still contribute to the committed tally here
@@ -403,6 +407,65 @@ class VmPool:
 
             self._schedule_forget_on_stop(execution)
 
+            return execution
+
+    async def create_vm_from_spec(self, spec: CreateVmSpec) -> VmExecution:
+        """Create a VM from a message-free CreateVmSpec.
+
+        The supervisor's creation path: no Aleph message, no download. The
+        spec carries resolved on-disk paths. The controller config is written
+        by build_qemu_configuration (0.C), so the message-coupled
+        vm.configure() is skipped (start(write_config=False)).
+        """
+        if spec.backend is not Backend.QEMU:
+            msg = f"create_vm_from_spec supports QEMU only, got {spec.backend}"
+            raise InvalidBackendError(msg)
+
+        vm_hash = ItemHash(spec.vm_id)
+        async with self.creation_lock:
+            current_execution = self.executions.get(vm_hash)
+            if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                current_execution.cancel_expiration()
+                return current_execution
+
+            execution = VmExecution.from_spec(
+                spec,
+                snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
+            )
+            self.executions[vm_hash] = execution
+
+            tap_interface = None
+            vm_id = None
+            try:
+                await execution.prepare()  # builds resources from the spec; no download
+
+                vm_id = self.get_unique_vm_id()
+
+                if self.network:
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, VmType.instance)
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
+                    await self.network.create_tap(vm_id, tap_interface)
+
+                config = await build_qemu_configuration(spec, vm_id, tap_interface)
+                save_controller_configuration(spec.vm_id, config)
+
+                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                await execution.start(write_config=False)
+                # NOTE: port forwarding is not fetched here. It depends on the
+                # owner address + user-settings aggregate (agent concerns); the
+                # agent drives it through the supervisor's add_port_forward.
+            except Exception:
+                if execution.vm:
+                    await execution.vm.teardown()
+                elif tap_interface and vm_id is not None:
+                    teardown_nftables_for_vm(vm_id)
+                    await tap_interface.delete()
+                self.forget_vm(vm_hash)
+                raise
+
+            self._schedule_forget_on_stop(execution)
             return execution
 
     def get_unique_vm_id(self) -> int:
