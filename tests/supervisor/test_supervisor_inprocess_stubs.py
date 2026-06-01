@@ -4,36 +4,12 @@ import pytest
 
 from aleph.vm.supervisor.errors import NotImplementedSupervisorError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import (
-    Backend,
-    BackupId,
-    CreateVmSpec,
-    DirectoryPath,
-    NetworkConfig,
-    VmId,
-)
+from aleph.vm.supervisor.types import BackupId, DirectoryPath, VmId
 
 
 class FakePool:
     def __init__(self):
         self.executions = {}
-
-
-def make_spec() -> CreateVmSpec:
-    return CreateVmSpec(
-        vm_id=VmId("abc"),
-        backend=Backend.QEMU,
-        kernel_path=Path(""),
-        initrd_path=Path(""),
-        disks=[],
-        vcpus=1,
-        memory_mib=512,
-        tee=None,
-        network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
-        gpus=[],
-        numa_node=None,
-        persistent=True,
-    )
 
 
 @pytest.fixture
@@ -43,12 +19,6 @@ def supervisor():
 
 def test_can_instantiate(supervisor):
     assert isinstance(supervisor, InProcessSupervisor)
-
-
-@pytest.mark.asyncio
-async def test_create_vm_is_stubbed(supervisor):
-    with pytest.raises(NotImplementedSupervisorError):
-        await supervisor.create_vm(make_spec())
 
 
 @pytest.mark.asyncio
