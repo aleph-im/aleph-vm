@@ -153,6 +153,32 @@ class CreateVmSpec:
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
 
+    @property
+    def rootfs(self) -> DiskSpec | None:
+        """The single rootfs disk, or None for a rootfs-less spec.
+
+        Instances carry exactly one ROOTFS disk; programs carry none (their root
+        image is the runtime disk). Raises if more than one ROOTFS disk is
+        present, which is a malformed spec.
+        """
+        # Local import: aleph.vm.supervisor.errors imports ErrorCode from this
+        # module, so a top-level import would be circular.
+        from aleph.vm.supervisor.errors import InvalidBackendError
+
+        rootfs_disks = [disk for disk in self.disks if disk.role is DiskRole.ROOTFS]
+        if len(rootfs_disks) > 1:
+            raise InvalidBackendError(f"CreateVmSpec has {len(rootfs_disks)} ROOTFS disks, expected at most one")
+        return rootfs_disks[0] if rootfs_disks else None
+
+    def require_rootfs(self) -> DiskSpec:
+        """The single rootfs disk; raises if absent (or if more than one present)."""
+        from aleph.vm.supervisor.errors import InvalidBackendError
+
+        rootfs = self.rootfs
+        if rootfs is None:
+            raise InvalidBackendError("CreateVmSpec has no ROOTFS disk")
+        return rootfs
+
 
 @dataclass(frozen=True)
 class VmInfo:
