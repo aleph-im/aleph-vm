@@ -24,10 +24,22 @@ from aleph.vm.controllers.firecracker.program import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.translate import build_create_vm_spec
+from aleph.vm.supervisor.types import (
+    GuestPort,
+    HostPort,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils import HostNotFoundError
+from aleph.vm.utils.aggregate import get_user_settings
 
 from .messages import load_updated_message
 from .pubsub import PubSub
@@ -75,6 +87,41 @@ def _is_spec_eligible(content) -> bool:
     if content.requirements and content.requirements.gpu:
         return False
     return True
+
+
+async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
+    """Agent-side policy: translate the user's port-forwarding aggregate settings
+    into the set of forwards the hypervisor should apply.
+
+    This is the agent half of the old VmExecution.fetch_port_redirect_config_and_setup.
+    Nothing here touches nftables; the caller applies each spec through
+    supervisor.add_port_forward. host_port is left 0; the hypervisor assigns it.
+    """
+    ports_requests: dict[int, dict[str, bool]] = {}
+    try:
+        settings_for_user = await get_user_settings(content.address, "port-forwarding")
+        vm_port_forwarding = settings_for_user.get(str(vm_id), {}) or {}
+        fetched = vm_port_forwarding.get("ports", {})
+        ports_requests = {int(port): flags for port, flags in fetched.items()}
+    except Exception:
+        logger.info("Could not fetch port redirect settings for %s", content.address, exc_info=True)
+
+    # Always forward SSH.
+    ports_requests.setdefault(22, {"tcp": True, "udp": False})
+
+    forwards: list[PortForwardSpec] = []
+    for vm_port, flags in ports_requests.items():
+        for protocol in (Protocol.TCP, Protocol.UDP):
+            if flags.get(protocol.value):
+                forwards.append(
+                    PortForwardSpec(
+                        vm_id=vm_id,
+                        host_port=HostPort(0),
+                        vm_port=GuestPort(int(vm_port)),
+                        protocol=protocol,
+                    )
+                )
+    return forwards
 
 
 async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
