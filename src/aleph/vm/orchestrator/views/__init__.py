@@ -247,7 +247,11 @@ async def list_executions(request: web.Request) -> web.Response:
                     "ipv4": execution.vm.tap_interface.ip_network,
                     "ipv6": execution.vm.tap_interface.ipv6_network,
                 },
-                "vm_type": VmType.from_message_content(execution.message).name,
+                "vm_type": (
+                    VmType.from_message_content(execution.message).name
+                    if execution.message is not None
+                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
+                ),
                 "awaiting_confidential_init": execution.is_awaiting_confidential_init,
             }
             for item_hash, execution in pool.executions.items()
@@ -285,7 +289,11 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 # Confidential VMs are only started once their owner uploads the
                 # session certificates: not running, but not dead either.
                 "awaiting_confidential_init": execution.is_awaiting_confidential_init,
-                "vm_type": VmType.from_message_content(execution.message).name,
+                "vm_type": (
+                    VmType.from_message_content(execution.message).name
+                    if execution.message is not None
+                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
+                ),
             }
             for item_hash, execution in pool.executions.items()
         },
