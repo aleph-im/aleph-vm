@@ -297,6 +297,14 @@ class Settings(BaseSettings):
         default=60.0,
         description="Interval in seconds between payment checks",
     )
+    DOMAIN_RESYNC_INTERVAL: float = Field(
+        default=600.0,
+        description=(
+            "Interval in seconds between periodic HAProxy domain-mapping "
+            "re-syncs against DOMAIN_SERVICE_URL. Acts as a safety net for "
+            "missed WS events or upstream indexing lag."
+        ),
+    )
     PAYMENT_RECEIVER_ADDRESS: str | None = Field(
         default=None,
         description="Address of the account receiving payments. " "Defaults to OWNER_ADDRESS if not set.",

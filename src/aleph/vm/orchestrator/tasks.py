@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import random
 import time
 from collections.abc import AsyncIterable, Callable
 from decimal import Decimal
@@ -447,3 +448,42 @@ async def stop_balances_monitoring_task(app: web.Application):
         await app["payments_monitor"]
     except asyncio.CancelledError:
         logger.debug("Task payments_monitor is cancelled now")
+
+
+async def periodic_domain_resync(app: web.Application):
+    """Re-sync HAProxy domain mappings on a jittered interval.
+
+    Belt-and-braces for the WS-event-driven path in
+    `_handle_domains_aggregate`: a missed frame or upstream indexing lag
+    on DOMAIN_SERVICE_URL would otherwise leave the map stale until the
+    next aggregate update or supervisor restart.
+
+    Jitter prevents thundering-herd against DOMAIN_SERVICE_URL when many
+    CRNs restart together (rolling deploys, common upstream events).
+    First sleep picks a random phase across the full interval;
+    subsequent sleeps stay decorrelated with ±15% jitter.
+    """
+    pool: VmPool = app["vm_pool"]
+    interval = settings.DOMAIN_RESYNC_INTERVAL
+    await asyncio.sleep(random.uniform(0, interval))
+    while True:
+        try:
+            await pool.update_domain_mapping()
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
+                logger.debug("periodic_domain_resync exiting: event loop closed")
+                return
+            logger.warning("periodic_domain_resync failed: %s", e, exc_info=True)
+        await asyncio.sleep(interval * random.uniform(0.85, 1.15))
+
+
+async def start_domain_resync_task(app: web.Application):
+    app["domain_resync"] = create_task_log_exceptions(periodic_domain_resync(app), name="domain_resync")
+
+
+async def stop_domain_resync_task(app: web.Application):
+    app["domain_resync"].cancel()
+    try:
+        await app["domain_resync"]
+    except asyncio.CancelledError:
+        logger.debug("Task domain_resync is cancelled now")

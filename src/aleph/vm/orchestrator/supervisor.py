@@ -29,9 +29,11 @@ from .node_identity import (
 )
 from .resources import about_capability, about_certificates, about_system_usage
 from .tasks import (
+    start_domain_resync_task,
     start_payment_monitoring_task,
     start_watch_for_messages_task,
     stop_balances_monitoring_task,
+    stop_domain_resync_task,
     stop_watch_for_messages_task,
 )
 from .views import (
@@ -318,8 +320,10 @@ def run():
         if settings.WATCH_FOR_MESSAGES:
             app.on_startup.append(start_watch_for_messages_task)
             app.on_startup.append(start_payment_monitoring_task)
+            app.on_startup.append(start_domain_resync_task)
             app.on_cleanup.append(stop_watch_for_messages_task)
             app.on_cleanup.append(stop_balances_monitoring_task)
+            app.on_cleanup.append(stop_domain_resync_task)
 
         app.on_cleanup.append(stop_all_vms)
 
