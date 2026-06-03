@@ -17,6 +17,7 @@ from aleph_message.models.execution.environment import (
 )
 from test_supervisor_translate import _make_qemu_instance_message
 
+from aleph.vm.models import MessageSpec
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor.types import (
@@ -110,6 +111,10 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     assert supervisor.add_port_forward.await_count >= 1
     # The execution is read back from the pool once for start_persistent_vm.
     assert execution is created
+    # PR 1 boundary: the message-free execution is re-sourced as message-driven
+    # so the operator API (owner-auth, billing) keeps reading execution.message
+    # until those consumers move to the registry.
+    assert execution.spec == MessageSpec(message=content, original=original_content)
     supervisor.delete_vm.assert_not_awaited()
 
 

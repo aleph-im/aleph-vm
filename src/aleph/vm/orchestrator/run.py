@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     VmSetupError,
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import VmExecution
+from aleph.vm.models import MessageSpec, VmExecution
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
@@ -179,9 +179,10 @@ async def create_vm_execution(
     if _is_spec_eligible(content):
         spec = await build_create_vm_spec(vm_hash, content)
         info = await supervisor.create_vm(spec)
-        # Agent territory: record the message for the agent's own consumers
-        # (operator API owner-auth, billing, update-watching). The supervisor
-        # machinery that created the VM never reads it.
+        # Agent territory: record the message in the agent's own cache. This is
+        # what the message-free agent will read once owner-auth and billing move
+        # off the VmExecution (design doc section 5). The supervisor machinery
+        # that created the VM never reads it.
         registry.record(vm_hash, message=content, original=original_message.content)
         try:
             await _wait_until_running(supervisor, info.vm_id)
@@ -196,11 +197,15 @@ async def create_vm_execution(
             except Exception:
                 logger.exception("Teardown of half-started VM %s failed", vm_hash)
             raise
-        # TEMPORARY (PR 1 boundary, design doc section 8): start_persistent_vm
-        # still drives the VmExecution for the pre-existing check, expiry-cancel
-        # and update-watching. Read it back once so that caller is unchanged.
-        # This line goes away when those ops migrate off VmExecution.
-        return pool.executions[vm_hash]
+        # TEMPORARY (PR 1 boundary, design doc sections 5/8): the operator
+        # endpoints, billing and update-watching still read owner identity and
+        # the message off the VmExecution, and start_persistent_vm drives it for
+        # the pre-existing check and expiry-cancel. Re-source the message-free
+        # execution as message-driven and hand it back unchanged. This goes away
+        # when those consumers read the registry instead.
+        execution = pool.executions[vm_hash]
+        execution.spec = MessageSpec(message=content, original=original_message.content)
+        return execution
 
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
