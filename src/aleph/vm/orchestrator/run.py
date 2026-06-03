@@ -28,6 +28,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import (
     GuestPort,
@@ -211,9 +212,15 @@ async def create_vm_execution(
     return execution
 
 
-async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
+async def create_vm_execution_or_raise_http_error(
+    vm_hash: ItemHash,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+) -> VmExecution:
     try:
-        return await create_vm_execution(vm_hash=vm_hash, pool=pool)
+        return await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry)
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
@@ -266,7 +273,15 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         execution = None
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+        # Programs always take the legacy create path (they are never spec-eligible),
+        # which ignores the supervisor; the registry is the agent's own message cache.
+        # Construct them locally: this entry point also serves the standalone benchmark
+        # where there is no app-wide singleton to draw from.
+        supervisor = InProcessSupervisor(pool)
+        registry = AgentVmRegistry()
+        execution = await create_vm_execution_or_raise_http_error(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+        )
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -366,7 +381,13 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+        # See run_code_on_request: programs use the legacy path; build the
+        # supervisor/registry locally since the reactor has no app singletons.
+        supervisor = InProcessSupervisor(pool)
+        registry = AgentVmRegistry()
+        execution = await create_vm_execution_or_raise_http_error(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+        )
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -408,7 +429,14 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
+async def start_persistent_vm(
+    vm_hash: ItemHash,
+    pubsub: PubSub | None,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+) -> VmExecution:
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
         if execution.is_running:
@@ -431,7 +459,9 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
+        execution = await create_vm_execution(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
+        )
 
     await execution.becomes_ready()
 

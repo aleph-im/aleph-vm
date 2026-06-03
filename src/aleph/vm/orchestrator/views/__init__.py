@@ -517,6 +517,8 @@ async def update_allocations(request: web.Request):
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
+    supervisor = request.app["supervisor"]
+    registry = request.app["vm_registry"]
 
     async with allocation_lock:
         logger.debug("Got allocation_lock, updating allocations")
@@ -561,7 +563,7 @@ async def update_allocations(request: web.Request):
             try:
                 logger.info(f"Starting long running VM '{vm_hash}'")
                 vm_hash = ItemHash(vm_hash)
-                await start_persistent_vm(vm_hash, pubsub, pool)
+                await start_persistent_vm(vm_hash, pubsub, pool, supervisor=supervisor, registry=registry)
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", vm_hash, error)
                 scheduling_errors[vm_hash] = error
@@ -575,7 +577,7 @@ async def update_allocations(request: web.Request):
             logger.info(f"Starting instance '{instance_hash}'")
             instance_item_hash = ItemHash(instance_hash)
             try:
-                await start_persistent_vm(instance_item_hash, pubsub, pool)
+                await start_persistent_vm(instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", instance_hash, error)
                 scheduling_errors[instance_item_hash] = error
@@ -818,6 +820,8 @@ async def notify_allocation(request: web.Request):
 
     pubsub: PubSub = request.app["pubsub"]
     pool: VmPool = request.app["vm_pool"]
+    supervisor = request.app["supervisor"]
+    registry = request.app["vm_registry"]
 
     # Capacity admission control: refuse the allocation early (before payment
     # validation) if accepting it would push the host above its memory, vCPU,
@@ -951,7 +955,7 @@ async def notify_allocation(request: web.Request):
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
         logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
-        await start_persistent_vm(item_hash, pubsub, pool)
+        await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
         successful = True
         await pool.update_domain_mapping()
     except vm_creation_exceptions as error:

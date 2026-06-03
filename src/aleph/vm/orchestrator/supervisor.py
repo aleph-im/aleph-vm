@@ -18,8 +18,10 @@ from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -163,6 +165,8 @@ def setup_webapp(pool: VmPool | None):
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
+    app["supervisor"] = InProcessSupervisor(pool)
+    app["vm_registry"] = AgentVmRegistry()
     app["backup_state"] = BackupState()
     cors = setup(
         app,

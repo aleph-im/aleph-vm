@@ -611,7 +611,12 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                 await pool.stop_vm(vm_hash)
                 pool.forget_vm(vm_hash)
 
-                await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+                await create_vm_execution_or_raise_http_error(
+                    vm_hash=vm_hash,
+                    pool=pool,
+                    supervisor=request.app["supervisor"],
+                    registry=request.app["vm_registry"],
+                )
             return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
         else:
             return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
@@ -774,6 +779,8 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
                 pool=pool,
+                supervisor=request.app["supervisor"],
+                registry=request.app["vm_registry"],
             )
 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
@@ -1377,6 +1384,8 @@ async def _do_restore(
                 await create_vm_execution_or_raise_http_error(
                     vm_hash=vm_hash,
                     pool=pool,
+                    supervisor=request.app["supervisor"],
+                    registry=request.app["vm_registry"],
                 )
 
             return web.json_response(
