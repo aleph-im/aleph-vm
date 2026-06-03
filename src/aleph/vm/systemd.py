@@ -67,8 +67,14 @@ class SystemDManager:
         enumerates every loaded systemd unit on the host over D-Bus and
         ran ahead of every operation, turning a per-VM ``is_service_active``
         sweep into N full host enumerations and stalling the event loop
-        for tens of seconds. Real call failures still trigger reconnect
-        via the per-method ``DBusException`` handlers.
+        for tens of seconds.
+
+        Note: ``get_is_connected()`` is a local library-level flag and
+        does not round-trip to the D-Bus daemon, so it cannot detect a
+        hung or unresponsive daemon. Real call failures still trigger
+        reconnect via the per-method ``DBusException`` handlers; this
+        check exists only to short-circuit the obvious "bus closed"
+        case before issuing the actual call.
         """
         if self._bus is None or self._manager is None:
             self._connect()

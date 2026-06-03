@@ -832,6 +832,15 @@ class VmPool:
                 instead of via the per-VM ``is_running`` property, which
                 otherwise issues a D-Bus round-trip per execution and
                 blocks the event loop.
+
+                Semantic note: the per-VM path also checked
+                ``is_service_enabled`` before reading the active state;
+                the batch path reads ActiveState only. Aleph-VM
+                controller services are always enabled via
+                ``EnableUnitFiles`` before ``StartUnit`` (see
+                ``SystemDManager.enable_and_start``), so the gap is
+                immaterial in practice; the same batch shortcut is
+                already used by ``load_persistent_executions``.
         """
         executions_by_address: dict[str, dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():

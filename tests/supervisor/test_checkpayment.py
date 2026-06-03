@@ -308,3 +308,84 @@ async def test_removed_message_status(mocker, fake_instance_content):
     await check_payment(pool=pool)
     mock_stop_vm.assert_called_once_with(hash)
     mock_forget_vm.assert_called_once_with(hash)
+
+
+@pytest.mark.asyncio
+async def test_persistent_vm_uses_batched_running_states(mocker, fake_instance_content):
+    """check_payment batches systemd state lookups for persistent VMs.
+
+    Verifies that the asyncio.to_thread + get_services_active_states
+    path is taken (single batched D-Bus call) instead of the per-VM
+    is_running property, and that the returned dict drives the filter
+    in get_executions_by_address.
+    """
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
+    mocker.patch(
+        "aleph.vm.orchestrator.tasks.get_community_wallet_address",
+        return_value=mock_community_wallet_address,
+    )
+    mocker.patch("aleph.vm.orchestrator.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
+    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+
+    async def compute_required_flow(executions):
+        return 500 * len(executions)
+
+    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", compute_required_flow)
+
+    message = InstanceContent.model_validate(fake_instance_content)
+    hash_active = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadec0"
+    hash_inactive = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadec1"
+
+    mocker.patch.object(VmExecution, "stop", new=mocker.AsyncMock(return_value=False))
+
+    systemd_manager = mocker.Mock()
+    systemd_manager.get_services_active_states = mocker.Mock(
+        return_value={
+            f"aleph-vm-controller@{hash_active}.service": True,
+            f"aleph-vm-controller@{hash_inactive}.service": False,
+        }
+    )
+
+    pool = VmPool()
+    pool.systemd_manager = systemd_manager
+
+    active_execution = VmExecution(
+        vm_hash=hash_active,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    inactive_execution = VmExecution(
+        vm_hash=hash_inactive,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    pool.executions = {hash_active: active_execution, hash_inactive: inactive_execution}
+
+    await check_payment(pool=pool)
+
+    systemd_manager.get_services_active_states.assert_called_once()
+    queried_services = set(systemd_manager.get_services_active_states.call_args.args[0])
+    assert queried_services == {
+        f"aleph-vm-controller@{hash_active}.service",
+        f"aleph-vm-controller@{hash_inactive}.service",
+    }
+
+    by_sender = pool.get_executions_by_address(
+        payment_type=PaymentType.superfluid,
+        running_states={
+            f"aleph-vm-controller@{hash_active}.service": True,
+            f"aleph-vm-controller@{hash_inactive}.service": False,
+        },
+    )
+    listed = [e for chains in by_sender.values() for executions in chains.values() for e in executions]
+    assert active_execution in listed
+    assert inactive_execution not in listed
