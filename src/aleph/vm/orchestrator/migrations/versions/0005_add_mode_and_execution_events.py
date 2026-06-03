@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy import create_engine
 from sqlalchemy.engine import reflection
 
-from aleph.vm.conf import make_db_url
+from aleph.vm.conf import make_sync_db_url
 
 revision = "b3c4d5e6f7a8"
 down_revision = "a1b2c3d4e5f6"
@@ -20,7 +20,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    engine = create_engine(make_db_url())
+    engine = create_engine(make_sync_db_url())
     inspector = reflection.Inspector.from_engine(engine)
     tables = inspector.get_table_names()
 

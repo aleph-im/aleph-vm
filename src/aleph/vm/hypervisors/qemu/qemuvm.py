@@ -207,9 +207,12 @@ class QemuVM:
     def _get_host_volumes_args(self):
         args = []
         for volume in self.host_volumes:
+            # Use the actual extension, not a substring match: paths like
+            # rootfs.qcow2.backup must be treated as raw, not qcow2.
+            volume_format = "qcow2" if volume.path_on_host.suffix == ".qcow2" else "raw"
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format={'qcow2' if str(volume.path_on_host).endswith('.qcow2') else 'raw'},"
+                f"file={volume.path_on_host},format={volume_format},"
                 f"readonly={'on' if volume.read_only else 'off'},"
                 f"media=disk,if=virtio",
             ]

@@ -111,7 +111,7 @@ class RuntimeEntry(_RuntimeEntryRequired, total=False):
 async def fetch_runtimes_aggregate() -> list[RuntimeEntry]:
     """Fetch the runtimes aggregate from the Aleph API."""
     session = get_session()
-    url = f"{settings.API_SERVER}/api/v0/aggregates/" f"{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=runtimes"
+    url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=runtimes"
     logger.debug("Fetching runtimes aggregate from %s", url)
     resp = await session.get(url)
     resp.raise_for_status()

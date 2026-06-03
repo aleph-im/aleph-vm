@@ -832,6 +832,18 @@ class _RescueParams:
     state: RescueState
 
 
+_SHA256_READ_CHUNK = 1024 * 1024
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the hex sha256 of ``path``, streaming so multi-GB images don't OOM."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fp:
+        for chunk in iter(lambda: fp.read(_SHA256_READ_CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 async def _run_rescue_work(params: _RescueParams) -> dict:
     """Stop the VM, download the rescue image, and restart in rescue mode."""
     execution = params.execution
@@ -847,23 +859,32 @@ async def _run_rescue_work(params: _RescueParams) -> dict:
 
     cached = False
     if rescue_rootfs_path.exists() and params.expected_sha256:
-        actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
-        if actual_sha256 == params.expected_sha256:
+        if _sha256_file(rescue_rootfs_path) == params.expected_sha256:
             logger.info("Rescue image already cached for %s, skipping download", vm_hash)
             cached = True
         else:
             rescue_rootfs_path.unlink()
 
     if not cached:
+        # Drop any stale image (different item_hash, or no expected_sha256
+        # to verify against) — download_file short-circuits if the file
+        # already exists, which would silently reuse the wrong image.
         rescue_rootfs_path.unlink(missing_ok=True)
         rescue_url = await get_content_url(params.rescue_hash)
-        await asyncio.wait_for(
-            download_file(rescue_url, rescue_rootfs_path),
-            timeout=settings.RESCUE_DOWNLOAD_TIMEOUT_SECONDS,
-        )
+        try:
+            await asyncio.wait_for(
+                download_file(rescue_url, rescue_rootfs_path),
+                timeout=settings.RESCUE_DOWNLOAD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            # download_file writes to <path>.part and renames on success.
+            # On timeout the .part is orphaned and a future attempt would
+            # treat it as resumable junk — drop it explicitly.
+            Path(f"{rescue_rootfs_path}.part").unlink(missing_ok=True)
+            raise
 
         if params.expected_sha256:
-            actual_sha256 = hashlib.sha256(rescue_rootfs_path.read_bytes()).hexdigest()
+            actual_sha256 = _sha256_file(rescue_rootfs_path)
             if actual_sha256 != params.expected_sha256:
                 rescue_rootfs_path.unlink(missing_ok=True)
                 logger.error(
@@ -985,7 +1006,7 @@ async def operate_rescue_status(request: web.Request, authenticated_sender: str)
     Returns:
         202 while the rescue download/restart is still running.
         200 once the instance is in rescue mode (or already was).
-        409 if no rescue operation was started.
+        404 if no rescue operation was started.
         500 if the rescue operation failed.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
@@ -1012,7 +1033,7 @@ async def operate_rescue_status(request: web.Request, authenticated_sender: str)
         if execution.mode == "rescue":
             return web.json_response(_RESCUE_ACTIVE_RESPONSE, dumps=dumps_for_json)
 
-        return web.HTTPConflict(text="No rescue operation in progress for this instance")
+        return web.HTTPNotFound(text="No rescue operation in progress for this instance")
 
 
 @cors_allow_all
@@ -1039,6 +1060,19 @@ async def operate_rescue_exit(request: web.Request, authenticated_sender: str) -
         logger.info("Exiting rescue mode for %s", vm_hash)
 
         await pool.stop_vm(execution.vm_hash, record_stopped_event=False)
+
+        # Reset the tap interface to clear offload state left by the rescue
+        # QEMU process. Without this, the normal-boot QEMU hits
+        # TUNSETOFFLOAD EBADFD and crashes in a restart loop until the
+        # kernel-side tap state eventually settles.
+        #
+        # Done BEFORE re-registering in pool.executions so periodic loops
+        # never see this execution in an inconsistent (registered, no tap)
+        # state.
+        if pool.network and execution.vm and pool.network.interface_exists(execution.vm.vm_id):
+            await execution.vm.tap_interface.delete()
+            await pool.network.create_tap(execution.vm.vm_id, execution.vm.tap_interface)
+
         execution.stop_event = asyncio.Event()
         pool.executions[execution.vm_hash] = execution
 
@@ -1049,21 +1083,21 @@ async def operate_rescue_exit(request: web.Request, authenticated_sender: str) -
                 rescue_rootfs_path.unlink()
                 logger.info("Deleted rescue rootfs %s", rescue_rootfs_path)
 
-        # Reset the tap interface to clear offload state left by the rescue
-        # QEMU process. Without this, the normal-boot QEMU hits
-        # TUNSETOFFLOAD EBADFD and crashes in a restart loop until the
-        # kernel-side tap state eventually settles.
-        if pool.network and execution.vm and pool.network.interface_exists(execution.vm.vm_id):
-            await execution.vm.tap_interface.delete()
-            await pool.network.create_tap(execution.vm.vm_id, execution.vm.tap_interface)
-
         execution.mode = "normal"
+        try:
+            await _restart_persistent_vm(pool, execution)
+        except Exception:
+            # Mirror the enter-side rollback in _run_rescue_work: if the
+            # restart fails we still consider the instance "in rescue" so
+            # operators can retry. Audit log only records the successful
+            # transition below.
+            execution.mode = "rescue"
+            raise
+
         await metrics.record_event(
             vm_hash=str(vm_hash),
             event_type="rescue_exited",
         )
-
-        await _restart_persistent_vm(pool, execution)
 
         return web.json_response(
             {
