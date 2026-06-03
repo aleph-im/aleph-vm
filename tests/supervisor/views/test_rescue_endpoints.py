@@ -232,7 +232,7 @@ async def test_rescue_status_no_operation(aiohttp_client, mocker):
     client, _ = await _setup_client(aiohttp_client, mocker, pool)
 
     response = await client.get(f"/control/machine/{MOCK_HASH}/rescue")
-    assert response.status == 409
+    assert response.status == 404
 
 
 @pytest.mark.asyncio
