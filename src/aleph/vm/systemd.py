@@ -17,6 +17,22 @@ class SystemDManagerError(Exception):
     pass
 
 
+_NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
+
+
+def _log_dbus_lookup_error(service: str, error: DBusException) -> None:
+    """Log a unit lookup error at the right severity.
+
+    NoSuchUnit is a routine outcome (instance was stopped or never
+    loaded) and should not pollute ERROR logs. Other DBusExceptions
+    are real and worth surfacing.
+    """
+    if error.get_dbus_name() == _NO_SUCH_UNIT:
+        logger.debug("Service %s not loaded", service)
+    else:
+        logger.error("D-Bus lookup failed for %s: %s", service, error)
+
+
 class SystemDManager:
     """SystemD Manager class.
 
@@ -44,17 +60,24 @@ class SystemDManager:
         raise DBusException(msg)
 
     def _ensure_connection(self) -> None:
-        """Ensure D-Bus connection is active, reconnect if necessary."""
+        """Ensure D-Bus connection is active, reconnect if necessary.
+
+        Uses ``get_is_connected()`` as a cheap local check. The previous
+        implementation called ``ListUnits()`` here as a "test": that
+        enumerates every loaded systemd unit on the host over D-Bus and
+        ran ahead of every operation, turning a per-VM ``is_service_active``
+        sweep into N full host enumerations and stalling the event loop
+        for tens of seconds. Real call failures still trigger reconnect
+        via the per-method ``DBusException`` handlers.
+        """
+        if self._bus is None or self._manager is None:
+            self._connect()
+            return
         try:
-            if self._bus is None or self._manager is None:
+            if not self._bus.get_is_connected():
                 self._connect()
-                return
-            self._bus.get_is_connected()
-            # Try a simple operation to test the connection
-            if self._manager is not None:
-                self._manager.ListUnits()
         except (DBusException, AttributeError):
-            logger.info("D-Bus connection lost, attempting to reconnect...")
+            logger.info("D-Bus connection lost, reconnecting")
             self._connect()
 
     def _get_manager(self) -> Interface:
@@ -153,7 +176,7 @@ class SystemDManager:
                 )
             )
         except DBusException as error:
-            logger.error("Failed to get active state for %s: %s", service, error)
+            _log_dbus_lookup_error(service, error)
             return "unknown"
 
     def is_service_active(self, service: str) -> bool:
@@ -171,7 +194,7 @@ class SystemDManager:
             active_state = unit_properties.Get("org.freedesktop.systemd1.Unit", "ActiveState")
             return active_state == "active"
         except DBusException as error:
-            logger.error(error)
+            _log_dbus_lookup_error(service, error)
             return False
 
     def get_services_active_states(self, services: list[str]) -> dict[str, bool]:
