@@ -1,7 +1,8 @@
-"""run.create_vm_execution routes eligible QEMU instances through the spec."""
+"""run.create_vm_execution routes eligible QEMU instances through the Supervisor."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,8 +17,8 @@ from aleph_message.models.execution.environment import (
 )
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.models import MessageSpec
 from aleph.vm.orchestrator import run as run_module
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -26,6 +27,8 @@ from aleph.vm.supervisor.types import (
     DiskSpec,
     NetworkConfig,
     VmId,
+    VmInfo,
+    VmStatus,
 )
 
 _HASH = ItemHash("deadbeef" * 8)
@@ -55,83 +58,138 @@ def _spec() -> CreateVmSpec:
     )
 
 
+def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
+    return VmInfo(
+        vm_id=VmId(str(_HASH)),
+        status=status,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+    )
+
+
+def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING):
+    return SimpleNamespace(
+        create_vm=AsyncMock(return_value=_info(create_status)),
+        get_vm=AsyncMock(return_value=_info(get_status)),
+        add_port_forward=AsyncMock(),
+        delete_vm=AsyncMock(),
+    )
+
+
 @pytest.mark.asyncio
-async def test_eligible_instance_routed_through_spec(monkeypatch):
+async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     original_content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
     original_message = MagicMock(content=original_content)
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
-
     spec = _spec()
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
 
-    created = SimpleNamespace(spec=None, is_instance=True)
-    created.fetch_port_redirect_config_and_setup = AsyncMock()
-    pool = SimpleNamespace(
-        message_cache={},
-        create_vm_from_spec=AsyncMock(return_value=created),
-        create_a_vm=AsyncMock(),
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
+    created = SimpleNamespace()
+    pool = SimpleNamespace(executions={_HASH: created}, create_a_vm=AsyncMock())
+
+    execution = await run_module.create_vm_execution(
+        _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
     )
 
-    execution = await run_module.create_vm_execution(_HASH, pool, persistent=True)
-
-    run_module.build_create_vm_spec.assert_awaited_once()
-    pool.create_vm_from_spec.assert_awaited_once_with(spec)
+    supervisor.create_vm.assert_awaited_once_with(spec)
     pool.create_a_vm.assert_not_awaited()
-    # Agent re-sourced the execution as message-driven for its own consumers.
-    assert execution.spec == MessageSpec(message=content, original=original_content)
-    created.fetch_port_redirect_config_and_setup.assert_awaited_once()
+    # The message is recorded in the agent registry, not on the execution.
+    assert registry.get(_HASH).message is content
+    assert registry.get(_HASH).original is original_content
+    # SSH port-forward applied through the abstraction.
+    assert supervisor.add_port_forward.await_count >= 1
+    # The execution is read back from the pool once for start_persistent_vm.
+    assert execution is created
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ineligible_firecracker_falls_back_to_legacy(monkeypatch):
-    content = _make_qemu_instance_message(hypervisor=HypervisorType.firecracker)
+async def test_eligible_instance_timeout_tears_down(monkeypatch):
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
-    original_message = MagicMock(content=_make_qemu_instance_message())
-    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
-    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
-
-    legacy = SimpleNamespace()
-    pool = SimpleNamespace(
-        message_cache={},
-        create_vm_from_spec=AsyncMock(),
-        create_a_vm=AsyncMock(return_value=legacy),
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "_START_POLL_TIMEOUT_SECONDS", 0)
 
-    execution = await run_module.create_vm_execution(_HASH, pool, persistent=False)
+    supervisor = _fake_supervisor(get_status=VmStatus.BOOTING)  # never RUNNING
+    registry = AgentVmRegistry()
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
-    pool.create_a_vm.assert_awaited_once()
-    pool.create_vm_from_spec.assert_not_awaited()
-    run_module.build_create_vm_spec.assert_not_awaited()
-    assert execution is legacy
+    with pytest.raises(asyncio.TimeoutError):
+        await run_module.create_vm_execution(
+            _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
+        )
+
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
+    assert registry.get(_HASH) is None  # forgotten on failure
+
+
+@pytest.mark.asyncio
+async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
+    # Readiness succeeds but applying a port forward fails: the other failure
+    # source in the same try block must trigger the same teardown.
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+
+    supervisor = _fake_supervisor()  # get_vm reports RUNNING immediately
+    supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables boom"))
+    registry = AgentVmRegistry()
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
+
+    with pytest.raises(RuntimeError, match="nftables boom"):
+        await run_module.create_vm_execution(
+            _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
+        )
+
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
+    assert registry.get(_HASH) is None  # forgotten on failure
 
 
 async def _assert_routed_to_legacy(monkeypatch, content) -> None:
-    """Assert an ineligible message takes create_a_vm and never touches the spec path."""
+    """An ineligible message takes create_a_vm, never touches the spec path, and is still recorded."""
     message = MagicMock(content=content)
     original_message = MagicMock(content=_make_qemu_instance_message())
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
 
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
     legacy = SimpleNamespace()
-    pool = SimpleNamespace(
-        message_cache={},
-        create_vm_from_spec=AsyncMock(),
-        create_a_vm=AsyncMock(return_value=legacy),
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock(return_value=legacy))
+
+    execution = await run_module.create_vm_execution(
+        _HASH, pool, supervisor=supervisor, registry=registry, persistent=False
     )
 
-    execution = await run_module.create_vm_execution(_HASH, pool, persistent=False)
-
     pool.create_a_vm.assert_awaited_once()
-    pool.create_vm_from_spec.assert_not_awaited()
+    supervisor.create_vm.assert_not_awaited()
     run_module.build_create_vm_spec.assert_not_awaited()
     assert execution is legacy
+    assert registry.get(_HASH) is not None  # legacy path records the message too
 
 
 @pytest.mark.asyncio
 async def test_non_instance_falls_back_to_legacy(monkeypatch):
-    # A program (non-instance) message is never spec-eligible.
     await _assert_routed_to_legacy(monkeypatch, MagicMock(spec=ProgramContent))
 
 

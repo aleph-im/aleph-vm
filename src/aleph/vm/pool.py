@@ -11,7 +11,6 @@ from typing import Any
 import psutil
 from aleph_message.models import (
     Chain,
-    ExecutableMessage,
     InstanceContent,
     ItemHash,
     Payment,
@@ -62,7 +61,6 @@ class VmPool:
     """
 
     executions: dict[ItemHash, VmExecution]
-    message_cache: dict[str, ExecutableMessage]
     network: Network | None
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
@@ -75,7 +73,6 @@ class VmPool:
 
     def __init__(self):
         self.executions = {}
-        self.message_cache = {}
         self.reservations = {}
         self.gpus = []
         self._draining = False

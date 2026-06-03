@@ -23,7 +23,7 @@ from aleph.vm.controllers.firecracker.program import (
     VmSetupError,
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
@@ -132,15 +132,22 @@ async def _wait_until_running(
     supervisor: Supervisor,
     vm_id: VmId,
     *,
-    timeout: float = _START_POLL_TIMEOUT_SECONDS,
-    interval: float = _START_POLL_INTERVAL_SECONDS,
+    timeout: float | None = None,
+    interval: float | None = None,
 ) -> VmInfo:
     """Poll get_vm until the VM reports RUNNING.
 
     In-process the first poll already reports RUNNING (create_vm blocked until
     boot); across a future gRPC boundary this does real work. Raises on a
     terminal status or after `timeout` seconds.
+
+    `timeout`/`interval` default to the module constants, resolved at call time
+    so tests (and operators) can override them by patching the constants.
     """
+    if timeout is None:
+        timeout = _START_POLL_TIMEOUT_SECONDS
+    if interval is None:
+        interval = _START_POLL_INTERVAL_SECONDS
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         info = await supervisor.get_vm(vm_id)
@@ -155,26 +162,44 @@ async def _wait_until_running(
         await asyncio.sleep(interval)
 
 
-async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
+async def create_vm_execution(
+    vm_hash: ItemHash,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    persistent: bool = False,
+) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
-    pool.message_cache[vm_hash] = message
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
 
     content = message.content
     if _is_spec_eligible(content):
-        # `persistent` is moot on this branch: eligibility requires an instance
-        # (see _is_spec_eligible) and instances are always persistent. The only
-        # persistent=False callers carry programs, which never reach here.
         spec = await build_create_vm_spec(vm_hash, content)
-        execution = await pool.create_vm_from_spec(spec)
-        # Agent territory: re-source the execution as message-driven so the
-        # operator API (owner auth), port forwarding and billing keep working.
-        # The supervisor machinery that just created the VM never read this.
-        execution.spec = MessageSpec(message=content, original=original_message.content)
-        if execution.is_instance:
-            await execution.fetch_port_redirect_config_and_setup()
-        return execution
+        info = await supervisor.create_vm(spec)
+        # Agent territory: record the message for the agent's own consumers
+        # (operator API owner-auth, billing, update-watching). The supervisor
+        # machinery that created the VM never reads it.
+        registry.record(vm_hash, message=content, original=original_message.content)
+        try:
+            await _wait_until_running(supervisor, info.vm_id)
+            for forward in await resolve_port_forwards(info.vm_id, content):
+                await supervisor.add_port_forward(forward)
+        except Exception:
+            # Readiness or port-forward setup failed: tear the half-started VM
+            # down, but never let a teardown error mask the original failure.
+            registry.forget(vm_hash)
+            try:
+                await supervisor.delete_vm(info.vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started VM %s failed", vm_hash)
+            raise
+        # TEMPORARY (PR 1 boundary, design doc section 8): start_persistent_vm
+        # still drives the VmExecution for the pre-existing check, expiry-cancel
+        # and update-watching. Read it back once so that caller is unchanged.
+        # This line goes away when those ops migrate off VmExecution.
+        return pool.executions[vm_hash]
 
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
@@ -182,7 +207,7 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
         original=original_message.content,
         persistent=persistent,
     )
-
+    registry.record(vm_hash, message=content, original=original_message.content)
     return execution
 
 
