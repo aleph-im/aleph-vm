@@ -18,7 +18,7 @@ from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
@@ -274,6 +274,12 @@ async def _run_migration_reaper(app: web.Application) -> None:
         await reap_orphan_migration_files(pool)
 
 
+async def _rehydrate_vm_registry(app: web.Application) -> None:
+    """on_startup hook: refill the agent's message registry from its DB."""
+    count = await rehydrate_registry(app["vm_registry"])
+    logger.info("Rehydrated %d VM record(s) into the agent registry", count)
+
+
 def run():
     """Run the VM Supervisor."""
     settings.check()
@@ -302,6 +308,7 @@ def run():
         cache_dir=settings.EXECUTION_ROOT,
     )
     app.on_startup.append(_run_migration_reaper)
+    app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

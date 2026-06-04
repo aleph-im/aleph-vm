@@ -95,7 +95,7 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
-    created = SimpleNamespace()
+    created = SimpleNamespace(save=AsyncMock())
     pool = SimpleNamespace(executions={_HASH: created}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
@@ -107,6 +107,9 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     # The message is recorded in the agent registry, not on the execution.
     assert registry.get(_HASH).message is content
     assert registry.get(_HASH).original is original_content
+    assert registry.get(_HASH).persistent is True
+    # The spec create path must persist the execution record after re-sourcing.
+    created.save.assert_awaited_once()
     # SSH port-forward applied through the abstraction.
     assert supervisor.add_port_forward.await_count >= 1
     # The execution is read back from the pool once for start_persistent_vm.
