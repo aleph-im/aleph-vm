@@ -6,7 +6,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 
@@ -54,14 +54,12 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import VmId, VmStatus
+from aleph.vm.supervisor.types import LogChunk, LogSource, VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
     get_message_executable_content,
 )
-from aleph.vm.utils.logs import get_past_vm_logs
-
 logger = logging.getLogger(__name__)
 
 _BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max
@@ -253,6 +251,18 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
     return False
 
 
+async def _logs_auth_message(request: web.Request, vm_hash: ItemHash):
+    """Message for owner-auth on the logs endpoints: registry first, then the
+    agent DB (past executions keep their record until record_usage deletes it)."""
+    record = request.app["vm_registry"].get(vm_hash)
+    if record is not None:
+        return record.message
+    db_record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
+    if not db_record:
+        return None
+    return get_message_executable_content(json.loads(db_record.message))
+
+
 @cors_allow_all
 async def stream_logs(request: web.Request) -> web.StreamResponse:
     """Stream the logs of a VM.
@@ -265,15 +275,9 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = pool.executions.get(vm_hash)
-        if not execution:
-            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
-            if not record:
-                raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
-            message = get_message_executable_content(json.loads(record.message))
-        else:
-            message = execution.message
+        message = await _logs_auth_message(request, vm_hash)
+        if message is None:
+            raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
 
         ws = web.WebSocketResponse()
         logger.info(f"starting websocket: {request.path}")
@@ -306,30 +310,26 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
         await ws.send_json({"status": "connected"})
 
-        if execution and execution.vm:
-            queue = execution.vm.get_log_queue()
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            info = None
+
+        if info and info.status is VmStatus.RUNNING:
             try:
-                while True:
-                    log_type, msg = await queue.get()
-                    logger.debug(msg)
-                    await ws.send_json({"type": log_type, "message": msg})
-                    queue.task_done()
+                async for chunk in supervisor.stream_logs(vm_id):
+                    await ws.send_json({"type": chunk.source.value, "message": chunk.line})
             finally:
-                execution.vm.unregister_queue(queue)
                 await ws.close()
                 logger.info(f"connection {ws} closed")
-        elif execution and execution.is_starting:
+        elif info and info.status is VmStatus.BOOTING:
             await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
             await ws.close()
         else:
-            stdout_id = f"vm-{vm_hash}-stdout"
-            stderr_id = f"vm-{vm_hash}-stderr"
-            for entry in get_past_vm_logs(stdout_id, stderr_id):
-                log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_id else "stderr"
-                msg = entry["MESSAGE"]
-                if isinstance(msg, bytes):
-                    msg = msg.decode("utf-8", errors="replace")
-                await ws.send_json({"type": log_type, "message": msg})
+            for chunk in await supervisor.get_logs(vm_id):
+                await ws.send_json({"type": chunk.source.value, "message": chunk.line})
             await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
             await ws.close()
             logger.info(f"connection {ws} closed (past logs for stopped VM)")
@@ -343,44 +343,34 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
     """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        # This endpoint allow logs for past executions, so we look into the database if any execution by that hash
-        # occurred, which we can then use to look for rights. We still check in the pool first, it is faster
-        pool: VmPool = request.app["vm_pool"]
-        execution = pool.executions.get(vm_hash)
-        if execution:
-            message = execution.message
-        else:
-            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
-            if not record:
-                raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
-            message = get_message_executable_content(json.loads(record.message))
+        message = await _logs_auth_message(request, vm_hash)
+        if message is None:
+            raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
         if not await is_sender_authorized(authenticated_sender, message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        _journal_stdout_name = f"vm-{vm_hash}-stdout"
-        _journal_stderr_name = f"vm-{vm_hash}-stderr"
+        supervisor: Supervisor = request.app["supervisor"]
+        chunks = await supervisor.get_logs(VmId(str(vm_hash)))
 
         response = web.StreamResponse()
         response.headers["Transfer-encoding"] = "chunked"
         response.headers["Content-Type"] = "application/json"
         await response.prepare(request)
         await response.write(b"[")
-
         first = True
-        for entry in get_past_vm_logs(_journal_stdout_name, _journal_stderr_name):
+        for chunk in chunks:
             if not first:
                 await response.write(b",\n")
             first = False
-            log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == _journal_stdout_name else "stderr"
+            identifier = f"vm-{vm_hash}-{chunk.source.value}"
             msg = {
-                "SYSLOG_IDENTIFIER": entry["SYSLOG_IDENTIFIER"],
-                "MESSAGE": entry["MESSAGE"],
-                "file": log_type,
-                "__REALTIME_TIMESTAMP": entry["__REALTIME_TIMESTAMP"],
+                "SYSLOG_IDENTIFIER": identifier,
+                "MESSAGE": chunk.line,
+                "file": chunk.source.value,
+                "__REALTIME_TIMESTAMP": datetime.fromtimestamp(chunk.timestamp_ns / 1e9, tz=timezone.utc),
             }
             await response.write(dumps_for_json(msg).encode())
         await response.write(b"]")
-
         await response.write_eof()
         return response
 
