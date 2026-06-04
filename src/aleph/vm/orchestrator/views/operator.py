@@ -45,7 +45,6 @@ from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.http import get_session
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
@@ -638,26 +637,17 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Erasing {execution.vm_hash}")
-
-        # Stop the VM
-        await pool.stop_vm(execution.vm_hash)
-        if execution.vm_hash in pool.executions:
-            logger.warning(f"VM {execution.vm_hash} was not stopped properly, forgetting it anyway")
-            pool.forget_vm(execution.vm_hash)
-
-        # Delete all data
-        # Non-persistent VMs already cleaned up by record_usage()
-        if execution.persistent:
-            await delete_port_mappings(execution.vm_hash)
-        execution.erase_volumes()
-
+        logger.info(f"Erasing {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            await supervisor.delete_vm(VmId(str(vm_hash)), wipe=True)
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        request.app["vm_registry"].forget(vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
@@ -677,44 +667,23 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
     rootfs_only = request.query.get("erase_volumes", "true") == "false"
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Reinstalling (reset to initial state) {execution.vm_hash}")
-
-        if execution.persistent:
-            await pool.stop_vm(execution.vm_hash)
-            # Invalidate the old forget_on_stop task and keep the
-            # execution in the pool so the allocation loop does not
-            # create a duplicate with a new vm_id while we await
-            # prepare() below.
-            execution.stop_event = asyncio.Event()
-            pool.executions[execution.vm_hash] = execution
-            execution.erase_volumes(
-                include_rootfs=True,
-                include_data_volumes=not rootfs_only,
-            )
-            execution.resources = None
-            await execution.prepare()
-            await pool.restart_persistent_vm(execution)
-        else:
-            await pool.stop_vm(execution.vm_hash)
-            if execution.vm_hash in pool.executions:
-                pool.forget_vm(execution.vm_hash)
-            execution.erase_volumes(
-                include_rootfs=True,
-                include_data_volumes=not rootfs_only,
-            )
+        logger.info(f"Reinstalling (reset to initial state) {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            await supervisor.reinstall_vm(VmId(str(vm_hash)), wipe_volumes=not rootfs_only)
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        if not record.persistent:
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
-                pool=pool,
-                supervisor=request.app["supervisor"],
+                pool=request.app["vm_pool"],
+                supervisor=supervisor,
                 registry=request.app["vm_registry"],
             )
-
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 

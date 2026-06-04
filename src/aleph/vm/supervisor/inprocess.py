@@ -9,6 +9,7 @@ NotImplementedSupervisorError.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -52,6 +53,8 @@ from aleph.vm.utils.logs import get_past_vm_logs
 
 if TYPE_CHECKING:
     from aleph.vm.pool import VmPool
+
+logger = logging.getLogger(__name__)
 
 
 def _backend_of(execution) -> Backend:
@@ -184,6 +187,7 @@ class InProcessSupervisor(Supervisor):
             execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
             if execution.vm_hash in self.pool.executions:
+                logger.warning("VM %s was not removed from pool after stop; forgetting it now", vm_id)
                 self.pool.forget_vm(vm_id)
             if wipe:
                 # Mirrors the old operate_erase semantics exactly: persisted
