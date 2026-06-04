@@ -134,3 +134,14 @@ async def test_start_skips_configure_and_save_for_spec(monkeypatch):
     systemd.enable_and_start.assert_awaited_once_with(execution.controller_service)
     save_record.assert_not_awaited()  # spec path keeps no DB record
     assert execution.ready_event.is_set()
+
+
+def test_start_watching_for_updates_is_noop_without_message():
+    # A message-free (spec-built / reattached) execution has no Aleph message to
+    # watch; start_watching_for_updates must no-op, not schedule a task that
+    # would crash on `self.original` being None.
+    execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
+
+    execution.start_watching_for_updates(pubsub=object())  # type: ignore[arg-type]
+
+    assert execution.update_task is None
