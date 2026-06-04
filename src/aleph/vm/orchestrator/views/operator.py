@@ -152,43 +152,6 @@ def _verify_backup_download(request: web.Request, vm_hash: str, backup_id: str) 
         raise web.HTTPForbidden(body="Invalid signature")
 
 
-def _erase_execution_volumes(
-    execution: VmExecution,
-    *,
-    include_rootfs: bool = False,
-    include_data_volumes: bool = True,
-) -> int:
-    """Delete volumes from an execution.
-
-    Args:
-        execution: The VM execution whose volumes to delete.
-        include_rootfs: Delete the rootfs disk image.
-        include_data_volumes: Delete non-read-only data volumes.
-
-    Returns the number of volumes deleted.
-    """
-    if execution.resources is None:
-        return 0
-
-    deleted_count = 0
-
-    if include_rootfs:
-        rootfs = execution.resources.rootfs_path
-        if rootfs.exists():
-            logger.info(f"Deleting rootfs {rootfs}")
-            rootfs.unlink()
-            deleted_count += 1
-
-    if include_data_volumes:
-        for volume in execution.resources.volumes:
-            if not volume.read_only:
-                logger.info(f"Deleting volume {volume.path_on_host}")
-                volume.path_on_host.unlink(missing_ok=True)
-                deleted_count += 1
-
-    return deleted_count
-
-
 async def _restart_persistent_vm(
     pool: VmPool,
     execution: VmExecution,
@@ -722,7 +685,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         # Non-persistent VMs already cleaned up by record_usage()
         if execution.persistent:
             await delete_port_mappings(execution.vm_hash)
-        _erase_execution_volumes(execution)
+        execution.erase_volumes()
 
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
@@ -759,8 +722,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
             # prepare() below.
             execution.stop_event = asyncio.Event()
             pool.executions[execution.vm_hash] = execution
-            _erase_execution_volumes(
-                execution,
+            execution.erase_volumes(
                 include_rootfs=True,
                 include_data_volumes=not rootfs_only,
             )
@@ -771,8 +733,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
             await pool.stop_vm(execution.vm_hash)
             if execution.vm_hash in pool.executions:
                 pool.forget_vm(execution.vm_hash)
-            _erase_execution_volumes(
-                execution,
+            execution.erase_volumes(
                 include_rootfs=True,
                 include_data_volumes=not rootfs_only,
             )

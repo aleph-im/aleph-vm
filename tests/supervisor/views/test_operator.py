@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
+from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
@@ -737,15 +738,17 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     fake_resources = mocker.Mock()
     fake_resources.volumes = [fake_volume]
 
+    fake_execution = mocker.AsyncMock(
+        vm_hash=vm_hash,
+        message=instance_message.content,
+        is_running=False,
+        persistent=False,
+        resources=fake_resources,
+    )
+    fake_execution.erase_volumes = lambda **kw: VmExecution.erase_volumes(fake_execution, **kw)
+
     fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=False,
-                resources=fake_resources,
-            ),
-        },
+        executions={vm_hash: fake_execution},
     )
 
     mocker.patch(
@@ -805,16 +808,17 @@ async def test_operator_reinstall(aiohttp_client, mocker):
     fake_resources = mocker.Mock()
     fake_resources.volumes = [fake_volume, fake_readonly_volume]
 
+    fake_execution = mocker.AsyncMock(
+        vm_hash=vm_hash,
+        message=instance_message.content,
+        is_running=True,
+        persistent=False,
+        resources=fake_resources,
+    )
+    fake_execution.erase_volumes = lambda **kw: VmExecution.erase_volumes(fake_execution, **kw)
+
     fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-                persistent=False,
-                resources=fake_resources,
-            ),
-        },
+        executions={vm_hash: fake_execution},
     )
 
     mocker.patch(

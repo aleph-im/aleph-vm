@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import psutil
 from aleph_message.models.execution.environment import HypervisorType
 
+from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
     NotImplementedSupervisorError,
@@ -157,11 +158,19 @@ class InProcessSupervisor(Supervisor):
             raise VmNotFoundError(vm_id)
         return execution
 
-    async def delete_vm(self, vm_id: VmId) -> None:
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
-            self._require(vm_id)
+            execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
-            self.pool.forget_vm(vm_id)
+            if execution.vm_hash in self.pool.executions:
+                self.pool.forget_vm(vm_id)
+            if wipe:
+                # Mirrors the old operate_erase semantics exactly: persisted
+                # port mappings (persistent VMs keep them across stops) and
+                # writable data volumes go; the rootfs stays.
+                if execution.persistent:
+                    await delete_port_mappings(execution.vm_hash)
+                execution.erase_volumes()
 
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():

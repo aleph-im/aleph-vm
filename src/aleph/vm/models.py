@@ -941,6 +941,29 @@ class VmExecution:
             self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
 
+    def erase_volumes(self, *, include_rootfs: bool = False, include_data_volumes: bool = True) -> int:
+        """Delete this execution's on-disk volumes.
+
+        Hypervisor mechanism behind Supervisor.delete_vm(wipe=...) and
+        reinstall_vm(...). Returns the number of files deleted.
+        """
+        if self.resources is None:
+            return 0
+        deleted_count = 0
+        if include_rootfs:
+            rootfs = self.resources.rootfs_path
+            if rootfs.exists():
+                logger.info(f"Deleting rootfs {rootfs}")
+                rootfs.unlink()
+                deleted_count += 1
+        if include_data_volumes:
+            for volume in self.resources.volumes:
+                if not volume.read_only:
+                    logger.info(f"Deleting volume {volume.path_on_host}")
+                    volume.path_on_host.unlink(missing_ok=True)
+                    deleted_count += 1
+        return deleted_count
+
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))
         # Non-persistent VMs won't restart, so clean up their port mappings

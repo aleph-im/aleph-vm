@@ -1,11 +1,15 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
+from aleph.vm.models import VmExecution
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import VmId
+
+VM_ID = VmId("itemhash123")
 
 
 @pytest.mark.asyncio
@@ -68,3 +72,71 @@ async def test_reinstall_persistent_vm_stops_then_restarts():
     pool.stop_vm.assert_awaited_once_with("itemhash123")
     systemd.restart.assert_called_once_with("aleph-vm-controller@itemhash123.service")
     assert info.vm_id == "itemhash123"
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_wipe_erases_data_volumes_and_port_mappings(monkeypatch):
+    execution = make_execution()
+    pool = FakePool(executions={VM_ID: execution})
+    pool.stop_vm = AsyncMock()
+    pool.forget_vm = MagicMock()
+    supervisor = InProcessSupervisor(pool)
+    deleted = AsyncMock()
+    monkeypatch.setattr("aleph.vm.supervisor.inprocess.delete_port_mappings", deleted)
+    erased = MagicMock(return_value=1)
+    execution.erase_volumes = erased
+
+    await supervisor.delete_vm(VM_ID, wipe=True)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    deleted.assert_awaited_once_with(execution.vm_hash)
+    erased.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_without_wipe_keeps_data(monkeypatch):
+    execution = make_execution()
+    pool = FakePool(executions={VM_ID: execution})
+    pool.stop_vm = AsyncMock()
+    pool.forget_vm = MagicMock()
+    supervisor = InProcessSupervisor(pool)
+    deleted = AsyncMock()
+    monkeypatch.setattr("aleph.vm.supervisor.inprocess.delete_port_mappings", deleted)
+    execution.erase_volumes = MagicMock()
+
+    await supervisor.delete_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.forget_vm.assert_called_once_with(VM_ID)
+    deleted.assert_not_awaited()
+    execution.erase_volumes.assert_not_called()
+
+
+def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
+    """Verify the erase_volumes logic against real tmp-path files.
+
+    Calls VmExecution.erase_volumes as an unbound method on a SimpleNamespace
+    so we can test the file-deletion logic without a full VmExecution instance.
+    """
+    rootfs = tmp_path / "rootfs.qcow2"
+    rootfs.touch()
+    vol = tmp_path / "data.qcow2"
+    vol.touch()
+    ro = tmp_path / "ro.sqsh"
+    ro.touch()
+    # Use a plain SimpleNamespace as `self` — erase_volumes only reads
+    # self.resources, so no VmExecution __init__ is needed.
+    execution = SimpleNamespace(
+        resources=SimpleNamespace(
+            rootfs_path=rootfs,
+            volumes=[
+                SimpleNamespace(read_only=False, path_on_host=vol),
+                SimpleNamespace(read_only=True, path_on_host=ro),
+            ],
+        )
+    )
+
+    deleted = VmExecution.erase_volumes(execution, include_rootfs=True)
+
+    assert deleted == 2
+    assert not rootfs.exists() and not vol.exists() and ro.exists()
