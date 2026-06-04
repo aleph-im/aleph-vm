@@ -48,6 +48,7 @@ from aleph.vm.supervisor.types import (
     VmInfo,
     VmStatus,
 )
+from aleph.vm.utils.logs import get_past_vm_logs
 
 if TYPE_CHECKING:
     from aleph.vm.pool import VmPool
@@ -111,9 +112,28 @@ def _log_source(log_type: str) -> LogSource:
     if log_type == "stdout":
         return LogSource.STDOUT
     if log_type == "stderr":
-        # stderr is delivered on the same journal path; map to STDOUT for now.
-        return LogSource.STDOUT
+        return LogSource.STDERR
     return LogSource.SERIAL
+
+
+def _history_chunks(vm_id: VmId) -> list[LogChunk]:
+    """Journald history for a VM, mapped to LogChunks.
+
+    Blocking sd-journal read; same behavior as the old views (the agent
+    endpoints already read journald inline on the event loop).
+    """
+    stdout_id = f"vm-{vm_id}-stdout"
+    stderr_id = f"vm-{vm_id}-stderr"
+    chunks: list[LogChunk] = []
+    for entry in get_past_vm_logs(stdout_id, stderr_id):
+        source = LogSource.STDOUT if entry["SYSLOG_IDENTIFIER"] == stdout_id else LogSource.STDERR
+        message = entry["MESSAGE"]
+        if isinstance(message, bytes):
+            message = message.decode("utf-8", errors="replace")
+        ts = entry["__REALTIME_TIMESTAMP"]
+        timestamp_ns = int(ts.timestamp()) * 1_000_000_000 + ts.microsecond * 1_000
+        chunks.append(LogChunk(timestamp_ns=timestamp_ns, line=message, source=source))
+    return chunks
 
 
 class InProcessSupervisor(Supervisor):
@@ -261,31 +281,27 @@ class InProcessSupervisor(Supervisor):
 
     # Logs
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
+        """Journald history for the VM (works for stopped VMs too)."""
         with translating_errors():
-            execution = self._require(vm_id)
-            if not execution.vm:
-                return []
-            queue = execution.vm.get_log_queue()
-            chunks: list[LogChunk] = []
-            try:
-                while not queue.empty():
-                    log_type, message = queue.get_nowait()
-                    chunks.append(LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type)))
-                    queue.task_done()
-            finally:
-                execution.vm.unregister_queue(queue)
+            chunks = _history_chunks(vm_id)
             if max_lines:
                 chunks = chunks[-max_lines:] if from_tail else chunks[:max_lines]
             return chunks
 
     async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]:
-        execution = self._require(vm_id)
-        if not execution.vm:
+        if include_history:
+            with translating_errors():
+                history = _history_chunks(vm_id)
+            for chunk in history:
+                yield chunk
+        execution = self.pool.executions.get(vm_id)
+        if not execution or not execution.vm:
             return
         queue = execution.vm.get_log_queue()
         try:
             while True:
                 log_type, message = await queue.get()
+                # Live queue items carry no timestamp; 0 is the "live" sentinel.
                 yield LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type))
                 queue.task_done()
         finally:
