@@ -15,7 +15,7 @@ from aleph.vm.conf import Settings, settings
 from aleph.vm.orchestrator.views import allocation_auth
 from aleph.vm.orchestrator.views.allocation_auth import (
     MAX_SIGNED_REQUEST_BODY_BYTES,
-    _last_accepted_iat,
+    _accepted_payloads,
     _parse_auth_params,
     _verify_aleph_signature,
     log_allocation_auth_config,
@@ -65,11 +65,11 @@ def authorize_signer(signing_account, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def reset_iat_cache():
-    """Clear the monotonic-iat dict between tests for isolation."""
-    _last_accepted_iat.clear()
+def reset_replay_cache():
+    """Clear the accepted-payloads dict between tests for isolation."""
+    _accepted_payloads.clear()
     yield
-    _last_accepted_iat.clear()
+    _accepted_payloads.clear()
 
 
 def make_signed_payload(*, method="POST", path="/control/allocations", body=b"", iat=None) -> bytes:
@@ -158,7 +158,7 @@ async def test_verify_aleph_signature_valid_request(mock_request, authorize_sign
     )
 
     assert await _verify_aleph_signature(request, auth) is True
-    assert authorize_signer.address.lower() in {k.lower() for k in _last_accepted_iat}
+    assert authorize_signer.address.lower() in {k.lower() for k in _accepted_payloads}
 
 
 @pytest.mark.asyncio
@@ -293,7 +293,7 @@ async def test_verify_rejects_body_mismatch(mock_request, authorize_signer):
 
 @pytest.mark.asyncio
 async def test_verify_rejects_replay(mock_request, authorize_signer):
-    """Replaying a captured request (same iat) is rejected by monotonic-iat."""
+    """Replaying a captured request (byte-identical payload) is rejected."""
     payload_bytes = make_signed_payload(body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
 
@@ -449,9 +449,9 @@ async def test_dispatcher_eip191_scheme_without_params_does_not_fall_back(mock_r
 @pytest.mark.asyncio
 async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
     """Two concurrent verifications with the same captured signed payload:
-    exactly one must succeed. Without the asyncio.Lock around the iat
-    check+update, both observe the old floor and both write — a same-iat
-    replay slips through.
+    exactly one must succeed. Without the asyncio.Lock around the seen-set
+    check+record, both observe the payload as unseen and both succeed — a
+    concurrent duplicate slips through.
 
     Forces an interleave by making `request.read()` yield control.
     """
@@ -728,38 +728,119 @@ async def test_verify_iat_just_past_upper_boundary_rejected(monkeypatch, mock_re
     assert await _verify_aleph_signature(request, auth) is False
 
 
-# --- M4: per-signer monotonic iat (no cross-signer interference) ---
+# --- M5: same-second distinct requests must not collide ---
 
 
 @pytest.mark.asyncio
-async def test_verify_per_signer_iat_floors_are_independent(mock_request, monkeypatch):
-    """Two authorized signers maintain independent iat floors.
+async def test_verify_accepts_same_iat_across_endpoints(mock_request, authorize_signer):
+    """Two distinct requests signed in the same wall-clock second both pass.
 
-    A future "optimization" using a single global counter would silently
-    break cross-signer interleaving; this test pins down the per-key dict
-    semantics so that regression is caught.
+    Regression: the replay check used a per-signer monotonic-iat floor, so a
+    POST followed <1s later by a status GET (different method+path but the
+    same integer-second iat) was rejected — a de-facto global rate limit of
+    one request per signer per second across all endpoints. Replay
+    protection must only reject byte-identical resubmissions; the payload
+    already binds method, path and body.
+    """
+    iat = int(time_module.time())
+
+    payload_post = make_signed_payload(method="POST", path="/control/machine/x/migration/export", body=b"{}", iat=iat)
+    auth_post = make_auth_header(authorize_signer, payload_post)
+    request_post = mock_request(
+        method="POST",
+        path="/control/machine/x/migration/export",
+        headers={"Authorization": auth_post},
+        body=b"{}",
+    )
+    assert await _verify_aleph_signature(request_post, auth_post) is True
+
+    payload_get = make_signed_payload(method="GET", path="/control/machine/x/migration/export/status", iat=iat)
+    auth_get = make_auth_header(authorize_signer, payload_get)
+    request_get = mock_request(
+        method="GET",
+        path="/control/machine/x/migration/export/status",
+        headers={"Authorization": auth_get},
+    )
+    assert await _verify_aleph_signature(request_get, auth_get) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_same_iat_distinct_bodies_same_endpoint(mock_request, authorize_signer):
+    """Two distinct POSTs to the same path within the same second both pass.
+
+    E.g. the scheduler allocating two VMs back-to-back: same method+path,
+    same integer-second iat, different bodies. Not replays of each other —
+    `body_sha256` differs — so both must be accepted.
+    """
+    iat = int(time_module.time())
+    for body in (b'{"persistent_vms": ["a"]}', b'{"persistent_vms": ["b"]}'):
+        payload_bytes = make_signed_payload(body=body, iat=iat)
+        auth = make_auth_header(authorize_signer, payload_bytes)
+        request = mock_request(headers={"Authorization": auth}, body=body)
+        assert await _verify_aleph_signature(request, auth) is True
+
+
+# --- M6: seen-set memory is bounded by the acceptance window ---
+
+
+@pytest.mark.asyncio
+async def test_accepted_payloads_pruned_after_window(monkeypatch, mock_request, authorize_signer):
+    """Entries older than the acceptance window are evicted on the next accept.
+
+    Once a payload's iat is stale enough that the absolute window would
+    reject a resubmission outright, keeping its hash adds nothing — pruning
+    bounds the seen-set to the signer's request rate over the window.
+    """
+    t0 = 1_700_000_000.0
+    _freeze_time(monkeypatch, t0)
+    payload_old = make_signed_payload(body=b"{}", iat=int(t0))
+    auth_old = make_auth_header(authorize_signer, payload_old)
+    request_old = mock_request(headers={"Authorization": auth_old}, body=b"{}")
+    assert await _verify_aleph_signature(request_old, auth_old) is True
+
+    signer_key = authorize_signer.address.lower()
+    assert sha256(payload_old).hexdigest() in _accepted_payloads[signer_key]
+
+    # Advance past the window; the next accepted request triggers pruning.
+    t1 = t0 + settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS + 1
+    _freeze_time(monkeypatch, t1)
+    payload_new = make_signed_payload(body=b"{}", iat=int(t1))
+    auth_new = make_auth_header(authorize_signer, payload_new)
+    request_new = mock_request(headers={"Authorization": auth_new}, body=b"{}")
+    assert await _verify_aleph_signature(request_new, auth_new) is True
+
+    assert _accepted_payloads[signer_key] == {sha256(payload_new).hexdigest(): int(t1)}
+
+
+# --- M4: per-signer dedup (no cross-signer interference) ---
+
+
+@pytest.mark.asyncio
+async def test_verify_per_signer_dedup_is_independent(mock_request, monkeypatch):
+    """Two authorized signers maintain independent seen-sets.
+
+    Two signers can legitimately produce byte-identical payloads (same
+    method, path, body and second). A future "optimization" using a single
+    global payload-hash set would reject the second signer's request as a
+    "replay" of the first's; this test pins down the per-signer keying.
     """
     signer_a = Account.create()
     signer_b = Account.create()
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [signer_a.address, signer_b.address])
 
-    now = int(time_module.time())
+    # Identical payload bytes, signed independently by A and B.
+    payload_bytes = make_signed_payload(body=b"{}", iat=int(time_module.time()))
 
-    # Signer A: iat=N → succeeds; A's floor advances to N.
-    payload_a = make_signed_payload(body=b"{}", iat=now)
-    auth_a = make_auth_header(signer_a, payload_a)
+    auth_a = make_auth_header(signer_a, payload_bytes)
     request_a = mock_request(headers={"Authorization": auth_a}, body=b"{}")
     assert await _verify_aleph_signature(request_a, auth_a) is True
 
-    # Signer B: iat=N-1 → still succeeds. B has its own floor; A's doesn't apply.
-    payload_b = make_signed_payload(body=b"{}", iat=now - 1)
-    auth_b = make_auth_header(signer_b, payload_b)
+    # Signer B's own signature over the same bytes → accepted; A's entry
+    # doesn't apply to B.
+    auth_b = make_auth_header(signer_b, payload_bytes)
     request_b = mock_request(headers={"Authorization": auth_b}, body=b"{}")
     assert await _verify_aleph_signature(request_b, auth_b) is True
 
-    # Signer A: iat=N-1 → rejected. Below A's own floor (N) — replay for A
-    # even though B just accepted the same iat.
-    payload_a2 = make_signed_payload(body=b"{}", iat=now - 1)
-    auth_a2 = make_auth_header(signer_a, payload_a2)
-    request_a2 = mock_request(headers={"Authorization": auth_a2}, body=b"{}")
-    assert await _verify_aleph_signature(request_a2, auth_a2) is False
+    # Replaying A's exact request is still rejected — for A.
+    request_a2 = mock_request(headers={"Authorization": auth_a}, body=b"{}")
+    assert await _verify_aleph_signature(request_a2, auth_a) is False

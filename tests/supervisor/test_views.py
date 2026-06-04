@@ -1008,12 +1008,12 @@ def _make_aleph_eip191_v1_header(account, *, method="POST", path="/control/alloc
 
 
 @pytest.fixture(autouse=True)
-def _reset_iat_cache_between_views_tests():
-    from aleph.vm.orchestrator.views.allocation_auth import _last_accepted_iat
+def _reset_replay_cache_between_views_tests():
+    from aleph.vm.orchestrator.views.allocation_auth import _accepted_payloads
 
-    _last_accepted_iat.clear()
+    _accepted_payloads.clear()
     yield
-    _last_accepted_iat.clear()
+    _accepted_payloads.clear()
 
 
 @pytest.mark.asyncio
