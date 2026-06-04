@@ -4,7 +4,7 @@ import json
 import tempfile
 from asyncio import Queue
 from unittest import mock
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -17,11 +17,37 @@ from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
 from aleph.vm.storage import get_message
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
 from aleph.vm.utils.logs import EntryDict
 from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
     patch_datetime_now,
 )
+
+_FAKE_HASH = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+
+def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> VmInfo:
+    return VmInfo(
+        vm_id=VmId(vm_id),
+        status=status,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+    )
+
+
+def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
+    return MagicMock(
+        get_vm=AsyncMock(return_value=_vm_info(status)),
+        delete_vm=AsyncMock(),
+        reboot_vm=AsyncMock(),
+    )
+
 
 # Ensure this is not removed by ruff
 assert patch_datetime_now
@@ -154,7 +180,7 @@ async def test_operator_expire(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_stop(aiohttp_client, mocker):
-    """Test that the stop endpoint call the method on pool"""
+    """Test that the stop endpoint drives the supervisor, not the pool directly."""
 
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
@@ -163,15 +189,7 @@ async def test_operator_stop(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     # Disable auth
     mocker.patch(
@@ -179,12 +197,20 @@ async def test_operator_stop(aiohttp_client, mocker):
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
     )
     assert response.status == 200, await response.text()
-    assert fake_vm_pool.stop_vm.call_count == 1
+    fake_sup.delete_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -277,36 +303,34 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_reboot_ok(aiohttp_client, mocker):
+    """Reboot a persistent VM: supervisor.reboot_vm is called."""
     mock_address = "mock_address"
-    mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    mock_hash = _FAKE_HASH
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
         return_value=mock_address,
     )
 
-    class FakeVmPool:
-        executions = {
-            mock_hash: mocker.Mock(
-                vm_hash=mock_hash,
-                message=mocker.Mock(address=mock_address),
-                is_confidential=False,
-                is_running=True,
-            ),
-        }
-        systemd_manager = mocker.Mock(restart=mocker.Mock())
-
-    pool = FakeVmPool()
-    app = setup_webapp(pool=pool)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = mocker.Mock()
+    app["vm_registry"].record(
+        ItemHash(mock_hash),
+        message=mocker.Mock(address=mock_address),
+        original=mocker.Mock(address=mock_address),
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
+
     client = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{mock_hash}/reboot",
     )
     assert response.status == 200
-    assert (
-        await response.text() == "Rebooted VM with ref decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
-    )
-    assert pool.systemd_manager.restart.call_count == 1
+    assert await response.text() == f"Rebooted VM with ref {mock_hash}"
+    fake_sup.reboot_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -552,15 +576,7 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     # Mock authentication to return the delegated address
     mocker.patch(
@@ -591,13 +607,21 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
     )
 
     assert response.status == 200, await response.text()
-    assert fake_vm_pool.stop_vm.call_count == 1
+    fake_sup.delete_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -606,20 +630,11 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
     settings.ENABLE_QEMU_SUPPORT = True
     settings.setup()
 
-    vm_owner_address = "0x40684b43B88356F62DCc56017547B6A7AC68780B"
     unauthorized_address = "0x8888888888888888888888888888888888888888"
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     # Mock authentication to return an unauthorized address
     mocker.patch(
@@ -650,6 +665,14 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
@@ -657,7 +680,7 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
 
     assert response.status == 403
     assert await response.text() == "Unauthorized sender"
-    assert fake_vm_pool.stop_vm.call_count == 0
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -670,18 +693,7 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.Mock(
-        executions={
-            vm_hash: mocker.Mock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-                persistent=True,
-                controller_service="vm-service",
-            ),
-        },
-        systemd_manager=mocker.Mock(restart=mocker.Mock()),
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -712,13 +724,21 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
 
     app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = mocker.Mock()
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/reboot",
     )
 
     assert response.status == 200
-    assert fake_vm_pool.systemd_manager.restart.call_count == 1
+    fake_sup.reboot_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -905,15 +925,7 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -930,6 +942,14 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
@@ -949,15 +969,7 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -987,6 +999,14 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
@@ -1007,15 +1027,7 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -1045,13 +1057,21 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
     )
 
     assert response.status == 200
-    assert fake_vm_pool.stop_vm.call_count == 1
+    fake_sup.delete_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1064,15 +1084,7 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -1088,6 +1100,14 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
@@ -1107,15 +1127,7 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.AsyncMock(
-        executions={
-            vm_hash: mocker.AsyncMock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -1145,10 +1157,209 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
     mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/stop",
     )
 
     assert response.status == 200
-    assert fake_vm_pool.stop_vm.call_count == 1
+    fake_sup.delete_vm.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# New test cases added for Task 6
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_already_stopped(aiohttp_client, mocker):
+    """Stop when the supervisor reports STOPPED → 200 'Already stopped', delete_vm NOT called."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.STOPPED)
+    app["supervisor"] = fake_sup
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert response.status == 200
+    assert await response.text() == "Already stopped, nothing to do"
+    fake_sup.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
+    """Reboot a non-persistent VM: delete_vm then create_vm_execution_or_raise_http_error called."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    mock_create_vm = mocker.patch(
+        "aleph.vm.orchestrator.views.operator.create_vm_execution_or_raise_http_error",
+        new=AsyncMock(),
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=False,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reboot")
+
+    assert response.status == 200
+    assert await response.text() == f"Rebooted VM with ref {vm_hash}"
+    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.reboot_vm.assert_not_awaited()
+    mock_create_vm.assert_awaited_once_with(
+        vm_hash=vm_hash,
+        pool=fake_vm_pool,
+        supervisor=fake_sup,
+        registry=app["vm_registry"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_unknown_vm_hash_registry_empty(aiohttp_client, mocker):
+    """Registry is empty → stop returns 404 immediately."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="some_sender",
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    # No record in registry
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert response.status == 404
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_registry_exists_but_supervisor_not_found(aiohttp_client, mocker):
+    """Registry has record but supervisor raises VmNotFoundError → 404."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    # Supervisor raises VmNotFoundError on get_vm
+    app["supervisor"] = MagicMock(
+        get_vm=AsyncMock(side_effect=VmNotFoundError("not found")),
+        delete_vm=AsyncMock(),
+        reboot_vm=AsyncMock(),
+    )
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert response.status == 404
+
+
+@pytest.mark.asyncio
+async def test_operator_reboot_registry_exists_but_supervisor_not_found(aiohttp_client, mocker):
+    """Registry has record but supervisor raises VmNotFoundError on reboot → 404."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    # Supervisor raises VmNotFoundError on get_vm
+    app["supervisor"] = MagicMock(
+        get_vm=AsyncMock(side_effect=VmNotFoundError("not found")),
+        delete_vm=AsyncMock(),
+        reboot_vm=AsyncMock(),
+    )
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reboot")
+
+    assert response.status == 404
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_booting_vm_is_stopped(aiohttp_client, mocker):
+    """Stop when the supervisor reports BOOTING → 200 'Stopped VM with ref ...', delete_vm called once."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.BOOTING)
+    app["supervisor"] = fake_sup
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert response.status == 200
+    assert await response.text() == f"Stopped VM with ref {vm_hash}"
+    fake_sup.delete_vm.assert_awaited_once()

@@ -51,7 +51,11 @@ from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
+from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
@@ -171,6 +175,14 @@ def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
         return execution
     else:
         raise web.HTTPNotFound(body=f"No virtual machine with ref {ref}")
+
+
+def get_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmRecord:
+    """Owner identity now comes from the agent registry, not the execution."""
+    record = request.app["vm_registry"].get(vm_hash)
+    if record is None:
+        raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
+    return record
 
 
 async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
@@ -493,19 +505,21 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
     """Stop the virtual machine, smoothly if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        logger.debug(f"Iterating through running executions... {pool.executions}")
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        if execution.is_running:
-            logger.info(f"Stopping {execution.vm_hash}")
-            await pool.stop_vm(execution.vm_hash)
-            return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
-        else:
-            return web.Response(status=200, body="Already stopped, nothing to do")
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+            if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+                logger.info(f"Stopping {vm_hash}")
+                await supervisor.delete_vm(vm_id)
+                return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        return web.Response(status=200, body="Already stopped, nothing to do")
 
 
 @cors_allow_all
@@ -516,29 +530,30 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        if execution.is_running:
-            logger.info(f"Rebooting {execution.vm_hash}")
-            if execution.persistent:
-                pool.systemd_manager.restart(execution.controller_service)
-            else:
-                await pool.stop_vm(vm_hash)
-                pool.forget_vm(vm_hash)
-
-                await create_vm_execution_or_raise_http_error(
-                    vm_hash=vm_hash,
-                    pool=pool,
-                    supervisor=request.app["supervisor"],
-                    registry=request.app["vm_registry"],
-                )
-            return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
-        else:
-            return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+            if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+                logger.info(f"Rebooting {vm_hash}")
+                if record.persistent:
+                    await supervisor.reboot_vm(vm_id)
+                else:
+                    await supervisor.delete_vm(vm_id)
+                    await create_vm_execution_or_raise_http_error(
+                        vm_hash=vm_hash,
+                        pool=request.app["vm_pool"],
+                        supervisor=supervisor,
+                        registry=request.app["vm_registry"],
+                    )
+                return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
 
 
 @cors_allow_all
