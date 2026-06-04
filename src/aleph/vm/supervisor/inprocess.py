@@ -8,6 +8,7 @@ NotImplementedSupervisorError.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -182,14 +183,28 @@ class InProcessSupervisor(Supervisor):
                 self.pool.forget_vm(vm_id)
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
-    async def reinstall_vm(self, vm_id: VmId) -> VmInfo:
+    async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
-            if execution.persistent and getattr(execution, "systemd_manager", None):
-                self.pool.systemd_manager.restart(execution.controller_service)
+            if execution.persistent:
+                # Keep the execution registered so the allocation loop cannot
+                # create a duplicate while we re-prepare (mirrors the old
+                # operate_reinstall persistent branch). Note: restart_persistent_vm
+                # re-registers the execution again after prepare() — the duplicate
+                # write is intentional.
+                execution.stop_event = asyncio.Event()
+                self.pool.executions[execution.vm_hash] = execution
+                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
+                execution.resources = None
+                await execution.prepare()
+                await self.pool.restart_persistent_vm(execution)
             else:
-                self.pool.forget_vm(vm_id)
+                if execution.vm_hash in self.pool.executions:
+                    self.pool.forget_vm(execution.vm_hash)
+                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
+                # The agent re-creates non-persistent VMs through the create
+                # path (it owns the message); we return the stopped state.
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
     # Port forwarding

@@ -12,6 +12,25 @@ from aleph.vm.supervisor.types import VmId
 VM_ID = VmId("itemhash123")
 
 
+def _make_execution(*, persistent: bool = True):
+    """Create a fake execution with configurable persistence flag.
+
+    Wraps make_execution() (always persistent=True) and patches the flag.
+    """
+    ex = make_execution()
+    ex.persistent = persistent
+    ex.prepare = AsyncMock()
+    return ex
+
+
+def _make_pool(executions: dict | None = None):
+    """Create a FakePool with stop_vm and forget_vm pre-mocked."""
+    pool = FakePool(executions=executions or {})
+    pool.stop_vm = AsyncMock()
+    pool.forget_vm = MagicMock()
+    return pool
+
+
 @pytest.mark.asyncio
 async def test_delete_vm_stops_and_forgets():
     execution = make_execution()
@@ -59,19 +78,34 @@ async def test_reboot_unknown_vm_raises():
 
 
 @pytest.mark.asyncio
-async def test_reinstall_persistent_vm_stops_then_restarts():
-    execution = make_execution(running=True)
-    systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})
-    systemd.restart = MagicMock()
-    pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
-    pool.stop_vm = AsyncMock()
-    sup = InProcessSupervisor(pool=pool)
+async def test_reinstall_persistent_erases_prepares_and_restarts():
+    execution = _make_execution(persistent=True)
+    execution.erase_volumes = MagicMock()
+    pool = _make_pool({VM_ID: execution})
+    pool.restart_persistent_vm = AsyncMock()
+    supervisor = InProcessSupervisor(pool)
 
-    info = await sup.reinstall_vm(VmId("itemhash123"))
+    await supervisor.reinstall_vm(VM_ID, wipe_volumes=False)
 
-    pool.stop_vm.assert_awaited_once_with("itemhash123")
-    systemd.restart.assert_called_once_with("aleph-vm-controller@itemhash123.service")
-    assert info.vm_id == "itemhash123"
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    execution.erase_volumes.assert_called_once_with(include_rootfs=True, include_data_volumes=False)
+    assert execution.resources is None
+    execution.prepare.assert_awaited_once()
+    pool.restart_persistent_vm.assert_awaited_once_with(execution)
+
+
+@pytest.mark.asyncio
+async def test_reinstall_non_persistent_stops_forgets_and_erases():
+    execution = _make_execution(persistent=False)
+    execution.erase_volumes = MagicMock()
+    pool = _make_pool({VM_ID: execution})
+    supervisor = InProcessSupervisor(pool)
+
+    await supervisor.reinstall_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.forget_vm.assert_called_once_with(VM_ID)
+    execution.erase_volumes.assert_called_once_with(include_rootfs=True, include_data_volumes=True)
 
 
 @pytest.mark.asyncio

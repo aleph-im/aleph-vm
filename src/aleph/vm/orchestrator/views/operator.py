@@ -152,50 +152,6 @@ def _verify_backup_download(request: web.Request, vm_hash: str, backup_id: str) 
         raise web.HTTPForbidden(body="Invalid signature")
 
 
-async def _restart_persistent_vm(
-    pool: VmPool,
-    execution: VmExecution,
-) -> None:
-    """Re-register a stopped persistent VM and restart it via systemd.
-
-    Re-registers the execution in the pool immediately (before any
-    async work) so the periodic allocation loop cannot create a
-    duplicate execution with a new vm_id.
-    """
-    # Re-register synchronously first to close the window where the
-    # allocation loop could see the VM as missing and recreate it.
-    execution.times.stopping_at = None
-    execution.times.stopped_at = None
-    execution.stop_event = asyncio.Event()
-    pool.executions[execution.vm_hash] = execution
-    pool._schedule_forget_on_stop(execution)
-
-    if pool.network and execution.vm:
-        if not pool.network.interface_exists(execution.vm.vm_id):
-            await pool.network.create_tap(
-                execution.vm.vm_id,
-                execution.vm.tap_interface,
-            )
-        else:
-            # Interface exists but nftables rules may have been
-            # flushed — always re-apply them (mirrors pool.py logic).
-            from aleph.vm.network.firewall import setup_nftables_for_vm
-
-            setup_nftables_for_vm(
-                execution.vm.vm_id,
-                interface=execution.vm.tap_interface,
-            )
-    pool.systemd_manager.restart(execution.controller_service)
-    # Reload port mappings from DB — stop() clears them in memory
-    # but the DB retains them for persistent VMs.
-    execution.mapped_ports = await get_port_mappings(execution.vm_hash)
-    if execution.mapped_ports:
-        await execution.recreate_port_redirect_rules()
-    # Re-save so load_persistent_executions() finds it on restart.
-    execution.record = None
-    await execution.save()
-
-
 def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
     try:
         ref = match_info["ref"]
@@ -728,7 +684,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
             )
             execution.resources = None
             await execution.prepare()
-            await _restart_persistent_vm(pool, execution)
+            await pool.restart_persistent_vm(execution)
         else:
             await pool.stop_vm(execution.vm_hash)
             if execution.vm_hash in pool.executions:
@@ -1338,7 +1294,7 @@ async def _do_restore(
 
             logger.info("Restarting VM %s after restore", vm_hash)
             if execution.persistent:
-                await _restart_persistent_vm(pool, execution)
+                await pool.restart_persistent_vm(execution)
             else:
                 if execution.vm_hash in pool.executions:
                     pool.forget_vm(execution.vm_hash)
