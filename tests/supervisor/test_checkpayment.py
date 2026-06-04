@@ -1,7 +1,7 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 from aleph_message.models import Chain, InstanceContent, PaymentType
 from aleph_message.status import MessageStatus
 

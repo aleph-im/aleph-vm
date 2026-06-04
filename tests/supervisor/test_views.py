@@ -856,19 +856,27 @@ async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_inst
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     message = InstanceContent.model_validate(mock_instance_content)
 
-    from aleph.vm.supervisor.types import VmId, VmInfo, VmStatus, Backend
-    from aleph.vm.supervisor.errors import VmNotFoundError
     from unittest.mock import AsyncMock, MagicMock
+
+    from aleph.vm.supervisor.errors import VmNotFoundError
+    from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
 
     # Register in registry so the endpoint can find it.
     web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
     # Supervisor reports BOOTING (not yet running).
     fake_sup = MagicMock()
-    fake_sup.get_vm = AsyncMock(return_value=VmInfo(
-        vm_id=VmId(vm_hash), status=VmStatus.BOOTING,
-        ipv4="", ipv6="", uptime_secs=0, backend=Backend.QEMU,
-        numa_node=None, status_message="",
-    ))
+    fake_sup.get_vm = AsyncMock(
+        return_value=VmInfo(
+            vm_id=VmId(vm_hash),
+            status=VmStatus.BOOTING,
+            ipv4="",
+            ipv6="",
+            uptime_secs=0,
+            backend=Backend.QEMU,
+            numa_node=None,
+            status_message="",
+        )
+    )
     web_app["supervisor"] = fake_sup
 
     response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
@@ -885,8 +893,9 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     message = InstanceContent.model_validate(mock_instance_content)
 
-    from aleph.vm.supervisor.types import VmId, VmInfo, VmStatus, Backend
     from unittest.mock import AsyncMock, MagicMock
+
+    from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
 
     reconcile_mock = AsyncMock()
     mocker.patch("aleph.vm.orchestrator.views.reconcile_port_forwards", reconcile_mock)
@@ -895,11 +904,18 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
     web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
     # Supervisor reports RUNNING.
     fake_sup = MagicMock()
-    fake_sup.get_vm = AsyncMock(return_value=VmInfo(
-        vm_id=VmId(vm_hash), status=VmStatus.RUNNING,
-        ipv4="", ipv6="", uptime_secs=0, backend=Backend.QEMU,
-        numa_node=None, status_message="",
-    ))
+    fake_sup.get_vm = AsyncMock(
+        return_value=VmInfo(
+            vm_id=VmId(vm_hash),
+            status=VmStatus.RUNNING,
+            ipv4="",
+            ipv6="",
+            uptime_secs=0,
+            backend=Backend.QEMU,
+            numa_node=None,
+            status_message="",
+        )
+    )
     web_app["supervisor"] = fake_sup
     web_app["vm_pool"].update_domain_mapping = AsyncMock()
 
@@ -1203,9 +1219,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     fake_supervisor = MagicMock(delete_vm=AsyncMock())
     app["supervisor"] = fake_supervisor
 
-    mock_delete_port_mappings = mocker.patch(
-        "aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock
-    )
+    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)

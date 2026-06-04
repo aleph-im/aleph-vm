@@ -10,7 +10,15 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.orchestrator import run as run_module
-from aleph.vm.supervisor.types import GuestPort, HostPort, PortForwardInfo, PortForwardSpec, Protocol, VmId, VmStatus
+from aleph.vm.supervisor.types import (
+    GuestPort,
+    HostPort,
+    PortForwardInfo,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+    VmStatus,
+)
 
 _HASH = ItemHash("deadbeef" * 8)
 _VM_ID = VmId(str(_HASH))

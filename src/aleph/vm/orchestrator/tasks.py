@@ -163,7 +163,9 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                 break
 
 
-async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry):
+async def watch_for_messages(
+    dispatcher: PubSub, reactor: Reactor, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
+):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
@@ -190,7 +192,9 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool,
                     await _handle_domains_aggregate(message, pool)
 
 
-async def _handle_port_forwarding_aggregate(message: AggregateMessage, supervisor: Supervisor, registry: AgentVmRegistry):
+async def _handle_port_forwarding_aggregate(
+    message: AggregateMessage, supervisor: Supervisor, registry: AgentVmRegistry
+):
     """Reconcile port forwards for VMs affected by a port-forwarding aggregate change."""
     # Use content.address (the target account), not message.sender,
     # because a sender can publish aggregates on behalf of another address.

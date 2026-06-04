@@ -25,7 +25,7 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
     initialize_nftables,
     recreate_network_for_vms,
@@ -35,7 +35,11 @@ from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records, get_port_mappings
+from aleph.vm.orchestrator.metrics import (
+    delete_port_mappings,
+    get_execution_records,
+    get_port_mappings,
+)
 from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
@@ -46,7 +50,11 @@ from aleph.vm.orchestrator.payment import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation, VMNotification
-from aleph.vm.orchestrator.run import reconcile_port_forwards, run_code_on_request, start_persistent_vm
+from aleph.vm.orchestrator.run import (
+    reconcile_port_forwards,
+    run_code_on_request,
+    start_persistent_vm,
+)
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
@@ -68,9 +76,9 @@ from aleph.vm.orchestrator.views.host_status import (
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.pool import VmPool
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import VmId, VmStatus
-from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,

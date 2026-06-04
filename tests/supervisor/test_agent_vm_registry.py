@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry, rehydrate_registry
+from aleph.vm.orchestrator.vm_registry import (
+    AgentVmRecord,
+    AgentVmRegistry,
+    rehydrate_registry,
+)
 
 _HASH = ItemHash("deadbeef" * 8)
 

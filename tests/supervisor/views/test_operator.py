@@ -10,13 +10,19 @@ from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import Backend, LogChunk, LogSource, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import (
+    Backend,
+    LogChunk,
+    LogSource,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils.test_helpers import (
     generate_signer_and_signed_headers_for_operation,
     patch_datetime_now,

@@ -1,10 +1,11 @@
 """Tests for port mapping DB logic and port availability checker."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from aleph.vm.orchestrator.metrics import Base, PortMapping, save_port_mappings
 
@@ -196,9 +197,7 @@ async def test_fetch_port_redirect_config_does_not_call_get_port_mappings(monkey
     from aleph.vm.models import MessageSpec, VmExecution
 
     # get_port_mappings should NOT be importable from aleph.vm.models any more.
-    assert not hasattr(models_mod, "get_port_mappings"), (
-        "get_port_mappings must not be in aleph.vm.models namespace"
-    )
+    assert not hasattr(models_mod, "get_port_mappings"), "get_port_mappings must not be in aleph.vm.models namespace"
 
     # Build a minimal fake execution with MessageSpec so the method runs.
     fake_vm = MagicMock()

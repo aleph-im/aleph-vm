@@ -60,6 +60,7 @@ from aleph.vm.utils import (
     dumps_for_json,
     get_message_executable_content,
 )
+
 logger = logging.getLogger(__name__)
 
 _BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max

@@ -33,7 +33,6 @@ from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import (
     GuestPort,
     HostPort,
-    PortForwardInfo,
     PortForwardSpec,
     Protocol,
     VmId,
