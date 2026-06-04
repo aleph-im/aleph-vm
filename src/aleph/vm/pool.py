@@ -816,20 +816,46 @@ class VmPool:
                 available_gpus.append(gpu)
         return available_gpus
 
-    def get_executions_by_address(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
-        """Return all executions of the given type, grouped by sender and by chain."""
+    def get_executions_by_address(
+        self,
+        payment_type: PaymentType,
+        running_states: dict[str, bool] | None = None,
+    ) -> dict[str, dict[str, list[VmExecution]]]:
+        """Return all executions of the given type, grouped by sender and by chain.
+
+        Args:
+            payment_type: Filter to this payment type.
+            running_states: Optional pre-computed mapping of
+                controller_service name -> active state, e.g. the result
+                of ``SystemDManager.get_services_active_states()``. When
+                provided, persistent executions are filtered by this map
+                instead of via the per-VM ``is_running`` property, which
+                otherwise issues a D-Bus round-trip per execution and
+                blocks the event loop.
+
+                Semantic note: the per-VM path also checked
+                ``is_service_enabled`` before reading the active state;
+                the batch path reads ActiveState only. Aleph-VM
+                controller services are always enabled via
+                ``EnableUnitFiles`` before ``StartUnit`` (see
+                ``SystemDManager.enable_and_start``), so the gap is
+                immaterial in practice; the same batch shortcut is
+                already used by ``load_persistent_executions``.
+        """
         executions_by_address: dict[str, dict[str, list[VmExecution]]] = {}
         for vm_hash, execution in self.executions.items():
             if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
                 # Ignore Diagnostic VM execution
                 continue
 
-            if not execution.is_running:
+            if running_states is not None and execution.persistent:
+                is_active = running_states.get(execution.controller_service, False)
+            else:
+                is_active = execution.is_running
+            if not is_active:
                 # Ignore the execution that is stopping or not running anymore
                 continue
-            if execution.vm_hash == settings.CHECK_FASTAPI_VM_ID:
-                # Ignore Diagnostic VM execution
-                continue
+
             execution_payment = (
                 execution.message.payment
                 if execution.message.payment

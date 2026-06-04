@@ -551,7 +551,9 @@ async def update_allocations(request: web.Request):
         # Schedule the start of persistent VMs:
         for vm_hash in allocation.persistent_vms:
             try:
-                logger.info(f"Starting long running VM '{vm_hash}'")
+                # start_persistent_vm logs at INFO when it actually starts
+                # a VM; firing an unconditional log here just adds noise
+                # when the scheduler re-pushes the full allocation list.
                 vm_hash = ItemHash(vm_hash)
                 await start_persistent_vm(vm_hash, pubsub, pool)
             except vm_creation_exceptions as error:
@@ -564,7 +566,6 @@ async def update_allocations(request: web.Request):
 
         # Schedule the start of instances:
         for instance_hash in allocation.instances:
-            logger.info(f"Starting instance '{instance_hash}'")
             instance_item_hash = ItemHash(instance_hash)
             try:
                 await start_persistent_vm(instance_item_hash, pubsub, pool)

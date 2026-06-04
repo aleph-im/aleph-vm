@@ -271,9 +271,9 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
         if execution.is_running:
-            logger.info(f"{vm_hash} is already running")
+            logger.debug(f"{vm_hash} is already running")
         elif execution.is_starting:
-            logger.info(f"{vm_hash} is already starting")
+            logger.debug(f"{vm_hash} is already starting")
         elif execution.is_stopping:
             logger.info(f"{vm_hash} is stopping, waiting for complete stop before restarting")
             await execution.stop_event.wait()

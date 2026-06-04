@@ -334,8 +334,27 @@ async def check_payment(pool: VmPool):
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
 
+    # Snapshot the active state of every persistent VM's controller
+    # service via a single batched D-Bus ListUnits() call, run off the
+    # event loop. Without this, get_executions_by_address would hit
+    # is_service_active per VM (each round-trip blocks the loop), and
+    # with dozens of VMs the loop stalls for tens of seconds, visible
+    # to clients as multi-second TTFB on unrelated HTTP requests.
+    persistent_services = [
+        execution.controller_service for execution in pool.executions.values() if execution.persistent
+    ]
+    if persistent_services and pool.systemd_manager:
+        running_states = await asyncio.to_thread(
+            pool.systemd_manager.get_services_active_states,
+            persistent_services,
+        )
+    else:
+        running_states = {}
+
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.hold).items():
+    for execution_address, chains in pool.get_executions_by_address(
+        payment_type=PaymentType.hold, running_states=running_states
+    ).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions if execution.is_confidential]
             if not executions:
@@ -359,7 +378,9 @@ async def check_payment(pool: VmPool):
         logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
 
     # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
-    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.credit).items():
+    for execution_address, chains in pool.get_executions_by_address(
+        payment_type=PaymentType.credit, running_states=running_states
+    ).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions]
             if not executions:
@@ -379,7 +400,9 @@ async def check_payment(pool: VmPool):
                 required_credits = await compute_required_credit_balance(executions)
 
     # Check if the balance held in the wallet is sufficient stream tier resources
-    for execution_address, chains in pool.get_executions_by_address(payment_type=PaymentType.superfluid).items():
+    for execution_address, chains in pool.get_executions_by_address(
+        payment_type=PaymentType.superfluid, running_states=running_states
+    ).items():
         for chain, executions in chains.items():
             try:
                 stream = await get_stream(
