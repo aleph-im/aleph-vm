@@ -851,56 +851,63 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
 @pytest.mark.asyncio
 async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_instance_content, mocker):
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
     client = await aiohttp_client(web_app)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     message = InstanceContent.model_validate(mock_instance_content)
 
-    mocker.patch.object(VmExecution, "update_port_redirects", new=mocker.AsyncMock(return_value=False))
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=False,
-        snapshot_manager=None,
-        systemd_manager=None,
-    )
+    from aleph.vm.supervisor.types import VmId, VmInfo, VmStatus, Backend
+    from aleph.vm.supervisor.errors import VmNotFoundError
+    from unittest.mock import AsyncMock, MagicMock
 
-    pool.executions = {vm_hash: execution}
+    # Register in registry so the endpoint can find it.
+    web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
+    # Supervisor reports BOOTING (not yet running).
+    fake_sup = MagicMock()
+    fake_sup.get_vm = AsyncMock(return_value=VmInfo(
+        vm_id=VmId(vm_hash), status=VmStatus.BOOTING,
+        ipv4="", ipv6="", uptime_secs=0, backend=Backend.QEMU,
+        numa_node=None, status_message="",
+    ))
+    web_app["supervisor"] = fake_sup
+
     response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
     assert response.status == 200, await response.text()
     response.raise_for_status()
     resp = await response.json()
     assert resp == {"msg": "VM not starting yet", "status": "ok"}
-    assert execution.update_port_redirects.call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content, mocker):
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
     client = await aiohttp_client(web_app)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     message = InstanceContent.model_validate(mock_instance_content)
 
-    mocker.patch.object(VmExecution, "update_port_redirects", new=mocker.AsyncMock(return_value=False))
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=False,
-        snapshot_manager=None,
-        systemd_manager=None,
-    )
-    execution.vm = mocker.Mock()
+    from aleph.vm.supervisor.types import VmId, VmInfo, VmStatus, Backend
+    from unittest.mock import AsyncMock, MagicMock
 
-    pool.executions = {vm_hash: execution}
+    reconcile_mock = AsyncMock()
+    mocker.patch("aleph.vm.orchestrator.views.reconcile_port_forwards", reconcile_mock)
+
+    # Register in registry so the endpoint can find it.
+    web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
+    # Supervisor reports RUNNING.
+    fake_sup = MagicMock()
+    fake_sup.get_vm = AsyncMock(return_value=VmInfo(
+        vm_id=VmId(vm_hash), status=VmStatus.RUNNING,
+        ipv4="", ipv6="", uptime_secs=0, backend=Backend.QEMU,
+        numa_node=None, status_message="",
+    ))
+    web_app["supervisor"] = fake_sup
+    web_app["vm_pool"].update_domain_mapping = AsyncMock()
+
     response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
     assert response.status == 200, await response.text()
     response.raise_for_status()
     resp = await response.json()
     assert resp == {}
-    assert execution.update_port_redirects.call_count == 1
+    reconcile_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

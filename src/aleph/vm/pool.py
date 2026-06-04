@@ -372,6 +372,10 @@ class VmPool:
                 await execution.start()
 
                 if execution.is_instance:
+                    # Reuse persisted host ports across restarts (hypervisor-owned).
+                    execution.mapped_ports = await get_port_mappings(vm_hash)
+                    if execution.mapped_ports:
+                        await execution.recreate_port_redirect_rules()
                     await execution.fetch_port_redirect_config_and_setup()
 
                 # Clear the user reservations
@@ -439,9 +443,12 @@ class VmPool:
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start(write_config=False)
-                # NOTE: port forwarding is not fetched here. It depends on the
-                # owner address + user-settings aggregate (agent concerns); the
-                # agent drives it through the supervisor's add_port_forward.
+                # Reuse persisted host ports across restarts. The agent then
+                # reconciles the aggregate settings through add_port_forward,
+                # which merges with these preloaded mappings.
+                execution.mapped_ports = await get_port_mappings(vm_hash)
+                if execution.mapped_ports:
+                    await execution.recreate_port_redirect_rules()
             except Exception:
                 if execution.vm:
                     await execution.vm.teardown()

@@ -55,7 +55,6 @@ from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_port_mappings,
     delete_record,
-    get_port_mappings,
     save_execution_data,
     save_port_mappings,
     save_record,
@@ -153,16 +152,13 @@ class VmExecution:
     record: ExecutionRecord | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
+        """Fetch the user's port-forwarding aggregate and apply updates.
+
+        Persisted-mapping reload is the creator's job
+        (pool.create_a_vm / create_vm_from_spec / restart_persistent_vm).
+        """
         if not self.is_instance:
             return
-
-        # Load persisted port mappings so existing host ports are reused
-        if not self.mapped_ports:
-            self.mapped_ports = await get_port_mappings(self.vm_hash)
-            # Ensure nft rules exist for DB-loaded mappings (they may
-            # have been wiped by a prior stop while the DB survived).
-            if self.mapped_ports:
-                await self.recreate_port_redirect_rules()
 
         # Precondition: this is an agent-responsibility entrypoint. The agent
         # attaches the message before calling it (see orchestrator/run.py); a

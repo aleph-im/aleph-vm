@@ -272,6 +272,13 @@ class InProcessSupervisor(Supervisor):
                 requested[int(vm_port)] = {"tcp": bool(mapping.get("tcp")), "udp": bool(mapping.get("udp"))}
                 if int(mapping["host"]) == host_port:
                     requested[int(vm_port)][protocol.value] = False
+            # A port whose last active protocol was just cleared must be
+            # dropped from the request entirely: update_port_redirects only
+            # deletes mappings for absent keys (all-False keys are kept as
+            # ghost entries).
+            requested = {
+                vm_port: flags for vm_port, flags in requested.items() if flags["tcp"] or flags["udp"]
+            }
             await execution.update_port_redirects(requested)
 
     async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]:

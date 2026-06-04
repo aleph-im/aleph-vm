@@ -1740,3 +1740,71 @@ async def test_websocket_logs_db_fallback_auth(aiohttp_client, mocker, patch_dat
 
     await websocket.close()
     assert websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_operate_update_reconciles_when_running(aiohttp_client, mocker):
+    """operate_update calls reconcile_port_forwards when the VM is RUNNING."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    reconcile_mock = AsyncMock()
+    mocker.patch(
+        "aleph.vm.orchestrator.views.reconcile_port_forwards",
+        reconcile_mock,
+    )
+
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+
+    response = await client.post(f"/control/machine/{vm_hash}/update")
+
+    assert response.status == 200
+    reconcile_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, mocker):
+    """operate_update returns 200 without reconciling when VM is not RUNNING."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    reconcile_mock = AsyncMock()
+    mocker.patch(
+        "aleph.vm.orchestrator.views.reconcile_port_forwards",
+        reconcile_mock,
+    )
+
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.BOOTING)
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+
+    response = await client.post(f"/control/machine/{vm_hash}/update")
+
+    assert response.status == 200
+    data = await response.json()
+    assert data["msg"] == "VM not starting yet"
+    reconcile_mock.assert_not_awaited()

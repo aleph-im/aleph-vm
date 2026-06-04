@@ -25,7 +25,7 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import VmExecution
+from aleph.vm.models import MessageSpec, VmExecution
 from aleph.vm.network.firewall import (
     initialize_nftables,
     recreate_network_for_vms,
@@ -35,7 +35,7 @@ from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records, get_port_mappings
 from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
@@ -46,7 +46,7 @@ from aleph.vm.orchestrator.payment import (
 )
 from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.resources import Allocation, VMNotification
-from aleph.vm.orchestrator.run import run_code_on_request, start_persistent_vm
+from aleph.vm.orchestrator.run import reconcile_port_forwards, run_code_on_request, start_persistent_vm
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
@@ -68,6 +68,8 @@ from aleph.vm.orchestrator.views.host_status import (
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import VmId, VmStatus
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import (
     HostNotFoundError,
@@ -709,14 +711,21 @@ async def recreate_network(request: web.Request):
             )
 
         # Step 5: Recreate port forwarding rules for instances
+        # TODO: recreate_network still drives executions directly (design §2 residual); operate_update uses the supervisor path.
         logger.info("Recreating port forwarding rules for instances")
         for vm_info in running_vms:
             execution = vm_info["execution"]
             if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
                 try:
-                    # Remove previous assigned ports as all forwarding port rules were deleted before
-                    execution.mapped_ports = {}
-                    await execution.fetch_port_redirect_config_and_setup()
+                    # All rules were flushed: reapply from the persisted
+                    # mappings, then re-sync message-driven VMs against the
+                    # aggregate. Spec-built (reattached) executions have no
+                    # message; their persisted mappings are authoritative.
+                    execution.mapped_ports = await get_port_mappings(str(vm_info["vm_hash"]))
+                    if execution.mapped_ports:
+                        await execution.recreate_port_redirect_rules()
+                    if isinstance(execution.spec, MessageSpec):
+                        await execution.fetch_port_redirect_config_and_setup()
                     logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
                 except Exception as e:
                     logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")
@@ -1034,13 +1043,21 @@ async def operate_update(request: web.Request) -> web.Response:
     and that it should be fetched and the setup upgraded"""
     vm_hash = get_itemhash_or_400(request.match_info)
 
-    pool: VmPool = request.app["vm_pool"]
-    execution: VmExecution = pool.executions.get(vm_hash)
-    if not execution:
+    registry = request.app["vm_registry"]
+    record = registry.get(vm_hash)
+    if record is None:
         raise HTTPNotFound(reason="VM not found")
-    if not execution.vm:
-        # Configuration will be fetched when the VM start so no need to return an error
+
+    supervisor = request.app["supervisor"]
+    vm_id = VmId(str(vm_hash))
+    try:
+        info = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        raise HTTPNotFound(reason="VM not found") from None
+    if info.status is not VmStatus.RUNNING:
+        # Configuration will be fetched when the VM starts; not an error.
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
-    await execution.fetch_port_redirect_config_and_setup()
-    await pool.update_domain_mapping()
+
+    await reconcile_port_forwards(supervisor, vm_id, record.message)
+    await request.app["vm_pool"].update_domain_mapping()
     return web.json_response({}, dumps=dumps_for_json, status=200)

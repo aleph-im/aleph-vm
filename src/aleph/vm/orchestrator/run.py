@@ -33,6 +33,7 @@ from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import (
     GuestPort,
     HostPort,
+    PortForwardInfo,
     PortForwardSpec,
     Protocol,
     VmId,
@@ -127,6 +128,23 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
                     )
                 )
     return forwards
+
+
+async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
+    """Drive the hypervisor's forwards to match the aggregate settings.
+
+    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
+    the desired set, diff against what the hypervisor reports, and issue
+    add/remove calls. The hypervisor owns application and persistence.
+    """
+    desired = {(int(spec.vm_port), spec.protocol): spec for spec in await resolve_port_forwards(vm_id, content)}
+    current = {(int(info.vm_port), info.protocol): info for info in await supervisor.list_port_forwards(vm_id)}
+    for key, info in current.items():
+        if key not in desired:
+            await supervisor.remove_port_forward(vm_id, info.host_port, info.protocol)
+    for key, spec in desired.items():
+        if key not in current:
+            await supervisor.add_port_forward(spec)
 
 
 async def _wait_until_running(
