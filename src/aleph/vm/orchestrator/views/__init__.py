@@ -539,9 +539,14 @@ async def update_allocations(request: web.Request):
             ):
                 vm_type = "instance" if execution.is_instance else "persistent program"
                 logger.info("Stopping %s %s", vm_type, execution.vm_hash)
-                await pool.stop_vm(execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
+                # Residual direct DB call: mapping persistence moves fully
+                # hypervisor-side with the gRPC split (plan: Design deltas #3).
                 await delete_port_mappings(execution.vm_hash)
-                pool.forget_vm(execution.vm_hash)
+                registry.forget(execution.vm_hash)
                 stopped_vms.append(execution.vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.

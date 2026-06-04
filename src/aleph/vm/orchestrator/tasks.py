@@ -282,12 +282,14 @@ async def monitor_payments(app: web.Application):
     "hold" tier, and stream flow validation for the "superfluid" tier to ensure compliance.
     """
     pool: VmPool = app["vm_pool"]
+    supervisor: Supervisor = app["supervisor"]
+    registry: AgentVmRegistry = app["vm_registry"]
     while True:
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
         # noinspection PyBroadException
         try:
             logger.debug("Monitoring balances task running")
-            await check_payment(pool)
+            await check_payment(pool, supervisor, registry)
             logger.debug("Monitoring balances task ended")
         except Exception as e:
             if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
@@ -296,7 +298,7 @@ async def monitor_payments(app: web.Application):
             logger.warning(f"check_payment failed {e}", exc_info=True)
 
 
-async def check_payment(pool: VmPool):
+async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry):
     """Ensures VMs are stopped if payment conditions are unmet, such as insufficient
     funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
     balance checks for the "hold" tier, and stream flow validation for the "superfluid" tier
@@ -335,9 +337,11 @@ async def check_payment(pool: VmPool):
                 message_status,
             )
             del _terminal_strike_count[key]
-            await pool.stop_vm(vm_hash)
+            await supervisor.delete_vm(VmId(str(vm_hash)))
+            # Residual direct DB call: mapping persistence moves fully
+            # hypervisor-side with the gRPC split (plan: Design deltas #3).
             await delete_port_mappings(vm_hash)
-            pool.forget_vm(vm_hash)
+            registry.forget(vm_hash)
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
@@ -359,7 +363,10 @@ async def check_payment(pool: VmPool):
             while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
                 logger.debug(f"Stopping {last_execution} due to insufficient balance")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
                 required_balance = await compute_required_balance(executions)
 
     community_wallet = await get_community_wallet_address()
@@ -383,7 +390,10 @@ async def check_payment(pool: VmPool):
             while executions and balance < (required_credits + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
                 logger.debug(f"Stopping {last_execution} due to insufficient credit balance")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
                 required_credits = await compute_required_credit_balance(executions)
 
     # Check if the balance held in the wallet is sufficient stream tier resources
@@ -443,7 +453,10 @@ async def check_payment(pool: VmPool):
                 # Stop executions until the required stream is reached
                 last_execution = executions.pop(-1)
                 logger.info(f"Stopping {last_execution} of {execution_address} due to insufficient stream")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
 
 
 async def start_payment_monitoring_task(app: web.Application):

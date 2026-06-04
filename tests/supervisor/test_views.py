@@ -6,7 +6,7 @@ from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 from unittest import mock
-from unittest.mock import call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from aiohttp import web
@@ -20,6 +20,7 @@ from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor.types import VmId
 
 
 @pytest.fixture()
@@ -1141,3 +1142,86 @@ async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
     response = await operator._do_restore(request, vm_hash, "0xSender")
 
     assert 400 <= response.status < 500, f"expected a 4xx response, got {response.status}"
+
+
+@pytest.mark.asyncio
+async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker):
+    """update_allocations stop loop must call supervisor.delete_vm + delete_port_mappings
+    + registry.forget (permanent dealloc) for executions no longer in the allocation.
+    It must NOT call pool.stop_vm or pool.forget_vm directly.
+    """
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    # Use a non-stream, non-credit payment type so the stop-loop condition is satisfied
+    # (superfluid / credit executions are excluded from the dealloc loop).
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {"reproducible": False, "internet": True, "aleph_api": True, "shared_cache": False},
+        "resources": {"vcpus": 1, "memory": 256, "seconds": 30, "published_ports": None},
+        "payment": {"type": "hold", "chain": "BASE"},
+        "requirements": None,
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    message = InstanceContent.model_validate(instance_content)
+
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    # Mark as running so the stop-loop condition is satisfied.
+    mocker.patch.object(VmExecution, "is_running", new=True)
+
+    class FakeVmPool:
+        def get_persistent_executions(self):
+            return [execution]
+
+        # stop_vm/forget_vm must NOT be called — assert by leaving them unimplemented.
+
+    pool = FakeVmPool()
+    app = setup_webapp(pool=pool)
+    app["pubsub"] = None
+
+    # Seed registry so the app knows the VM.
+    app["vm_registry"].record(vm_hash, message=message, original=message, persistent=True)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    app["supervisor"] = fake_supervisor
+
+    mock_delete_port_mappings = mocker.patch(
+        "aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock
+    )
+
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    client = await aiohttp_client(app)
+
+    # Empty allocation — vm_hash is not in persistent_vms or instances, so it must be stopped.
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp_json = await response.json()
+    assert vm_hash in resp_json["stopped"]
+
+    # Verify the supervisor path was taken.
+    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    mock_delete_port_mappings.assert_awaited_once_with(vm_hash)
+    # Permanent dealloc: registry.forget must be called.
+    assert vm_hash not in app["vm_registry"]
