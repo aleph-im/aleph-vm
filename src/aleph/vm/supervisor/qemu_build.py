@@ -27,7 +27,18 @@ from aleph.vm.controllers.qemu.cloudinit import (
     get_hostname_from_hash,
 )
 from aleph.vm.sizes import MiB
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, DiskRole
+from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.types import (
+    Backend,
+    CreateVmSpec,
+    DiskFormat,
+    DiskRole,
+    DiskSpec,
+    GpuSpec,
+    NetworkConfig,
+    PciAddress,
+    VmId,
+)
 
 if TYPE_CHECKING:
     from aleph.vm.network.interfaces import TapInterface
@@ -154,4 +165,57 @@ async def build_qemu_configuration(
         settings=settings,
         vm_configuration=vm_configuration,
         hypervisor=HypervisorType.qemu,
+    )
+
+
+def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
+    """Reconstruct a CreateVmSpec from an on-disk controller Configuration.
+
+    The inverse of build_qemu_configuration, used by reboot-recovery to
+    reattach a running VM message-free. Only non-confidential QEMU configs
+    are supported (QemuConfidentialVMConfiguration is a separate type).
+    """
+    vm_cfg = config.vm_configuration
+    if not isinstance(vm_cfg, QemuVMConfiguration):
+        msg = f"Reattach supports QemuVMConfiguration only, got {type(vm_cfg).__name__}"
+        raise InvalidBackendError(msg)
+
+    disks: list[DiskSpec] = [
+        DiskSpec(
+            path=Path(vm_cfg.image_path),
+            readonly=False,
+            format=DiskFormat.QCOW2,
+            role=DiskRole.ROOTFS,
+            mount="",
+        )
+    ] + [
+        DiskSpec(
+            path=v.path_on_host,
+            readonly=v.read_only,
+            format=DiskFormat.RAW,
+            role=DiskRole.EXTRA,
+            mount=v.mount,
+        )
+        for v in vm_cfg.host_volumes
+    ]
+
+    gpus = [GpuSpec(pci_host=PciAddress(g.pci_host), supports_x_vga=g.supports_x_vga) for g in vm_cfg.gpus]
+
+    return CreateVmSpec(
+        vm_id=VmId(str(config.vm_hash)),
+        backend=Backend.QEMU,
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=disks,
+        vcpus=vm_cfg.vcpu_count,
+        memory_mib=vm_cfg.mem_size_mb.count,
+        tee=None,
+        network=NetworkConfig(
+            internet_access=bool(vm_cfg.interface_name),
+            requested_ipv6="",
+            ipv6_prefix_len=0,
+        ),
+        gpus=gpus,
+        numa_node=None,
+        persistent=True,
     )
