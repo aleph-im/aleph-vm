@@ -30,9 +30,7 @@ class AgentVmRegistry:
     def __init__(self) -> None:
         self._records: dict[ItemHash, AgentVmRecord] = {}
 
-    def record(
-        self, vm_hash: ItemHash, *, message: ExecutableContent, original: ExecutableContent
-    ) -> AgentVmRecord:
+    def record(self, vm_hash: ItemHash, *, message: ExecutableContent, original: ExecutableContent) -> AgentVmRecord:
         record = AgentVmRecord(message=message, original=original)
         self._records[vm_hash] = record
         return record

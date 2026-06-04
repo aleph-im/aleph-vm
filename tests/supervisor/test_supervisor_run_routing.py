@@ -135,9 +135,7 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(asyncio.TimeoutError):
-        await run_module.create_vm_execution(
-            _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, pool, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure
@@ -162,9 +160,7 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(
-            _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, pool, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure

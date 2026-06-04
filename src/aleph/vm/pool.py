@@ -9,13 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psutil
-from aleph_message.models import (
-    Chain,
-    InstanceContent,
-    ItemHash,
-    Payment,
-    PaymentType,
-)
+from aleph_message.models import Chain, InstanceContent, ItemHash, Payment, PaymentType
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
