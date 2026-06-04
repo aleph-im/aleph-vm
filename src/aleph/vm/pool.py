@@ -541,7 +541,7 @@ class VmPool:
         """
         try:
             config_paths = sorted(settings.EXECUTION_ROOT.glob("*-controller.json"))
-        except Exception:
+        except OSError:
             logger.warning("Failed to enumerate controller configs", exc_info=True)
             config_paths = []
 
@@ -593,7 +593,7 @@ class VmPool:
             await self.update_domain_mapping(force_update=True)
         logger.info("Loaded %d executions", len(self.executions))
 
-    async def _restore_network(self, _execution: VmExecution, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
+    async def _restore_network(self, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
@@ -634,7 +634,7 @@ class VmPool:
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
 
         await execution.prepare()  # builds resources from the spec; no download
-        tap_interface = await self._restore_network(execution, vm_id, vm_hash)
+        tap_interface = await self._restore_network(vm_id, vm_hash)
 
         vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
         await vm.start_guest_api()
@@ -696,7 +696,7 @@ class VmPool:
         """
         try:
             config_files = list(settings.EXECUTION_ROOT.glob("*-controller.json"))
-        except Exception:
+        except OSError:
             logger.warning("Failed to enumerate controller configs", exc_info=True)
             return
 
