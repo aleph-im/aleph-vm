@@ -9,14 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psutil
-from aleph_message.models import (
-    Chain,
-    ExecutableMessage,
-    InstanceContent,
-    ItemHash,
-    Payment,
-    PaymentType,
-)
+from aleph_message.models import Chain, InstanceContent, ItemHash, Payment, PaymentType
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -62,7 +55,6 @@ class VmPool:
     """
 
     executions: dict[ItemHash, VmExecution]
-    message_cache: dict[str, ExecutableMessage]
     network: Network | None
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
@@ -75,7 +67,6 @@ class VmPool:
 
     def __init__(self):
         self.executions = {}
-        self.message_cache = {}
         self.reservations = {}
         self.gpus = []
         self._draining = False
