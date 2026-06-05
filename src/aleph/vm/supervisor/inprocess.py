@@ -153,6 +153,7 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         started_at_ns=_ns(times.started_at),
         stopping_at_ns=_ns(times.stopping_at),
         stopped_at_ns=_ns(times.stopped_at),
+        is_instance=bool(execution.is_instance),
     )
 
 

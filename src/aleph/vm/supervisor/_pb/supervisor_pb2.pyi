@@ -572,6 +572,7 @@ class VmInfo(google.protobuf.message.Message):
     STARTED_AT_NS_FIELD_NUMBER: builtins.int
     STOPPING_AT_NS_FIELD_NUMBER: builtins.int
     STOPPED_AT_NS_FIELD_NUMBER: builtins.int
+    IS_INSTANCE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     status: Global___VmStatus.ValueType
     ipv4: builtins.str
@@ -593,6 +594,11 @@ class VmInfo(google.protobuf.message.Message):
     started_at_ns: builtins.int
     stopping_at_ns: builtins.int
     stopped_at_ns: builtins.int
+    is_instance: builtins.bool
+    """True for instances (full VMs), false for programs/microvms. Independent of
+    the hypervisor backend: an instance may run under Firecracker or QEMU, so
+    `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
+    """
     def __init__(
         self,
         *,
@@ -613,9 +619,10 @@ class VmInfo(google.protobuf.message.Message):
         started_at_ns: builtins.int = ...,
         stopping_at_ns: builtins.int = ...,
         stopped_at_ns: builtins.int = ...,
+        is_instance: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "defined_at_ns", b"defined_at_ns", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "defined_at_ns", b"defined_at_ns", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 Global___VmInfo: typing_extensions.TypeAlias = VmInfo

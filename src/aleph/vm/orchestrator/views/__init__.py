@@ -2,6 +2,7 @@ import asyncio
 import binascii
 import http
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from json import JSONDecodeError
 from packaging.version import InvalidVersion, Version
@@ -75,10 +76,12 @@ from aleph.vm.orchestrator.views.host_status import (
     check_host_http_ipv6,
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
+from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import VmId, VmStatus
+from aleph.vm.supervisor.types import PortForwardInfo, VmId, VmInfo, VmStatus
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
@@ -201,58 +204,73 @@ async def about_executions(request: web.Request) -> web.Response:
     )
 
 
-def _get_executions_running_states(pool: VmPool) -> dict[ItemHash, bool]:
-    """Get running state for all executions efficiently using batch systemd query.
+def _vm_type_name(record: AgentVmRecord | None, info: VmInfo) -> str:
+    """vm_type label: from the agent's message when known, otherwise from the
+    supervisor's instance flag (spec-created / reattached VMs without a registry
+    record) — the same VmExecution.is_instance the old views fell back to.
 
-    For persistent VMs, this uses a single D-Bus call to get all service states
-    instead of one call per VM, which is much faster when there are many persistent VMs.
+    The instance flag is used rather than the backend because the backend alone
+    cannot recover instance-ness: an instance running under Firecracker reports
+    Backend.FIRECRACKER yet is still an instance."""
+    if record is not None:
+        return VmType.from_message_content(record.message).name
+    return VmType.instance.name if info.is_instance else VmType.microvm.name
+
+
+def _datetime_from_ns(ns: int) -> datetime | None:
+    """Inverse of the supervisor's ns composition; lossless at µs precision."""
+    if not ns:
+        return None
+    return datetime.fromtimestamp(ns // 1_000_000_000, tz=timezone.utc).replace(
+        microsecond=(ns % 1_000_000_000) // 1_000
+    )
+
+
+def _times_dict(info: VmInfo) -> dict[str, datetime | None]:
+    """The VmExecutionTimes-shaped dict the v2 endpoint has always served."""
+    return {
+        "defined_at": _datetime_from_ns(info.defined_at_ns),
+        "preparing_at": _datetime_from_ns(info.preparing_at_ns),
+        "prepared_at": _datetime_from_ns(info.prepared_at_ns),
+        "starting_at": _datetime_from_ns(info.starting_at_ns),
+        "started_at": _datetime_from_ns(info.started_at_ns),
+        "stopping_at": _datetime_from_ns(info.stopping_at_ns),
+        "stopped_at": _datetime_from_ns(info.stopped_at_ns),
+    }
+
+
+def _group_port_forwards(forwards: list[PortForwardInfo]) -> dict[str, dict[int, dict]]:
+    """{vm_id: {vm_port: {"host", "tcp", "udp"}}} — the legacy mapped_ports
+    shape, rebuilt from the supervisor's flat port-forward list.
+
+    Deliberate divergence from the old pool dump: a "ghost" mapping with no
+    enabled protocol yields no PortForwardInfo and is therefore not listed.
     """
-    # Collect persistent executions that need systemd check
-    persistent_services: dict[str, ItemHash] = {}
-    for item_hash, execution in pool.executions.items():
-        if execution.persistent and execution.systemd_manager:
-            persistent_services[execution.controller_service] = item_hash
-
-    # Batch query systemd for all persistent services at once
-    service_states: dict[str, bool] = {}
-    if persistent_services:
-        service_states = pool.systemd_manager.get_services_active_states(list(persistent_services.keys()))
-
-    # Build running states for all executions
-    running_states: dict[ItemHash, bool] = {}
-    for item_hash, execution in pool.executions.items():
-        if execution.persistent and execution.systemd_manager:
-            # Use batch result for persistent VMs
-            running_states[item_hash] = service_states.get(execution.controller_service, False)
-        else:
-            # Use timestamp check for non-persistent VMs
-            running_states[item_hash] = bool(execution.times.starting_at and not execution.times.stopping_at)
-
-    return running_states
+    grouped: dict[str, dict[int, dict]] = {}
+    for fwd in forwards:
+        entry = grouped.setdefault(str(fwd.vm_id), {}).setdefault(
+            int(fwd.vm_port), {"host": int(fwd.host_port), "tcp": False, "udp": False}
+        )
+        entry[fwd.protocol.value] = True
+    return grouped
 
 
 @cors_allow_all
 async def list_executions(request: web.Request) -> web.Response:
-    pool: VmPool = request.app["vm_pool"]
-
-    # Get running states efficiently using batch systemd query
-    running_states = _get_executions_running_states(pool)
-
+    supervisor: Supervisor = request.app["supervisor"]
+    registry: AgentVmRegistry = request.app["vm_registry"]
+    infos = await supervisor.list_vms()
     return web.json_response(
         {
-            item_hash: {
+            info.vm_id: {
                 "networking": {
-                    "ipv4": execution.vm.tap_interface.ip_network,
-                    "ipv6": execution.vm.tap_interface.ipv6_network,
+                    "ipv4": info.ipv4_network,
+                    "ipv6": info.ipv6_network,
                 },
-                "vm_type": (
-                    VmType.from_message_content(execution.message).name
-                    if execution.message is not None
-                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
-                ),
+                "vm_type": _vm_type_name(registry.get(info.vm_id), info),
             }
-            for item_hash, execution in pool.executions.items()
-            if running_states.get(item_hash, False)
+            for info in infos
+            if info.status is VmStatus.RUNNING
         },
         dumps=dumps_for_json,
     )
@@ -261,35 +279,31 @@ async def list_executions(request: web.Request) -> web.Response:
 @cors_allow_all
 async def list_executions_v2(request: web.Request) -> web.Response:
     """List all executions. Returning their status and ip"""
-    pool: VmPool = request.app["vm_pool"]
-
-    # Get running states efficiently using batch systemd query
-    running_states = _get_executions_running_states(pool)
-
+    supervisor: Supervisor = request.app["supervisor"]
+    registry: AgentVmRegistry = request.app["vm_registry"]
+    infos = await supervisor.list_vms()
+    host_info = await supervisor.get_host_info()
+    mapped_ports = _group_port_forwards(await supervisor.list_port_forwards())
     return web.json_response(
         {
-            item_hash: {
+            info.vm_id: {
                 "networking": (
                     {
-                        "ipv4_network": execution.vm.tap_interface.ip_network,
-                        "host_ipv4": pool.network.host_ipv4,
-                        "ipv6_network": execution.vm.tap_interface.ipv6_network,
-                        "ipv6_ip": execution.vm.tap_interface.guest_ipv6.ip,
-                        "ipv4_ip": execution.vm.tap_interface.guest_ip.ip,
-                        "mapped_ports": execution.mapped_ports,
+                        "ipv4_network": info.ipv4_network,
+                        "host_ipv4": host_info.host_ipv4,
+                        "ipv6_network": info.ipv6_network,
+                        "ipv6_ip": info.ipv6,
+                        "ipv4_ip": info.ipv4,
+                        "mapped_ports": mapped_ports.get(info.vm_id, {}),
                     }
-                    if execution.vm and execution.vm.tap_interface
+                    if info.ipv4_network
                     else {}
                 ),
-                "status": execution.times,
-                "running": running_states.get(item_hash, False),
-                "vm_type": (
-                    VmType.from_message_content(execution.message).name
-                    if execution.message is not None
-                    else (VmType.instance.name if execution.is_instance else VmType.microvm.name)
-                ),
+                "status": _times_dict(info),
+                "running": info.status is VmStatus.RUNNING,
+                "vm_type": _vm_type_name(registry.get(info.vm_id), info),
             }
-            for item_hash, execution in pool.executions.items()
+            for info in infos
         },
         dumps=dumps_for_json,
     )

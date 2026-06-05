@@ -77,6 +77,23 @@ async def test_get_vm_maps_a_running_qemu_instance():
 
 
 @pytest.mark.asyncio
+async def test_get_vm_reports_is_instance():
+    """is_instance is carried from the execution, independent of the backend."""
+    instance = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
+    instance.is_instance = True
+    program = make_execution(vm_hash="p", hypervisor=HypervisorType.firecracker)
+    program.is_instance = False
+    pool = FakePool(executions={"i": instance, "p": program})
+    sup = InProcessSupervisor(pool=pool)
+
+    assert (await sup.get_vm(VmId("i"))).is_instance is True
+    # A firecracker instance still reports FIRECRACKER for backend, so the flag
+    # is the only way to recover instance-ness.
+    assert (await sup.get_vm(VmId("i"))).backend is Backend.FIRECRACKER
+    assert (await sup.get_vm(VmId("p"))).is_instance is False
+
+
+@pytest.mark.asyncio
 async def test_get_vm_unknown_raises_vm_not_found():
     sup = InProcessSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):

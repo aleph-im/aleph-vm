@@ -350,6 +350,7 @@ def test_vm_info_network_and_lifecycle_fields_default():
         "stopped_at_ns",
     ):
         assert getattr(info, field) == 0
+    assert info.is_instance is False
 
 
 def test_host_info_host_ipv4_defaults_empty():
@@ -373,6 +374,7 @@ def test_vm_info_dataclass_new_fields_default():
     assert info.ipv4_network == ""
     assert info.defined_at_ns == 0
     assert info.stopped_at_ns == 0
+    assert info.is_instance is False
 
 
 def test_host_info_dataclass_host_ipv4_defaults_empty():

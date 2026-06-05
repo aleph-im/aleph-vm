@@ -3,6 +3,7 @@ import os
 import tempfile
 import time as time_module
 from copy import deepcopy
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from unittest import mock
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from aiohttp import web
-from aleph_message.models import InstanceContent
+from aleph_message.models import InstanceContent, ItemHash
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
@@ -1239,3 +1240,123 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     mock_delete_port_mappings.assert_awaited_once_with(vm_hash)
     # Permanent dealloc: registry.forget must be called.
     assert vm_hash not in app["vm_registry"]
+
+
+@pytest.mark.asyncio
+async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+    """/about/executions/list keeps its shape: running VMs only, networks + vm_type."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    registry = web_app["vm_registry"]
+    message = InstanceContent.model_validate(mock_instance_content)
+
+    running_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    stopped_hash = "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe"
+
+    running = VmExecution(
+        vm_hash=running_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    running.times.starting_at = datetime.now(tz=timezone.utc)
+    running.vm = mocker.Mock()
+    running.vm.tap_interface = mocker.Mock(
+        ip_network="172.16.3.0/24",
+        ipv6_network="fc00:1:2:3::/64",
+        guest_ip=mocker.Mock(ip="172.16.3.2"),
+        guest_ipv6=mocker.Mock(ip="fc00:1:2:3::2"),
+    )
+    registry.record(ItemHash(running_hash), message=message, original=message, persistent=False)
+
+    stopped = VmExecution(
+        vm_hash=stopped_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+
+    pool.executions = {running_hash: running, stopped_hash: stopped}
+    client = await aiohttp_client(web_app)
+    response = await client.get("/about/executions/list")
+    assert response.status == 200
+    assert await response.json() == {
+        running_hash: {
+            "networking": {"ipv4": "172.16.3.0/24", "ipv6": "fc00:1:2:3::/64"},
+            "vm_type": "instance",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+    """v2 rebuilds the legacy mapped_ports shape from list_port_forwards."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    message = InstanceContent.model_validate(mock_instance_content)
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    execution.vm = mocker.Mock()
+    execution.vm.tap_interface = mocker.Mock(
+        ip_network="172.16.3.0/24",
+        ipv6_network="fc00:1:2:3::/64",
+        guest_ip=mocker.Mock(ip="172.16.3.2"),
+        guest_ipv6=mocker.Mock(ip="fc00:1:2:3::2"),
+    )
+    execution.mapped_ports = {22: {"host": 24000, "tcp": True, "udp": False}}
+
+    pool.executions = {vm_hash: execution}
+    client = await aiohttp_client(web_app)
+    response = await client.get("/v2/about/executions/list")
+    assert response.status == 200
+    body = await response.json()
+    assert body[vm_hash]["networking"]["mapped_ports"] == {"22": {"host": 24000, "tcp": True, "udp": False}}
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+    """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
+    divergence from the legacy pool dump, which emitted it verbatim)."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+    message = InstanceContent.model_validate(mock_instance_content)
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=False,
+        snapshot_manager=None,
+        systemd_manager=None,
+    )
+    execution.vm = mocker.Mock()
+    execution.vm.tap_interface = mocker.Mock(
+        ip_network="172.16.3.0/24",
+        ipv6_network="fc00:1:2:3::/64",
+        guest_ip=mocker.Mock(ip="172.16.3.2"),
+        guest_ipv6=mocker.Mock(ip="fc00:1:2:3::2"),
+    )
+    execution.mapped_ports = {
+        22: {"host": 24000, "tcp": True, "udp": False},
+        8080: {"host": 24001, "tcp": False, "udp": False},
+    }
+
+    pool.executions = {vm_hash: execution}
+    client = await aiohttp_client(web_app)
+    response = await client.get("/v2/about/executions/list")
+    assert response.status == 200
+    body = await response.json()
+    assert body[vm_hash]["networking"]["mapped_ports"] == {"22": {"host": 24000, "tcp": True, "udp": False}}

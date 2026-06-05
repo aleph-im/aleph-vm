@@ -202,6 +202,10 @@ class VmInfo:
     started_at_ns: int = 0
     stopping_at_ns: int = 0
     stopped_at_ns: int = 0
+    # True for instances (full VMs), false for programs/microvms. Independent of
+    # `backend`: an instance may run under Firecracker or QEMU, so the backend
+    # alone cannot recover this. Mirrors VmExecution.is_instance.
+    is_instance: bool = False
 
 
 @dataclass(frozen=True)

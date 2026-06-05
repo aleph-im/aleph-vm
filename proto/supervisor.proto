@@ -206,6 +206,11 @@ message VmInfo {
   uint64 started_at_ns = 15;
   uint64 stopping_at_ns = 16;
   uint64 stopped_at_ns = 17;
+
+  // True for instances (full VMs), false for programs/microvms. Independent of
+  // the hypervisor backend: an instance may run under Firecracker or QEMU, so
+  // `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
+  bool is_instance = 18;
 }
 
 message GetVmRequest      { string vm_id = 1; }
