@@ -404,9 +404,56 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
                 "stopped_at": None,
             },
             "running": False,
+            "awaiting_confidential_init": False,
             "vm_type": "instance",
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_confidential_awaiting_init(
+    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
+):
+    """A confidential VM waiting for its owner to initialize it must be distinguishable
+    from a dead VM in the executions list, so the scheduler and console can report it."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    content = deepcopy(mock_instance_content)
+    content["environment"]["hypervisor"] = "qemu"
+    content["environment"]["trusted_execution"] = {
+        "policy": 1,
+        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
+    }
+    message = InstanceContent.model_validate(content)
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    systemd_manager = mocker.Mock(
+        is_service_active=mocker.Mock(return_value=False),
+        get_services_active_states=mocker.Mock(return_value={}),
+    )
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    execution.times.starting_at = execution.times.defined_at
+    execution.times.started_at = execution.times.defined_at
+
+    pool.executions = {vm_hash: execution}
+    pool.systemd_manager = systemd_manager
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/v2/about/executions/list",
+    )
+    assert response.status == 200
+    resp = await response.json()
+    assert resp[vm_hash]["running"] is False
+    assert resp[vm_hash]["awaiting_confidential_init"] is True
 
 
 @pytest.mark.asyncio
@@ -480,6 +527,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
                 "stopped_at": None,
             },
             "running": False,
+            "awaiting_confidential_init": False,
             "vm_type": "instance",
         }
     }
