@@ -21,7 +21,7 @@ def _entries(vm_hash: str):
     ]
 
 
-def _make_vm_with_queue(queue: asyncio.Queue) -> SimpleNamespace:
+def _make_vm_with_queue(queue: asyncio.Queue) -> tuple[SimpleNamespace, dict[str, bool]]:
     unregistered = {"called": False}
 
     def unregister(q):
