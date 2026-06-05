@@ -843,8 +843,13 @@ async def test_operator_reinstall(aiohttp_client, mocker):
     assert fake_volume.path_on_host.unlink.call_count == 1
     # Readonly volume was NOT deleted
     assert fake_readonly_volume.path_on_host.unlink.call_count == 0
-    # VM was started again
-    mock_create_vm.assert_called_once_with(vm_hash=vm_hash, pool=fake_vm_pool)
+    # VM was started again, routed through the app-wide supervisor + registry
+    mock_create_vm.assert_called_once_with(
+        vm_hash=vm_hash,
+        pool=fake_vm_pool,
+        supervisor=app["supervisor"],
+        registry=app["vm_registry"],
+    )
 
 
 @pytest.mark.asyncio
