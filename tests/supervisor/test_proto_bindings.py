@@ -6,6 +6,8 @@ fields. Behavioural tests live with the Supervisor implementations
 (plans 0.C and 0.D).
 """
 
+from aleph.vm.supervisor._pb import supervisor_pb2
+
 
 def test_generated_modules_importable():
     from aleph.vm.supervisor._pb import (  # noqa: F401
@@ -332,3 +334,48 @@ def test_full_service_surface_pinned():
     }
     actual = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert actual == expected, f"unexpected drift: missing {expected - actual}, " f"extra {actual - expected}"
+
+
+def test_vm_info_network_and_lifecycle_fields_default():
+    info = supervisor_pb2.VmInfo()
+    assert info.ipv4_network == ""
+    assert info.ipv6_network == ""
+    for field in (
+        "defined_at_ns",
+        "preparing_at_ns",
+        "prepared_at_ns",
+        "starting_at_ns",
+        "started_at_ns",
+        "stopping_at_ns",
+        "stopped_at_ns",
+    ):
+        assert getattr(info, field) == 0
+
+
+def test_host_info_host_ipv4_defaults_empty():
+    host = supervisor_pb2.HostInfo()
+    assert host.host_ipv4 == ""
+
+
+def test_vm_info_dataclass_new_fields_default():
+    from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
+
+    info = VmInfo(
+        vm_id=VmId("x"),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+    )
+    assert info.ipv4_network == ""
+    assert info.defined_at_ns == 0
+    assert info.stopped_at_ns == 0
+
+
+def test_host_info_dataclass_host_ipv4_defaults_empty():
+    from aleph.vm.supervisor.types import HostInfo
+
+    assert HostInfo().host_ipv4 == ""
