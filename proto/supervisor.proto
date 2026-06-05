@@ -209,6 +209,9 @@ message RebootVmRequest {
 message ReinstallVmRequest {
   string vm_id = 1;
   bool wipe_volumes = 2;             // false = reset rootfs only, keep writable data volumes
+                                     // NOTE: the Python ABC defaults wipe_volumes to true; proto3
+                                     // bools default to false. The gRPC server must treat an unset
+                                     // field as true (callers should always set it explicitly).
 }
 
 // ── Port forwarding ──────────────────────────────────────────────────────
