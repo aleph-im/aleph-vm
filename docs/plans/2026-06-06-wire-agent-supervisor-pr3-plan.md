@@ -17,6 +17,8 @@
 3. **`/about/executions/details` (`about_executions`) stays a residual.** It dumps raw `VmExecution` internals, which cannot cross the boundary; nobody is known to use it. Documented in-code; dies (or moves to the hypervisor's own debug surface) with the in-process pool in Phase 1.
 4. **Batch systemd query moves into the in-process supervisor.** The views' `_get_executions_running_states` (one D-Bus call for all persistent VMs) is deleted; `InProcessSupervisor.list_vms` gets the same batching via a `_running_states(pool)` helper, so migrating the views does not regress D-Bus round-trips. `get_vm` keeps the per-VM `_is_running`.
 5. **vm_type resolution moves agent-side.** Registry hit → `VmType.from_message_content(record.message)`. Registry miss (spec-created or reattached VM) → infer from `VmInfo.backend` (`QEMU`/`QEMU_SEV` → `instance`, `FIRECRACKER` → `microvm`) — exactly what `execution.is_instance` computes for spec executions today.
+6. **(amended during execution)** `VmInfo` gains `bool is_instance = 18`. The planned registry-miss vm_type fallback via `backend` was lossy — a message-backed instance on the default Firecracker hypervisor reports `Backend.FIRECRACKER` and would be mislabeled `microvm` (caught by the byte-parity tests). The hypervisor carries the signal explicitly; `_vm_type_name` reads `info.is_instance`.
+7. **(amended during execution)** Ghost `mapped_ports` entries (`{"tcp": false, "udp": false}`, creatable only via an all-false entry in the user's port-forwarding aggregate on the legacy create path) are intentionally no longer listed by the v2 endpoint: `list_port_forwards` only reports enabled protocols. Pinned by `test_v2_executions_list_omits_ghost_mapped_ports`.
 
 ### Behavior notes (reviewer-facing)
 

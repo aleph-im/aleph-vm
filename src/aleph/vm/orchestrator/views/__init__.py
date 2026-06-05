@@ -196,6 +196,10 @@ async def debug_haproxy(request: web.Request) -> web.Response:
 @cors_allow_all
 async def about_executions(request: web.Request) -> web.Response:
     "/about/executions/details Debugging endpoint with full execution details."
+    # RESIDUAL (wire-agent design §8.3, decided 2026-06-06): dumps raw
+    # VmExecution internals, which cannot cross the Supervisor boundary, and
+    # has no known consumers. It dies — or moves to the hypervisor's own debug
+    # surface — when the in-process pool goes away in Phase 1.
     authenticate_request(request)
     pool: VmPool = request.app["vm_pool"]
     return web.json_response(

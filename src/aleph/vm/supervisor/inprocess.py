@@ -224,8 +224,7 @@ class InProcessSupervisor(Supervisor):
         with translating_errors():
             running = _running_states(self.pool)
             return [
-                _to_vm_info(execution, running[str(vm_hash)])
-                for vm_hash, execution in self.pool.executions.items()
+                _to_vm_info(execution, running[str(vm_hash)]) for vm_hash, execution in self.pool.executions.items()
             ]
 
     def _require(self, vm_id: VmId):

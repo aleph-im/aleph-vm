@@ -1326,7 +1326,9 @@ async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+async def test_v2_executions_list_omits_ghost_mapped_ports(
+    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
+):
     """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
     divergence from the legacy pool dump, which emitted it verbatim)."""
     web_app = await mock_app_with_pool
