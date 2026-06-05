@@ -75,36 +75,54 @@ def _parse_auth_params(auth_header: str) -> dict[str, str]:
     return params
 
 
-_last_accepted_iat: dict[str, int] = {}
-"""Per-signer floor on accepted `iat` values. Module-level state, in-memory
-only; doesn't survive supervisor restarts (the absolute time window covers
-the post-restart gap). Single-process only: a multi-worker supervisor would
-let a captured request be replayed against a sibling worker."""
+_accepted_payloads: dict[str, dict[str, int]] = {}
+"""Per-signer map of accepted payload hashes to their `iat`, used to reject
+byte-identical resubmissions. The signed payload already binds method, path,
+body and iat, so the only thing left to call a "replay" is an exact
+duplicate — the previous design (a per-signer monotonic-iat floor) also
+rejected *distinct* same-second requests, throttling each signer to one
+request per second across all endpoints. Entries are pruned once their iat
+falls behind the absolute acceptance window (a resubmission would then be
+rejected as stale anyway), bounding memory to the signer's request rate over
+~2x the window. Module-level state, in-memory only; doesn't survive
+supervisor restarts (the absolute time window covers the post-restart gap).
+Single-process only: a multi-worker supervisor would let a captured request
+be replayed against a sibling worker."""
 
-_iat_lock: asyncio.Lock | None = None
-"""Serializes the read-check-write on `_last_accepted_iat`. Without this,
-two concurrent verifications for the same signer can both observe the old
-floor and both write, letting a same-iat replay slip through. Lazily
-initialized so module import doesn't require a running event loop."""
+_replay_lock: asyncio.Lock | None = None
+"""Serializes the read-check-write on `_accepted_payloads`. Without this,
+two concurrent verifications of the same captured request can both observe
+the payload as unseen and both succeed. Lazily initialized so module import
+doesn't require a running event loop."""
 
 PAYLOAD_REQUIRED_FIELDS = ("method", "path", "body_sha256", "iat")
 
 
-async def _accept_iat_if_fresh(signer_key: str, iat: int) -> bool:
-    """Atomically check `iat > last accepted for this signer` and update.
+async def _accept_payload_if_new(signer_key: str, payload_hash: str, iat: int) -> bool:
+    """Atomically check this exact payload is unseen for this signer and record it.
 
-    Returns True iff the iat strictly exceeds the floor and the floor was
-    advanced. The lock prevents two concurrent verifications for the same
-    signer from both observing the old floor and both succeeding.
+    Returns True iff the payload hash has not been accepted before. Keyed by
+    the payload hash, NOT the signature: ECDSA signatures are malleable
+    ((r, s, v) -> (r, -s mod n, v')), so a signature-keyed seen-set could be
+    bypassed by re-encoding the captured signature over the same payload.
+    The lock prevents two concurrent verifications of the same request from
+    both observing the payload as unseen and both succeeding.
     """
-    global _iat_lock  # noqa: PLW0603 — lazy singleton; deferred to first call so import doesn't need a running loop
-    if _iat_lock is None:
-        _iat_lock = asyncio.Lock()
-    async with _iat_lock:
-        previous = _last_accepted_iat.get(signer_key, float("-inf"))
-        if iat <= previous:
+    global _replay_lock  # noqa: PLW0603 — lazy singleton; deferred to first call so import doesn't need a running loop
+    if _replay_lock is None:
+        _replay_lock = asyncio.Lock()
+    async with _replay_lock:
+        seen = _accepted_payloads.setdefault(signer_key, {})
+        # Drop entries the absolute time window now rejects outright — a
+        # duplicate of those fails the staleness check before reaching this
+        # point. Future-dated iats (clock skew) stay until they age out.
+        cutoff = time.time() - settings.ALLOCATION_SIGNATURE_MAX_AGE_SECONDS
+        for known_hash, known_iat in list(seen.items()):
+            if known_iat < cutoff:
+                del seen[known_hash]
+        if payload_hash in seen:
             return False
-        _last_accepted_iat[signer_key] = iat
+        seen[payload_hash] = iat
         return True
 
 
@@ -112,8 +130,9 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
     """Verify a request bearing an `Authorization: Aleph-EIP191-V1 ...` header.
 
     Returns True iff the signature is valid, recovers an authorized signer,
-    binds the request, and beats the per-signer monotonic-iat floor. All
-    failure modes return False (the dispatcher decides the response shape).
+    binds the request, and is not a duplicate of an already-accepted payload.
+    All failure modes return False (the dispatcher decides the response
+    shape).
 
     Side effect: calls `await request.read()`, which buffers the body into
     aiohttp's request cache. Downstream handlers using `request.json()` or
@@ -173,11 +192,12 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         if sha256(body).hexdigest() != payload["body_sha256"]:
             return False
 
-        # Monotonic-iat replay protection. The check-and-update MUST be
-        # atomic; without it, two concurrent requests with the same signer
-        # can both succeed. Done last so we don't bump the floor for a
-        # request that would otherwise fail downstream.
-        return await _accept_iat_if_fresh(recovered.lower(), iat)
+        # Duplicate-payload replay protection. The check-and-record MUST be
+        # atomic; without it, two concurrent copies of the same request can
+        # both succeed. Done last so we don't record a payload for a request
+        # that would otherwise fail downstream.
+        payload_hash = sha256(payload_bytes).hexdigest()
+        return await _accept_payload_if_new(recovered.lower(), payload_hash, iat)
     except Exception as exc:  # broad catch intentional — auth verifier MUST NOT raise
         # Signature recovery, hex decoding, JSON parsing, and field type
         # coercion all raise different exception types. For an auth verifier,
