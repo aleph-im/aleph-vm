@@ -339,6 +339,21 @@ class VmExecution:
         return True if getattr(self.message.environment, "trusted_execution", None) else False
 
     @property
+    def is_awaiting_confidential_init(self) -> bool:
+        """The confidential VM is created but waiting for its owner to upload the
+        session certificates and start it via /control/machine/{ref}/confidential/initialize.
+
+        The controller service is only started at that point, so the execution is
+        neither starting nor running. It must not be treated as a dead execution:
+        only the owner can start it, the orchestrator cannot."""
+        return (
+            self.is_confidential
+            and self.persistent
+            and bool(self.times.started_at and not self.times.stopping_at)
+            and not self.is_running
+        )
+
+    @property
     def hypervisor(self) -> HypervisorType:
         if self.is_program:
             return HypervisorType.firecracker

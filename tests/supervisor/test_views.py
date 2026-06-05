@@ -404,9 +404,165 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
                 "stopped_at": None,
             },
             "running": False,
+            "awaiting_confidential_init": False,
             "vm_type": "instance",
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_v2_executions_list_confidential_awaiting_init(
+    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
+):
+    """A confidential VM waiting for its owner to initialize it must be distinguishable
+    from a dead VM in the executions list, so the scheduler and console can report it."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    content = deepcopy(mock_instance_content)
+    content["environment"]["hypervisor"] = "qemu"
+    content["environment"]["trusted_execution"] = {
+        "policy": 1,
+        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
+    }
+    message = InstanceContent.model_validate(content)
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    systemd_manager = mocker.Mock(
+        is_service_active=mocker.Mock(return_value=False),
+        get_services_active_states=mocker.Mock(return_value={}),
+    )
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    execution.times.starting_at = execution.times.defined_at
+    execution.times.started_at = execution.times.defined_at
+
+    pool.executions = {vm_hash: execution}
+    pool.systemd_manager = systemd_manager
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/v2/about/executions/list",
+    )
+    assert response.status == 200
+    resp = await response.json()
+    assert resp[vm_hash]["running"] is False
+    assert resp[vm_hash]["awaiting_confidential_init"] is True
+
+
+@pytest.mark.asyncio
+async def test_v1_executions_list_includes_confidential_awaiting_init(
+    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
+):
+    """The scheduler reads /about/executions/list and re-allocates any planned VM
+    missing from it. A confidential VM waiting for its owner must be listed, else
+    the scheduler re-POSTs allocations forever and keeps reporting it missing."""
+    from ipaddress import IPv4Network, IPv6Network
+
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    content = deepcopy(mock_instance_content)
+    content["environment"]["hypervisor"] = "qemu"
+    content["environment"]["trusted_execution"] = {
+        "policy": 1,
+        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
+    }
+    message = InstanceContent.model_validate(content)
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    systemd_manager = mocker.Mock(
+        is_service_active=mocker.Mock(return_value=False),
+        get_services_active_states=mocker.Mock(return_value={}),
+    )
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    execution.times.starting_at = execution.times.defined_at
+    execution.times.started_at = execution.times.defined_at
+    execution.vm = mocker.Mock(
+        tap_interface=mocker.Mock(
+            ip_network=IPv4Network("172.16.3.0/24"),
+            ipv6_network=IPv6Network("fc00:1:2:3::/64"),
+        )
+    )
+
+    pool.executions = {vm_hash: execution}
+    pool.systemd_manager = systemd_manager
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/about/executions/list",
+    )
+    assert response.status == 200
+    resp = await response.json()
+    assert resp == {
+        vm_hash: {
+            "networking": {
+                "ipv4": "172.16.3.0/24",
+                "ipv6": "fc00:1:2:3::/64",
+            },
+            "vm_type": "instance",
+            "awaiting_confidential_init": True,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_v1_executions_list_excludes_awaiting_init_without_network(
+    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
+):
+    """Entries without networking would break strict consumers of the v1 schema
+    (the scheduler requires networking.ipv4/ipv6), so an awaiting-init VM whose
+    tap interface is not set up must stay out of the list."""
+    web_app = await mock_app_with_pool
+    pool = web_app["vm_pool"]
+
+    content = deepcopy(mock_instance_content)
+    content["environment"]["hypervisor"] = "qemu"
+    content["environment"]["trusted_execution"] = {
+        "policy": 1,
+        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
+    }
+    message = InstanceContent.model_validate(content)
+
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    systemd_manager = mocker.Mock(
+        is_service_active=mocker.Mock(return_value=False),
+        get_services_active_states=mocker.Mock(return_value={}),
+    )
+    execution = VmExecution(
+        vm_hash=vm_hash,
+        message=message,
+        original=message,
+        persistent=True,
+        snapshot_manager=None,
+        systemd_manager=systemd_manager,
+    )
+    execution.times.starting_at = execution.times.defined_at
+    execution.times.started_at = execution.times.defined_at
+    execution.vm = mocker.Mock(tap_interface=None)
+
+    pool.executions = {vm_hash: execution}
+    pool.systemd_manager = systemd_manager
+
+    client = await aiohttp_client(web_app)
+    response: web.Response = await client.get(
+        "/about/executions/list",
+    )
+    assert response.status == 200
+    assert await response.json() == {}
 
 
 @pytest.mark.asyncio
@@ -480,6 +636,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
                 "stopped_at": None,
             },
             "running": False,
+            "awaiting_confidential_init": False,
             "vm_type": "instance",
         }
     }

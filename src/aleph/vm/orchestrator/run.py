@@ -278,6 +278,10 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
             logger.info(f"{vm_hash} is stopping, waiting for complete stop before restarting")
             await execution.stop_event.wait()
             execution = None
+        elif execution.is_awaiting_confidential_init:
+            # Stopping and recreating the execution here would loop forever:
+            # only the owner can start it by uploading the session certificates.
+            logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
         else:
             logger.info(f"{vm_hash} unknown execution state, stopping the vm")
             if execution.vm:
