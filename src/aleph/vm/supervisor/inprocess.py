@@ -95,19 +95,64 @@ def _uptime_secs(execution, running: bool) -> int:
     return 0
 
 
+def _ns(dt: datetime | None) -> int:
+    """Unix nanoseconds for an aware datetime; 0 for None.
+
+    Same lossless composition as the log timestamps: whole seconds plus the
+    integer microsecond field (datetimes carry µs precision, so this
+    roundtrips exactly; float multiplication would not).
+    """
+    if dt is None:
+        return 0
+    return int(dt.timestamp()) * 1_000_000_000 + dt.microsecond * 1_000
+
+
+def _running_states(pool) -> dict[str, bool]:
+    """Running flag for every execution with one batched systemd query.
+
+    Same semantics as _is_running, but a single D-Bus call covers all
+    persistent VMs instead of one call each.
+    """
+    persistent_services: dict[str, str] = {}
+    for vm_hash, execution in pool.executions.items():
+        if execution.persistent and getattr(execution, "systemd_manager", None):
+            persistent_services[execution.controller_service] = str(vm_hash)
+
+    service_states: dict[str, bool] = {}
+    if persistent_services and getattr(pool, "systemd_manager", None):
+        service_states = pool.systemd_manager.get_services_active_states(list(persistent_services.keys()))
+
+    states: dict[str, bool] = {}
+    for vm_hash, execution in pool.executions.items():
+        if execution.persistent and getattr(execution, "systemd_manager", None):
+            states[str(vm_hash)] = service_states.get(execution.controller_service, False)
+        else:
+            times = execution.times
+            states[str(vm_hash)] = bool(times.starting_at and not times.stopping_at)
+    return states
+
+
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
-    ipv4 = str(tap.guest_ip.ip) if tap else ""
-    ipv6 = str(tap.guest_ipv6.ip) if tap else ""
+    times = execution.times
     return VmInfo(
         vm_id=VmId(str(execution.vm_hash)),
         status=_status_of(execution, running),
-        ipv4=ipv4,
-        ipv6=ipv6,
+        ipv4=str(tap.guest_ip.ip) if tap else "",
+        ipv6=str(tap.guest_ipv6.ip) if tap else "",
         uptime_secs=_uptime_secs(execution, running),
         backend=_backend_of(execution),
         numa_node=None,
         status_message="",
+        ipv4_network=str(tap.ip_network) if tap else "",
+        ipv6_network=str(tap.ipv6_network) if tap else "",
+        defined_at_ns=_ns(times.defined_at),
+        preparing_at_ns=_ns(times.preparing_at),
+        prepared_at_ns=_ns(times.prepared_at),
+        starting_at_ns=_ns(times.starting_at),
+        started_at_ns=_ns(times.started_at),
+        stopping_at_ns=_ns(times.stopping_at),
+        stopped_at_ns=_ns(times.stopped_at),
     )
 
 
@@ -152,11 +197,13 @@ class InProcessSupervisor(Supervisor):
 
     async def get_host_info(self) -> HostInfo:
         with translating_errors():
+            network = getattr(self.pool, "network", None)
             return HostInfo(
                 cpu_count=os.cpu_count() or 0,
                 memory_mib=int(psutil.virtual_memory().total / (1024 * 1024)),
                 kernel_version=os.uname().release,
                 hostname=os.uname().nodename,
+                host_ipv4=network.host_ipv4 if network else "",
             )
 
     # Lifecycle
@@ -174,8 +221,10 @@ class InProcessSupervisor(Supervisor):
 
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
+            running = _running_states(self.pool)
             return [
-                _to_vm_info(execution, _is_running(execution, self.pool)) for execution in self.pool.executions.values()
+                _to_vm_info(execution, running[str(vm_hash)])
+                for vm_hash, execution in self.pool.executions.items()
             ]
 
     def _require(self, vm_id: VmId):
