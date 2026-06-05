@@ -24,15 +24,32 @@ from aleph.vm.controllers.firecracker.program import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.translate import build_create_vm_spec
+from aleph.vm.supervisor.types import (
+    GuestPort,
+    HostPort,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils import HostNotFoundError
+from aleph.vm.utils.aggregate import get_user_settings
 
 from .messages import load_updated_message
 from .pubsub import PubSub
 
 logger = logging.getLogger(__name__)
+
+# Readiness poll for the spec create path (replaces execution.becomes_ready()).
+_START_POLL_TIMEOUT_SECONDS = 120.0
+_START_POLL_INTERVAL_SECONDS = 0.5
 
 
 async def build_asgi_scope(path: str, request: web.Request) -> dict[str, Any]:
@@ -77,25 +94,117 @@ def _is_spec_eligible(content) -> bool:
     return True
 
 
-async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool = False) -> VmExecution:
+async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
+    """Agent-side policy: translate the user's port-forwarding aggregate settings
+    into the set of forwards the hypervisor should apply.
+
+    This is the agent half of the old VmExecution.fetch_port_redirect_config_and_setup.
+    Nothing here touches nftables; the caller applies each spec through
+    supervisor.add_port_forward. host_port is left 0; the hypervisor assigns it.
+    """
+    ports_requests: dict[int, dict[str, bool]] = {}
+    try:
+        settings_for_user = await get_user_settings(content.address, "port-forwarding")
+        vm_port_forwarding = settings_for_user.get(str(vm_id), {}) or {}
+        fetched = vm_port_forwarding.get("ports", {})
+        ports_requests = {int(port): flags for port, flags in fetched.items()}
+    except Exception:
+        logger.info("Could not fetch port redirect settings for %s", content.address, exc_info=True)
+
+    # Always forward SSH.
+    ports_requests.setdefault(22, {"tcp": True, "udp": False})
+
+    forwards: list[PortForwardSpec] = []
+    for vm_port, flags in ports_requests.items():
+        for protocol in (Protocol.TCP, Protocol.UDP):
+            if flags.get(protocol.value):
+                forwards.append(
+                    PortForwardSpec(
+                        vm_id=vm_id,
+                        host_port=HostPort(0),
+                        vm_port=GuestPort(int(vm_port)),
+                        protocol=protocol,
+                    )
+                )
+    return forwards
+
+
+async def _wait_until_running(
+    supervisor: Supervisor,
+    vm_id: VmId,
+    *,
+    timeout: float | None = None,
+    interval: float | None = None,
+) -> VmInfo:
+    """Poll get_vm until the VM reports RUNNING.
+
+    In-process the first poll already reports RUNNING (create_vm blocked until
+    boot); across a future gRPC boundary this does real work. Raises on a
+    terminal status or after `timeout` seconds.
+
+    `timeout`/`interval` default to the module constants, resolved at call time
+    so tests (and operators) can override them by patching the constants.
+    """
+    if timeout is None:
+        timeout = _START_POLL_TIMEOUT_SECONDS
+    if interval is None:
+        interval = _START_POLL_INTERVAL_SECONDS
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        info = await supervisor.get_vm(vm_id)
+        if info.status is VmStatus.RUNNING:
+            return info
+        if info.status in (VmStatus.STOPPED, VmStatus.FAILED):
+            msg = f"VM {vm_id} entered status {info.status.value} while waiting to start"
+            raise RuntimeError(msg)
+        if asyncio.get_running_loop().time() >= deadline:
+            msg = f"VM {vm_id} did not reach RUNNING within {timeout}s"
+            raise asyncio.TimeoutError(msg)
+        await asyncio.sleep(interval)
+
+
+async def create_vm_execution(
+    vm_hash: ItemHash,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    persistent: bool = False,
+) -> VmExecution:
     message, original_message = await load_updated_message(vm_hash)
-    pool.message_cache[vm_hash] = message
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
 
     content = message.content
     if _is_spec_eligible(content):
-        # `persistent` is moot on this branch: eligibility requires an instance
-        # (see _is_spec_eligible) and instances are always persistent. The only
-        # persistent=False callers carry programs, which never reach here.
         spec = await build_create_vm_spec(vm_hash, content)
-        execution = await pool.create_vm_from_spec(spec)
-        # Agent territory: re-source the execution as message-driven so the
-        # operator API (owner auth), port forwarding and billing keep working.
-        # The supervisor machinery that just created the VM never read this.
+        info = await supervisor.create_vm(spec)
+        # Agent territory: record the message in the agent's own cache. This is
+        # what the message-free agent will read once owner-auth and billing move
+        # off the VmExecution (design doc section 5). The supervisor machinery
+        # that created the VM never reads it.
+        registry.record(vm_hash, message=content, original=original_message.content)
+        try:
+            await _wait_until_running(supervisor, info.vm_id)
+            for forward in await resolve_port_forwards(info.vm_id, content):
+                await supervisor.add_port_forward(forward)
+        except Exception:
+            # Readiness or port-forward setup failed: tear the half-started VM
+            # down, but never let a teardown error mask the original failure.
+            registry.forget(vm_hash)
+            try:
+                await supervisor.delete_vm(info.vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started VM %s failed", vm_hash)
+            raise
+        # TEMPORARY (PR 1 boundary, design doc sections 5/8): the operator
+        # endpoints, billing and update-watching still read owner identity and
+        # the message off the VmExecution, and start_persistent_vm drives it for
+        # the pre-existing check and expiry-cancel. Re-source the message-free
+        # execution as message-driven and hand it back unchanged. This goes away
+        # when those consumers read the registry instead.
+        execution = pool.executions[vm_hash]
         execution.spec = MessageSpec(message=content, original=original_message.content)
-        if execution.is_instance:
-            await execution.fetch_port_redirect_config_and_setup()
         return execution
 
     execution = await pool.create_a_vm(
@@ -104,13 +213,19 @@ async def create_vm_execution(vm_hash: ItemHash, pool: VmPool, persistent: bool 
         original=original_message.content,
         persistent=persistent,
     )
-
+    registry.record(vm_hash, message=content, original=original_message.content)
     return execution
 
 
-async def create_vm_execution_or_raise_http_error(vm_hash: ItemHash, pool: VmPool) -> VmExecution:
+async def create_vm_execution_or_raise_http_error(
+    vm_hash: ItemHash,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+) -> VmExecution:
     try:
-        return await create_vm_execution(vm_hash=vm_hash, pool=pool)
+        return await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry)
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
@@ -163,7 +278,15 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         execution = None
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+        # Programs always take the legacy create path (they are never spec-eligible),
+        # which ignores the supervisor; the registry is the agent's own message cache.
+        # Construct them locally: this entry point also serves the standalone benchmark
+        # where there is no app-wide singleton to draw from.
+        supervisor = InProcessSupervisor(pool)
+        registry = AgentVmRegistry()
+        execution = await create_vm_execution_or_raise_http_error(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+        )
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -263,7 +386,13 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        execution = await create_vm_execution_or_raise_http_error(vm_hash=vm_hash, pool=pool)
+        # See run_code_on_request: programs use the legacy path; build the
+        # supervisor/registry locally since the reactor has no app singletons.
+        supervisor = InProcessSupervisor(pool)
+        registry = AgentVmRegistry()
+        execution = await create_vm_execution_or_raise_http_error(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+        )
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -305,7 +434,14 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
+async def start_persistent_vm(
+    vm_hash: ItemHash,
+    pubsub: PubSub | None,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+) -> VmExecution:
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
         if execution.is_running:
@@ -328,7 +464,9 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
 
     if not execution:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(vm_hash=vm_hash, pool=pool, persistent=True)
+        execution = await create_vm_execution(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
+        )
 
     await execution.becomes_ready()
 

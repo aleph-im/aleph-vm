@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
@@ -239,7 +241,9 @@ async def benchmark(runs: int):
 
 async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> VmExecution:
     """Run an instance from an InstanceMessage."""
-    return await start_persistent_vm(item_hash, pubsub, pool)
+    supervisor = InProcessSupervisor(pool)
+    registry = AgentVmRegistry()
+    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
