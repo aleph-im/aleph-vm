@@ -221,6 +221,18 @@ def _get_executions_running_states(pool: VmPool) -> dict[ItemHash, bool]:
     return running_states
 
 
+def _is_listable_awaiting_confidential_init(execution: VmExecution) -> bool:
+    """Whether a confidential VM waiting for its owner belongs in the executions list.
+
+    The scheduler re-allocates any planned VM absent from the list, so a waiting
+    confidential VM must be listed or it gets re-allocated forever. Consumers
+    require the networking fields, so only list it once its tap interface exists.
+    """
+    return (
+        execution.is_awaiting_confidential_init and execution.vm is not None and execution.vm.tap_interface is not None
+    )
+
+
 @cors_allow_all
 async def list_executions(request: web.Request) -> web.Response:
     pool: VmPool = request.app["vm_pool"]
@@ -236,9 +248,10 @@ async def list_executions(request: web.Request) -> web.Response:
                     "ipv6": execution.vm.tap_interface.ipv6_network,
                 },
                 "vm_type": VmType.from_message_content(execution.message).name,
+                "awaiting_confidential_init": execution.is_awaiting_confidential_init,
             }
             for item_hash, execution in pool.executions.items()
-            if running_states.get(item_hash, False)
+            if running_states.get(item_hash, False) or _is_listable_awaiting_confidential_init(execution)
         },
         dumps=dumps_for_json,
     )
