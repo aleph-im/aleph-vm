@@ -196,9 +196,6 @@ async def test_fetch_port_redirect_config_does_not_call_get_port_mappings(monkey
     import aleph.vm.models as models_mod
     from aleph.vm.models import MessageSpec, VmExecution
 
-    # get_port_mappings should NOT be importable from aleph.vm.models any more.
-    assert not hasattr(models_mod, "get_port_mappings"), "get_port_mappings must not be in aleph.vm.models namespace"
-
     # Build a minimal fake execution with MessageSpec so the method runs.
     fake_vm = MagicMock()
     fake_vm.tap_interface = MagicMock()

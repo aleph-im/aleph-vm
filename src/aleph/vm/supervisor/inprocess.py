@@ -134,6 +134,8 @@ def _history_chunks(vm_id: VmId) -> list[LogChunk]:
         if isinstance(message, bytes):
             message = message.decode("utf-8", errors="replace")
         ts = entry["__REALTIME_TIMESTAMP"]
+        # Exact for post-epoch times: whole seconds + the integer microsecond
+        # field. int(ts.timestamp() * 1e9) would carry ~256ns of float64 error.
         timestamp_ns = int(ts.timestamp()) * 1_000_000_000 + ts.microsecond * 1_000
         chunks.append(LogChunk(timestamp_ns=timestamp_ns, line=message, source=source))
     return chunks
