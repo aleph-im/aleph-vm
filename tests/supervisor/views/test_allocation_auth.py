@@ -12,6 +12,8 @@ from eth_account.messages import encode_defunct
 from pydantic import ValidationError
 
 from aleph.vm.conf import Settings, settings
+from aleph.vm.orchestrator import utils as orchestrator_utils
+from aleph.vm.orchestrator.utils import get_authorized_allocation_signers
 from aleph.vm.orchestrator.views import allocation_auth
 from aleph.vm.orchestrator.views.allocation_auth import (
     MAX_SIGNED_REQUEST_BODY_BYTES,
@@ -20,6 +22,33 @@ from aleph.vm.orchestrator.views.allocation_auth import (
     _verify_aleph_signature,
     log_allocation_auth_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def stub_settings_aggregate(monkeypatch):
+    """Default the settings-aggregate fetch to "unavailable" so tests never hit
+    the network. Fail-closed: with no local signers, the aggregate path
+    authorizes nobody unless a test explicitly provides one via
+    `set_aggregate_signers`."""
+
+    async def _none():
+        return None
+
+    monkeypatch.setattr(orchestrator_utils, "get_aggregate_settings", _none)
+
+
+@pytest.fixture
+def set_aggregate_signers(monkeypatch):
+    """Return a callable that makes the settings aggregate report the given
+    list of authorized signer addresses."""
+
+    def _apply(addresses):
+        async def _aggregate():
+            return {"authorized_allocation_signers": list(addresses)}
+
+        monkeypatch.setattr(orchestrator_utils, "get_aggregate_settings", _aggregate)
+
+    return _apply
 
 
 def test_authorized_signers_default_empty():
@@ -641,24 +670,31 @@ def test_log_allocation_auth_config_both_enabled_warns(caplog, monkeypatch):
     assert any("legacy X-Auth-Signature path is still enabled" in m for m in warnings)
 
 
-def test_log_allocation_auth_config_legacy_only_warns(caplog, monkeypatch):
-    """No signers, legacy hash only → warning prompts operator to migrate."""
+def test_log_allocation_auth_config_legacy_still_enabled_warns(caplog, monkeypatch):
+    """No local override + legacy hash → warning to remove the legacy path.
+
+    The signature path is not "disabled" here: with no local override signers
+    are sourced from the settings aggregate, so the only thing worth warning
+    about is the still-enabled legacy token."""
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
 
-    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
         log_allocation_auth_config()
-    assert any("only the legacy X-Auth-Signature path is configured" in r.message for r in caplog.records)
+    assert any("legacy X-Auth-Signature path is still enabled" in r.message for r in caplog.records)
 
 
-def test_log_allocation_auth_config_nothing_configured_warns(caplog, monkeypatch):
-    """No signers and no legacy hash → warning that all scheduler calls will 401."""
+def test_log_allocation_auth_config_aggregate_sourced_when_local_empty(caplog, monkeypatch):
+    """No local override and no legacy hash → signers come from the settings
+    aggregate (the default for a stock CRN); this is not a misconfiguration, so
+    no warning is emitted."""
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
-    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
         log_allocation_auth_config()
-    assert any("no auth method configured" in r.message for r in caplog.records)
+    assert any("settings aggregate" in r.message for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 # --- M3: iat window boundary behavior ---
@@ -844,3 +880,157 @@ async def test_verify_per_signer_dedup_is_independent(mock_request, monkeypatch)
     # Replaying A's exact request is still rejected — for A.
     request_a2 = mock_request(headers={"Authorization": auth_a}, body=b"{}")
     assert await _verify_aleph_signature(request_a2, auth_a) is False
+
+
+# --- Authorized-signer resolution: local override > aggregate > baked-in default ---
+
+
+def test_default_allocation_signers_includes_scheduler():
+    """The package ships with the official scheduler address as the built-in
+    default, so a fresh CRN trusts it with zero configuration even before the
+    settings aggregate is reachable."""
+    assert "0x2937f62e5F81A88e921f883f8fE56ceCf4A4A44A" in settings.DEFAULT_ALLOCATION_SIGNERS
+
+
+@pytest.mark.asyncio
+async def test_signers_local_overrides_aggregate(monkeypatch, set_aggregate_signers):
+    """A non-empty local list is used verbatim; the aggregate is not consulted."""
+    local = Account.create()
+    aggregate_only = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [local.address])
+    set_aggregate_signers([aggregate_only.address])
+
+    resolved = await get_authorized_allocation_signers()
+
+    assert resolved == {local.address.lower()}
+    assert aggregate_only.address.lower() not in resolved
+
+
+@pytest.mark.asyncio
+async def test_signers_from_aggregate_when_local_empty(monkeypatch, set_aggregate_signers):
+    """With no local override, signers come from the settings aggregate."""
+    aggregate_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    set_aggregate_signers([aggregate_signer.address])
+
+    resolved = await get_authorized_allocation_signers()
+
+    assert resolved == {aggregate_signer.address.lower()}
+
+
+@pytest.mark.asyncio
+async def test_signers_aggregate_overrides_default(monkeypatch, set_aggregate_signers):
+    """A non-empty aggregate list replaces the baked-in default, so rotation via
+    the aggregate takes effect and a superseded default key can be dropped."""
+    aggregate_signer = Account.create()
+    default_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+    set_aggregate_signers([aggregate_signer.address])
+
+    resolved = await get_authorized_allocation_signers()
+
+    assert resolved == {aggregate_signer.address.lower()}
+    assert default_signer.address.lower() not in resolved
+
+
+@pytest.mark.asyncio
+async def test_signers_fall_back_to_default_when_aggregate_unavailable(monkeypatch):
+    """Local empty + aggregate unfetchable → the baked-in default scheduler is
+    used, so a stock CRN keeps accepting the official scheduler even when the
+    aggregate can't be fetched. (The autouse stub makes the fetch return None.)"""
+    default_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+
+    assert await get_authorized_allocation_signers() == {default_signer.address.lower()}
+
+
+@pytest.mark.asyncio
+async def test_signers_fall_back_to_default_when_aggregate_omits_key(monkeypatch):
+    """Local empty + aggregate fetched but without the signer key → default."""
+    default_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+
+    async def _aggregate_without_key():
+        return {"compatible_gpus": []}
+
+    monkeypatch.setattr(orchestrator_utils, "get_aggregate_settings", _aggregate_without_key)
+
+    assert await get_authorized_allocation_signers() == {default_signer.address.lower()}
+
+
+@pytest.mark.asyncio
+async def test_signers_empty_aggregate_list_falls_back_to_default(monkeypatch, set_aggregate_signers):
+    """An empty aggregate list is treated as "no opinion" and falls back to the
+    default — publishing an empty list cannot silently brick scheduling."""
+    default_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+    set_aggregate_signers([])
+
+    assert await get_authorized_allocation_signers() == {default_signer.address.lower()}
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_signer_from_aggregate(mock_request, monkeypatch, set_aggregate_signers):
+    """A request signed by an aggregate-listed signer verifies when no local override is set."""
+    signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    set_aggregate_signers([signer.address])
+
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    assert await _verify_aleph_signature(request, auth) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_default_signer_when_aggregate_unavailable(mock_request, monkeypatch):
+    """A request signed by the baked-in default scheduler verifies when local is
+    empty and the aggregate is unavailable — the zero-config day-one path."""
+    default_signer = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(default_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    assert await _verify_aleph_signature(request, auth) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_aggregate_signer_when_local_override_set(
+    mock_request, monkeypatch, set_aggregate_signers
+):
+    """Override semantics: a local list shadows the aggregate entirely, so an
+    aggregate-only signer is rejected once any local signer is configured."""
+    aggregate_signer = Account.create()
+    other_local = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [other_local.address])
+    set_aggregate_signers([aggregate_signer.address])
+
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(aggregate_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    assert await _verify_aleph_signature(request, auth) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_unknown_signer_via_default_fallback(mock_request, monkeypatch):
+    """On the default-fallback path (local empty, aggregate down), a signer that
+    is neither in the aggregate nor the baked-in default is still rejected."""
+    default_signer = Account.create()
+    unknown = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
+    monkeypatch.setattr(settings, "DEFAULT_ALLOCATION_SIGNERS", [default_signer.address])
+
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(unknown, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+
+    assert await _verify_aleph_signature(request, auth) is False

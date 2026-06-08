@@ -15,7 +15,7 @@ from aleph_message.models import Chain
 from aleph_message.models.execution.environment import HypervisorType
 from dotenv import load_dotenv
 from eth_utils import is_checksum_address
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, HttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
@@ -114,15 +114,15 @@ def obtain_dns_ips(dns_resolver: DnsResolver, network_interface: str) -> list[st
 
 
 class Settings(BaseSettings):
-    @field_validator("AUTHORIZED_ALLOCATION_SIGNERS")
+    @field_validator("AUTHORIZED_ALLOCATION_SIGNERS", "DEFAULT_ALLOCATION_SIGNERS")
     @classmethod
-    def _check_authorized_signers(cls, value: list[str]) -> list[str]:
+    def _check_authorized_signers(cls, value: list[str], info: ValidationInfo) -> list[str]:
         for addr in value:
             if not is_checksum_address(addr):
                 msg = (
-                    f"AUTHORIZED_ALLOCATION_SIGNERS contains an invalid or "
-                    f"non-checksummed ETH address: {addr!r}. Use the checksum "
-                    f"form (mixed case, EIP-55) to catch typos."
+                    f"{info.field_name} contains an invalid or non-checksummed "
+                    f"ETH address: {addr!r}. Use the checksum form (mixed case, "
+                    f"EIP-55) to catch typos."
                 )
                 raise ValueError(msg)
         return value
@@ -362,12 +362,31 @@ class Settings(BaseSettings):
     schedulers migrate to AUTHORIZED_ALLOCATION_SIGNERS / Aleph-EIP191-V1."""
 
     AUTHORIZED_ALLOCATION_SIGNERS: list[str] = []
-    """ETH addresses authorized to sign requests to scheduler-only endpoints
-    (Aleph-EIP191-V1 scheme). Empty list disables the signature path; only the
-    legacy ALLOCATION_TOKEN_HASH path is active.
+    """Local override of the ETH addresses authorized to sign requests to
+    scheduler-only endpoints (Aleph-EIP191-V1 scheme).
+
+    When non-empty, this list is used verbatim and both the settings aggregate
+    and DEFAULT_ALLOCATION_SIGNERS are ignored — giving operators an immediate,
+    network-independent way to rotate or revoke a scheduler key. When empty (the
+    default), signers are resolved from the network, then the built-in default.
+    See aleph.vm.orchestrator.utils.get_authorized_allocation_signers for the
+    full precedence (override > aggregate > default).
 
     Each entry must be a checksummed ETH address (e.g. 0xAbC...). Validated at
     startup; invalid entries fail with a clear error.
+    """
+
+    DEFAULT_ALLOCATION_SIGNERS: list[str] = ["0x2937f62e5F81A88e921f883f8fE56ceCf4A4A44A"]
+    """Built-in fallback scheduler signer(s) for the Aleph-EIP191-V1 path, used
+    only when there is no local AUTHORIZED_ALLOCATION_SIGNERS override and the
+    settings aggregate provides no signers (unfetchable, or its
+    `authorized_allocation_signers` key is absent/empty).
+
+    Ships with the official scheduler address so a fresh CRN trusts it with zero
+    configuration on day one and stays reachable if the aggregate is down. A
+    non-empty aggregate list takes precedence, so the foundation can rotate the
+    scheduler key network-wide without a CRN redeploy. Same checksum-address
+    validation as AUTHORIZED_ALLOCATION_SIGNERS.
     """
 
     ALLOCATION_SIGNATURE_MAX_AGE_SECONDS: int = 300
