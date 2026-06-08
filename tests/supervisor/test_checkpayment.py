@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import Chain, InstanceContent, PaymentType
@@ -8,6 +9,7 @@ from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.tasks import check_payment
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.types import VmId
 
 
 @pytest.fixture()
@@ -37,6 +39,16 @@ def fake_instance_content():
     return fake
 
 
+def _make_supervisor() -> MagicMock:
+    """Return a fake Supervisor with delete_vm as an AsyncMock."""
+    return MagicMock(delete_vm=AsyncMock())
+
+
+def _make_registry() -> MagicMock:
+    """Return a fake AgentVmRegistry with a no-op forget."""
+    return MagicMock(forget=MagicMock())
+
+
 @pytest.mark.asyncio
 async def test_enough_flow(mocker, fake_instance_content):
     """Execution with community flow
@@ -56,6 +68,8 @@ async def test_enough_flow(mocker, fake_instance_content):
 
     loop = asyncio.get_event_loop()
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
 
@@ -86,9 +100,10 @@ async def test_enough_flow(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
     assert pool.executions == {hash: execution}
     execution.stop.assert_not_called()
+    supervisor.delete_vm.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -110,6 +125,8 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
 
     loop = asyncio.get_event_loop()
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=500, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
 
@@ -140,9 +157,10 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
     assert pool.executions == {hash: execution}
     execution.stop.assert_not_called()
+    supervisor.delete_vm.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -154,6 +172,8 @@ async def test_not_enough_flow(mocker, fake_instance_content):
 
     loop = asyncio.get_event_loop()
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=2, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
@@ -177,9 +197,12 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
 
-    execution.stop.assert_called_with()
+    # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called
+    # (VM may be re-paid and restarted).
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
+    registry.forget.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -189,6 +212,8 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
 
     loop = asyncio.get_event_loop()
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
     async def get_stream(sender, receiver, chain):
@@ -221,9 +246,11 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
 
-    execution.stop.assert_called_with()
+    # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called.
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
+    registry.forget.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -232,6 +259,8 @@ async def test_message_removing_status(mocker, fake_instance_content):
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
 
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
@@ -258,9 +287,10 @@ async def test_message_removing_status(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
-    await check_payment(pool=pool)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
 
-    execution.stop.assert_not_called()
+    supervisor.delete_vm.assert_not_called()
+    registry.forget.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -269,13 +299,17 @@ async def test_removed_message_status(mocker, fake_instance_content):
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
 
     pool = VmPool()
+    supervisor = _make_supervisor()
+    registry = _make_registry()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
     mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
     mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVED)
     mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
-    mocker.patch("aleph.vm.orchestrator.tasks.delete_port_mappings", new_callable=mocker.AsyncMock)
+    mock_delete_port_mappings = mocker.patch(
+        "aleph.vm.orchestrator.tasks.delete_port_mappings", new_callable=mocker.AsyncMock
+    )
     message = InstanceContent.model_validate(fake_instance_content)
 
     mocker.patch.object(VmExecution, "is_running", new=True)
@@ -296,15 +330,15 @@ async def test_removed_message_status(mocker, fake_instance_content):
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
     # Consecutive-confirmation counter requires 3 checks before stopping
-    mock_stop_vm = mocker.patch.object(pool, "stop_vm", new=mocker.AsyncMock())
-    mock_forget_vm = mocker.patch.object(pool, "forget_vm")
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_called()
 
-    await check_payment(pool=pool)
-    mock_stop_vm.assert_not_called()
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_called()
 
-    await check_payment(pool=pool)
-    mock_stop_vm.assert_not_called()
-
-    await check_payment(pool=pool)
-    mock_stop_vm.assert_called_once_with(hash)
-    mock_forget_vm.assert_called_once_with(hash)
+    await check_payment(pool=pool, supervisor=supervisor, registry=registry)
+    # Terminal-status dealloc: supervisor.delete_vm + delete_port_mappings (residual) + registry.forget
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
+    mock_delete_port_mappings.assert_awaited_once_with(hash)
+    registry.forget.assert_called_once_with(hash)
+    # pool.stop_vm and pool.forget_vm must NOT be called

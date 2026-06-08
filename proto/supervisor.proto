@@ -195,7 +195,10 @@ message VmInfo {
 message GetVmRequest      { string vm_id = 1; }
 message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
-message DeleteVmRequest   { string vm_id = 1; }
+message DeleteVmRequest {
+  string vm_id = 1;
+  bool wipe = 2;                     // also delete persisted port mappings and writable data volumes
+}
 message DeleteVmResponse  {}
 message RebootVmRequest {
   string vm_id = 1;
@@ -203,7 +206,13 @@ message RebootVmRequest {
   // for persistent VMs, recreate for ephemeral). Firecracker has no
   // reboot API. Add a `hard` option when a real implementation lands.
 }
-message ReinstallVmRequest { string vm_id = 1; }
+message ReinstallVmRequest {
+  string vm_id = 1;
+  bool wipe_volumes = 2;             // false = reset rootfs only, keep writable data volumes
+                                     // NOTE: the Python ABC defaults wipe_volumes to true; proto3
+                                     // bools default to false. The gRPC server must treat an unset
+                                     // field as true (callers should always set it explicitly).
+}
 
 // ── Port forwarding ──────────────────────────────────────────────────────
 
@@ -264,6 +273,7 @@ message LogChunk {
     LOG_SOURCE_SERIAL = 1;           // QEMU serial console
     LOG_SOURCE_STDOUT = 2;           // Firecracker vm-stdout
     LOG_SOURCE_SYSTEMD = 3;          // systemd journal for persistent VM unit
+    LOG_SOURCE_STDERR = 4;           // vm-stderr journal identifier
   }
 }
 

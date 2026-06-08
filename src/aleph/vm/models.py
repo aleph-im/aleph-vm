@@ -55,7 +55,6 @@ from aleph.vm.orchestrator.metrics import (
     ExecutionRecord,
     delete_port_mappings,
     delete_record,
-    get_port_mappings,
     save_execution_data,
     save_port_mappings,
     save_record,
@@ -153,16 +152,13 @@ class VmExecution:
     record: ExecutionRecord | None = None
 
     async def fetch_port_redirect_config_and_setup(self):
+        """Fetch the user's port-forwarding aggregate and apply updates.
+
+        Persisted-mapping reload is the creator's job
+        (pool.create_a_vm / create_vm_from_spec / restart_persistent_vm).
+        """
         if not self.is_instance:
             return
-
-        # Load persisted port mappings so existing host ports are reused
-        if not self.mapped_ports:
-            self.mapped_ports = await get_port_mappings(self.vm_hash)
-            # Ensure nft rules exist for DB-loaded mappings (they may
-            # have been wiped by a prior stop while the DB survived).
-            if self.mapped_ports:
-                await self.recreate_port_redirect_rules()
 
         # Precondition: this is an agent-responsibility entrypoint. The agent
         # attaches the message before calling it (see orchestrator/run.py); a
@@ -940,6 +936,29 @@ class VmExecution:
             self.record.persistent = self.persistent
             self.record.mapped_ports = self.mapped_ports
         await save_record(self.record)
+
+    def erase_volumes(self, *, include_rootfs: bool = False, include_data_volumes: bool = True) -> int:
+        """Delete this execution's on-disk volumes.
+
+        Hypervisor mechanism behind Supervisor.delete_vm(wipe=...) and
+        reinstall_vm(...). Returns the number of files deleted.
+        """
+        if self.resources is None:
+            return 0
+        deleted_count = 0
+        if include_rootfs:
+            rootfs = self.resources.rootfs_path
+            if rootfs.exists():
+                logger.info(f"Deleting rootfs {rootfs}")
+                rootfs.unlink()
+                deleted_count += 1
+        if include_data_volumes:
+            for volume in self.resources.volumes:
+                if not volume.read_only:
+                    logger.info(f"Deleting volume {volume.path_on_host}")
+                    volume.path_on_host.unlink(missing_ok=True)
+                    deleted_count += 1
+        return deleted_count
 
     async def record_usage(self):
         await delete_record(execution_uuid=str(self.uuid))

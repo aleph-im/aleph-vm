@@ -8,6 +8,8 @@ NotImplementedSupervisorError.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -16,6 +18,7 @@ from typing import TYPE_CHECKING
 import psutil
 from aleph_message.models.execution.environment import HypervisorType
 
+from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
     NotImplementedSupervisorError,
@@ -46,9 +49,12 @@ from aleph.vm.supervisor.types import (
     VmInfo,
     VmStatus,
 )
+from aleph.vm.utils.logs import get_past_vm_logs
 
 if TYPE_CHECKING:
     from aleph.vm.pool import VmPool
+
+logger = logging.getLogger(__name__)
 
 
 def _backend_of(execution) -> Backend:
@@ -109,9 +115,30 @@ def _log_source(log_type: str) -> LogSource:
     if log_type == "stdout":
         return LogSource.STDOUT
     if log_type == "stderr":
-        # stderr is delivered on the same journal path; map to STDOUT for now.
-        return LogSource.STDOUT
+        return LogSource.STDERR
     return LogSource.SERIAL
+
+
+def _history_chunks(vm_id: VmId) -> list[LogChunk]:
+    """Journald history for a VM, mapped to LogChunks.
+
+    Blocking sd-journal read; same behavior as the old views (the agent
+    endpoints already read journald inline on the event loop).
+    """
+    stdout_id = f"vm-{vm_id}-stdout"
+    stderr_id = f"vm-{vm_id}-stderr"
+    chunks: list[LogChunk] = []
+    for entry in get_past_vm_logs(stdout_id, stderr_id):
+        source = LogSource.STDOUT if entry["SYSLOG_IDENTIFIER"] == stdout_id else LogSource.STDERR
+        message = entry["MESSAGE"]
+        if isinstance(message, bytes):
+            message = message.decode("utf-8", errors="replace")
+        ts = entry["__REALTIME_TIMESTAMP"]
+        # Exact for post-epoch times: whole seconds + the integer microsecond
+        # field. int(ts.timestamp() * 1e9) would carry ~256ns of float64 error.
+        timestamp_ns = int(ts.timestamp()) * 1_000_000_000 + ts.microsecond * 1_000
+        chunks.append(LogChunk(timestamp_ns=timestamp_ns, line=message, source=source))
+    return chunks
 
 
 class InProcessSupervisor(Supervisor):
@@ -157,11 +184,20 @@ class InProcessSupervisor(Supervisor):
             raise VmNotFoundError(vm_id)
         return execution
 
-    async def delete_vm(self, vm_id: VmId) -> None:
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
-            self._require(vm_id)
+            execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
-            self.pool.forget_vm(vm_id)
+            if execution.vm_hash in self.pool.executions:
+                logger.warning("VM %s was not removed from pool after stop; forgetting it now", vm_id)
+                self.pool.forget_vm(vm_id)
+            if wipe:
+                # Mirrors the old operate_erase semantics exactly: persisted
+                # port mappings (persistent VMs keep them across stops) and
+                # writable data volumes go; the rootfs stays.
+                if execution.persistent:
+                    await delete_port_mappings(execution.vm_hash)
+                execution.erase_volumes()
 
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
@@ -173,14 +209,28 @@ class InProcessSupervisor(Supervisor):
                 self.pool.forget_vm(vm_id)
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
-    async def reinstall_vm(self, vm_id: VmId) -> VmInfo:
+    async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
-            if execution.persistent and getattr(execution, "systemd_manager", None):
-                self.pool.systemd_manager.restart(execution.controller_service)
+            if execution.persistent:
+                # Keep the execution registered so the allocation loop cannot
+                # create a duplicate while we re-prepare (mirrors the old
+                # operate_reinstall persistent branch). Note: restart_persistent_vm
+                # re-registers the execution again after prepare() — the duplicate
+                # write is intentional.
+                execution.stop_event = asyncio.Event()
+                self.pool.executions[execution.vm_hash] = execution
+                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
+                execution.resources = None
+                await execution.prepare()
+                await self.pool.restart_persistent_vm(execution)
             else:
-                self.pool.forget_vm(vm_id)
+                if execution.vm_hash in self.pool.executions:
+                    self.pool.forget_vm(execution.vm_hash)
+                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
+                # The agent re-creates non-persistent VMs through the create
+                # path (it owns the message); we return the stopped state.
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
     # Port forwarding
@@ -224,6 +274,11 @@ class InProcessSupervisor(Supervisor):
                 requested[int(vm_port)] = {"tcp": bool(mapping.get("tcp")), "udp": bool(mapping.get("udp"))}
                 if int(mapping["host"]) == host_port:
                     requested[int(vm_port)][protocol.value] = False
+            # A port whose last active protocol was just cleared must be
+            # dropped from the request entirely: update_port_redirects only
+            # deletes mappings for absent keys (all-False keys are kept as
+            # ghost entries).
+            requested = {vm_port: flags for vm_port, flags in requested.items() if flags["tcp"] or flags["udp"]}
             await execution.update_port_redirects(requested)
 
     async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]:
@@ -237,31 +292,27 @@ class InProcessSupervisor(Supervisor):
 
     # Logs
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
+        """Journald history for the VM (works for stopped VMs too)."""
         with translating_errors():
-            execution = self._require(vm_id)
-            if not execution.vm:
-                return []
-            queue = execution.vm.get_log_queue()
-            chunks: list[LogChunk] = []
-            try:
-                while not queue.empty():
-                    log_type, message = queue.get_nowait()
-                    chunks.append(LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type)))
-                    queue.task_done()
-            finally:
-                execution.vm.unregister_queue(queue)
+            chunks = _history_chunks(vm_id)
             if max_lines:
                 chunks = chunks[-max_lines:] if from_tail else chunks[:max_lines]
             return chunks
 
     async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]:
-        execution = self._require(vm_id)
-        if not execution.vm:
+        if include_history:
+            with translating_errors():
+                history = _history_chunks(vm_id)
+            for chunk in history:
+                yield chunk
+        execution = self.pool.executions.get(vm_id)
+        if not execution or not execution.vm:
             return
         queue = execution.vm.get_log_queue()
         try:
             while True:
                 log_type, message = await queue.get()
+                # Live queue items carry no timestamp; 0 is the "live" sentinel.
                 yield LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type))
                 queue.task_done()
         finally:

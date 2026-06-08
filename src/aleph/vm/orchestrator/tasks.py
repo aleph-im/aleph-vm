@@ -13,6 +13,7 @@ from aiohttp import web
 from aleph_message.models import (
     AggregateMessage,
     AlephMessage,
+    InstanceContent,
     PaymentType,
     ProgramMessage,
     parse_message,
@@ -22,12 +23,17 @@ from yarl import URL
 
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.metrics import delete_port_mappings
+from aleph.vm.orchestrator.run import reconcile_port_forwards
 from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
 )
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import VmId, VmStatus
 from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.
@@ -157,7 +163,9 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                 break
 
 
-async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool):
+async def watch_for_messages(
+    dispatcher: PubSub, reactor: Reactor, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
+):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
@@ -179,37 +187,38 @@ async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, pool: VmPool)
             key = message.content.key
             if isinstance(key, str):
                 if key == "port-forwarding":
-                    await _handle_port_forwarding_aggregate(message, pool)
+                    await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
                     await _handle_domains_aggregate(message, pool)
 
 
-async def _handle_port_forwarding_aggregate(message: AggregateMessage, pool: VmPool):
-    """Update port redirects for VMs affected by a port-forwarding aggregate change."""
+async def _handle_port_forwarding_aggregate(
+    message: AggregateMessage, supervisor: Supervisor, registry: AgentVmRegistry
+):
+    """Reconcile port forwards for VMs affected by a port-forwarding aggregate change."""
     # Use content.address (the target account), not message.sender,
     # because a sender can publish aggregates on behalf of another address.
     address = message.content.address
     affected = [
-        execution
-        for execution in pool.executions.values()
-        if execution.is_instance and execution.vm and execution.message and execution.message.address == address
+        (vm_hash, record)
+        for vm_hash, record in registry.items()
+        if isinstance(record.message, InstanceContent) and record.message.address == address
     ]
     if not affected:
         return
-
-    logger.info(
-        "Port-forwarding aggregate for %s, updating %d VM(s)",
-        address,
-        len(affected),
-    )
-    for execution in affected:
+    logger.info("Port-forwarding aggregate for %s, updating %d VM(s)", address, len(affected))
+    for vm_hash, record in affected:
+        vm_id = VmId(str(vm_hash))
         try:
-            await execution.fetch_port_redirect_config_and_setup()
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            continue
+        if info.status is not VmStatus.RUNNING:
+            continue
+        try:
+            await reconcile_port_forwards(supervisor, vm_id, record.message)
         except Exception:
-            logger.exception(
-                "Failed to update port redirects for %s",
-                execution.vm_hash,
-            )
+            logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
 async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
@@ -243,6 +252,8 @@ async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
     pool: VmPool = app["vm_pool"]
+    supervisor = app["supervisor"]
+    registry = app["vm_registry"]
     reactor = Reactor(pubsub, pool)
 
     # Register an hardcoded initial program
@@ -256,7 +267,9 @@ async def start_watch_for_messages_task(app: web.Application):
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
-    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor, pool))
+    app["messages_listener"] = create_task_log_exceptions(
+        watch_for_messages(pubsub, reactor, pool, supervisor, registry)
+    )
 
 
 async def stop_watch_for_messages_task(app: web.Application):
@@ -273,12 +286,14 @@ async def monitor_payments(app: web.Application):
     "hold" tier, and stream flow validation for the "superfluid" tier to ensure compliance.
     """
     pool: VmPool = app["vm_pool"]
+    supervisor: Supervisor = app["supervisor"]
+    registry: AgentVmRegistry = app["vm_registry"]
     while True:
         await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
         # noinspection PyBroadException
         try:
             logger.debug("Monitoring balances task running")
-            await check_payment(pool)
+            await check_payment(pool, supervisor, registry)
             logger.debug("Monitoring balances task ended")
         except Exception as e:
             if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
@@ -287,7 +302,7 @@ async def monitor_payments(app: web.Application):
             logger.warning(f"check_payment failed {e}", exc_info=True)
 
 
-async def check_payment(pool: VmPool):
+async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry):
     """Ensures VMs are stopped if payment conditions are unmet, such as insufficient
     funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
     balance checks for the "hold" tier, and stream flow validation for the "superfluid" tier
@@ -326,9 +341,11 @@ async def check_payment(pool: VmPool):
                 message_status,
             )
             del _terminal_strike_count[key]
-            await pool.stop_vm(vm_hash)
+            await supervisor.delete_vm(VmId(str(vm_hash)))
+            # Residual direct DB call: mapping persistence moves fully
+            # hypervisor-side with the gRPC split (plan: Design deltas #3).
             await delete_port_mappings(vm_hash)
-            pool.forget_vm(vm_hash)
+            registry.forget(vm_hash)
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
@@ -350,7 +367,10 @@ async def check_payment(pool: VmPool):
             while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
                 logger.debug(f"Stopping {last_execution} due to insufficient balance")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
                 required_balance = await compute_required_balance(executions)
 
     community_wallet = await get_community_wallet_address()
@@ -374,7 +394,10 @@ async def check_payment(pool: VmPool):
             while executions and balance < (required_credits + settings.PAYMENT_BUFFER):
                 last_execution = executions.pop(-1)
                 logger.debug(f"Stopping {last_execution} due to insufficient credit balance")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
                 required_credits = await compute_required_credit_balance(executions)
 
     # Check if the balance held in the wallet is sufficient stream tier resources
@@ -434,7 +457,10 @@ async def check_payment(pool: VmPool):
                 # Stop executions until the required stream is reached
                 last_execution = executions.pop(-1)
                 logger.info(f"Stopping {last_execution} of {execution_address} due to insufficient stream")
-                await pool.stop_vm(last_execution.vm_hash)
+                try:
+                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                except VmNotFoundError:
+                    pass
 
 
 async def start_payment_monitoring_task(app: web.Application):

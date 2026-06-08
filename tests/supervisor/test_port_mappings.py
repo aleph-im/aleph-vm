@@ -1,5 +1,7 @@
 """Tests for port mapping DB logic and port availability checker."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -186,3 +188,32 @@ def test_get_active_host_ports_with_data(tmp_path):
         assert result == {30000}  # deleted row excluded
     finally:
         _SyncEngineHolder.reset()
+
+
+@pytest.mark.asyncio
+async def test_fetch_port_redirect_config_does_not_call_get_port_mappings(monkeypatch):
+    """fetch_port_redirect_config_and_setup no longer loads from DB — that is the creator's job."""
+    import aleph.vm.models as models_mod
+    from aleph.vm.models import MessageSpec, VmExecution
+
+    # Build a minimal fake execution with MessageSpec so the method runs.
+    fake_vm = MagicMock()
+    fake_vm.tap_interface = MagicMock()
+    content = MagicMock()
+    content.address = "0xabc"
+    execution = MagicMock(spec=VmExecution)
+    execution.is_instance = True
+    execution.spec = MessageSpec(message=content, original=content)
+    execution.vm = fake_vm
+    execution.mapped_ports = {}
+    execution.vm_hash = "deadbeef" * 8
+
+    # Patch get_user_settings and update_port_redirects so we don't need real I/O.
+    monkeypatch.setattr(models_mod, "get_user_settings", AsyncMock(return_value={}))
+    update_mock = AsyncMock()
+    execution.update_port_redirects = update_mock
+
+    await VmExecution.fetch_port_redirect_config_and_setup(execution)
+
+    # The aggregate fetch and update_port_redirects must have been called.
+    update_mock.assert_awaited_once()

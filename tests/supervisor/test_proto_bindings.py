@@ -265,6 +265,32 @@ def test_error_detail_message_shape():
     assert {"code", "message", "vm_id"} <= fields
 
 
+def test_delete_vm_request_has_wipe_field():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    req = supervisor_pb2.DeleteVmRequest(vm_id="x", wipe=True)
+    assert req.wipe is True
+    assert supervisor_pb2.DeleteVmRequest(vm_id="x").wipe is False
+
+
+def test_reinstall_vm_request_has_wipe_volumes_field():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    req = supervisor_pb2.ReinstallVmRequest(vm_id="x", wipe_volumes=True)
+    assert req.wipe_volumes is True
+    assert supervisor_pb2.ReinstallVmRequest(vm_id="x").wipe_volumes is False
+
+
+def test_log_source_has_stderr():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
+
+    from aleph.vm.supervisor.types import LogSource
+
+    assert LogSource.STDERR.value == "stderr"
+
+
 def test_full_service_surface_pinned():
     """Whole-surface assertion. Update this list intentionally when the
     contract changes (and bump the proto package version when breaking)."""
