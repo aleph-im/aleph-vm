@@ -269,6 +269,13 @@ async def stop_all_vms(app: web.Application):
         logger.exception("Error stopping VMs during shutdown")
 
 
+async def stop_expiry_manager(app: web.Application) -> None:
+    """on_cleanup hook: cancel any pending idle-teardown timers."""
+    expiry = app.get("expiry")
+    if expiry is not None:
+        await expiry.cancel_all()
+
+
 async def _run_migration_reaper(app: web.Application) -> None:
     """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
     pool = app.get("vm_pool")
@@ -334,6 +341,7 @@ def run():
             app.on_cleanup.append(stop_watch_for_messages_task)
             app.on_cleanup.append(stop_balances_monitoring_task)
 
+        app.on_cleanup.append(stop_expiry_manager)
         app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.orchestrator.http import close_session, reset_session
