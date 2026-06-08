@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool
 
+from aleph.vm.orchestrator import run as run_module
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import (
@@ -137,3 +138,20 @@ async def test_add_port_forward_udp():
 
     assert info.protocol is Protocol.UDP
     assert info.host_port == 34002
+
+
+@pytest.mark.asyncio
+async def test_reconcile_removes_last_protocol_drops_port_entirely(monkeypatch):
+    """reconcile with desired=[] must call update_port_redirects({}) — not
+    {22: {tcp: False, udp: False}} — so update_port_redirects removes the
+    mapping entirely rather than leaving a ghost entry."""
+    execution = make_execution_with_ports({22: {"host": 24022, "tcp": True, "udp": False}})
+    pool = FakePool(executions={"vm1": execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    # reconcile_port_forwards drives the supervisor; patch resolve so desired=[]
+    monkeypatch.setattr(run_module, "resolve_port_forwards", AsyncMock(return_value=[]))
+
+    await run_module.reconcile_port_forwards(sup, VmId("vm1"), SimpleNamespace(address="0xabc"))
+
+    execution.update_port_redirects.assert_awaited_once_with({})

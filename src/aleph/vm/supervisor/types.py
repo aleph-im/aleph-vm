@@ -59,6 +59,7 @@ class Protocol(Enum):
 class LogSource(Enum):
     SERIAL = "serial"
     STDOUT = "stdout"
+    STDERR = "stderr"
     SYSTEMD = "systemd"
 
 
