@@ -475,6 +475,7 @@ async def start_persistent_vm(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    expiry: ExpiryManager,
 ) -> VmExecution:
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
@@ -506,7 +507,7 @@ async def start_persistent_vm(
 
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
-    execution.cancel_expiration()
+    expiry.cancel(VmId(str(vm_hash)))
 
     if pubsub and settings.WATCH_FOR_UPDATES:
         execution.start_watching_for_updates(pubsub=pubsub)

@@ -254,7 +254,10 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> Vm
     """Run an instance from an InstanceMessage."""
     supervisor = InProcessSupervisor(pool)
     registry = AgentVmRegistry()
-    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
+    expiry = ExpiryManager(supervisor)
+    return await start_persistent_vm(
+        item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+    )
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
