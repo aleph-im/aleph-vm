@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
@@ -157,6 +158,7 @@ def parse_args(args):
 
 
 class FakeRequest:
+    app: dict
     headers: dict[str, str]
     raw_headers: list[tuple[bytes, bytes]]
     match_info: dict
@@ -192,6 +194,12 @@ async def benchmark(runs: int):
     loop = asyncio.get_event_loop()
     pool = VmPool()
     await pool.setup()
+    bench_supervisor = InProcessSupervisor(pool)
+    fake_request.app = {
+        "supervisor": bench_supervisor,
+        "expiry": ExpiryManager(bench_supervisor),
+        "pubsub": PubSub(),
+    }
 
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False

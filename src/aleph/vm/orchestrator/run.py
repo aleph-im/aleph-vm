@@ -24,6 +24,7 @@ from aleph.vm.controllers.firecracker.program import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
@@ -288,6 +289,10 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     """
     Execute the code corresponding to the 'code id' in the path.
     """
+    supervisor: Supervisor = request.app["supervisor"]
+    expiry: ExpiryManager = request.app["expiry"]
+    vm_id = VmId(str(vm_hash))
+    expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
@@ -393,10 +398,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
-            await execution.stop()
-            pool.forget_vm(execution.vm_hash)
+            await supervisor.delete_vm(vm_id)
 
 
 async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPool):
