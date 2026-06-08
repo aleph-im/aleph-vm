@@ -52,9 +52,10 @@ class FakeSystemd:
 
 
 class FakePool:
-    def __init__(self, executions=None, systemd=None):
+    def __init__(self, executions=None, systemd=None, network=None):
         self.executions = executions or {}
         self.systemd_manager = systemd or FakeSystemd()
+        self.network = network
 
 
 @pytest.mark.asyncio
