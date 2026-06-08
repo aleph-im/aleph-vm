@@ -6,7 +6,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 
@@ -45,19 +45,21 @@ from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.http import get_session
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
+from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import LogChunk, LogSource, VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
     get_message_executable_content,
 )
-from aleph.vm.utils.logs import get_past_vm_logs
 
 logger = logging.getLogger(__name__)
 
@@ -152,87 +154,6 @@ def _verify_backup_download(request: web.Request, vm_hash: str, backup_id: str) 
         raise web.HTTPForbidden(body="Invalid signature")
 
 
-def _erase_execution_volumes(
-    execution: VmExecution,
-    *,
-    include_rootfs: bool = False,
-    include_data_volumes: bool = True,
-) -> int:
-    """Delete volumes from an execution.
-
-    Args:
-        execution: The VM execution whose volumes to delete.
-        include_rootfs: Delete the rootfs disk image.
-        include_data_volumes: Delete non-read-only data volumes.
-
-    Returns the number of volumes deleted.
-    """
-    if execution.resources is None:
-        return 0
-
-    deleted_count = 0
-
-    if include_rootfs:
-        rootfs = execution.resources.rootfs_path
-        if rootfs.exists():
-            logger.info(f"Deleting rootfs {rootfs}")
-            rootfs.unlink()
-            deleted_count += 1
-
-    if include_data_volumes:
-        for volume in execution.resources.volumes:
-            if not volume.read_only:
-                logger.info(f"Deleting volume {volume.path_on_host}")
-                volume.path_on_host.unlink(missing_ok=True)
-                deleted_count += 1
-
-    return deleted_count
-
-
-async def _restart_persistent_vm(
-    pool: VmPool,
-    execution: VmExecution,
-) -> None:
-    """Re-register a stopped persistent VM and restart it via systemd.
-
-    Re-registers the execution in the pool immediately (before any
-    async work) so the periodic allocation loop cannot create a
-    duplicate execution with a new vm_id.
-    """
-    # Re-register synchronously first to close the window where the
-    # allocation loop could see the VM as missing and recreate it.
-    execution.times.stopping_at = None
-    execution.times.stopped_at = None
-    execution.stop_event = asyncio.Event()
-    pool.executions[execution.vm_hash] = execution
-    pool._schedule_forget_on_stop(execution)
-
-    if pool.network and execution.vm:
-        if not pool.network.interface_exists(execution.vm.vm_id):
-            await pool.network.create_tap(
-                execution.vm.vm_id,
-                execution.vm.tap_interface,
-            )
-        else:
-            # Interface exists but nftables rules may have been
-            # flushed — always re-apply them (mirrors pool.py logic).
-            from aleph.vm.network.firewall import setup_nftables_for_vm
-
-            setup_nftables_for_vm(
-                execution.vm.vm_id,
-                interface=execution.vm.tap_interface,
-            )
-    pool.systemd_manager.restart(execution.controller_service)
-    # Reload port mappings from DB — stop() clears them in memory
-    # but the DB retains them for persistent VMs.
-    execution.mapped_ports = await get_port_mappings(execution.vm_hash)
-    if execution.mapped_ports:
-        await execution.recreate_port_redirect_rules()
-    # Re-save so load_persistent_executions() finds it on restart.
-    execution.record = None
-    await execution.save()
-
-
 def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
     try:
         ref = match_info["ref"]
@@ -252,6 +173,14 @@ def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
         return execution
     else:
         raise web.HTTPNotFound(body=f"No virtual machine with ref {ref}")
+
+
+def get_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmRecord:
+    """Owner identity now comes from the agent registry, not the execution."""
+    record = request.app["vm_registry"].get(vm_hash)
+    if record is None:
+        raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
+    return record
 
 
 async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
@@ -323,6 +252,18 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
     return False
 
 
+async def _logs_auth_message(request: web.Request, vm_hash: ItemHash):
+    """Message for owner-auth on the logs endpoints: registry first, then the
+    agent DB (past executions keep their record until record_usage deletes it)."""
+    record = request.app["vm_registry"].get(vm_hash)
+    if record is not None:
+        return record.message
+    db_record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
+    if not db_record:
+        return None
+    return get_message_executable_content(json.loads(db_record.message))
+
+
 @cors_allow_all
 async def stream_logs(request: web.Request) -> web.StreamResponse:
     """Stream the logs of a VM.
@@ -335,15 +276,9 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = pool.executions.get(vm_hash)
-        if not execution:
-            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
-            if not record:
-                raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
-            message = get_message_executable_content(json.loads(record.message))
-        else:
-            message = execution.message
+        message = await _logs_auth_message(request, vm_hash)
+        if message is None:
+            raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
 
         ws = web.WebSocketResponse()
         logger.info(f"starting websocket: {request.path}")
@@ -376,30 +311,26 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
 
         await ws.send_json({"status": "connected"})
 
-        if execution and execution.vm:
-            queue = execution.vm.get_log_queue()
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            info = None
+
+        if info and info.status is VmStatus.RUNNING:
             try:
-                while True:
-                    log_type, msg = await queue.get()
-                    logger.debug(msg)
-                    await ws.send_json({"type": log_type, "message": msg})
-                    queue.task_done()
+                async for chunk in supervisor.stream_logs(vm_id):
+                    await ws.send_json({"type": chunk.source.value, "message": chunk.line})
             finally:
-                execution.vm.unregister_queue(queue)
                 await ws.close()
                 logger.info(f"connection {ws} closed")
-        elif execution and execution.is_starting:
+        elif info and info.status is VmStatus.BOOTING:
             await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
             await ws.close()
         else:
-            stdout_id = f"vm-{vm_hash}-stdout"
-            stderr_id = f"vm-{vm_hash}-stderr"
-            for entry in get_past_vm_logs(stdout_id, stderr_id):
-                log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == stdout_id else "stderr"
-                msg = entry["MESSAGE"]
-                if isinstance(msg, bytes):
-                    msg = msg.decode("utf-8", errors="replace")
-                await ws.send_json({"type": log_type, "message": msg})
+            for chunk in await supervisor.get_logs(vm_id):
+                await ws.send_json({"type": chunk.source.value, "message": chunk.line})
             await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
             await ws.close()
             logger.info(f"connection {ws} closed (past logs for stopped VM)")
@@ -413,44 +344,34 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
     """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        # This endpoint allow logs for past executions, so we look into the database if any execution by that hash
-        # occurred, which we can then use to look for rights. We still check in the pool first, it is faster
-        pool: VmPool = request.app["vm_pool"]
-        execution = pool.executions.get(vm_hash)
-        if execution:
-            message = execution.message
-        else:
-            record = await metrics.get_last_record_for_vm(vm_hash=vm_hash)
-            if not record:
-                raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
-            message = get_message_executable_content(json.loads(record.message))
+        message = await _logs_auth_message(request, vm_hash)
+        if message is None:
+            raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
         if not await is_sender_authorized(authenticated_sender, message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        _journal_stdout_name = f"vm-{vm_hash}-stdout"
-        _journal_stderr_name = f"vm-{vm_hash}-stderr"
+        supervisor: Supervisor = request.app["supervisor"]
+        chunks = await supervisor.get_logs(VmId(str(vm_hash)))
 
         response = web.StreamResponse()
         response.headers["Transfer-encoding"] = "chunked"
         response.headers["Content-Type"] = "application/json"
         await response.prepare(request)
         await response.write(b"[")
-
         first = True
-        for entry in get_past_vm_logs(_journal_stdout_name, _journal_stderr_name):
+        for chunk in chunks:
             if not first:
                 await response.write(b",\n")
             first = False
-            log_type = "stdout" if entry["SYSLOG_IDENTIFIER"] == _journal_stdout_name else "stderr"
+            identifier = f"vm-{vm_hash}-{chunk.source.value}"
             msg = {
-                "SYSLOG_IDENTIFIER": entry["SYSLOG_IDENTIFIER"],
-                "MESSAGE": entry["MESSAGE"],
-                "file": log_type,
-                "__REALTIME_TIMESTAMP": entry["__REALTIME_TIMESTAMP"],
+                "SYSLOG_IDENTIFIER": identifier,
+                "MESSAGE": chunk.line,
+                "file": chunk.source.value,
+                "__REALTIME_TIMESTAMP": datetime.fromtimestamp(chunk.timestamp_ns / 1e9, tz=timezone.utc),
             }
             await response.write(dumps_for_json(msg).encode())
         await response.write(b"]")
-
         await response.write_eof()
         return response
 
@@ -574,19 +495,21 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
     """Stop the virtual machine, smoothly if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        logger.debug(f"Iterating through running executions... {pool.executions}")
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        if execution.is_running:
-            logger.info(f"Stopping {execution.vm_hash}")
-            await pool.stop_vm(execution.vm_hash)
-            return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
-        else:
-            return web.Response(status=200, body="Already stopped, nothing to do")
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+            if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+                logger.info(f"Stopping {vm_hash}")
+                await supervisor.delete_vm(vm_id)
+                return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        return web.Response(status=200, body="Already stopped, nothing to do")
 
 
 @cors_allow_all
@@ -597,29 +520,30 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        if execution.is_running:
-            logger.info(f"Rebooting {execution.vm_hash}")
-            if execution.persistent:
-                pool.systemd_manager.restart(execution.controller_service)
-            else:
-                await pool.stop_vm(vm_hash)
-                pool.forget_vm(vm_hash)
-
-                await create_vm_execution_or_raise_http_error(
-                    vm_hash=vm_hash,
-                    pool=pool,
-                    supervisor=request.app["supervisor"],
-                    registry=request.app["vm_registry"],
-                )
-            return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
-        else:
-            return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+            if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+                logger.info(f"Rebooting {vm_hash}")
+                if record.persistent:
+                    await supervisor.reboot_vm(vm_id)
+                else:
+                    await supervisor.delete_vm(vm_id)
+                    await create_vm_execution_or_raise_http_error(
+                        vm_hash=vm_hash,
+                        pool=request.app["vm_pool"],
+                        supervisor=supervisor,
+                        registry=request.app["vm_registry"],
+                    )
+                return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
 
 
 @cors_allow_all
@@ -704,26 +628,17 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Erasing {execution.vm_hash}")
-
-        # Stop the VM
-        await pool.stop_vm(execution.vm_hash)
-        if execution.vm_hash in pool.executions:
-            logger.warning(f"VM {execution.vm_hash} was not stopped properly, forgetting it anyway")
-            pool.forget_vm(execution.vm_hash)
-
-        # Delete all data
-        # Non-persistent VMs already cleaned up by record_usage()
-        if execution.persistent:
-            await delete_port_mappings(execution.vm_hash)
-        _erase_execution_volumes(execution)
-
+        logger.info(f"Erasing {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            await supervisor.delete_vm(VmId(str(vm_hash)), wipe=True)
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        request.app["vm_registry"].forget(vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
@@ -743,46 +658,23 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
     rootfs_only = request.query.get("erase_volumes", "true") == "false"
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Reinstalling (reset to initial state) {execution.vm_hash}")
-
-        if execution.persistent:
-            await pool.stop_vm(execution.vm_hash)
-            # Invalidate the old forget_on_stop task and keep the
-            # execution in the pool so the allocation loop does not
-            # create a duplicate with a new vm_id while we await
-            # prepare() below.
-            execution.stop_event = asyncio.Event()
-            pool.executions[execution.vm_hash] = execution
-            _erase_execution_volumes(
-                execution,
-                include_rootfs=True,
-                include_data_volumes=not rootfs_only,
-            )
-            execution.resources = None
-            await execution.prepare()
-            await _restart_persistent_vm(pool, execution)
-        else:
-            await pool.stop_vm(execution.vm_hash)
-            if execution.vm_hash in pool.executions:
-                pool.forget_vm(execution.vm_hash)
-            _erase_execution_volumes(
-                execution,
-                include_rootfs=True,
-                include_data_volumes=not rootfs_only,
-            )
+        logger.info(f"Reinstalling (reset to initial state) {vm_hash}")
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            await supervisor.reinstall_vm(VmId(str(vm_hash)), wipe_volumes=not rootfs_only)
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        if not record.persistent:
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
-                pool=pool,
-                supervisor=request.app["supervisor"],
+                pool=request.app["vm_pool"],
+                supervisor=supervisor,
                 registry=request.app["vm_registry"],
             )
-
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 
@@ -1377,7 +1269,7 @@ async def _do_restore(
 
             logger.info("Restarting VM %s after restore", vm_hash)
             if execution.persistent:
-                await _restart_persistent_vm(pool, execution)
+                await pool.restart_persistent_vm(execution)
             else:
                 if execution.vm_hash in pool.executions:
                     pool.forget_vm(execution.vm_hash)

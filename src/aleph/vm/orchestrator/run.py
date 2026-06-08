@@ -129,6 +129,23 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
     return forwards
 
 
+async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
+    """Drive the hypervisor's forwards to match the aggregate settings.
+
+    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
+    the desired set, diff against what the hypervisor reports, and issue
+    add/remove calls. The hypervisor owns application and persistence.
+    """
+    desired = {(int(spec.vm_port), spec.protocol): spec for spec in await resolve_port_forwards(vm_id, content)}
+    current = {(int(info.vm_port), info.protocol): info for info in await supervisor.list_port_forwards(vm_id)}
+    for key, info in current.items():
+        if key not in desired:
+            await supervisor.remove_port_forward(vm_id, info.host_port, info.protocol)
+    for key, spec in desired.items():
+        if key not in current:
+            await supervisor.add_port_forward(spec)
+
+
 async def _wait_until_running(
     supervisor: Supervisor,
     vm_id: VmId,
@@ -183,7 +200,7 @@ async def create_vm_execution(
         # what the message-free agent will read once owner-auth and billing move
         # off the VmExecution (design doc section 5). The supervisor machinery
         # that created the VM never reads it.
-        registry.record(vm_hash, message=content, original=original_message.content)
+        registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
             await _wait_until_running(supervisor, info.vm_id)
             for forward in await resolve_port_forwards(info.vm_id, content):
@@ -205,6 +222,10 @@ async def create_vm_execution(
         # when those consumers read the registry instead.
         execution = pool.executions[vm_hash]
         execution.spec = MessageSpec(message=content, original=original_message.content)
+        # The spec create path skipped save() (no MessageSpec at start time).
+        # Persist the record now: registry rehydration and past-logs owner
+        # auth read the message back from the agent DB.
+        await execution.save()
         return execution
 
     execution = await pool.create_a_vm(
@@ -213,7 +234,7 @@ async def create_vm_execution(
         original=original_message.content,
         persistent=persistent,
     )
-    registry.record(vm_hash, message=content, original=original_message.content)
+    registry.record(vm_hash, message=content, original=original_message.content, persistent=persistent)
     return execution
 
 

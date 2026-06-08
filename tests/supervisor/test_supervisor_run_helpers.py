@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.orchestrator import run as run_module
-from aleph.vm.supervisor.types import Protocol, VmId, VmStatus
+from aleph.vm.supervisor.types import (
+    GuestPort,
+    HostPort,
+    PortForwardInfo,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+    VmStatus,
+)
 
 _HASH = ItemHash("deadbeef" * 8)
 _VM_ID = VmId(str(_HASH))
@@ -80,3 +88,48 @@ async def test_wait_until_running_times_out(monkeypatch):
 
     with pytest.raises(asyncio.TimeoutError):
         await run_module._wait_until_running(supervisor, _VM_ID, timeout=0, interval=0)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_adds_missing_and_removes_extra(monkeypatch):
+    desired = [
+        PortForwardSpec(vm_id=_VM_ID, host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP),
+        PortForwardSpec(vm_id=_VM_ID, host_port=HostPort(0), vm_port=GuestPort(8080), protocol=Protocol.TCP),
+    ]
+    monkeypatch.setattr(run_module, "resolve_port_forwards", AsyncMock(return_value=desired))
+    current = [
+        PortForwardInfo(vm_id=_VM_ID, host_port=HostPort(24022), vm_port=GuestPort(22), protocol=Protocol.TCP),
+        PortForwardInfo(vm_id=_VM_ID, host_port=HostPort(24099), vm_port=GuestPort(9999), protocol=Protocol.UDP),
+    ]
+    supervisor = SimpleNamespace(
+        list_port_forwards=AsyncMock(return_value=current),
+        add_port_forward=AsyncMock(),
+        remove_port_forward=AsyncMock(),
+    )
+
+    await run_module.reconcile_port_forwards(supervisor, _VM_ID, MagicMock())
+
+    supervisor.remove_port_forward.assert_awaited_once_with(_VM_ID, HostPort(24099), Protocol.UDP)
+    added = [c.args[0] for c in supervisor.add_port_forward.await_args_list]
+    assert [(int(s.vm_port), s.protocol) for s in added] == [(8080, Protocol.TCP)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_no_op_when_desired_equals_current(monkeypatch):
+    desired = [
+        PortForwardSpec(vm_id=_VM_ID, host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP),
+    ]
+    monkeypatch.setattr(run_module, "resolve_port_forwards", AsyncMock(return_value=desired))
+    current = [
+        PortForwardInfo(vm_id=_VM_ID, host_port=HostPort(24022), vm_port=GuestPort(22), protocol=Protocol.TCP),
+    ]
+    supervisor = SimpleNamespace(
+        list_port_forwards=AsyncMock(return_value=current),
+        add_port_forward=AsyncMock(),
+        remove_port_forward=AsyncMock(),
+    )
+
+    await run_module.reconcile_port_forwards(supervisor, _VM_ID, MagicMock())
+
+    supervisor.add_port_forward.assert_not_awaited()
+    supervisor.remove_port_forward.assert_not_awaited()

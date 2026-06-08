@@ -69,6 +69,7 @@ async def test_create_vm_from_spec_wires_into_pool(monkeypatch):
     save_cfg = MagicMock()
     monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", build_cfg)
     monkeypatch.setattr("aleph.vm.pool.save_controller_configuration", save_cfg)
+    monkeypatch.setattr("aleph.vm.pool.get_port_mappings", AsyncMock(return_value={}))
     # Controller reports active immediately.
     monkeypatch.setattr(
         "aleph.vm.models.VmExecution.non_blocking_wait_for_boot",
@@ -83,6 +84,30 @@ async def test_create_vm_from_spec_wires_into_pool(monkeypatch):
     build_cfg.assert_awaited_once()
     save_cfg.assert_called_once_with(_HASH, "fake-config")
     pool.systemd_manager.enable_and_start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_preloads_persisted_port_mappings(monkeypatch):
+    """create_vm_from_spec loads persisted port mappings and recreates nft rules."""
+    pool = _bare_pool()
+
+    persisted = {22: {"host": 24022, "tcp": True, "udp": False}}
+    get_pm = AsyncMock(return_value=persisted)
+    monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", AsyncMock(return_value="cfg"))
+    monkeypatch.setattr("aleph.vm.pool.save_controller_configuration", MagicMock())
+    monkeypatch.setattr("aleph.vm.pool.get_port_mappings", get_pm)
+    monkeypatch.setattr(
+        "aleph.vm.models.VmExecution.non_blocking_wait_for_boot",
+        AsyncMock(return_value=True),
+    )
+    recreate = AsyncMock()
+    monkeypatch.setattr("aleph.vm.models.VmExecution.recreate_port_redirect_rules", recreate)
+
+    execution = await pool.create_vm_from_spec(_spec())
+
+    get_pm.assert_awaited_once_with(_HASH)
+    assert execution.mapped_ports == persisted
+    recreate.assert_awaited_once()
 
 
 @pytest.mark.asyncio
