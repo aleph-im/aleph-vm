@@ -372,6 +372,10 @@ class VmPool:
                 await execution.start()
 
                 if execution.is_instance:
+                    # Reuse persisted host ports across restarts (hypervisor-owned).
+                    execution.mapped_ports = await get_port_mappings(vm_hash)
+                    if execution.mapped_ports:
+                        await execution.recreate_port_redirect_rules()
                     await execution.fetch_port_redirect_config_and_setup()
 
                 # Clear the user reservations
@@ -439,9 +443,12 @@ class VmPool:
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
                 await execution.start(write_config=False)
-                # NOTE: port forwarding is not fetched here. It depends on the
-                # owner address + user-settings aggregate (agent concerns); the
-                # agent drives it through the supervisor's add_port_forward.
+                # Reuse persisted host ports across restarts. The agent then
+                # reconciles the aggregate settings through add_port_forward,
+                # which merges with these preloaded mappings.
+                execution.mapped_ports = await get_port_mappings(vm_hash)
+                if execution.mapped_ports:
+                    await execution.recreate_port_redirect_rules()
             except Exception:
                 if execution.vm:
                     await execution.vm.teardown()
@@ -506,6 +513,36 @@ class VmPool:
             del self.executions[vm_hash]
         except KeyError:
             pass
+
+    async def restart_persistent_vm(self, execution: VmExecution) -> None:
+        """Re-register a stopped persistent VM and restart it via systemd.
+
+        Re-registers the execution in the pool immediately (before any async
+        work) so the periodic allocation loop cannot create a duplicate
+        execution with a new vm_id.
+        """
+        execution.times.stopping_at = None
+        execution.times.stopped_at = None
+        execution.stop_event = asyncio.Event()
+        self.executions[execution.vm_hash] = execution
+        self._schedule_forget_on_stop(execution)
+
+        if self.network and execution.vm:
+            if not self.network.interface_exists(execution.vm.vm_id):
+                await self.network.create_tap(execution.vm.vm_id, execution.vm.tap_interface)
+            else:
+                # Interface exists but nftables rules may have been flushed —
+                # always re-apply them.
+                setup_nftables_for_vm(execution.vm.vm_id, interface=execution.vm.tap_interface)
+        self.systemd_manager.restart(execution.controller_service)
+        # Reload port mappings from DB — stop() clears them in memory
+        # but the DB retains them for persistent VMs.
+        execution.mapped_ports = await get_port_mappings(execution.vm_hash)
+        if execution.mapped_ports:
+            await execution.recreate_port_redirect_rules()
+        # Re-save so the record survives for registry rehydration.
+        execution.record = None
+        await execution.save()
 
     def _schedule_forget_on_stop(self, execution: VmExecution):
         """Create a task that will remove the VM from the pool after it stops."""
