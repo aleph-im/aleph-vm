@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import uuid
-from asyncio import Task
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -139,7 +138,6 @@ class VmExecution:
     runs_done_event: asyncio.Event
     stop_pending_lock: asyncio.Lock
     stop_event: asyncio.Event
-    expire_task: asyncio.Task | None = None
     update_task: asyncio.Task | None = None
     init_task: asyncio.Task | None
     _forget_task: asyncio.Task | None = None
@@ -782,34 +780,6 @@ class VmExecution:
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
         await self.vm.wait_for_init()
 
-    def stop_after_timeout(self, timeout: float = 5.0) -> Task | None:
-        if self.persistent:
-            logger.debug("VM marked as long running. Ignoring timeout.")
-            return None
-
-        if self.expire_task:
-            logger.debug("VM already has a timeout. Extending it.")
-            self.expire_task.cancel()
-
-        vm_id: str = str(self.vm.vm_id if self.vm else None)
-        self.expire_task = create_task_log_exceptions(self.expire(timeout), name=f"expire {vm_id}")
-        return self.expire_task
-
-    async def expire(self, timeout: float) -> None:
-        """Coroutine that will stop the VM after 'timeout' seconds."""
-        await asyncio.sleep(timeout)
-        assert self.times.started_at
-        if self.times.stopping_at or self.times.stopped_at:
-            return
-        await self.stop()
-
-    def cancel_expiration(self) -> bool:
-        if self.expire_task:
-            self.expire_task.cancel()
-            return True
-        else:
-            return False
-
     def cancel_update(self) -> bool:
         if self.update_task:
             self.update_task.cancel()
@@ -838,7 +808,6 @@ class VmExecution:
             await self.vm.teardown()
 
             self.times.stopped_at = datetime.now(tz=timezone.utc)
-            self.cancel_expiration()
             self.cancel_update()
 
             if self.vm.support_snapshot and self.snapshot_manager:

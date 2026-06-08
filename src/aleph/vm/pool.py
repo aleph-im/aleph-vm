@@ -324,7 +324,6 @@ class VmPool:
             current_execution = self.executions.get(vm_hash)
             if current_execution:
                 if current_execution.is_running and not current_execution.is_stopping:
-                    current_execution.cancel_expiration()
                     return current_execution
 
             # Check if there are sufficient resources available before creating the VM
@@ -415,7 +414,6 @@ class VmPool:
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
-                current_execution.cancel_expiration()
                 return current_execution
 
             execution = VmExecution.from_spec(
@@ -476,19 +474,17 @@ class VmPool:
         raise ValueError(msg)
 
     def get_running_or_starting_vm(self, vm_hash: ItemHash) -> VmExecution | None:
-        """Return a running VM or None. Disables the VM expiration task."""
+        """Return a running VM or None."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
-            execution.cancel_expiration()
             return execution
         else:
             return None
 
     def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
-        """Return a running VM or None. Disables the VM expiration task."""
+        """Return a running VM or None."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
-            execution.cancel_expiration()
             return execution
         else:
             return None
