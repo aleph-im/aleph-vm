@@ -243,7 +243,10 @@ async def benchmark(runs: int):
     logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} min={min(bench):03f} max={max(bench):03f}")
     logger.info(bench)
 
-    result = await run_code_on_event(vm_hash=ref, event=None, pubsub=PubSub(), pool=pool)
+    result = await run_code_on_event(
+        vm_hash=ref, event=None, pubsub=PubSub(), pool=pool,
+        supervisor=bench_supervisor, expiry=fake_request.app["expiry"],
+    )
     print("Event result", result)
 
 

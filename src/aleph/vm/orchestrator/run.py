@@ -403,17 +403,26 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
             await supervisor.delete_vm(vm_id)
 
 
-async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPool):
+async def run_code_on_event(
+    vm_hash: ItemHash,
+    event,
+    pubsub: PubSub,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    expiry: ExpiryManager,
+):
     """
     Execute code in response to an event.
     """
+    vm_id = VmId(str(vm_hash))
+    expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        # See run_code_on_request: programs use the legacy path; build the
-        # supervisor/registry locally since the reactor has no app singletons.
-        supervisor = InProcessSupervisor(pool)
+        # programs use the legacy create path; the reactor has no agent
+        # registry singleton, so build a local one for the create follow-up.
         registry = AgentVmRegistry()
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
@@ -454,9 +463,9 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=pubsub)
-            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
-            await execution.stop()
+            await supervisor.delete_vm(vm_id)
 
 
 async def start_persistent_vm(
