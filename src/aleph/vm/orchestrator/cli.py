@@ -244,8 +244,12 @@ async def benchmark(runs: int):
     logger.info(bench)
 
     result = await run_code_on_event(
-        vm_hash=ref, event=None, pubsub=PubSub(), pool=pool,
-        supervisor=bench_supervisor, expiry=fake_request.app["expiry"],
+        vm_hash=ref,
+        event=None,
+        pubsub=PubSub(),
+        pool=pool,
+        supervisor=bench_supervisor,
+        expiry=fake_request.app["expiry"],
     )
     print("Event result", result)
 
@@ -255,9 +259,7 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> Vm
     supervisor = InProcessSupervisor(pool)
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
-    return await start_persistent_vm(
-        item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
-    )
+    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:

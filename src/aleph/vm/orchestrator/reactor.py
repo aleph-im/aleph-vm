@@ -71,8 +71,12 @@ class Reactor:
                     # Register the listener in the list of coroutines to run asynchronously:
                     coroutines.append(
                         run_code_on_event(
-                            vm_hash, event, self.pubsub, pool=self.pool,
-                            supervisor=self.supervisor, expiry=self.expiry,
+                            vm_hash,
+                            event,
+                            self.pubsub,
+                            pool=self.pool,
+                            supervisor=self.supervisor,
+                            expiry=self.expiry,
                         )
                     )
                     break

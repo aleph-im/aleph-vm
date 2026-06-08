@@ -620,7 +620,9 @@ async def update_allocations(request: web.Request):
             try:
                 logger.info(f"Starting long running VM '{vm_hash}'")
                 vm_hash = ItemHash(vm_hash)
-                await start_persistent_vm(vm_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
+                await start_persistent_vm(
+                    vm_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", vm_hash, error)
                 scheduling_errors[vm_hash] = error
@@ -634,7 +636,9 @@ async def update_allocations(request: web.Request):
             logger.info(f"Starting instance '{instance_hash}'")
             instance_item_hash = ItemHash(instance_hash)
             try:
-                await start_persistent_vm(instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
+                await start_persistent_vm(
+                    instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", instance_hash, error)
                 scheduling_errors[instance_item_hash] = error
