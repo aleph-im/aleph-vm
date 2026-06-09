@@ -235,6 +235,11 @@ branch = true
 parallel = true
 omit = [
   "src/aleph/vm/__about__.py",
+  # Generated protobuf bindings: descriptor code that does not run under the
+  # default C++ descriptors, so it is not meaningfully testable. Already
+  # excluded from mypy (see [tool.mypy] exclude below).
+  "src/aleph/vm/supervisor/_pb/*",
+  "*/supervisor/_pb/*",
 ]
 
 [tool.coverage.paths]

@@ -191,6 +191,21 @@ class VmInfo:
     backend: Backend
     numa_node: int | None
     status_message: str
+    # Tap networks (CIDR strings); empty until the tap device exists.
+    ipv4_network: str = ""
+    ipv6_network: str = ""
+    # Lifecycle timestamps, unix nanoseconds UTC; 0 = stage not reached.
+    defined_at_ns: int = 0
+    preparing_at_ns: int = 0
+    prepared_at_ns: int = 0
+    starting_at_ns: int = 0
+    started_at_ns: int = 0
+    stopping_at_ns: int = 0
+    stopped_at_ns: int = 0
+    # True for instances (full VMs), false for programs/microvms. Independent of
+    # `backend`: an instance may run under Firecracker or QEMU, so the backend
+    # alone cannot recover this. Mirrors VmExecution.is_instance.
+    is_instance: bool = False
 
 
 @dataclass(frozen=True)
@@ -283,5 +298,6 @@ class HostInfo:
     sev_es_supported: bool = False
     sev_snp_supported: bool = False
     tdx_supported: bool = False
+    host_ipv4: str = ""  # primary external IPv4; empty when host networking is disabled
     numa_nodes: list[NumaNodeInfo] = field(default_factory=list)
     gpus: list[GpuDevice] = field(default_factory=list)
