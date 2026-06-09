@@ -24,6 +24,7 @@ from aleph.vm.controllers.firecracker.program import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
@@ -288,6 +289,10 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     """
     Execute the code corresponding to the 'code id' in the path.
     """
+    supervisor: Supervisor = request.app["supervisor"]
+    expiry: ExpiryManager = request.app["expiry"]
+    vm_id = VmId(str(vm_hash))
+    expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
@@ -393,23 +398,33 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            # Persistent executions are long-running by design: never idle-reap them.
+            if not execution.persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
-            await execution.stop()
-            pool.forget_vm(execution.vm_hash)
+            await supervisor.delete_vm(vm_id)
 
 
-async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPool):
+async def run_code_on_event(
+    vm_hash: ItemHash,
+    event,
+    pubsub: PubSub,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    expiry: ExpiryManager,
+):
     """
     Execute code in response to an event.
     """
+    vm_id = VmId(str(vm_hash))
+    expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        # See run_code_on_request: programs use the legacy path; build the
-        # supervisor/registry locally since the reactor has no app singletons.
-        supervisor = InProcessSupervisor(pool)
+        # programs use the legacy create path; the reactor has no agent
+        # registry singleton, so build a local one for the create follow-up.
         registry = AgentVmRegistry()
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
@@ -450,9 +465,11 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=pubsub)
-            _ = execution.stop_after_timeout(timeout=settings.REUSE_TIMEOUT)
+            # Persistent executions are long-running by design: never idle-reap them.
+            if not execution.persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
-            await execution.stop()
+            await supervisor.delete_vm(vm_id)
 
 
 async def start_persistent_vm(
@@ -462,6 +479,7 @@ async def start_persistent_vm(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    expiry: ExpiryManager,
 ) -> VmExecution:
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
@@ -493,7 +511,7 @@ async def start_persistent_vm(
 
     # If the VM was already running in lambda mode, it should not expire
     # as long as it is also scheduled as long-running
-    execution.cancel_expiration()
+    expiry.cancel(VmId(str(vm_hash)))
 
     if pubsub and settings.WATCH_FOR_UPDATES:
         execution.start_watching_for_updates(pubsub=pubsub)

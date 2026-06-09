@@ -44,6 +44,7 @@ from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.http import get_session
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
 from aleph.vm.orchestrator.views.authentication import (
@@ -429,8 +430,8 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
             return web.Response(status=403, body="Unauthorized sender")
 
         logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
-        execution.persistent = False
-        execution.stop_after_timeout(timeout=timeout)
+        expiry: ExpiryManager = request.app["expiry"]
+        expiry.schedule(VmId(str(vm_hash)), timeout)
 
         return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
 
@@ -506,6 +507,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
             if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
                 logger.info(f"Stopping {vm_hash}")
                 await supervisor.delete_vm(vm_id)
+                request.app["expiry"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
@@ -534,6 +536,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                     await supervisor.reboot_vm(vm_id)
                 else:
                     await supervisor.delete_vm(vm_id)
+                    request.app["expiry"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
                         vm_hash=vm_hash,
                         pool=request.app["vm_pool"],
@@ -636,6 +639,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         supervisor: Supervisor = request.app["supervisor"]
         try:
             await supervisor.delete_vm(VmId(str(vm_hash)), wipe=True)
+            request.app["expiry"].cancel(VmId(str(vm_hash)))
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["vm_registry"].forget(vm_hash)

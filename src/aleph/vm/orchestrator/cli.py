@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
@@ -157,6 +158,7 @@ def parse_args(args):
 
 
 class FakeRequest:
+    app: dict
     headers: dict[str, str]
     raw_headers: list[tuple[bytes, bytes]]
     match_info: dict
@@ -192,6 +194,12 @@ async def benchmark(runs: int):
     loop = asyncio.get_event_loop()
     pool = VmPool()
     await pool.setup()
+    bench_supervisor = InProcessSupervisor(pool)
+    fake_request.app = {
+        "supervisor": bench_supervisor,
+        "expiry": ExpiryManager(bench_supervisor),
+        "pubsub": PubSub(),
+    }
 
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False
@@ -235,7 +243,14 @@ async def benchmark(runs: int):
     logger.info(f"BENCHMARK: n={len(bench)} avg={mean(bench):03f} min={min(bench):03f} max={max(bench):03f}")
     logger.info(bench)
 
-    result = await run_code_on_event(vm_hash=ref, event=None, pubsub=PubSub(), pool=pool)
+    result = await run_code_on_event(
+        vm_hash=ref,
+        event=None,
+        pubsub=PubSub(),
+        pool=pool,
+        supervisor=bench_supervisor,
+        expiry=fake_request.app["expiry"],
+    )
     print("Event result", result)
 
 
@@ -243,7 +258,8 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> Vm
     """Run an instance from an InstanceMessage."""
     supervisor = InProcessSupervisor(pool)
     registry = AgentVmRegistry()
-    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
+    expiry = ExpiryManager(supervisor)
+    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
