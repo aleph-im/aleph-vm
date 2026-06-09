@@ -318,3 +318,11 @@ async def test_create_execution_legacy():
     Create a new VM execution based on the legacy FastAPI check and ensure that it starts properly.
     """
     await test_create_execution_online(vm_hash=settings.LEGACY_CHECK_FASTAPI_VM_ID)
+
+
+def test_vm_execution_has_no_update_watch_api():
+    # Update-watching moved to the agent-side UpdateWatcher (design 2026-06-09).
+    from aleph.vm.models import VmExecution
+
+    for gone in ("start_watching_for_updates", "watch_for_updates", "cancel_update"):
+        assert not hasattr(VmExecution, gone), f"{gone} should be removed from VmExecution"

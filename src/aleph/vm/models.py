@@ -58,7 +58,6 @@ from aleph.vm.orchestrator.metrics import (
     save_port_mappings,
     save_record,
 )
-from aleph.vm.orchestrator.pubsub import PubSub
 from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.supervisor.types import Backend, CreateVmSpec
@@ -138,7 +137,6 @@ class VmExecution:
     runs_done_event: asyncio.Event
     stop_pending_lock: asyncio.Lock
     stop_event: asyncio.Event
-    update_task: asyncio.Task | None = None
     init_task: asyncio.Task | None
     _forget_task: asyncio.Task | None = None
 
@@ -780,13 +778,6 @@ class VmExecution:
         assert self.vm, "The VM attribute has to be set before calling wait_for_init()"
         await self.vm.wait_for_init()
 
-    def cancel_update(self) -> bool:
-        if self.update_task:
-            self.update_task.cancel()
-            return True
-        else:
-            return False
-
     async def stop(self) -> None:
         """Stop the VM and release resources"""
         assert self.vm, "The VM attribute has to be set before calling stop()"
@@ -808,43 +799,11 @@ class VmExecution:
             await self.vm.teardown()
 
             self.times.stopped_at = datetime.now(tz=timezone.utc)
-            self.cancel_update()
 
             if self.vm.support_snapshot and self.snapshot_manager:
                 await self.snapshot_manager.stop_for(self.vm_hash)
             self.stop_event.set()
             logger.info("%s stopped", self)
-
-    def start_watching_for_updates(self, pubsub: PubSub):
-        if not isinstance(self.spec, MessageSpec):
-            # Message-free (spec-built / reattached) executions have no Aleph
-            # message to watch for updates. After a reboot the agent re-fetches
-            # the allocation and re-establishes watching; the supervisor's own
-            # reattach does not. No-op rather than scheduling a task that fails.
-            return
-        if not self.update_task:
-            self.update_task = create_task_log_exceptions(self.watch_for_updates(pubsub=pubsub))
-
-    async def watch_for_updates(self, pubsub: PubSub):
-        # Message-only entrypoint. start_watching_for_updates already no-ops for
-        # spec-built / reattached executions, so reaching here with one is a
-        # programming error: fail loud rather than silently watching nothing.
-        if not isinstance(self.spec, MessageSpec):
-            raise TypeError("watch_for_updates is message-only; spec-built executions have no message to update")
-        original = self.spec.original
-        if self.is_instance:
-            await pubsub.msubscribe(
-                *(volume.ref for volume in (original.volumes or []) if hasattr(volume, "ref")),
-            )
-        else:
-            await pubsub.msubscribe(
-                original.code.ref,
-                original.runtime.ref,
-                original.data.ref if original.data else None,
-                *(volume.ref for volume in (original.volumes or []) if hasattr(volume, "ref")),
-            )
-        logger.debug("Update received, stopping VM...")
-        await self.stop()
 
     async def all_runs_complete(self):
         """Wait for all runs to complete. Used in self.stop() to prevent interrupting a request."""
