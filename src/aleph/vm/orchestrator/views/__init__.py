@@ -261,6 +261,19 @@ def _group_port_forwards(forwards: list[PortForwardInfo]) -> dict[str, dict[int,
 
 @cors_allow_all
 async def list_executions(request: web.Request) -> web.Response:
+    # ASSUMPTION (single-tenant supervisor): list_vms() is hypervisor-global —
+    # it returns every VM the supervisor manages, and we report all of them as
+    # ours. That is correct only while the agent is the supervisor's sole
+    # client, so every VmId is one of our item hashes and registry.get either
+    # hits or cleanly misses on our own set. The moment the supervisor gains
+    # another tenant (a node operator's own VMs, a second agent with a
+    # different VmId scheme), a foreign VmId misses the registry and falls
+    # through _vm_type_name to backend inference — i.e. we would list and label
+    # a VM we do not own. Fix then by scoping ownership at the boundary
+    # (list_vms(owner=...) / an auth-scoped supervisor) so foreign VmInfos never
+    # arrive, or, failing that, filter here to `registry.get(info.vm_id) is not
+    # None`. Until then these /list endpoints mean "agent-owned"; a node-wide
+    # view belongs on the operator surface (see about_executions).
     supervisor: Supervisor = request.app["supervisor"]
     registry: AgentVmRegistry = request.app["vm_registry"]
     infos = await supervisor.list_vms()
@@ -283,6 +296,9 @@ async def list_executions(request: web.Request) -> web.Response:
 @cors_allow_all
 async def list_executions_v2(request: web.Request) -> web.Response:
     """List all executions. Returning their status and ip"""
+    # Same single-tenant assumption as list_executions: list_vms() is
+    # hypervisor-global, so under a multi-tenant supervisor this would report
+    # VMs the agent does not own. See the note there.
     supervisor: Supervisor = request.app["supervisor"]
     registry: AgentVmRegistry = request.app["vm_registry"]
     infos = await supervisor.list_vms()
