@@ -2037,3 +2037,16 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
         json={},
     )
     assert response.status == 403, await response.text()
+
+
+def test_operator_module_does_not_read_execution_message():
+    """Owner-auth and content reads must come from the registry, not the pool execution."""
+    import inspect
+
+    from aleph.vm.orchestrator.views import operator
+
+    source = inspect.getsource(operator)
+    assert "execution.message" not in source, (
+        "operator.py must not read `execution.message`; authorize from the agent "
+        "registry (get_agent_record_or_404 -> record.message) instead."
+    )
