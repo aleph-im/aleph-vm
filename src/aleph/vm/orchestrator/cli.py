@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
@@ -195,9 +196,13 @@ async def benchmark(runs: int):
     pool = VmPool()
     await pool.setup()
     bench_supervisor = InProcessSupervisor(pool)
+    bench_registry = AgentVmRegistry()
+    bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
     fake_request.app = {
         "supervisor": bench_supervisor,
         "expiry": ExpiryManager(bench_supervisor),
+        "update_watcher": bench_update_watcher,
+        "vm_registry": bench_registry,
         "pubsub": PubSub(),
     }
 
@@ -250,6 +255,8 @@ async def benchmark(runs: int):
         pool=pool,
         supervisor=bench_supervisor,
         expiry=fake_request.app["expiry"],
+        update_watcher=bench_update_watcher,
+        registry=bench_registry,
     )
     print("Event result", result)
 

@@ -25,11 +25,11 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import MessageSpec, VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import (
     GuestPort,
@@ -291,6 +291,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     """
     supervisor: Supervisor = request.app["supervisor"]
     expiry: ExpiryManager = request.app["expiry"]
+    update_watcher: UpdateWatcher = request.app["update_watcher"]
     vm_id = VmId(str(vm_hash))
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
@@ -305,11 +306,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
 
     if not execution:
         # Programs always take the legacy create path (they are never spec-eligible),
-        # which ignores the supervisor; the registry is the agent's own message cache.
-        # Construct them locally: this entry point also serves the standalone benchmark
-        # where there is no app-wide singleton to draw from.
-        supervisor = InProcessSupervisor(pool)
-        registry = AgentVmRegistry()
+        # which ignores the supervisor. Use the app-wide registry so the agent's
+        # update-watcher (which reads app["vm_registry"]) sees the record it creates.
+        registry = request.app["vm_registry"]
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
         )
@@ -397,11 +396,12 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     finally:
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
-                execution.start_watching_for_updates(pubsub=request.app["pubsub"])
+                update_watcher.watch(vm_id, vm_hash, request.app["pubsub"])
             # Persistent executions are long-running by design: never idle-reap them.
             if not execution.persistent:
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
+            update_watcher.cancel(vm_id)
             await supervisor.delete_vm(vm_id)
 
 
@@ -413,6 +413,8 @@ async def run_code_on_event(
     *,
     supervisor: Supervisor,
     expiry: ExpiryManager,
+    update_watcher: UpdateWatcher,
+    registry: AgentVmRegistry,
 ):
     """
     Execute code in response to an event.
@@ -423,9 +425,8 @@ async def run_code_on_event(
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        # programs use the legacy create path; the reactor has no agent
-        # registry singleton, so build a local one for the create follow-up.
-        registry = AgentVmRegistry()
+        # programs use the legacy create path; the registry is the agent's
+        # shared known-VM store (so the watcher reads the same record).
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
         )
@@ -464,11 +465,12 @@ async def run_code_on_event(
     finally:
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
-                execution.start_watching_for_updates(pubsub=pubsub)
+                update_watcher.watch(vm_id, vm_hash, pubsub)
             # Persistent executions are long-running by design: never idle-reap them.
             if not execution.persistent:
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
+            update_watcher.cancel(vm_id)
             await supervisor.delete_vm(vm_id)
 
 
