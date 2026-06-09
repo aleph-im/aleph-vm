@@ -19,6 +19,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.utils import get_authorized_allocation_signers
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,7 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
             encode_defunct(payload_bytes),
             signature=bytes.fromhex(sig_hex),
         )
-        authorized = {a.lower() for a in settings.AUTHORIZED_ALLOCATION_SIGNERS}
+        authorized = await get_authorized_allocation_signers()
         if recovered.lower() not in authorized:
             return False
 
@@ -243,30 +244,33 @@ async def authenticate_api_request(request: web.Request) -> bool:
 
 
 def log_allocation_auth_config() -> None:
-    """Emit a one-shot warning at supervisor boot if the legacy token path is
-    the only auth method configured. Operators see the deprecation notice
-    exactly once per process lifetime — not flooded per-request."""
+    """Summarize the allocation-auth configuration once at supervisor boot, so
+    operators see the deprecation notice exactly once per process lifetime —
+    not flooded per-request.
+
+    Note this can only report the *local* configuration: the aggregate-sourced
+    signer list (used when no local override is set) is fetched lazily at
+    request time, so its contents aren't known here."""
     has_signers = bool(settings.AUTHORIZED_ALLOCATION_SIGNERS)
     has_legacy = bool(settings.ALLOCATION_TOKEN_HASH)
     if has_signers:
         logger.info(
-            "Allocation auth: Aleph-EIP191-V1 enabled with %d authorized signer(s)",
+            "Allocation auth: Aleph-EIP191-V1 enabled with %d locally-configured "
+            "signer(s) (overrides the settings aggregate)",
             len(settings.AUTHORIZED_ALLOCATION_SIGNERS),
         )
-        if has_legacy:
-            logger.warning(
-                "Allocation auth: legacy X-Auth-Signature path is still enabled "
-                "(ALLOCATION_TOKEN_HASH is set). Remove it once all schedulers "
-                "have migrated to Aleph-EIP191-V1.",
-            )
-    elif has_legacy:
-        logger.warning(
-            "Allocation auth: only the legacy X-Auth-Signature path is configured. "
-            "Set AUTHORIZED_ALLOCATION_SIGNERS to enable Aleph-EIP191-V1 (recommended).",
-        )
     else:
+        logger.info(
+            "Allocation auth: no local AUTHORIZED_ALLOCATION_SIGNERS override set; "
+            "Aleph-EIP191-V1 signers are sourced from the network settings aggregate, "
+            "falling back to %d built-in default signer(s).",
+            len(settings.DEFAULT_ALLOCATION_SIGNERS),
+        )
+    if has_legacy:
         logger.warning(
-            "Allocation auth: no auth method configured — all scheduler " "endpoints will reject requests with 401.",
+            "Allocation auth: legacy X-Auth-Signature path is still enabled "
+            "(ALLOCATION_TOKEN_HASH is set). Remove it once all schedulers "
+            "have migrated to Aleph-EIP191-V1.",
         )
 
 
