@@ -398,7 +398,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=request.app["pubsub"])
-            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+            # Persistent executions are long-running by design: never idle-reap them.
+            if not execution.persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
             await supervisor.delete_vm(vm_id)
 
@@ -463,7 +465,9 @@ async def run_code_on_event(
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 execution.start_watching_for_updates(pubsub=pubsub)
-            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+            # Persistent executions are long-running by design: never idle-reap them.
+            if not execution.persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         else:
             await supervisor.delete_vm(vm_id)
 
