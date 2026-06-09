@@ -168,7 +168,6 @@ def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
 
 def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
     """Return the execution corresponding to the ref or raise an HTTP 404 error."""
-    # TODO: Check if this should be execution.message.address or execution.message.content.address?
     execution = pool.executions.get(ref)
     if execution:
         return execution
@@ -375,37 +374,6 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
         await response.write(b"]")
         await response.write_eof()
         return response
-
-
-async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: ItemHash, ws: web.WebSocketResponse):
-    """Authenticate a websocket connection.
-
-    Web browsers do not allow setting headers in WebSocket requests, so the authentication
-    relies on the first message sent by the client.
-    """
-    try:
-        first_message = await ws.receive_json()
-    except TypeError as error:
-        logging.exception(error)
-        await ws.send_json({"status": "failed", "reason": str(error)})
-        raise web.HTTPForbidden(body="Invalid auth package")
-    credentials = first_message["auth"]
-
-    try:
-        authenticated_sender = await authenticate_websocket_message(credentials)
-
-        if await is_sender_authorized(authenticated_sender, execution.message):
-            logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
-            return True
-    except Exception as error:
-        # Error occurred (invalid auth packet or other
-        await ws.send_json({"status": "failed", "reason": str(error)})
-        raise web.HTTPForbidden(body="Unauthorized sender")
-
-    # Auth was valid but not the correct user
-    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-    raise web.HTTPForbidden(body="Unauthorized sender")
 
 
 @cors_allow_all

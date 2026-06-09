@@ -1814,3 +1814,10 @@ async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, m
     data = await response.json()
     assert data["msg"] == "VM not starting yet"
     reconcile_mock.assert_not_awaited()
+
+
+def test_dead_websocket_auth_helper_is_removed():
+    """authenticate_websocket_for_vm_or_403 had no callers; it must be gone."""
+    from aleph.vm.orchestrator.views import operator
+
+    assert not hasattr(operator, "authenticate_websocket_for_vm_or_403")
