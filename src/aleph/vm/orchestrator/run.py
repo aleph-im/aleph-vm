@@ -30,6 +30,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.supervisor.types import (
     GuestPort,
@@ -177,6 +178,30 @@ async def _wait_until_running(
             raise RuntimeError(msg)
         if asyncio.get_running_loop().time() >= deadline:
             msg = f"VM {vm_id} did not reach RUNNING within {timeout}s"
+            raise asyncio.TimeoutError(msg)
+        await asyncio.sleep(interval)
+
+
+async def _wait_until_gone(
+    supervisor: Supervisor,
+    vm_id: VmId,
+    *,
+    timeout: float | None = None,
+    interval: float | None = None,
+) -> None:
+    """Poll get_vm until the VM is gone (VmNotFoundError)."""
+    if timeout is None:
+        timeout = _START_POLL_TIMEOUT_SECONDS
+    if interval is None:
+        interval = _START_POLL_INTERVAL_SECONDS
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        try:
+            await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            msg = f"VM {vm_id} did not stop within {timeout}s"
             raise asyncio.TimeoutError(msg)
         await asyncio.sleep(interval)
 
@@ -482,40 +507,39 @@ async def start_persistent_vm(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     expiry: ExpiryManager,
-) -> VmExecution:
-    execution: VmExecution | None = pool.executions.get(vm_hash)
-    if execution:
-        if execution.is_running:
+    update_watcher: UpdateWatcher,
+) -> None:
+    vm_id = VmId(str(vm_hash))
+    try:
+        info: VmInfo | None = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        info = None
+
+    if info is not None:
+        if info.status == VmStatus.RUNNING:
             logger.info(f"{vm_hash} is already running")
-        elif execution.is_starting:
+        elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
             logger.info(f"{vm_hash} is already starting")
-        elif execution.is_stopping:
-            logger.info(f"{vm_hash} is stopping, waiting for complete stop before restarting")
-            await execution.stop_event.wait()
-            execution = None
-        else:
-            logger.info(f"{vm_hash} unknown execution state, stopping the vm")
-            if execution.vm:
-                await execution.stop()
-            else:
-                if execution._forget_task:
-                    execution._forget_task.cancel()
-                pool.forget_vm(vm_hash)
-            execution = None
+            await _wait_until_running(supervisor, vm_id)
+        elif info.status == VmStatus.STOPPING:
+            logger.info(f"{vm_hash} is stopping, waiting before restart")
+            await _wait_until_gone(supervisor, vm_id)
+            info = None
+        else:  # STOPPED / FAILED
+            logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
+            await supervisor.delete_vm(vm_id)
+            info = None
 
-    if not execution:
+    if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        execution = await create_vm_execution(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
-        )
+        await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True)
+        # create_vm_execution blocks until RUNNING in-process today; this re-poll
+        # is the explicit readiness barrier (and stays correct if a future
+        # out-of-process create returns before the VM is RUNNING).
+        await _wait_until_running(supervisor, vm_id)
 
-    await execution.becomes_ready()
-
-    # If the VM was already running in lambda mode, it should not expire
-    # as long as it is also scheduled as long-running
-    expiry.cancel(VmId(str(vm_hash)))
+    # Scheduled long-running: it must not idle-expire.
+    expiry.cancel(vm_id)
 
     if pubsub and settings.WATCH_FOR_UPDATES:
-        execution.start_watching_for_updates(pubsub=pubsub)
-
-    return execution
+        update_watcher.watch(vm_id, vm_hash, pubsub)

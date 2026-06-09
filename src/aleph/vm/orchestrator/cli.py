@@ -18,7 +18,6 @@ from aleph_message.models import ItemHash
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
@@ -261,12 +260,21 @@ async def benchmark(runs: int):
     print("Event result", result)
 
 
-async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> VmExecution:
+async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> None:
     """Run an instance from an InstanceMessage."""
     supervisor = InProcessSupervisor(pool)
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
-    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
+    update_watcher = UpdateWatcher(supervisor, registry)
+    await start_persistent_vm(
+        item_hash,
+        pubsub,
+        pool,
+        supervisor=supervisor,
+        registry=registry,
+        expiry=expiry,
+        update_watcher=update_watcher,
+    )
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
