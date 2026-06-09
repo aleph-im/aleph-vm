@@ -582,6 +582,7 @@ async def update_allocations(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
+    expiry = request.app["expiry"]
 
     async with allocation_lock:
         logger.debug("Got allocation_lock, updating allocations")
@@ -655,7 +656,9 @@ async def update_allocations(request: web.Request):
                 # a VM; firing an unconditional log here just adds noise
                 # when the scheduler re-pushes the full allocation list.
                 vm_hash = ItemHash(vm_hash)
-                await start_persistent_vm(vm_hash, pubsub, pool, supervisor=supervisor, registry=registry)
+                await start_persistent_vm(
+                    vm_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", vm_hash, error)
                 scheduling_errors[vm_hash] = error
@@ -668,7 +671,9 @@ async def update_allocations(request: web.Request):
         for instance_hash in allocation.instances:
             instance_item_hash = ItemHash(instance_hash)
             try:
-                await start_persistent_vm(instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
+                await start_persistent_vm(
+                    instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", instance_hash, error)
                 scheduling_errors[instance_item_hash] = error
@@ -920,6 +925,7 @@ async def notify_allocation(request: web.Request):
     pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
+    expiry = request.app["expiry"]
 
     # Capacity admission control: refuse the allocation early (before payment
     # validation) if accepting it would push the host above its memory, vCPU,
@@ -1053,7 +1059,7 @@ async def notify_allocation(request: web.Request):
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
         logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
-        await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry)
+        await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
         successful = True
         await pool.update_domain_mapping()
     except vm_creation_exceptions as error:
