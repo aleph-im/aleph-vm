@@ -17,18 +17,29 @@
 ## Environment notes (read before running anything)
 
 - **Every `Bash` command needs `dangerouslyDisableSandbox: true`** (the repo's seccomp profile blocks sandboxed exec with `apply-seccomp ... Permission denied`).
-- **This worktree has no local venv.** Run tests with the sibling worktree's venv:
+- **This worktree has no local venv.** Run tests with the sibling worktree's venv,
+  **and redirect the cache/execution roots to writable tmp dirs** — otherwise
+  `settings.setup()` does `os.makedirs("/var/cache/aleph", ...)` and raises
+  `PermissionError` in this sandbox (the messages are read from a bundled
+  `examples/instance_message_from_aleph.json`, so redirecting the cache is safe):
   ```bash
   cd /home/olivier/git/aleph/aleph-vm/.worktrees/wire-supervisor-expiry
-  PYTHONPATH=src /home/olivier/git/aleph/aleph-vm/.worktrees/wire-supervisor-read-views/.testvenv/bin/python -m pytest <args>
+  mkdir -p "$TMPDIR/alephcache" "$TMPDIR/alephlib"
+  ALEPH_VM_CACHE_ROOT="$TMPDIR/alephcache" ALEPH_VM_EXECUTION_ROOT="$TMPDIR/alephlib" \
+    PYTHONPATH=src /home/olivier/git/aleph/aleph-vm/.worktrees/wire-supervisor-read-views/.testvenv/bin/python \
+    -m pytest <args> -p no:warnings
   ```
+  With these overrides the whole `tests/supervisor/views/test_operator.py` file is
+  green (40 passed, 1 skipped before this work). Use this exact invocation for all
+  test runs below (the bare `PYTHONPATH=src ... pytest` shown in later steps assumes
+  these two env vars are also set).
 - **Style gates (CI):**
   ```bash
   uvx ruff@0.4.6 format --diff src/aleph/vm/orchestrator/views/operator.py tests/supervisor/views/test_operator.py
   uvx isort==5.13.2 --check-only --profile black src/aleph/vm/orchestrator/views/operator.py tests/supervisor/views/test_operator.py
   ```
   `uvx` writes an untracked `uv.lock` — **never `git add` it.**
-- **Pre-existing environmental failures:** the full `tests/supervisor` suite has ~50 failed + 4 errors on `/var/cache/aleph`, `/var/lib/aleph`, and pyroute2 netlink — identical to the `origin/dev` baseline. Judge regressions against that baseline, not against zero. Run the targeted test file `tests/supervisor/views/test_operator.py` (which does not hit those paths) for fast iteration.
+- **Pre-existing environmental failures:** without the `ALEPH_VM_*` overrides above, the full `tests/supervisor` suite has ~50 failed + 4 errors on `/var/cache/aleph`, `/var/lib/aleph`, and pyroute2 netlink — identical to the `origin/dev` baseline. The overrides fix the `/var/cache` and `/var/lib` class for `test_operator.py`; pyroute2/netlink failures elsewhere remain environmental. Iterate on `tests/supervisor/views/test_operator.py` with the overrides for a clean green signal.
 - **No `Co-Authored-By` trailer in commits.**
 
 ## Shared facts (true for every task)
