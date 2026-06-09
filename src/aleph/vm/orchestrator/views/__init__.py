@@ -9,6 +9,7 @@ from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from secrets import compare_digest
 from string import Template
+from typing import cast
 
 import aiodns
 import aiohttp
@@ -284,7 +285,10 @@ async def list_executions(request: web.Request) -> web.Response:
                     "ipv4": info.ipv4_network,
                     "ipv6": info.ipv6_network,
                 },
-                "vm_type": _vm_type_name(registry.get(info.vm_id), info),
+                # cast: info.vm_id is a VmId (opaque str at the boundary); the
+                # agent knows its own VMs are keyed by item hash. See the
+                # ownership note at the top of list_executions.
+                "vm_type": _vm_type_name(registry.get(cast(ItemHash, info.vm_id)), info),
             }
             for info in infos
             if info.status is VmStatus.RUNNING
@@ -321,7 +325,10 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": _times_dict(info),
                 "running": info.status is VmStatus.RUNNING,
-                "vm_type": _vm_type_name(registry.get(info.vm_id), info),
+                # cast: info.vm_id is a VmId (opaque str at the boundary); the
+                # agent knows its own VMs are keyed by item hash. See the
+                # ownership note at the top of list_executions.
+                "vm_type": _vm_type_name(registry.get(cast(ItemHash, info.vm_id)), info),
             }
             for info in infos
         },

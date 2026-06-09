@@ -13,7 +13,6 @@ import json
 import logging
 from collections.abc import ItemsView
 from dataclasses import dataclass
-from typing import cast
 
 from aleph_message.models import ExecutableContent, ItemHash
 
@@ -53,18 +52,8 @@ class AgentVmRegistry:
         self._records[vm_hash] = record
         return record
 
-    def get(self, vm_hash: ItemHash | str) -> AgentVmRecord | None:
-        # Accept a plain str (e.g. a hypervisor-issued VmId) without re-validating
-        # it into an ItemHash. ItemHash is a str subclass, so the dict lookup
-        # works at runtime; the cast only satisfies the typed dict key.
-        #
-        # The str branch exists for the list endpoints, which look up by the
-        # VmId the supervisor hands back. That only resolves to one of our
-        # records while the agent is the supervisor's sole client (every VmId is
-        # then one of our item hashes); a multi-tenant supervisor would surface
-        # foreign VmIds that miss here. See the ownership note in
-        # orchestrator/views.list_executions.
-        return self._records.get(cast(ItemHash, vm_hash))
+    def get(self, vm_hash: ItemHash) -> AgentVmRecord | None:
+        return self._records.get(vm_hash)
 
     def forget(self, vm_hash: ItemHash) -> None:
         self._records.pop(vm_hash, None)
