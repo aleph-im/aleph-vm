@@ -193,3 +193,58 @@ async def test_watch_again_after_completion_rewatches():
     assert pubsub2.subscribed is not None
     watcher.cancel(vm_id)
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_expiry_reap_cancels_update_watch():
+    # Regression: an idle-expired VM must not leak its update-watch subscription.
+    from aleph.vm.orchestrator.expiry import ExpiryManager
+
+    sup = FakeSupervisor()
+    registry = _registry_with(_HASH, _make_qemu_instance_message())
+    watcher = UpdateWatcher(sup, registry)
+    expiry = ExpiryManager(sup)
+    expiry.on_reaped = watcher.cancel
+    watcher.on_reaped = expiry.cancel
+    vm_id = VmId(_HASH)
+
+    watcher.watch(vm_id, _HASH, FakePubSub())
+    expiry.schedule(vm_id, 0.01)
+    await asyncio.sleep(0.05)  # expiry fires, reaps, cancels the watch
+
+    assert sup.deleted == [(_HASH, False)]  # expiry reaped
+    assert watcher.cancel(vm_id) is False  # the watch was cancelled (gone)
+
+
+@pytest.mark.asyncio
+async def test_update_watch_on_reaped_called_after_reap():
+    sup, pubsub = FakeSupervisor(), FakePubSub()
+    registry = _registry_with(_HASH, _make_qemu_instance_message())
+    watcher = UpdateWatcher(sup, registry)
+    reaped: list = []
+    watcher.on_reaped = reaped.append
+    vm_id = VmId(_HASH)
+
+    watcher.watch(vm_id, _HASH, pubsub)
+    await asyncio.sleep(0)
+    pubsub.trigger()
+    await asyncio.sleep(0.02)
+
+    assert reaped == [vm_id]
+
+
+@pytest.mark.asyncio
+async def test_update_watch_on_reaped_not_called_on_cancel():
+    sup, pubsub = FakeSupervisor(), FakePubSub()
+    registry = _registry_with(_HASH, _make_qemu_instance_message())
+    watcher = UpdateWatcher(sup, registry)
+    reaped: list = []
+    watcher.on_reaped = reaped.append
+    vm_id = VmId(_HASH)
+
+    watcher.watch(vm_id, _HASH, pubsub)
+    await asyncio.sleep(0)
+    watcher.cancel(vm_id)
+    await asyncio.sleep(0.02)
+
+    assert reaped == []  # cancellation is not a reap

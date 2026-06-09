@@ -226,7 +226,7 @@ one the create path records into.
   (alongside the `supervisor`/`expiry` it already took), passes them into
   `run_code_on_event`.
 - `tasks.py` (`start_watch_for_messages_task`): construct
-  `Reactor(pubsub, pool, supervisor, app["expiry"], app["vm_registry"], app["update_watcher"])`.
+  `Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], app["vm_registry"])`.
 - Lifecycle endpoints (`views/operator.py`): add `update_watcher.cancel(vm_id)`
   next to every existing `expiry.cancel(vm_id)` (stop / reboot / erase).
 - `update_allocations` / `notify_allocation` (`views/__init__.py`): pass

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 
 from aleph_message.models import ExecutableContent, InstanceContent, ItemHash
 
@@ -37,6 +38,7 @@ class UpdateWatcher:
         self.supervisor = supervisor
         self.registry = registry
         self._tasks: dict[VmId, asyncio.Task] = {}
+        self.on_reaped: Callable[[VmId], object] | None = None
 
     def watch(self, vm_id: VmId, vm_hash: ItemHash, pubsub: PubSub) -> None:
         """Start watching for updates to vm_hash, unless already watching it.
@@ -67,12 +69,15 @@ class UpdateWatcher:
             self.cancel(vm_id)
 
     async def _watch(self, vm_id: VmId, refs: list[str], pubsub: PubSub) -> None:
+        reaped = False
         try:
             await pubsub.msubscribe(*refs)
             logger.info("Update received for %s, reaping", vm_id)
             await self.supervisor.delete_vm(vm_id)
+            reaped = True
         except VmNotFoundError:
             logger.debug("Update-watch: VM %s already gone", vm_id)
+            reaped = True
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -81,3 +86,7 @@ class UpdateWatcher:
             # Only drop our own entry: a concurrent re-watch may have replaced it.
             if self._tasks.get(vm_id) is asyncio.current_task():
                 del self._tasks[vm_id]
+            # Cancel the sibling idle-teardown timer (the expiry manager) for the
+            # same VM once it has been reaped.
+            if reaped and self.on_reaped is not None:
+                self.on_reaped(vm_id)

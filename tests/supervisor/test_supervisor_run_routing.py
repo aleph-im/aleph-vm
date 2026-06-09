@@ -303,3 +303,22 @@ async def test_start_persistent_waits_gone_then_recreates_when_stopping(monkeypa
     )
     waited_gone.assert_awaited_once()  # STOPPING -> wait until gone
     created.assert_awaited_once()  # then recreate
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_arms_update_watch(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.RUNNING)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+    watcher = MagicMock()
+    pubsub = MagicMock()  # truthy -> WATCH_FOR_UPDATES default True -> watch armed
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        pubsub,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=watcher,
+    )
+    watcher.watch.assert_called_once()

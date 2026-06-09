@@ -98,3 +98,32 @@ async def test_cancel_all_clears_every_timer():
     assert all(task.cancelled() for task in tasks)
     assert sup.deleted == []
     assert not expiry._tasks
+
+
+@pytest.mark.asyncio
+async def test_expiry_on_reaped_called_after_reap():
+    sup = FakeSupervisor()
+    expiry = ExpiryManager(sup)
+    reaped: list = []
+    expiry.on_reaped = reaped.append
+    vm_id = VmId("vm-a")
+
+    expiry.schedule(vm_id, 0.01)
+    await asyncio.sleep(0.05)
+
+    assert reaped == [vm_id]
+
+
+@pytest.mark.asyncio
+async def test_expiry_on_reaped_not_called_on_cancel():
+    sup = FakeSupervisor()
+    expiry = ExpiryManager(sup)
+    reaped: list = []
+    expiry.on_reaped = reaped.append
+    vm_id = VmId("vm-a")
+
+    expiry.schedule(vm_id, 0.05)
+    expiry.cancel(vm_id)
+    await asyncio.sleep(0.1)
+
+    assert reaped == []

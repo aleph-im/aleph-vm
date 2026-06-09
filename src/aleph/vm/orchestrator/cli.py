@@ -197,13 +197,16 @@ async def benchmark(runs: int):
     bench_supervisor = InProcessSupervisor(pool)
     bench_registry = AgentVmRegistry()
     bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
+    bench_expiry = ExpiryManager(bench_supervisor)
     fake_request.app = {
         "supervisor": bench_supervisor,
-        "expiry": ExpiryManager(bench_supervisor),
+        "expiry": bench_expiry,
         "update_watcher": bench_update_watcher,
         "vm_registry": bench_registry,
         "pubsub": PubSub(),
     }
+    bench_expiry.on_reaped = bench_update_watcher.cancel
+    bench_update_watcher.on_reaped = bench_expiry.cancel
 
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False
@@ -266,6 +269,8 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> No
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
     update_watcher = UpdateWatcher(supervisor, registry)
+    expiry.on_reaped = update_watcher.cancel
+    update_watcher.on_reaped = expiry.cancel
     await start_persistent_vm(
         item_hash,
         pubsub,

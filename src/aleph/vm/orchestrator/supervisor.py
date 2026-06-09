@@ -171,6 +171,10 @@ def setup_webapp(pool: VmPool | None):
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
+    # Each idle-teardown facility cancels the other's timer when it reaps a VM,
+    # so an expired or updated VM never leaks the sibling's pending task.
+    app["expiry"].on_reaped = app["update_watcher"].cancel
+    app["update_watcher"].on_reaped = app["expiry"].cancel
     app["backup_state"] = BackupState()
     cors = setup(
         app,

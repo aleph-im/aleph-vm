@@ -62,7 +62,7 @@ from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils import create_task_log_exceptions, dumps_for_json
+from aleph.vm.utils import dumps_for_json
 from aleph.vm.utils.aggregate import get_user_settings
 
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
