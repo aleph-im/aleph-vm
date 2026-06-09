@@ -238,7 +238,10 @@ class InProcessSupervisor(Supervisor):
             execution = self._require(vm_id)
             await self.pool.stop_vm(vm_id)
             if execution.vm_hash in self.pool.executions:
-                logger.warning("VM %s was not removed from pool after stop; forgetting it now", vm_id)
+                # Routine: the pool's _schedule_forget_on_stop task has usually
+                # not run yet by the time stop_vm returns, so delete_vm wins
+                # this race on most reaps.
+                logger.debug("VM %s was not removed from pool after stop; forgetting it now", vm_id)
                 self.pool.forget_vm(vm_id)
             if wipe:
                 # Mirrors the old operate_erase semantics exactly: persisted

@@ -4,7 +4,9 @@ from collections.abc import Coroutine
 from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
+from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
 
 from .pubsub import PubSub
@@ -41,11 +43,15 @@ def subscription_matches(subscription: Subscription, message: AlephMessage) -> b
 class Reactor:
     pubsub: PubSub
     pool: VmPool
+    supervisor: Supervisor
+    expiry: ExpiryManager
     listeners: list[AlephMessage]
 
-    def __init__(self, pubsub: PubSub, pool: VmPool):
+    def __init__(self, pubsub: PubSub, pool: VmPool, supervisor: Supervisor, expiry: ExpiryManager):
         self.pubsub = pubsub
         self.pool = pool
+        self.supervisor = supervisor
+        self.expiry = expiry
         self.listeners = []
 
     async def trigger(self, message: AlephMessage):
@@ -63,7 +69,16 @@ class Reactor:
                     vm_hash = listener.item_hash
                     event = message.model_dump_json()
                     # Register the listener in the list of coroutines to run asynchronously:
-                    coroutines.append(run_code_on_event(vm_hash, event, self.pubsub, pool=self.pool))
+                    coroutines.append(
+                        run_code_on_event(
+                            vm_hash,
+                            event,
+                            self.pubsub,
+                            pool=self.pool,
+                            supervisor=self.supervisor,
+                            expiry=self.expiry,
+                        )
+                    )
                     break
 
         # Call all listeners asynchronously from the event loop:
