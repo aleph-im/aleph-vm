@@ -6,6 +6,10 @@ from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import VmId
 
+# Cap on every wait for a timer that is expected to fire: generous enough for a
+# loaded CI worker, only ever reached on an actual failure.
+WAIT_TIMEOUT = 5.0
+
 
 class FakeSupervisor:
     def __init__(self, *, raise_not_found: bool = False):
@@ -24,8 +28,8 @@ async def test_schedule_reaps_after_timeout():
     expiry = ExpiryManager(sup)
     vm_id = VmId("vm-a")
 
-    expiry.schedule(vm_id, 0.01)
-    await asyncio.sleep(0.05)
+    expiry.schedule(vm_id, 0.001)
+    await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
     assert sup.deleted == [("vm-a", False)]
     assert expiry.cancel(vm_id) is False  # task removed itself after firing
@@ -37,10 +41,12 @@ async def test_cancel_prevents_reap():
     expiry = ExpiryManager(sup)
     vm_id = VmId("vm-a")
 
-    expiry.schedule(vm_id, 0.05)
+    expiry.schedule(vm_id, 60)
+    task = expiry._tasks[vm_id]
     assert expiry.cancel(vm_id) is True
-    await asyncio.sleep(0.1)
+    await asyncio.gather(task, return_exceptions=True)
 
+    assert task.cancelled()
     assert sup.deleted == []
     assert expiry.cancel(vm_id) is False
 
@@ -51,10 +57,16 @@ async def test_reschedule_replaces_pending_timer():
     expiry = ExpiryManager(sup)
     vm_id = VmId("vm-a")
 
-    expiry.schedule(vm_id, 0.2)
-    expiry.schedule(vm_id, 0.01)  # re-arm shorter
-    await asyncio.sleep(0.1)
+    expiry.schedule(vm_id, 60)
+    first = expiry._tasks[vm_id]
+    expiry.schedule(vm_id, 0.001)  # re-arm shorter
+    second = expiry._tasks[vm_id]
+    assert first is not second
 
+    await asyncio.wait_for(second, timeout=WAIT_TIMEOUT)
+    await asyncio.gather(first, return_exceptions=True)
+
+    assert first.cancelled()
     assert sup.deleted == [("vm-a", False)]  # fired once, on the second timer
 
 
@@ -64,8 +76,9 @@ async def test_expire_swallows_vm_not_found():
     expiry = ExpiryManager(sup)
     vm_id = VmId("vm-gone")
 
-    expiry.schedule(vm_id, 0.01)
-    await asyncio.sleep(0.05)  # must not raise
+    expiry.schedule(vm_id, 0.001)
+    # Awaiting the task directly also surfaces any exception _expire let through.
+    await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
     assert sup.deleted == [("vm-gone", False)]
     assert expiry.cancel(vm_id) is False
@@ -76,9 +89,12 @@ async def test_cancel_all_clears_every_timer():
     sup = FakeSupervisor()
     expiry = ExpiryManager(sup)
 
-    expiry.schedule(VmId("vm-a"), 0.05)
-    expiry.schedule(VmId("vm-b"), 0.05)
+    expiry.schedule(VmId("vm-a"), 60)
+    expiry.schedule(VmId("vm-b"), 60)
+    tasks = list(expiry._tasks.values())
     await expiry.cancel_all()
-    await asyncio.sleep(0.1)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
+    assert all(task.cancelled() for task in tasks)
     assert sup.deleted == []
+    assert not expiry._tasks
