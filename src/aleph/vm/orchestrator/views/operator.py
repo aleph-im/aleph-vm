@@ -411,11 +411,12 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
         logger.debug(f"Iterating through running executions... {pool.executions}")
         execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
-            return web.Response(status=403, body="Unauthorized sender")
 
         if execution.is_running:
             return web.json_response(
@@ -528,10 +529,11 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
+
+        execution = get_execution_or_404(vm_hash, pool=pool)
 
         if not execution.is_running:
             raise web.HTTPForbidden(body="Operation not running")
@@ -573,9 +575,11 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
+
+        execution = get_execution_or_404(vm_hash, pool=pool)
 
         # if not execution.is_running:
         #     raise web.HTTPForbidden(body="Operation not running")
@@ -839,10 +843,11 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
             pool: VmPool = request.app["vm_pool"]
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not await is_sender_authorized(authenticated_sender, execution.message):
+            record = get_agent_record_or_404(request, vm_hash)
+            if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
+
+            execution = get_execution_or_404(vm_hash, pool=pool)
 
             if not execution.is_running:
                 return web.HTTPBadRequest(body="VM must be running to create backup")
@@ -1176,10 +1181,11 @@ async def _do_restore(
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
             pool: VmPool = request.app["vm_pool"]
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not await is_sender_authorized(authenticated_sender, execution.message):
+            record = get_agent_record_or_404(request, vm_hash)
+            if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
+
+            execution = get_execution_or_404(vm_hash, pool=pool)
 
             if not isinstance(execution.vm, AlephQemuInstance | AlephQemuConfidentialInstance):
                 return web.HTTPBadRequest(body="Restore only supported for QEMU VMs")
@@ -1190,7 +1196,7 @@ async def _do_restore(
             current_rootfs = Path(execution.vm.resources.rootfs_path)
             backup_dir = get_backup_directory()
 
-            max_upload = execution.message.rootfs.size_mib * 1024 * 1024
+            max_upload = record.message.rootfs.size_mib * 1024 * 1024
             if request.content_length and request.content_length > max_upload:
                 return web.HTTPRequestEntityTooLarge(
                     max_size=max_upload,
@@ -1220,7 +1226,7 @@ async def _do_restore(
                     body="Uploaded file is not a valid QCOW2 disk image",
                 )
 
-            max_size = execution.message.rootfs.size_mib * 1024 * 1024
+            max_size = record.message.rootfs.size_mib * 1024 * 1024
             if new_size > max_size:
                 return web.HTTPBadRequest(
                     body=f"New rootfs virtual size ({new_size} bytes) exceeds "
