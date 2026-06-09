@@ -90,6 +90,9 @@ message HostInfo {
   // Identity
   string hostname = 7;
   string kernel_version = 8;
+
+  // Networking
+  string host_ipv4 = 17;             // primary external IPv4 of the host; empty when host networking is disabled
 }
 
 message NumaNode {
@@ -190,6 +193,24 @@ message VmInfo {
   Backend backend = 6;
   optional uint32 numa_node = 7;     // effective placement (0-indexed). Unset until status is BOOTING/RUNNING.
   string status_message = 8;         // human-readable, optional
+
+  // Tap networks (CIDR strings, e.g. "172.16.3.0/24"). Empty until the tap device exists.
+  string ipv4_network = 9;
+  string ipv6_network = 10;
+
+  // Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached.
+  uint64 defined_at_ns = 11;
+  uint64 preparing_at_ns = 12;
+  uint64 prepared_at_ns = 13;
+  uint64 starting_at_ns = 14;
+  uint64 started_at_ns = 15;
+  uint64 stopping_at_ns = 16;
+  uint64 stopped_at_ns = 17;
+
+  // True for instances (full VMs), false for programs/microvms. Independent of
+  // the hypervisor backend: an instance may run under Firecracker or QEMU, so
+  // `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
+  bool is_instance = 18;
 }
 
 message GetVmRequest      { string vm_id = 1; }
