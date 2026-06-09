@@ -391,13 +391,11 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
         if not 0 < timeout < timedelta(days=10).total_seconds():
             return web.HTTPBadRequest(body="Invalid timeout duration")
 
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
+        logger.info(f"Expiring in {timeout} seconds: {vm_hash}")
         expiry: ExpiryManager = request.app["expiry"]
         expiry.schedule(VmId(str(vm_hash)), timeout)
         # Deliberately leave the update watcher armed: the VM keeps running until
@@ -954,10 +952,8 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
     vm_hash = get_itemhash_or_400(request.match_info)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         vm_hash_str = str(vm_hash)
@@ -1069,10 +1065,8 @@ async def operate_backup_delete(
     backup_id = _validate_backup_id(request.match_info.get("backup_id", ""), vm_hash)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         destination_dir = get_backup_directory()
