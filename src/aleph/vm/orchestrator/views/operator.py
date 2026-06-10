@@ -432,6 +432,8 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
         logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
         expiry: ExpiryManager = request.app["expiry"]
         expiry.schedule(VmId(str(vm_hash)), timeout)
+        # Deliberately leave the update watcher armed: the VM keeps running until
+        # the timer fires, so an update during the window should still redeploy it.
 
         return web.Response(status=200, body=f"Expiring VM with ref {vm_hash} in {timeout} seconds")
 
@@ -508,6 +510,7 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
                 logger.info(f"Stopping {vm_hash}")
                 await supervisor.delete_vm(vm_id)
                 request.app["expiry"].cancel(vm_id)
+                request.app["update_watcher"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
@@ -537,6 +540,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                 else:
                     await supervisor.delete_vm(vm_id)
                     request.app["expiry"].cancel(vm_id)
+                    request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
                         vm_hash=vm_hash,
                         pool=request.app["vm_pool"],
@@ -640,6 +644,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         try:
             await supervisor.delete_vm(VmId(str(vm_hash)), wipe=True)
             request.app["expiry"].cancel(VmId(str(vm_hash)))
+            request.app["update_watcher"].cancel(VmId(str(vm_hash)))
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["vm_registry"].forget(vm_hash)

@@ -583,6 +583,7 @@ async def update_allocations(request: web.Request):
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
+    update_watcher = request.app["update_watcher"]
 
     async with allocation_lock:
         logger.debug("Got allocation_lock, updating allocations")
@@ -657,7 +658,13 @@ async def update_allocations(request: web.Request):
                 # when the scheduler re-pushes the full allocation list.
                 vm_hash = ItemHash(vm_hash)
                 await start_persistent_vm(
-                    vm_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                    vm_hash,
+                    pubsub,
+                    pool,
+                    supervisor=supervisor,
+                    registry=registry,
+                    expiry=expiry,
+                    update_watcher=update_watcher,
                 )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", vm_hash, error)
@@ -672,7 +679,13 @@ async def update_allocations(request: web.Request):
             instance_item_hash = ItemHash(instance_hash)
             try:
                 await start_persistent_vm(
-                    instance_item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry
+                    instance_item_hash,
+                    pubsub,
+                    pool,
+                    supervisor=supervisor,
+                    registry=registry,
+                    expiry=expiry,
+                    update_watcher=update_watcher,
                 )
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", instance_hash, error)
@@ -926,6 +939,7 @@ async def notify_allocation(request: web.Request):
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
+    update_watcher = request.app["update_watcher"]
 
     # Capacity admission control: refuse the allocation early (before payment
     # validation) if accepting it would push the host above its memory, vCPU,
@@ -1059,7 +1073,15 @@ async def notify_allocation(request: web.Request):
     scheduling_errors: dict[ItemHash, Exception] = {}
     try:
         logger.info(f"Starting persistent vm {item_hash} from notify_allocation")
-        await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
+        await start_persistent_vm(
+            item_hash,
+            pubsub,
+            pool,
+            supervisor=supervisor,
+            registry=registry,
+            expiry=expiry,
+            update_watcher=update_watcher,
+        )
         successful = True
         await pool.update_domain_mapping()
     except vm_creation_exceptions as error:
