@@ -20,6 +20,7 @@ from test_supervisor_translate import _make_qemu_instance_message
 from aleph.vm.models import MessageSpec
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -220,3 +221,104 @@ async def test_gpu_instance_falls_back_to_legacy(monkeypatch):
         }
     )
     await _assert_routed_to_legacy(monkeypatch, content)
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_reuses_running(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.RUNNING)
+    created = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    result = await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    assert result is None
+    created.assert_not_awaited()  # already running -> no create
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_creates_when_absent(monkeypatch):
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(side_effect=VmNotFoundError(_HASH))
+    created = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    created.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_recreates_after_terminal(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.STOPPED)
+    created = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    sup.delete_vm.assert_awaited_once()  # terminal -> delete then recreate
+    created.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_waits_gone_then_recreates_when_stopping(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.STOPPING)
+    waited_gone = AsyncMock()
+    created = AsyncMock()
+    monkeypatch.setattr(run_module, "_wait_until_gone", waited_gone)
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    waited_gone.assert_awaited_once()  # STOPPING -> wait until gone
+    created.assert_awaited_once()  # then recreate
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_arms_update_watch(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.RUNNING)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+    watcher = MagicMock()
+    pubsub = MagicMock()  # truthy -> WATCH_FOR_UPDATES default True -> watch armed
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        pubsub,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=watcher,
+    )
+    watcher.watch.assert_called_once()

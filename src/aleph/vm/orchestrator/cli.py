@@ -18,8 +18,8 @@ from aleph_message.models import ItemHash
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
@@ -195,11 +195,18 @@ async def benchmark(runs: int):
     pool = VmPool()
     await pool.setup()
     bench_supervisor = InProcessSupervisor(pool)
+    bench_registry = AgentVmRegistry()
+    bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
+    bench_expiry = ExpiryManager(bench_supervisor)
     fake_request.app = {
         "supervisor": bench_supervisor,
-        "expiry": ExpiryManager(bench_supervisor),
+        "expiry": bench_expiry,
+        "update_watcher": bench_update_watcher,
+        "vm_registry": bench_registry,
         "pubsub": PubSub(),
     }
+    bench_expiry.on_reaped = bench_update_watcher.cancel
+    bench_update_watcher.on_reaped = bench_expiry.cancel
 
     # Does not make sense in benchmarks
     settings.WATCH_FOR_MESSAGES = False
@@ -250,16 +257,29 @@ async def benchmark(runs: int):
         pool=pool,
         supervisor=bench_supervisor,
         expiry=fake_request.app["expiry"],
+        update_watcher=bench_update_watcher,
+        registry=bench_registry,
     )
     print("Event result", result)
 
 
-async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> VmExecution:
+async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> None:
     """Run an instance from an InstanceMessage."""
     supervisor = InProcessSupervisor(pool)
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
-    return await start_persistent_vm(item_hash, pubsub, pool, supervisor=supervisor, registry=registry, expiry=expiry)
+    update_watcher = UpdateWatcher(supervisor, registry)
+    expiry.on_reaped = update_watcher.cancel
+    update_watcher.on_reaped = expiry.cancel
+    await start_persistent_vm(
+        item_hash,
+        pubsub,
+        pool,
+        supervisor=supervisor,
+        registry=registry,
+        expiry=expiry,
+        update_watcher=update_watcher,
+    )
 
 
 async def run_instances(instances: list[ItemHash]) -> None:
