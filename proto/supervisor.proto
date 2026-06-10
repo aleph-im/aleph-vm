@@ -184,6 +184,17 @@ message GpuConfig {
   bool supports_x_vga = 2;
 }
 
+// The confidential-computing mode a VM is actually running under. Precise by
+// design: the agent reduces this to a boolean for Aleph APIs; the contract does
+// not pre-reduce it. SEV vs SEV-ES is distinguished by the AMD SEV policy;
+// SEV-SNP is a distinct launch path (not yet emitted by the in-process backend).
+enum ConfidentialMode {
+  CONFIDENTIAL_MODE_NONE    = 0;
+  CONFIDENTIAL_MODE_SEV     = 1;
+  CONFIDENTIAL_MODE_SEV_ES  = 2;
+  CONFIDENTIAL_MODE_SEV_SNP = 3;
+}
+
 message VmInfo {
   string vm_id = 1;
   VmStatus status = 2;
@@ -211,6 +222,9 @@ message VmInfo {
   // the hypervisor backend: an instance may run under Firecracker or QEMU, so
   // `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
   bool is_instance = 18;
+
+  ConfidentialMode confidential_mode = 19;   // precise TEE mode; NONE for non-confidential VMs
+  repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
 }
 
 message GetVmRequest      { string vm_id = 1; }
