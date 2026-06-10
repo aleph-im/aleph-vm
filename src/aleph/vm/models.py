@@ -560,6 +560,8 @@ class VmExecution:
                             HostGPU(
                                 pci_host=available_gpu.pci_host,
                                 supports_x_vga=available_gpu.has_x_vga_support,
+                                device_id=available_gpu.device_id,
+                                model=available_gpu.model,
                             )
                         )
                         assigned_pci_hosts.add(available_gpu.pci_host)
