@@ -53,6 +53,7 @@ def _registry_with(vm_hash: str, original):
 
 
 _HASH = "a" * 64
+WAIT_TIMEOUT = 5.0
 
 
 def test_update_refs_instance_uses_volume_refs():
@@ -210,7 +211,9 @@ async def test_expiry_reap_cancels_update_watch():
 
     watcher.watch(vm_id, _HASH, FakePubSub())
     expiry.schedule(vm_id, 0.01)
-    await asyncio.sleep(0.05)  # expiry fires, reaps, cancels the watch
+    # expiry.on_reaped (= watcher.cancel) runs inside _expire's finally before the
+    # task completes, so awaiting the task is enough to observe the cancellation.
+    await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
     assert sup.deleted == [(_HASH, False)]  # expiry reaped
     assert watcher.cancel(vm_id) is False  # the watch was cancelled (gone)
@@ -243,8 +246,11 @@ async def test_update_watch_on_reaped_not_called_on_cancel():
     vm_id = VmId(_HASH)
 
     watcher.watch(vm_id, _HASH, pubsub)
-    await asyncio.sleep(0)
+    task = watcher._tasks[vm_id]
     watcher.cancel(vm_id)
-    await asyncio.sleep(0.02)
+    # Awaiting the cancelled task runs its finally (reaped stays False) without
+    # relying on a wall-clock sleep to let the cancellation settle.
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     assert reaped == []  # cancellation is not a reap

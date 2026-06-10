@@ -109,7 +109,9 @@ async def test_expiry_on_reaped_called_after_reap():
     vm_id = VmId("vm-a")
 
     expiry.schedule(vm_id, 0.01)
-    await asyncio.sleep(0.05)
+    # on_reaped fires inside _expire's finally, before the task completes, so
+    # awaiting the task deterministically guarantees the callback has run.
+    await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
     assert reaped == [vm_id]
 
@@ -123,7 +125,11 @@ async def test_expiry_on_reaped_not_called_on_cancel():
     vm_id = VmId("vm-a")
 
     expiry.schedule(vm_id, 0.05)
+    task = expiry._tasks[vm_id]
     expiry.cancel(vm_id)
-    await asyncio.sleep(0.1)
+    # Awaiting the cancelled task drives it to completion (its finally runs and
+    # leaves reaped False), so the assertion no longer races a wall-clock sleep.
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     assert reaped == []
