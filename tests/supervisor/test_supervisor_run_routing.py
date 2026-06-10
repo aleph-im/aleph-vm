@@ -17,7 +17,6 @@ from aleph_message.models.execution.environment import (
 )
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.models import MessageSpec
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor.errors import VmNotFoundError
@@ -93,11 +92,14 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    persist = AsyncMock()
+    monkeypatch.setattr(run_module, "persist_record", persist)
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
-    created = SimpleNamespace(save=AsyncMock())
-    pool = SimpleNamespace(executions={_HASH: created}, create_a_vm=AsyncMock())
+    # An EMPTY pool: the spec path must never read pool.executions (the old
+    # readback would KeyError here).
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
         _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
@@ -106,19 +108,16 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     supervisor.create_vm.assert_awaited_once_with(spec)
     pool.create_a_vm.assert_not_awaited()
     # The message is recorded in the agent registry, not on the execution.
-    assert registry.get(_HASH).message is content
-    assert registry.get(_HASH).original is original_content
-    assert registry.get(_HASH).persistent is True
-    # The spec create path must persist the execution record after re-sourcing.
-    created.save.assert_awaited_once()
+    record = registry.get(_HASH)
+    assert record.message is content
+    assert record.original is original_content
+    assert record.persistent is True
+    # The agent persists its own record; the hypervisor object is never touched.
+    persist.assert_awaited_once_with(_HASH, record)
     # SSH port-forward applied through the abstraction.
     assert supervisor.add_port_forward.await_count >= 1
-    # The execution is read back from the pool once for start_persistent_vm.
-    assert execution is created
-    # PR 1 boundary: the message-free execution is re-sourced as message-driven
-    # so the operator API (owner-auth, billing) keeps reading execution.message
-    # until those consumers move to the registry.
-    assert execution.spec == MessageSpec(message=content, original=original_content)
+    # Spec path returns None: no caller consumes a hypervisor object from it.
+    assert execution is None
     supervisor.delete_vm.assert_not_awaited()
 
 

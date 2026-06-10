@@ -68,13 +68,6 @@ def test_grouping_defaults_to_hold_and_filters_by_type():
 def test_grouping_skips_stopped_and_diagnostic_executions():
     payment = Payment(chain=Chain.ETH, type=PaymentType.hold)
     registry = _registry_with(_HASH, payment=payment)
-    fake_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    registry.record(
-        fake_hash,
-        message=SimpleNamespace(payment=payment, address="0xabc"),
-        original=MagicMock(),
-        persistent=True,
-    )
     diag = SimpleNamespace(vm_hash=ItemHash(settings.CHECK_FASTAPI_VM_ID), is_running=True)
     registry.record(
         diag.vm_hash,

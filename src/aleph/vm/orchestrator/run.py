@@ -23,10 +23,10 @@ from aleph.vm.controllers.firecracker.program import (
     VmSetupError,
 )
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import MessageSpec, VmExecution
+from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
@@ -213,7 +213,16 @@ async def create_vm_execution(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     persistent: bool = False,
-) -> VmExecution:
+) -> VmExecution | None:
+    """Create a VM for the given message.
+
+    Spec-eligible messages (QEMU instances) are created through the Supervisor
+    abstraction: the agent records and persists its own knowledge of the VM and
+    returns None — the hypervisor object lives behind the supervisor, not in the
+    pool. Legacy messages (programs) take the pool create path and return the
+    pool-managed VmExecution. The two program callers (run_code_on_request /
+    run_code_on_event) guard the None case explicitly.
+    """
     message, original_message = await load_updated_message(vm_hash)
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
@@ -226,7 +235,8 @@ async def create_vm_execution(
         # what the message-free agent will read once owner-auth and billing move
         # off the VmExecution (design doc section 5). The supervisor machinery
         # that created the VM never reads it.
-        registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        # Spec-eligible VMs are QEMU instances, which are always persistent.
+        record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
             await _wait_until_running(supervisor, info.vm_id)
             for forward in await resolve_port_forwards(info.vm_id, content):
@@ -240,19 +250,11 @@ async def create_vm_execution(
             except Exception:
                 logger.exception("Teardown of half-started VM %s failed", vm_hash)
             raise
-        # TEMPORARY (PR 1 boundary, design doc sections 5/8): the operator
-        # endpoints, billing and update-watching still read owner identity and
-        # the message off the VmExecution, and start_persistent_vm drives it for
-        # the pre-existing check and expiry-cancel. Re-source the message-free
-        # execution as message-driven and hand it back unchanged. This goes away
-        # when those consumers read the registry instead.
-        execution = pool.executions[vm_hash]
-        execution.spec = MessageSpec(message=content, original=original_message.content)
-        # The spec create path skipped save() (no MessageSpec at start time).
-        # Persist the record now: registry rehydration and past-logs owner
-        # auth read the message back from the agent DB.
-        await execution.save()
-        return execution
+        # Agent persists its own knowledge; the hypervisor object is not
+        # touched. Registry rehydration and past-logs owner-auth read the
+        # message back from the agent DB.
+        await persist_record(vm_hash, record)
+        return None
 
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
@@ -270,7 +272,7 @@ async def create_vm_execution_or_raise_http_error(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
-) -> VmExecution:
+) -> VmExecution | None:
     try:
         return await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry)
     except ResourceDownloadError as error:
@@ -337,6 +339,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
         )
+        if execution is None:
+            # Spec-eligible messages are instances; they cannot serve code requests.
+            raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
     logger.debug(f"Using vm={execution.vm_id}")
 
@@ -455,6 +460,9 @@ async def run_code_on_event(
         execution = await create_vm_execution_or_raise_http_error(
             vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
         )
+        if execution is None:
+            # Spec-eligible messages are instances; they cannot serve code requests.
+            raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
     logger.debug(f"Using vm={execution.vm_id}")
 
