@@ -402,16 +402,6 @@ class VmExecution:
         return f"aleph-vm-controller@{self.vm_hash}.service"
 
     @property
-    def uses_payment_stream(self) -> bool:
-        message = self.message
-        return bool(message and message.payment and message.payment.is_stream)
-
-    @property
-    def uses_payment_credit(self) -> bool:
-        message = self.message
-        return bool(message and message.payment and message.payment.is_credit)
-
-    @property
     def allocated_memory_mib(self) -> int:
         """Requested memory in MiB, from the spec or the message."""
         if isinstance(self.spec, CreateVmSpec):

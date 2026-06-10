@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -1367,3 +1368,111 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(
     assert response.status == 200
     body = await response.json()
     assert body[vm_hash]["networking"]["mapped_ports"] == {"22": {"host": 24000, "tcp": True, "udp": False}}
+
+
+@pytest.mark.asyncio
+async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
+    """A message-less execution whose REGISTRY record is stream-paid must be spared
+    by the stop loop even when absent from the allocation (the restored-PAYG case)."""
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    instance_content = {
+        "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+        "time": 1713874241.800818,
+        "allow_amend": False,
+        "metadata": None,
+        "authorized_keys": None,
+        "variables": None,
+        "environment": {"reproducible": False, "internet": True, "aleph_api": True, "shared_cache": False},
+        "resources": {"vcpus": 1, "memory": 256, "seconds": 30, "published_ports": None},
+        "payment": {"type": "superfluid", "chain": "BASE"},
+        "requirements": None,
+        "replaces": None,
+        "rootfs": {
+            "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+            "use_latest": True,
+            "comment": "",
+            "persistence": "host",
+            "size_mib": 1000,
+        },
+    }
+    message = InstanceContent.model_validate(instance_content)
+
+    # Message-less, structurally-typed stand-in for a restored spec-built execution:
+    # the payment tier is knowable only through the registry.
+    execution = SimpleNamespace(
+        vm_hash=ItemHash(vm_hash),
+        is_running=True,
+        gpus=[],
+        is_confidential=False,
+        is_instance=True,
+    )
+
+    class FakeVmPool:
+        def get_persistent_executions(self):
+            return [execution]
+
+    pool = FakeVmPool()
+    app = setup_webapp(pool=pool)
+    app["pubsub"] = None
+    app["vm_registry"].record(ItemHash(vm_hash), message=message, original=message, persistent=True)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    app["supervisor"] = fake_supervisor
+
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    client = await aiohttp_client(app)
+
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp_json = await response.json()
+    assert vm_hash not in resp_json["stopped"]
+    fake_supervisor.delete_vm.assert_not_awaited()
+    assert ItemHash(vm_hash) in app["vm_registry"]
+
+
+@pytest.mark.asyncio
+async def test_update_allocations_stops_unrecorded_execution(aiohttp_client, mocker):
+    """No registry record behaves as hold-tier: a record-less persistent VM absent
+    from the allocation must still be stopped (mirrors the old message-less False)."""
+    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    # Message-less execution with NO registry record seeded.
+    execution = SimpleNamespace(
+        vm_hash=ItemHash(vm_hash),
+        is_running=True,
+        gpus=[],
+        is_confidential=False,
+        is_instance=True,
+    )
+
+    class FakeVmPool:
+        def get_persistent_executions(self):
+            return [execution]
+
+    pool = FakeVmPool()
+    app = setup_webapp(pool=pool)
+    app["pubsub"] = None
+    # Deliberately do NOT record vm_hash in app["vm_registry"].
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    app["supervisor"] = fake_supervisor
+
+    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+    client = await aiohttp_client(app)
+
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp_json = await response.json()
+    assert vm_hash in resp_json["stopped"]
+    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    mock_delete_port_mappings.assert_awaited_once_with(vm_hash)
