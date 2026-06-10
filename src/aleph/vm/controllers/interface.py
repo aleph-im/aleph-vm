@@ -72,7 +72,7 @@ class AlephVmControllerInterface(ABC):
         May be empty."""
         pass
 
-    async def configure(self) -> None:
+    async def configure(self, mode: str = "normal") -> None:
         """Configuration done after the VM process is started."""
         raise NotImplementedError()
 
