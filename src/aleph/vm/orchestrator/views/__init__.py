@@ -82,7 +82,13 @@ from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import ConfidentialMode, PortForwardInfo, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import (
+    ConfidentialMode,
+    PortForwardInfo,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
@@ -194,21 +200,6 @@ async def debug_haproxy(request: web.Request) -> web.Response:
     )
 
 
-@cors_allow_all
-async def about_executions(request: web.Request) -> web.Response:
-    "/about/executions/details Debugging endpoint with full execution details."
-    # RESIDUAL (wire-agent design §8.3, decided 2026-06-06): dumps raw
-    # VmExecution internals, which cannot cross the Supervisor boundary, and
-    # has no known consumers. It dies — or moves to the hypervisor's own debug
-    # surface — when the in-process pool goes away in Phase 1.
-    authenticate_request(request)
-    pool: VmPool = request.app["vm_pool"]
-    return web.json_response(
-        [dict(pool.executions.items())],
-        dumps=dumps_for_json,
-    )
-
-
 def _vm_type_name(record: AgentVmRecord | None, info: VmInfo) -> str:
     """vm_type label: from the agent's message when known, otherwise from the
     supervisor's instance flag (spec-created / reattached VMs without a registry
@@ -274,7 +265,7 @@ async def list_executions(request: web.Request) -> web.Response:
     # (list_vms(owner=...) / an auth-scoped supervisor) so foreign VmInfos never
     # arrive, or, failing that, filter here to `registry.get(info.vm_id) is not
     # None`. Until then these /list endpoints mean "agent-owned"; a node-wide
-    # view belongs on the operator surface (see about_executions).
+    # debug view belongs on the operator surface.
     supervisor: Supervisor = request.app["supervisor"]
     registry: AgentVmRegistry = request.app["vm_registry"]
     infos = await supervisor.list_vms()

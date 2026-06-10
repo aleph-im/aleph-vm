@@ -1680,3 +1680,15 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, descripti
 
     assert str(VM_HASH) not in resp_json["stopped"], description
     fake_supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_about_executions_details_route_gone(aiohttp_client):
+    """/about/executions/details must NOT exist — route was deleted in Phase 1."""
+    app = setup_webapp(pool=None)
+    client = await aiohttp_client(app)
+    response: web.Response = await client.get("/about/executions/details")
+    assert response.status == 404, (
+        f"Expected 404 (route deleted), got {response.status}. "
+        "The /about/executions/details debug endpoint must be removed."
+    )
