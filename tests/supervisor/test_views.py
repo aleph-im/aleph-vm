@@ -1129,12 +1129,14 @@ async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     execution = mocker.Mock()
-    execution.message.rootfs.size_mib = 1000
     execution.is_running = False
     execution.vm = mocker.Mock()
     # Make the AlephQemuInstance isinstance check pass.
     execution.vm.__class__ = AlephQemuInstance
     execution.vm.resources.rootfs_path = str(tmp_path / "rootfs.qcow2")
+
+    record = mocker.Mock()
+    record.message.rootfs.size_mib = 1000
 
     mocker.patch.object(operator, "get_execution_or_404", return_value=execution)
     mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
@@ -1152,7 +1154,10 @@ async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
     )
 
     request = mocker.Mock()
-    request.app = {"vm_pool": mocker.Mock()}
+    request.app = {
+        "vm_pool": mocker.Mock(),
+        "vm_registry": mocker.Mock(get=mocker.Mock(return_value=record)),
+    }
     request.content_length = None
     request.content_type = "multipart/form-data"
 

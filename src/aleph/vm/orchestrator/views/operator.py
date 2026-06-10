@@ -168,7 +168,6 @@ def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
 
 def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
     """Return the execution corresponding to the ref or raise an HTTP 404 error."""
-    # TODO: Check if this should be execution.message.address or execution.message.content.address?
     execution = pool.executions.get(ref)
     if execution:
         return execution
@@ -377,37 +376,6 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
         return response
 
 
-async def authenticate_websocket_for_vm_or_403(execution: VmExecution, vm_hash: ItemHash, ws: web.WebSocketResponse):
-    """Authenticate a websocket connection.
-
-    Web browsers do not allow setting headers in WebSocket requests, so the authentication
-    relies on the first message sent by the client.
-    """
-    try:
-        first_message = await ws.receive_json()
-    except TypeError as error:
-        logging.exception(error)
-        await ws.send_json({"status": "failed", "reason": str(error)})
-        raise web.HTTPForbidden(body="Invalid auth package")
-    credentials = first_message["auth"]
-
-    try:
-        authenticated_sender = await authenticate_websocket_message(credentials)
-
-        if await is_sender_authorized(authenticated_sender, execution.message):
-            logger.debug(f"Accepted request to access logs by {authenticated_sender} on {vm_hash}")
-            return True
-    except Exception as error:
-        # Error occurred (invalid auth packet or other
-        await ws.send_json({"status": "failed", "reason": str(error)})
-        raise web.HTTPForbidden(body="Unauthorized sender")
-
-    # Auth was valid but not the correct user
-    logger.debug(f"Denied request to access logs by {authenticated_sender} on {vm_hash}")
-    await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-    raise web.HTTPForbidden(body="Unauthorized sender")
-
-
 @cors_allow_all
 @require_jwk_authentication
 async def operate_expire(request: web.Request, authenticated_sender: str) -> web.Response:
@@ -423,13 +391,11 @@ async def operate_expire(request: web.Request, authenticated_sender: str) -> web
         if not 0 < timeout < timedelta(days=10).total_seconds():
             return web.HTTPBadRequest(body="Invalid timeout duration")
 
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.info(f"Expiring in {timeout} seconds: {execution.vm_hash}")
+        logger.info(f"Expiring in {timeout} seconds: {vm_hash}")
         expiry: ExpiryManager = request.app["expiry"]
         expiry.schedule(VmId(str(vm_hash)), timeout)
         # Deliberately leave the update watcher armed: the VM keeps running until
@@ -445,11 +411,12 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
         logger.debug(f"Iterating through running executions... {pool.executions}")
         execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
-            return web.Response(status=403, body="Unauthorized sender")
 
         if execution.is_running:
             return web.json_response(
@@ -562,10 +529,11 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
+
+        execution = get_execution_or_404(vm_hash, pool=pool)
 
         if not execution.is_running:
             raise web.HTTPForbidden(body="Operation not running")
@@ -607,9 +575,11 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
+
+        execution = get_execution_or_404(vm_hash, pool=pool)
 
         # if not execution.is_running:
         #     raise web.HTTPForbidden(body="Operation not running")
@@ -873,10 +843,11 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
             pool: VmPool = request.app["vm_pool"]
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not await is_sender_authorized(authenticated_sender, execution.message):
+            record = get_agent_record_or_404(request, vm_hash)
+            if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
+
+            execution = get_execution_or_404(vm_hash, pool=pool)
 
             if not execution.is_running:
                 return web.HTTPBadRequest(body="VM must be running to create backup")
@@ -986,10 +957,8 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
     vm_hash = get_itemhash_or_400(request.match_info)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         vm_hash_str = str(vm_hash)
@@ -1101,10 +1070,8 @@ async def operate_backup_delete(
     backup_id = _validate_backup_id(request.match_info.get("backup_id", ""), vm_hash)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not await is_sender_authorized(authenticated_sender, execution.message):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
         destination_dir = get_backup_directory()
@@ -1214,10 +1181,11 @@ async def _do_restore(
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
             pool: VmPool = request.app["vm_pool"]
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not await is_sender_authorized(authenticated_sender, execution.message):
+            record = get_agent_record_or_404(request, vm_hash)
+            if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
+
+            execution = get_execution_or_404(vm_hash, pool=pool)
 
             if not isinstance(execution.vm, AlephQemuInstance | AlephQemuConfidentialInstance):
                 return web.HTTPBadRequest(body="Restore only supported for QEMU VMs")
@@ -1228,7 +1196,7 @@ async def _do_restore(
             current_rootfs = Path(execution.vm.resources.rootfs_path)
             backup_dir = get_backup_directory()
 
-            max_upload = execution.message.rootfs.size_mib * 1024 * 1024
+            max_upload = record.message.rootfs.size_mib * 1024 * 1024
             if request.content_length and request.content_length > max_upload:
                 return web.HTTPRequestEntityTooLarge(
                     max_size=max_upload,
@@ -1258,7 +1226,7 @@ async def _do_restore(
                     body="Uploaded file is not a valid QCOW2 disk image",
                 )
 
-            max_size = execution.message.rootfs.size_mib * 1024 * 1024
+            max_size = record.message.rootfs.size_mib * 1024 * 1024
             if new_size > max_size:
                 return web.HTTPBadRequest(
                     body=f"New rootfs virtual size ({new_size} bytes) exceeds "
