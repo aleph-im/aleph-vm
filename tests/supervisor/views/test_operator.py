@@ -83,22 +83,18 @@ def _clear_caches():
 
 @pytest.mark.asyncio
 async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
-    """Test that the confidential initialize endpoint rejects if the sender is not the good one. Auth needed"""
-
+    """Rejects when the sender is not authorized; auth message comes from the registry."""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
     settings.setup()
 
-    class FakeExecution:
-        message = None
-        is_running: bool = True
-        is_confidential: bool = False
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
 
     class FakeVmPool:
-        executions: dict[ItemHash, FakeExecution] = {}
-
-        def __init__(self):
-            self.executions[settings.FAKE_INSTANCE_ID] = FakeExecution()
+        # The 403 is returned at the registry-auth check, before the pool is read,
+        # so an empty pool is sufficient.
+        executions: dict = {}
 
     with mock.patch(
         "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
@@ -109,6 +105,12 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
             return_value=False,
         ) as is_sender_authorized_mock:
             app = setup_webapp(pool=FakeVmPool())
+            app["vm_registry"].record(
+                vm_hash,
+                message=instance_message.content,
+                original=instance_message.content,
+                persistent=True,
+            )
             client = await aiohttp_client(app)
             response = await client.post(
                 f"/control/machine/{settings.FAKE_INSTANCE_ID}/confidential/initialize",
@@ -146,6 +148,12 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -157,45 +165,6 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         "code": "vm_running",
         "description": "Operation not allowed, instance already running",
     }
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip()
-async def test_operator_expire(aiohttp_client, mocker):
-    """Test that the expires endpoint work. SPOILER it doesn't"""
-
-    settings.ENABLE_QEMU_SUPPORT = True
-    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
-    settings.setup()
-
-    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    instance_message = await get_message(ref=vm_hash)
-
-    fake_vm_pool = mocker.Mock(
-        executions={
-            vm_hash: mocker.Mock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_confidential=False,
-                is_running=False,
-            ),
-        },
-    )
-
-    # Disable auth
-    mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
-        return_value=instance_message.sender,
-    )
-    app = setup_webapp(pool=fake_vm_pool)
-    client: TestClient = await aiohttp_client(app)
-    response = await client.post(
-        f"/control/machine/{vm_hash}/expire",
-        data={"timeout": 1},
-        # json={"timeout": 1},
-    )
-    assert response.status == 200, await response.text()
-    assert fake_vm_pool["executions"][vm_hash].expire.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -261,6 +230,12 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -311,6 +286,12 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
             return_value=instance_message.sender,
         ):
             app = setup_webapp(pool=FakeVmPool())
+            app["vm_registry"].record(
+                vm_hash,
+                message=instance_message.content,
+                original=instance_message.content,
+                persistent=True,
+            )
             client = await aiohttp_client(app)
             response = await client.post(
                 f"/control/machine/{vm_hash}/confidential/initialize",
@@ -799,6 +780,112 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe=True)
     # registry record must be forgotten after erase
     assert app["vm_registry"].get(vm_hash) is None
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_status_authorized_reads_registry(aiohttp_client, mocker, tmp_path):
+    """Authorized backup-status reaches the backup logic with an empty pool."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=True,
+    )
+    # get_backup_directory() mkdirs under settings.EXECUTION_ROOT; patch the
+    # operator-local name to a tmp dir.
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.get_backup_directory",
+        return_value=tmp_path,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    response = await client.get(f"/control/machine/{vm_hash}/backup")
+    # Past auth: no backup exists, so the backup logic returns its own 404.
+    body = await response.text()
+    assert response.status == 404, body
+    assert "No backup found" in body
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_status_unauthorized_reads_registry(aiohttp_client, mocker):
+    """Backup-status authorizes against the registry, not the pool."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="0xstranger",
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    response = await client.get(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_delete_authorized_reads_registry(aiohttp_client, mocker, tmp_path):
+    """Authorized backup-delete reaches the delete logic with an empty pool."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=True,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.get_backup_directory",
+        return_value=tmp_path,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    response = await client.delete(f"/control/machine/{vm_hash}/backup/{vm_hash}aa")
+    # Past auth: no such backup file, so the delete logic returns its own 404.
+    body = await response.text()
+    assert response.status == 404, body
+    assert "not found" in body
 
 
 @pytest.mark.asyncio
@@ -1814,3 +1901,152 @@ async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, m
     data = await response.json()
     assert data["msg"] == "VM not starting yet"
     reconcile_mock.assert_not_awaited()
+
+
+def test_dead_websocket_auth_helper_is_removed():
+    """authenticate_websocket_for_vm_or_403 had no callers; it must be gone."""
+    from aleph.vm.orchestrator.views import operator
+
+    assert not hasattr(operator, "authenticate_websocket_for_vm_or_403")
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_measurement_unauthorized_reads_registry(aiohttp_client, mocker):
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="0xstranger",
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    response = await client.get(f"/control/machine/{vm_hash}/confidential/measurement")
+    assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_inject_secret_unauthorized_reads_registry(aiohttp_client, mocker):
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="0xstranger",
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    # InjectSecretParams (packet_header, secret) is validated before auth, so the
+    # body must be schema-valid for the request to reach the registry-auth check.
+    response = await client.post(
+        f"/control/machine/{vm_hash}/confidential/inject_secret",
+        json={"packet_header": "aGVhZGVy", "secret": "c2VjcmV0"},
+    )
+    assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_unauthorized_reads_registry(aiohttp_client, mocker):
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="0xstranger",
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mocker):
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value="0xstranger",
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=False,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    client: TestClient = await aiohttp_client(app)
+    # operate_restore acquires the per-VM backup lock then delegates to _do_restore,
+    # whose first act (after migration) is the registry-auth check — before any body
+    # parsing — so an empty JSON body is fine for the 403 path.
+    response = await client.post(
+        f"/control/machine/{vm_hash}/restore",
+        json={},
+    )
+    assert response.status == 403, await response.text()
+
+
+def test_operator_module_does_not_read_execution_message():
+    """Owner-auth and content reads must come from the registry, not the pool execution."""
+    import inspect
+
+    from aleph.vm.orchestrator.views import operator
+
+    source = inspect.getsource(operator)
+    assert "execution.message" not in source, (
+        "operator.py must not read `execution.message`; authorize from the agent "
+        "registry (get_agent_record_or_404 -> record.message) instead."
+    )
