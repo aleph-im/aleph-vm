@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psutil
-from aleph_message.models import Chain, InstanceContent, ItemHash, Payment, PaymentType
+from aleph_message.models import InstanceContent, ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -893,33 +893,6 @@ class VmPool:
             if not used:
                 available_gpus.append(gpu)
         return available_gpus
-
-    def get_executions_by_address(self, payment_type: PaymentType) -> dict[str, dict[str, list[VmExecution]]]:
-        """Return all executions of the given type, grouped by sender and by chain."""
-        executions_by_address: dict[str, dict[str, list[VmExecution]]] = {}
-        for vm_hash, execution in self.executions.items():
-            message = execution.message
-            if message is None:
-                # Spec-built (supervisor-owned) executions carry no message;
-                # payment grouping is an agent concern.
-                continue
-            if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
-                # Ignore Diagnostic VM execution
-                continue
-
-            if not execution.is_running:
-                # Ignore the execution that is stopping or not running anymore
-                continue
-            if execution.vm_hash == settings.CHECK_FASTAPI_VM_ID:
-                # Ignore Diagnostic VM execution
-                continue
-            execution_payment = message.payment if message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
-            if execution_payment.type == payment_type:
-                address = message.address
-                chain = execution_payment.chain
-                executions_by_address.setdefault(address, {})
-                executions_by_address[address].setdefault(chain, []).append(execution)
-        return executions_by_address
 
     def get_valid_reservation(self, resource) -> Reservation | None:
         if resource in self.reservations and self.reservations[resource].is_expired():
