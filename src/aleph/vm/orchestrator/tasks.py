@@ -192,7 +192,7 @@ async def watch_for_messages(
                 if key == "port-forwarding":
                     await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
-                    await _handle_domains_aggregate(message, pool)
+                    await _handle_domains_aggregate(message, pool, registry)
 
 
 async def _handle_port_forwarding_aggregate(
@@ -224,7 +224,7 @@ async def _handle_port_forwarding_aggregate(
             logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
-async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
+async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, registry: AgentVmRegistry):
     """Update HAProxy domain mapping when a domains aggregate changes.
 
     The aggregate content maps domain names to instance configs:
@@ -234,11 +234,16 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
     """
     address = message.content.address
 
-    # Trigger if the address owns any running instance on this node.
+    # Trigger if the address owns any running instance on this node. The owner
+    # address comes from the agent registry, not the hypervisor object —
+    # spec-built and restored executions carry no message.
     # This covers both additions (new domain pointing to local instance)
     # and deletions (domain removed — need to clean up the map).
     has_local_instance = any(
-        execution.is_instance and execution.vm and execution.message and execution.message.address == address
+        execution.is_instance
+        and execution.vm
+        and (record := registry.get(execution.vm_hash)) is not None
+        and record.message.address == address
         for execution in pool.executions.values()
     )
     if not has_local_instance:

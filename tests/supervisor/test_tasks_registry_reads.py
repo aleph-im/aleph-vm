@@ -9,7 +9,10 @@ import pytest
 from aleph_message.models import Chain, ItemHash, Payment, PaymentType
 
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.tasks import _group_executions_by_payment
+from aleph.vm.orchestrator.tasks import (
+    _group_executions_by_payment,
+    _handle_domains_aggregate,
+)
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 
 _HASH = ItemHash("deadbeef" * 8)
@@ -95,6 +98,64 @@ def test_grouping_skips_stopped_and_diagnostic_executions():
     )
 
     assert _group_executions_by_payment(pool, registry, PaymentType.hold) == {}
+
+
+@pytest.mark.asyncio
+async def test_domains_aggregate_triggers_for_registry_recorded_instance():
+    """A message-less (spec-built / restored) instance must still trigger the
+    HAProxy domain-mapping refresh when its registry record matches the owner."""
+    registry = _registry_with(_HASH, payment=None, address="0xowner")
+    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    pool = SimpleNamespace(
+        executions={_HASH: execution},
+        update_domain_mapping=AsyncMock(),
+    )
+    aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
+
+    await _handle_domains_aggregate(aggregate, pool, registry)
+
+    pool.update_domain_mapping.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_domains_aggregate_ignores_unrelated_address():
+    registry = _registry_with(_HASH, payment=None, address="0xowner")
+    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    pool = SimpleNamespace(
+        executions={_HASH: execution},
+        update_domain_mapping=AsyncMock(),
+    )
+    aggregate = SimpleNamespace(content=SimpleNamespace(address="0xsomeoneelse"))
+
+    await _handle_domains_aggregate(aggregate, pool, registry)
+
+    pool.update_domain_mapping.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_domains_aggregate_ignores_unrecorded_execution():
+    """A matching-owner instance the agent has no record for must NOT trigger a
+    refresh (no registry record -> short-circuits before the address compare)."""
+    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    pool = SimpleNamespace(executions={_HASH: execution}, update_domain_mapping=AsyncMock())
+    aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
+
+    await _handle_domains_aggregate(aggregate, pool, AgentVmRegistry())
+
+    pool.update_domain_mapping.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_domains_aggregate_ignores_non_instance():
+    """A program (not an instance) owned by the address must NOT trigger a refresh."""
+    registry = _registry_with(_HASH, payment=None, address="0xowner")
+    execution = SimpleNamespace(vm_hash=_HASH, is_instance=False, vm=object())
+    pool = SimpleNamespace(executions={_HASH: execution}, update_domain_mapping=AsyncMock())
+    aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
+
+    await _handle_domains_aggregate(aggregate, pool, registry)
+
+    pool.update_domain_mapping.assert_not_awaited()
 
 
 def test_pool_has_no_message_reads():
