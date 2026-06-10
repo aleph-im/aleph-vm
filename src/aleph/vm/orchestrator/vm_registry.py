@@ -13,10 +13,16 @@ import json
 import logging
 from collections.abc import ItemsView
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from aleph_message.models import ExecutableContent, ItemHash
 
-from aleph.vm.orchestrator.metrics import get_execution_records
+from aleph.vm.orchestrator.metrics import (
+    ExecutionRecord,
+    get_execution_records,
+    save_record,
+)
 from aleph.vm.utils import get_message_executable_content
 
 logger = logging.getLogger(__name__)
@@ -32,6 +38,14 @@ class AgentVmRecord:
     message: ExecutableContent
     original: ExecutableContent
     persistent: bool = False
+
+    @property
+    def uses_payment_stream(self) -> bool:
+        return bool(self.message.payment and self.message.payment.is_stream)
+
+    @property
+    def uses_payment_credit(self) -> bool:
+        return bool(self.message.payment and self.message.payment.is_credit)
 
 
 class AgentVmRegistry:
@@ -94,3 +108,40 @@ async def rehydrate_registry(registry: AgentVmRegistry) -> int:
         registry.record(vm_hash, message=message, original=original, persistent=bool(db_record.persistent))
         count += 1
     return count
+
+
+async def persist_record(vm_hash: ItemHash, record: AgentVmRecord) -> None:
+    """Persist the agent's knowledge of a VM to the agent DB.
+
+    Write-side sibling of rehydrate_registry: what this writes is exactly what
+    rehydrate_registry needs to rebuild the registry after a restart (message,
+    original, persistent), carried on the existing ExecutionRecord table.
+    Hypervisor-owned facts are deliberately absent: vm_id (numeric id unknown
+    agent-side) and mapped_ports (the PortMapping table is the authority) are
+    None; both are read only by the debug records endpoint.
+    """
+    now = datetime.now(tz=timezone.utc)
+    resources = record.message.resources
+    db_record = ExecutionRecord(
+        uuid=str(uuid4()),
+        vm_hash=str(vm_hash),
+        vm_id=None,
+        time_defined=now,
+        time_prepared=now,
+        time_started=now,
+        time_stopping=None,
+        cpu_time_user=None,
+        cpu_time_system=None,
+        io_read_count=None,
+        io_write_count=None,
+        io_read_bytes=None,
+        io_write_bytes=None,
+        vcpus=resources.vcpus,
+        memory=resources.memory,
+        message=record.message.model_dump_json(),
+        original_message=record.original.model_dump_json(),
+        persistent=record.persistent,
+        gpus=json.dumps([]),
+        mapped_ports=None,
+    )
+    await save_record(db_record)
