@@ -83,7 +83,7 @@ def _request_fakes(*, persistent: bool):
         result={"headers": {"headers": [[b"content-type", b"text/plain"]], "status": 200}, "body": {"body": b"ok"}},
     )
     expiry = SpyExpiry()
-    request = FakeRequest(app={"supervisor": None, "expiry": expiry, "pubsub": None})
+    request = FakeRequest(app={"supervisor": None, "expiry": expiry, "pubsub": None, "update_watcher": None})
     return execution, expiry, request
 
 
@@ -113,7 +113,9 @@ async def test_event_rearms_idle_timer_for_on_demand_vm(reuse_settings):
     execution = FakeExecution(persistent=False, result={"body": "ok"})
     expiry = SpyExpiry()
 
-    result = await run_code_on_event(VM_HASH, None, None, FakePool(execution), supervisor=None, expiry=expiry)
+    result = await run_code_on_event(
+        VM_HASH, None, None, FakePool(execution), supervisor=None, expiry=expiry, update_watcher=None, registry=None
+    )
 
     assert result == "ok"
     assert expiry.cancelled == [str(VM_HASH)]
@@ -125,7 +127,9 @@ async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
     execution = FakeExecution(persistent=True, result={"body": "ok"})
     expiry = SpyExpiry()
 
-    result = await run_code_on_event(VM_HASH, None, None, FakePool(execution), supervisor=None, expiry=expiry)
+    result = await run_code_on_event(
+        VM_HASH, None, None, FakePool(execution), supervisor=None, expiry=expiry, update_watcher=None, registry=None
+    )
 
     assert result == "ok"
     assert expiry.scheduled == []
