@@ -82,7 +82,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import PortForwardInfo, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import ConfidentialMode, PortForwardInfo, VmId, VmInfo, VmStatus
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
@@ -578,33 +578,35 @@ async def update_allocations(request: web.Request):
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances
         stopped_vms = []
-        # Make a copy since the pool is modified
-        for execution in list(pool.get_persistent_executions()):
-            # Payment tier comes from the agent registry, not the hypervisor
-            # object: spec-built and restart-restored executions carry no
-            # message, but their registry record (rehydrated from the agent DB)
-            # does. No record behaves as hold-tier, exactly like the old
-            # message-less False.
-            record = registry.get(execution.vm_hash)
+        # Status comes from the supervisor (VmInfo); persistence, payment tier
+        # and owner come from the agent registry. A VM with no registry record is
+        # not scheduler-managed and is skipped here; this is safe because every
+        # agent-created VM has a record (persisted on create, rehydrated on
+        # restart) post-#972, so a record-less running VM should not occur.
+        for info in await supervisor.list_vms():
+            vm_hash = ItemHash(info.vm_id)
+            record = registry.get(vm_hash)
             if (
-                execution.vm_hash not in allocations
-                and execution.is_running
-                and not (record and record.uses_payment_stream)
-                and not (record and record.uses_payment_credit)
-                and not execution.gpus
-                and not execution.is_confidential
+                record is not None
+                and record.persistent
+                and vm_hash not in allocations
+                and info.status is VmStatus.RUNNING
+                and not record.uses_payment_stream
+                and not record.uses_payment_credit
+                and not info.gpus
+                and info.confidential_mode is ConfidentialMode.NONE
             ):
-                vm_type = "instance" if execution.is_instance else "persistent program"
-                logger.info("Stopping %s %s", vm_type, execution.vm_hash)
+                vm_type = VmType.from_message_content(record.message).name
+                logger.info("Stopping %s %s", vm_type, vm_hash)
                 try:
-                    await supervisor.delete_vm(VmId(str(execution.vm_hash)))
+                    await supervisor.delete_vm(VmId(str(vm_hash)))
                 except VmNotFoundError:
                     pass
                 # Residual direct DB call: mapping persistence moves fully
-                # hypervisor-side with the gRPC split (plan: Design deltas #3).
-                await delete_port_mappings(execution.vm_hash)
-                registry.forget(execution.vm_hash)
-                stopped_vms.append(execution.vm_hash)
+                # hypervisor-side with the gRPC split.
+                await delete_port_mappings(vm_hash)
+                registry.forget(vm_hash)
+                stopped_vms.append(vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.
 

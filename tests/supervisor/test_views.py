@@ -354,12 +354,8 @@ async def test_allocation_valid_token(aiohttp_client):
 
     This is a very simple test that don't start or stop any VM so the mock is minimal"""
 
-    class FakeVmPool:
-        def get_persistent_executions(self):
-            return []
-
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp(pool=FakeVmPool())
+    app = setup_webapp(pool=_FakeVmPool())
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
@@ -1017,6 +1013,9 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
 
 
 class _FakeVmPool:
+    def __init__(self):
+        self.executions = {}
+
     def get_persistent_executions(self):
         return []
 
@@ -1172,7 +1171,10 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     """update_allocations stop loop must call supervisor.delete_vm + delete_port_mappings
     + registry.forget (permanent dealloc) for executions no longer in the allocation.
     It must NOT call pool.stop_vm or pool.forget_vm directly.
+    Status is read from supervisor.list_vms() (VmInfo); persistence from the registry.
     """
+    from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmInfo, VmStatus
+
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     # Use a non-stream, non-credit payment type so the stop-loop condition is satisfied
     # (superfluid / credit executions are excluded from the dealloc loop).
@@ -1199,31 +1201,28 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     }
     message = InstanceContent.model_validate(instance_content)
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=True,
-        snapshot_manager=None,
-        systemd_manager=None,
+    vm_info = VmInfo(
+        vm_id=VmId(vm_hash),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        confidential_mode=ConfidentialMode.NONE,
+        gpus=[],
+        is_instance=True,
     )
-    # Mark as running so the stop-loop condition is satisfied.
-    mocker.patch.object(VmExecution, "is_running", new=True)
 
-    class FakeVmPool:
-        def get_persistent_executions(self):
-            return [execution]
-
-        # stop_vm/forget_vm must NOT be called — assert by leaving them unimplemented.
-
-    pool = FakeVmPool()
+    pool = _FakeVmPool()
     app = setup_webapp(pool=pool)
     app["pubsub"] = None
 
     # Seed registry so the app knows the VM.
     app["vm_registry"].record(vm_hash, message=message, original=message, persistent=True)
 
-    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
     mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
@@ -1372,8 +1371,11 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(
 
 @pytest.mark.asyncio
 async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
-    """A message-less execution whose REGISTRY record is stream-paid must be spared
-    by the stop loop even when absent from the allocation (the restored-PAYG case)."""
+    """A stream-paid registry record must be spared by the stop loop even when absent
+    from the allocation (the restored-PAYG case).
+    Status is read from supervisor.list_vms(); payment tier from the registry."""
+    from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmInfo, VmStatus
+
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     instance_content = {
         "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
@@ -1398,26 +1400,27 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     }
     message = InstanceContent.model_validate(instance_content)
 
-    # Message-less, structurally-typed stand-in for a restored spec-built execution:
-    # the payment tier is knowable only through the registry.
-    execution = SimpleNamespace(
-        vm_hash=ItemHash(vm_hash),
-        is_running=True,
+    # Supervisor reports the VM as RUNNING; payment tier is knowable only via registry.
+    vm_info = VmInfo(
+        vm_id=VmId(vm_hash),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        confidential_mode=ConfidentialMode.NONE,
         gpus=[],
-        is_confidential=False,
         is_instance=True,
     )
 
-    class FakeVmPool:
-        def get_persistent_executions(self):
-            return [execution]
-
-    pool = FakeVmPool()
+    pool = _FakeVmPool()
     app = setup_webapp(pool=pool)
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message, original=message, persistent=True)
 
-    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
@@ -1436,29 +1439,34 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stops_unrecorded_execution(aiohttp_client, mocker):
-    """No registry record behaves as hold-tier: a record-less persistent VM absent
-    from the allocation must still be stopped (mirrors the old message-less False)."""
+async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mocker):
+    """A VM with no registry record is not scheduler-managed and must NOT be stopped
+    by the stop-loop; it is left to the idle-expiry path instead.
+    Status is read from supervisor.list_vms(); a missing record means skip entirely."""
+    from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmInfo, VmStatus
+
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
-    # Message-less execution with NO registry record seeded.
-    execution = SimpleNamespace(
-        vm_hash=ItemHash(vm_hash),
-        is_running=True,
+
+    vm_info = VmInfo(
+        vm_id=VmId(vm_hash),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        confidential_mode=ConfidentialMode.NONE,
         gpus=[],
-        is_confidential=False,
         is_instance=True,
     )
 
-    class FakeVmPool:
-        def get_persistent_executions(self):
-            return [execution]
-
-    pool = FakeVmPool()
+    pool = _FakeVmPool()
     app = setup_webapp(pool=pool)
     app["pubsub"] = None
     # Deliberately do NOT record vm_hash in app["vm_registry"].
 
-    fake_supervisor = MagicMock(delete_vm=AsyncMock())
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
     mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
@@ -1473,6 +1481,202 @@ async def test_update_allocations_stops_unrecorded_execution(aiohttp_client, moc
     )
     assert response.status == 200
     resp_json = await response.json()
-    assert vm_hash in resp_json["stopped"]
-    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
-    mock_delete_port_mappings.assert_awaited_once_with(vm_hash)
+    # No registry record → not scheduler-managed → not stopped by this loop.
+    assert vm_hash not in resp_json["stopped"]
+    fake_supervisor.delete_vm.assert_not_awaited()
+    mock_delete_port_mappings.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# New pinning tests for the VmInfo-based stop-loop (Task 4)
+# ---------------------------------------------------------------------------
+
+VM_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
+
+_HOLD_INSTANCE_CONTENT = {
+    "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
+    "time": 1713874241.800818,
+    "allow_amend": False,
+    "metadata": None,
+    "authorized_keys": None,
+    "variables": None,
+    "environment": {"reproducible": False, "internet": True, "aleph_api": True, "shared_cache": False},
+    "resources": {"vcpus": 1, "memory": 256, "seconds": 30, "published_ports": None},
+    "payment": {"type": "hold", "chain": "BASE"},
+    "requirements": None,
+    "replaces": None,
+    "rootfs": {
+        "parent": {"ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696"},
+        "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
+        "use_latest": True,
+        "comment": "",
+        "persistence": "host",
+        "size_mib": 1000,
+    },
+}
+
+_STREAM_INSTANCE_CONTENT = {
+    **_HOLD_INSTANCE_CONTENT,
+    "payment": {"type": "superfluid", "chain": "BASE"},
+}
+
+_CREDIT_INSTANCE_CONTENT = {
+    **_HOLD_INSTANCE_CONTENT,
+    "payment": {"type": "credit"},
+}
+
+
+def _make_app_with_supervisor(supervisor):
+    """Create a minimal webapp whose supervisor is replaced with the given double."""
+    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    app = setup_webapp(pool=_FakeVmPool())
+    app["pubsub"] = None
+    app["supervisor"] = supervisor
+    return app
+
+
+def _running_vm_info(
+    vm_hash=VM_HASH,
+    *,
+    confidential_mode=None,
+    gpus=None,
+):
+    from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmInfo, VmStatus
+
+    if confidential_mode is None:
+        confidential_mode = ConfidentialMode.NONE
+    if gpus is None:
+        gpus = []
+    return VmInfo(
+        vm_id=VmId(str(vm_hash)),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        is_instance=True,
+        confidential_mode=confidential_mode,
+        gpus=gpus,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
+    """A running, persistent, hold-tier VM not in the allocation must be stopped.
+
+    Behavior 1: registry has record, persistent=True, status=RUNNING, no GPUs,
+    confidential_mode=NONE, not stream/credit → supervisor.delete_vm is awaited
+    and the VM is reported in stopped[].
+    """
+    message = InstanceContent.model_validate(_HOLD_INSTANCE_CONTENT)
+
+    fake_supervisor = MagicMock(
+        delete_vm=AsyncMock(),
+        list_vms=AsyncMock(return_value=[_running_vm_info()]),
+    )
+    app = _make_app_with_supervisor(fake_supervisor)
+    app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+
+    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp_json = await response.json()
+
+    assert str(VM_HASH) in resp_json["stopped"]
+    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(VM_HASH)))
+    mock_delete_port_mappings.assert_awaited_once_with(VM_HASH)
+    assert VM_HASH not in app["vm_registry"]
+
+
+@pytest.mark.parametrize(
+    "description,vm_info_kwargs,registry_kwargs",
+    [
+        (
+            "GPU-bearing VM is not stopped",
+            {
+                "gpus": [
+                    # GpuDevice from aleph.vm.supervisor.types
+                    None  # placeholder — real object built in test body
+                ]
+            },
+            {},
+        ),
+        (
+            "confidential VM (SEV) is not stopped",
+            {"confidential_mode": None},  # placeholder — real enum built in test body
+            {},
+        ),
+        (
+            "stream-paid VM is not stopped",
+            {},
+            {"stream": True},
+        ),
+        (
+            "VM with no registry record is not stopped",
+            {},
+            {"no_record": True},
+        ),
+        (
+            "credit-tier VM is not stopped",
+            {},
+            {"credit": True},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, description, vm_info_kwargs, registry_kwargs):
+    """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
+    must NOT be stopped by the stop-loop.
+    """
+    from aleph.vm.supervisor.types import ConfidentialMode, GpuDevice, PciAddress
+
+    # Build the real VmInfo kwargs — resolve placeholders.
+    resolved_kwargs = dict(vm_info_kwargs)
+    if "gpus" in resolved_kwargs and resolved_kwargs["gpus"] == [None]:
+        resolved_kwargs["gpus"] = [
+            GpuDevice(pci_host=PciAddress("01:00.0"), device_id="10de:27b0", model="RTX 4000", supports_x_vga=True)
+        ]
+    if "confidential_mode" in resolved_kwargs and resolved_kwargs["confidential_mode"] is None:
+        resolved_kwargs["confidential_mode"] = ConfidentialMode.SEV
+
+    info = _running_vm_info(**resolved_kwargs)
+
+    # Determine which message content to use for the registry record.
+    if registry_kwargs.get("stream"):
+        content = _STREAM_INSTANCE_CONTENT
+    elif registry_kwargs.get("credit"):
+        content = _CREDIT_INSTANCE_CONTENT
+    else:
+        content = _HOLD_INSTANCE_CONTENT
+    message = InstanceContent.model_validate(content)
+
+    fake_supervisor = MagicMock(
+        delete_vm=AsyncMock(),
+        list_vms=AsyncMock(return_value=[info]),
+    )
+    app = _make_app_with_supervisor(fake_supervisor)
+
+    if not registry_kwargs.get("no_record"):
+        app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+
+    mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200, description
+    resp_json = await response.json()
+
+    assert str(VM_HASH) not in resp_json["stopped"], description
+    fake_supervisor.delete_vm.assert_not_awaited()
