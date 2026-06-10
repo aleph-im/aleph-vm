@@ -4,6 +4,7 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterable, Callable
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TypeVar
 
@@ -15,6 +16,7 @@ from aleph_message.models import (
     AlephMessage,
     Chain,
     InstanceContent,
+    ItemHash,
     Payment,
     PaymentType,
     ProgramMessage,
@@ -24,7 +26,6 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import reconcile_port_forwards
 from aleph.vm.orchestrator.utils import (
@@ -36,7 +37,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import VmId, VmStatus
+from aleph.vm.supervisor.types import ConfidentialMode, VmId, VmInfo, VmStatus
 from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.
@@ -74,6 +75,12 @@ logger = logging.getLogger(__name__)
 
 Value = TypeVar("Value")
 COMMUNITY_STREAM_RATIO = Decimal(0.2)
+
+
+def _dt_from_ns(ns: int) -> datetime | None:
+    if not ns:
+        return None
+    return datetime.fromtimestamp(ns // 1_000_000_000, tz=timezone.utc).replace(microsecond=(ns // 1_000) % 1_000_000)
 
 
 async def retry_generator(
@@ -293,7 +300,6 @@ async def monitor_payments(app: web.Application):
     wallet balance or payment stream coverage. Handles forgotten VMs, balance checks for the
     "hold" tier, and stream flow validation for the "superfluid" tier to ensure compliance.
     """
-    pool: VmPool = app["vm_pool"]
     supervisor: Supervisor = app["supervisor"]
     registry: AgentVmRegistry = app["vm_registry"]
     while True:
@@ -301,7 +307,7 @@ async def monitor_payments(app: web.Application):
         # noinspection PyBroadException
         try:
             logger.debug("Monitoring balances task running")
-            await check_payment(pool, supervisor, registry)
+            await check_payment(supervisor, registry)
             logger.debug("Monitoring balances task ended")
         except Exception as e:
             if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
@@ -311,44 +317,45 @@ async def monitor_payments(app: web.Application):
 
 
 def _group_executions_by_payment(
-    pool: VmPool, registry: AgentVmRegistry, payment_type: PaymentType
-) -> dict[str, dict[Chain, list[VmExecution]]]:
-    """Group running executions by sender address and chain for one payment type.
+    infos: list[VmInfo], registry: AgentVmRegistry, payment_type: PaymentType
+) -> dict[str, dict[Chain, list[VmInfo]]]:
+    """Group running VMs by sender address and chain for one payment type.
 
-    The message (payment tier, owner address) comes from the agent registry;
-    the execution supplies only structural facts. Replaces the pool method that
-    read the message off the hypervisor object — and thereby skipped spec-built
-    and restart-restored VMs entirely.
+    Status comes from the supervisor (VmInfo); the message (payment tier, owner)
+    comes from the agent registry. Spec-built and restart-restored VMs (which
+    carry no hypervisor-side message) are grouped via their registry record.
     """
-    executions_by_address: dict[str, dict[Chain, list[VmExecution]]] = {}
-    for vm_hash, execution in pool.executions.items():
+    by_address: dict[str, dict[Chain, list[VmInfo]]] = {}
+    for info in infos:
+        vm_hash = ItemHash(info.vm_id)
         record = registry.get(vm_hash)
         if record is None:
-            # The agent has no message for this VM (e.g. the diagnostic fake
-            # never enters the registry); payment grouping cannot apply.
             continue
-        if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
-            # Ignore the diagnostic VM
+        if vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
             continue
-        if not execution.is_running:
+        if info.status is not VmStatus.RUNNING:
             continue
         payment = record.message.payment if record.message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
         if payment.type == payment_type:
-            executions_by_address.setdefault(record.message.address, {}).setdefault(payment.chain, []).append(execution)
-    return executions_by_address
+            by_address.setdefault(record.message.address, {}).setdefault(payment.chain, []).append(info)
+    return by_address
 
 
-async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry):
+async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     """Ensures VMs are stopped if payment conditions are unmet, such as insufficient
     funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
     balance checks for the "hold" tier, and stream flow validation for the "superfluid" tier
     stopping executions as needed to maintain compliance.
     """
+    # Take a single snapshot of all running VMs from the supervisor.
+    infos = await supervisor.list_vms()
+
     # Check if the executions continues existing or are forgotten before checking the payment
     # this is actually the main workflow for properly stopping PAYG instances, a user agent would stop the payment stream
     # and forget the instance message. Compared to just stopping or decreasing the payment stream as the CRN don't know
     # which VM it affects.
-    for vm_hash in list(pool.executions.keys()):
+    for info in infos:
+        vm_hash = ItemHash(info.vm_id)
         if vm_hash == settings.FAKE_INSTANCE_ID:
             continue
         try:
@@ -387,58 +394,56 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
             _terminal_strike_count.pop(str(vm_hash), None)
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-    for execution_address, chains in _group_executions_by_payment(pool, registry, PaymentType.hold).items():
-        for chain, executions in chains.items():
-            executions = [execution for execution in executions if execution.is_confidential]
-            if not executions:
+    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.hold).items():
+        for chain, vm_infos in chains.items():
+            vm_infos = [i for i in vm_infos if i.confidential_mode is not ConfidentialMode.NONE]
+            if not vm_infos:
                 continue
             balance = await fetch_balance_of_address(execution_address)
 
             # Stop executions until the required balance is reached
-            required_balance = await compute_required_balance(executions)
-            logger.debug(
-                f"Required balance for Sender {execution_address} executions: {required_balance}, {executions}"
-            )
+            required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
+            logger.debug(f"Required balance for Sender {execution_address} executions: {required_balance}, {vm_infos}")
             # Stop executions until the required balance is reached
-            while executions and balance < (required_balance + settings.PAYMENT_BUFFER):
-                last_execution = executions.pop(-1)
-                logger.debug(f"Stopping {last_execution} due to insufficient balance")
+            while vm_infos and balance < (required_balance + settings.PAYMENT_BUFFER):
+                last_info = vm_infos.pop(-1)
+                logger.debug(f"Stopping {last_info.vm_id} due to insufficient balance")
                 try:
-                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                    await supervisor.delete_vm(last_info.vm_id)
                 except VmNotFoundError:
                     pass
-                required_balance = await compute_required_balance(executions)
+                required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     community_wallet = await get_community_wallet_address()
     if not community_wallet:
         logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
 
     # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
-    for execution_address, chains in _group_executions_by_payment(pool, registry, PaymentType.credit).items():
-        for chain, executions in chains.items():
-            executions = [execution for execution in executions]
-            if not executions:
+    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.credit).items():
+        for chain, vm_infos in chains.items():
+            vm_infos = list(vm_infos)
+            if not vm_infos:
                 continue
             balance = await fetch_credit_balance_of_address(execution_address)
 
             # Stop executions until the required credits are reached
-            required_credits = await compute_required_credit_balance(executions)
+            required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
             logger.debug(
-                f"Required credit balance for Address {execution_address} executions: {required_credits}, {executions}"
+                f"Required credit balance for Address {execution_address} executions: {required_credits}, {vm_infos}"
             )
             # Stop executions until the required credits are reached
-            while executions and balance < (required_credits + settings.PAYMENT_BUFFER):
-                last_execution = executions.pop(-1)
-                logger.debug(f"Stopping {last_execution} due to insufficient credit balance")
+            while vm_infos and balance < (required_credits + settings.PAYMENT_BUFFER):
+                last_info = vm_infos.pop(-1)
+                logger.debug(f"Stopping {last_info.vm_id} due to insufficient credit balance")
                 try:
-                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                    await supervisor.delete_vm(last_info.vm_id)
                 except VmNotFoundError:
                     pass
-                required_credits = await compute_required_credit_balance(executions)
+                required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     # Check if the balance held in the wallet is sufficient stream tier resources
-    for execution_address, chains in _group_executions_by_payment(pool, registry, PaymentType.superfluid).items():
-        for chain, executions in chains.items():
+    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.superfluid).items():
+        for chain, vm_infos in chains.items():
             try:
                 stream = await get_stream(
                     sender=execution_address, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain
@@ -460,29 +465,27 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
                 logger.error(f"Error found getting stream for chain {chain} and sender {execution_address}: {error}")
                 continue
 
-            while executions:
-                executions_with_community = [
-                    execution
-                    for execution in executions
-                    if await is_after_community_wallet_start(execution.times.started_at)
+            while vm_infos:
+                infos_with_community = [
+                    i for i in vm_infos if await is_after_community_wallet_start(_dt_from_ns(i.started_at_ns))
                 ]
 
-                required_stream = await compute_required_flow(executions_with_community)
-                executions_without_community = [
-                    execution
-                    for execution in executions
-                    if not await is_after_community_wallet_start(execution.times.started_at)
+                required_stream = await compute_required_flow([ItemHash(i.vm_id) for i in infos_with_community])
+                infos_without_community = [
+                    i for i in vm_infos if not await is_after_community_wallet_start(_dt_from_ns(i.started_at_ns))
                 ]
-                logger.info("flow community %s", executions_with_community)
-                logger.info("flow without community %s", executions_without_community)
-                required_stream_without_community = await compute_required_flow(executions_without_community)
+                logger.info("flow community %s", infos_with_community)
+                logger.info("flow without community %s", infos_without_community)
+                required_stream_without_community = await compute_required_flow(
+                    [ItemHash(i.vm_id) for i in infos_without_community]
+                )
                 # TODO, rounding should be done per executions to not have the extra  accumulate before rounding
                 required_crn_stream = format_cost(
                     required_stream * (1 - COMMUNITY_STREAM_RATIO) + required_stream_without_community
                 )
                 required_community_stream = format_cost(required_stream * COMMUNITY_STREAM_RATIO)
                 logger.debug(
-                    f"Stream for senders {execution_address} {len(executions)} executions.  CRN : {stream} /  {required_crn_stream}."
+                    f"Stream for senders {execution_address} {len(vm_infos)} executions.  CRN : {stream} /  {required_crn_stream}."
                     f"Community: {community_stream} / {required_community_stream}"
                 )
                 # Can pay all executions
@@ -491,10 +494,10 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
                 ) > required_community_stream:
                     break
                 # Stop executions until the required stream is reached
-                last_execution = executions.pop(-1)
-                logger.info(f"Stopping {last_execution} of {execution_address} due to insufficient stream")
+                last_info = vm_infos.pop(-1)
+                logger.info(f"Stopping {last_info.vm_id} of {execution_address} due to insufficient stream")
                 try:
-                    await supervisor.delete_vm(VmId(str(last_execution.vm_hash)))
+                    await supervisor.delete_vm(last_info.vm_id)
                 except VmNotFoundError:
                     pass
 

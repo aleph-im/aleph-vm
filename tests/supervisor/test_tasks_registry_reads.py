@@ -14,13 +14,23 @@ from aleph.vm.orchestrator.tasks import (
     _handle_domains_aggregate,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmInfo, VmStatus
 
 _HASH = ItemHash("deadbeef" * 8)
 
 
-def _execution(vm_hash: ItemHash, *, is_running: bool = True) -> SimpleNamespace:
-    # Message-less, structurally-typed stand-in for a spec-built pool execution.
-    return SimpleNamespace(vm_hash=vm_hash, is_running=is_running)
+def _info(vm_hash: ItemHash, *, running: bool = True, confidential=False) -> VmInfo:
+    return VmInfo(
+        vm_id=VmId(str(vm_hash)),
+        status=VmStatus.RUNNING if running else VmStatus.STOPPED,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        confidential_mode=ConfidentialMode.SEV if confidential else ConfidentialMode.NONE,
+    )
 
 
 def _registry_with(vm_hash: ItemHash, *, payment: Payment | None, address: str = "0xabc") -> AgentVmRegistry:
@@ -38,59 +48,39 @@ def test_grouping_sources_message_from_registry():
     """A message-less (spec-built / restored) execution with a registry record is grouped."""
     payment = Payment(chain=Chain.ETH, type=PaymentType.superfluid)
     registry = _registry_with(_HASH, payment=payment)
-    pool = SimpleNamespace(executions={_HASH: _execution(_HASH)})
-
-    groups = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
-
+    groups = _group_executions_by_payment([_info(_HASH)], registry, PaymentType.superfluid)
     assert list(groups) == ["0xabc"]
-    assert list(groups["0xabc"]) == [Chain.ETH]
-    assert groups["0xabc"][Chain.ETH][0].vm_hash == _HASH
+    assert groups["0xabc"][Chain.ETH][0].vm_id == str(_HASH)
 
 
 def test_grouping_skips_unrecorded_executions():
-    """No registry record -> the agent knows no message -> not grouped."""
-    pool = SimpleNamespace(executions={_HASH: _execution(_HASH)})
-
-    groups = _group_executions_by_payment(pool, AgentVmRegistry(), PaymentType.superfluid)
-
+    groups = _group_executions_by_payment([_info(_HASH)], AgentVmRegistry(), PaymentType.superfluid)
     assert groups == {}
 
 
 def test_grouping_defaults_to_hold_and_filters_by_type():
-    registry = _registry_with(_HASH, payment=None)  # no payment -> hold tier
-    pool = SimpleNamespace(executions={_HASH: _execution(_HASH)})
-
-    assert _group_executions_by_payment(pool, registry, PaymentType.superfluid) == {}
-    hold_groups = _group_executions_by_payment(pool, registry, PaymentType.hold)
-    assert hold_groups["0xabc"][Chain.ETH][0].vm_hash == _HASH
+    registry = _registry_with(_HASH, payment=None)
+    assert _group_executions_by_payment([_info(_HASH)], registry, PaymentType.superfluid) == {}
+    hold = _group_executions_by_payment([_info(_HASH)], registry, PaymentType.hold)
+    assert hold["0xabc"][Chain.ETH][0].vm_id == str(_HASH)
 
 
 def test_grouping_skips_stopped_and_diagnostic_executions():
     payment = Payment(chain=Chain.ETH, type=PaymentType.hold)
     registry = _registry_with(_HASH, payment=payment)
-    diag = SimpleNamespace(vm_hash=ItemHash(settings.CHECK_FASTAPI_VM_ID), is_running=True)
-    registry.record(
-        diag.vm_hash,
-        message=SimpleNamespace(payment=payment, address="0xabc"),
-        original=MagicMock(),
-        persistent=True,
-    )
-    legacy = SimpleNamespace(vm_hash=ItemHash(settings.LEGACY_CHECK_FASTAPI_VM_ID), is_running=True)
-    registry.record(
-        legacy.vm_hash,
-        message=SimpleNamespace(payment=payment, address="0xabc"),
-        original=MagicMock(),
-        persistent=True,
-    )
-    pool = SimpleNamespace(
-        executions={
-            _HASH: _execution(_HASH, is_running=False),  # stopped -> skipped
-            diag.vm_hash: diag,  # diagnostic -> skipped
-            legacy.vm_hash: legacy,  # legacy diagnostic -> skipped
-        }
-    )
-
-    assert _group_executions_by_payment(pool, registry, PaymentType.hold) == {}
+    for diag_id in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
+        registry.record(
+            ItemHash(diag_id),
+            message=SimpleNamespace(payment=payment, address="0xabc"),
+            original=MagicMock(),
+            persistent=True,
+        )
+    infos = [
+        _info(_HASH, running=False),
+        _info(ItemHash(settings.CHECK_FASTAPI_VM_ID)),
+        _info(ItemHash(settings.LEGACY_CHECK_FASTAPI_VM_ID)),
+    ]
+    assert _group_executions_by_payment(infos, registry, PaymentType.hold) == {}
 
 
 @pytest.mark.asyncio
@@ -160,3 +150,16 @@ def test_pool_has_no_message_reads():
     source = inspect.getsource(pool_module)
     assert "execution.message" not in source
     assert "get_executions_by_address" not in source
+
+
+def test_payment_grouping_has_no_pool_status_reads():
+    """check_payment / grouping must read VM status from VmInfo, not pool executions."""
+    import inspect
+
+    from aleph.vm.orchestrator import tasks
+
+    for fn in (tasks._group_executions_by_payment, tasks.check_payment):
+        source = inspect.getsource(fn)
+        assert "pool.executions" not in source
+        assert ".is_running" not in source
+        assert ".is_confidential" not in source
