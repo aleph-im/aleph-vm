@@ -5,6 +5,8 @@ from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
 from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.update_watcher import UpdateWatcher
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
@@ -45,13 +47,25 @@ class Reactor:
     pool: VmPool
     supervisor: Supervisor
     expiry: ExpiryManager
+    update_watcher: UpdateWatcher
+    registry: AgentVmRegistry
     listeners: list[AlephMessage]
 
-    def __init__(self, pubsub: PubSub, pool: VmPool, supervisor: Supervisor, expiry: ExpiryManager):
+    def __init__(
+        self,
+        pubsub: PubSub,
+        pool: VmPool,
+        supervisor: Supervisor,
+        expiry: ExpiryManager,
+        update_watcher: UpdateWatcher,
+        registry: AgentVmRegistry,
+    ):
         self.pubsub = pubsub
         self.pool = pool
         self.supervisor = supervisor
         self.expiry = expiry
+        self.update_watcher = update_watcher
+        self.registry = registry
         self.listeners = []
 
     async def trigger(self, message: AlephMessage):
@@ -77,6 +91,8 @@ class Reactor:
                             pool=self.pool,
                             supervisor=self.supervisor,
                             expiry=self.expiry,
+                            update_watcher=self.update_watcher,
+                            registry=self.registry,
                         )
                     )
                     break
