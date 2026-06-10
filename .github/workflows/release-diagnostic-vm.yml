@@ -1,0 +1,77 @@
+---
+name: "Release Diagnostic VM"
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'ALEPH channel to deploy to'
+        required: false
+        default: 'aleph-vm-ci'
+        type: string
+      runtime_hash:
+        description: 'Runtime hash to use (leave empty for default)'
+        required: false
+        type: string
+
+
+jobs:
+  build_and_deploy_diagnostic_vm:
+    name: "Build and Deploy Diagnostic VM"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build rootfs
+        uses: ./.github/actions/build-rootfs
+        with:
+          os: debian-12
+          artifact-name: aleph-debian-12-python.squashfs
+
+      - name: Build diagnostic VM package
+        run: |
+          cd examples
+          zip -r diagnostic_vm.zip example_fastapi
+          ls -lh diagnostic_vm.zip
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install aleph-client
+        run: |
+          pip install aleph-client
+
+      - name: Extract diagnostic VM
+        run: |
+          cd examples
+          unzip diagnostic_vm.zip -d ../artifacts
+          ls -la ../artifacts
+
+      - name: Upload diagnostic VM to ALEPH network
+        env:
+          PRIVATE_KEY: ${{ secrets.ALEPH_WALLET_PRIVATE_KEY }}
+        run: |
+          # Build the command
+          CMD="aleph program upload ./artifacts/example_fastapi main:app --private-key $PRIVATE_KEY --channel ${{ inputs.channel }} --print-messages"
+
+          # Add runtime hash if provided
+          if [ -n "${{ inputs.runtime_hash }}" ]; then
+            CMD="$CMD --runtime ${{ inputs.runtime_hash }}"
+          fi
+
+          echo "Deploying diagnostic VM..."
+          eval $CMD
+
+          echo "✅ Diagnostic VM deployed successfully to channel: ${{ inputs.channel }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-vm-release
+          path: |-
+            examples/diagnostic_vm.zip
+            runtimes/aleph-debian-12-python/rootfs.squashfs
