@@ -207,6 +207,10 @@ jobs:
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
           echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> supervisor.env
           echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> supervisor.env
+          # Pin public resolvers for guest VMs: DNS auto-detection on the droplet
+          # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
+          # which is unreachable from inside the VMs and breaks all guest DNS.
+          echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
@@ -277,7 +281,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm-runtime
     timeout-minutes: 10
-    needs: build_deb
+    needs: [build_deb, build_example_venv_volume]
 
     steps:
       - name: Checkout repository
@@ -327,6 +331,15 @@ jobs:
           name: "aleph-vm.debian-12.deb"
           path: packaging/target/
 
+      # The supervisor requires the example venv volume when running with fake data
+      # (ALEPH_VM_FAKE_DATA_VOLUME, asserted at startup). It is built by the
+      # build_example_venv_volume job; place it where `scp -pr ./examples` ships it.
+      - uses: actions/download-artifact@v4
+        name: "Download the example venv volume from artifacts."
+        with:
+          name: "example-volume-venv.squashfs"
+          path: examples/volumes/
+
       #      - name: Build Debian Package
       #        run: |
       #          cd packaging && make all-podman-debian-12 && cd ..
@@ -354,6 +367,10 @@ jobs:
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
           echo ALEPH_VM_FAKE_DATA_PROGRAM=/opt/examples/example_fastapi >> supervisor.env
           echo ALEPH_VM_FAKE_DATA_RUNTIME=/opt/rootfs.squashfs >> supervisor.env
+          # Pin public resolvers for guest VMs: DNS auto-detection on the droplet
+          # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
+          # which is unreachable from inside the VMs and breaks all guest DNS.
+          echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
