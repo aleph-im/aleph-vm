@@ -200,8 +200,8 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         ],
         control_socket_path=_control_socket_path(execution),
         runtime_version=_runtime_version(execution),
-        ipv4_gateway=str(tap.host_ip.ip) if tap else "",
-        ipv6_gateway=str(tap.host_ipv6.ip) if tap else "",
+        ipv4_gateway=str(tap.host_ip.ip) if tap and getattr(tap, "host_ip", None) else "",
+        ipv6_gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
     )
 
 

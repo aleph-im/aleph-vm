@@ -6,6 +6,7 @@ from aleph_message.models.execution.environment import Subscription
 
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
+from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
@@ -59,6 +60,7 @@ class Reactor:
         expiry: ExpiryManager,
         update_watcher: UpdateWatcher,
         registry: AgentVmRegistry,
+        program_client: ProgramGuestClient,
     ):
         self.pubsub = pubsub
         self.pool = pool
@@ -66,6 +68,7 @@ class Reactor:
         self.expiry = expiry
         self.update_watcher = update_watcher
         self.registry = registry
+        self.program_client = program_client
         self.listeners = []
 
     async def trigger(self, message: AlephMessage):
@@ -93,6 +96,7 @@ class Reactor:
                             expiry=self.expiry,
                             update_watcher=self.update_watcher,
                             registry=self.registry,
+                            program_client=self.program_client,
                         )
                     )
                     break

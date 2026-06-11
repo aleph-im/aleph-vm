@@ -20,6 +20,7 @@ from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
+from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
@@ -170,10 +171,25 @@ def setup_webapp(pool: VmPool | None):
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
-    # Each idle-teardown facility cancels the other's timer when it reaps a VM,
-    # so an expired or updated VM never leaks the sibling's pending task.
-    app["expiry"].on_reaped = app["update_watcher"].cancel
-    app["update_watcher"].on_reaped = app["expiry"].cancel
+    app["program_client"] = ProgramGuestClient()
+
+    # When a reaper tears a VM down: each idle-teardown facility cancels the
+    # other's timer (an expired or updated VM never leaks the sibling's pending
+    # task), and the agent's guest-side program state (guest API process,
+    # configured mark) is dropped.
+    def _drop_program_guest_state(vm_id) -> None:
+        asyncio.get_running_loop().create_task(app["program_client"].forget(vm_id))
+
+    def _on_expiry_reaped(vm_id) -> None:
+        app["update_watcher"].cancel(vm_id)
+        _drop_program_guest_state(vm_id)
+
+    def _on_update_reaped(vm_id) -> None:
+        app["expiry"].cancel(vm_id)
+        _drop_program_guest_state(vm_id)
+
+    app["expiry"].on_reaped = _on_expiry_reaped
+    app["update_watcher"].on_reaped = _on_update_reaped
     app["backup_state"] = BackupState()
     cors = setup(
         app,
@@ -287,6 +303,13 @@ async def stop_update_watcher(app: web.Application) -> None:
         await update_watcher.cancel_all()
 
 
+async def stop_program_client(app: web.Application) -> None:
+    """on_cleanup hook: stop the agent-owned guest API processes."""
+    program_client = app.get("program_client")
+    if program_client is not None:
+        await program_client.forget_all()
+
+
 async def _run_migration_reaper(app: web.Application) -> None:
     """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
     pool = app.get("vm_pool")
@@ -354,6 +377,7 @@ def run():
 
         app.on_cleanup.append(stop_expiry_manager)
         app.on_cleanup.append(stop_update_watcher)
+        app.on_cleanup.append(stop_program_client)
         app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.orchestrator.http import close_session, reset_session
