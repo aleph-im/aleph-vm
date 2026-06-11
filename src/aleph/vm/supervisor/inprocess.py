@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -416,8 +417,10 @@ class InProcessSupervisor(Supervisor):
         try:
             while True:
                 log_type, message = await queue.get()
-                # Live queue items carry no timestamp; 0 is the "live" sentinel.
-                yield LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type))
+                # Live queue items carry no timestamp; stamp at capture so
+                # the wire never carries a magic 0 (which clients rendered
+                # as the 1970 epoch).
+                yield LogChunk(timestamp_ns=time.time_ns(), line=message, source=_log_source(log_type))
                 queue.task_done()
         finally:
             execution.vm.unregister_queue(queue)
