@@ -192,6 +192,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
         gpus=[pb.GpuConfig(pci_host=str(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in spec.gpus],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
+        program_mode=spec.program_mode,
     )
     if spec.tee is not None:
         request.tee.CopyFrom(
@@ -232,6 +233,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
+        program_mode=msg.program_mode,
     )
 
 
@@ -274,6 +276,10 @@ def vm_info_to_pb(info: VmInfo) -> pb.VmInfo:
         is_instance=info.is_instance,
         confidential_mode=CONFIDENTIAL_MODE_TO_PB[info.confidential_mode],
         gpus=[gpu_device_to_pb(gpu) for gpu in info.gpus],
+        control_socket_path=info.control_socket_path,
+        runtime_version=info.runtime_version,
+        ipv4_gateway=info.ipv4_gateway,
+        ipv6_gateway=info.ipv6_gateway,
     )
     if info.numa_node is not None:
         msg.numa_node = info.numa_node
@@ -302,6 +308,10 @@ def vm_info_from_pb(msg: pb.VmInfo) -> VmInfo:
         is_instance=msg.is_instance,
         confidential_mode=CONFIDENTIAL_MODE_FROM_PB[msg.confidential_mode],
         gpus=[gpu_device_from_pb(gpu) for gpu in msg.gpus],
+        control_socket_path=msg.control_socket_path,
+        runtime_version=msg.runtime_version,
+        ipv4_gateway=msg.ipv4_gateway,
+        ipv6_gateway=msg.ipv6_gateway,
     )
 
 

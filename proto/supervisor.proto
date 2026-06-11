@@ -141,6 +141,11 @@ message CreateVmRequest {
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
   bool persistent = 12;              // supervisor wraps in systemd if true
   repeated string ssh_authorized_keys = 13; // guest cloud-init SSH keys (agent-provided)
+  // Program boot flow: the supervisor enables the VMM control socket (vsock),
+  // waits for the guest init's ready signal as part of boot, and reports the
+  // socket in VmInfo.control_socket_path. It carries no Aleph vocabulary: the
+  // payloads the agent exchanges over that socket are opaque to the supervisor.
+  bool program_mode = 14;
 }
 
 message DiskConfig {
@@ -225,6 +230,20 @@ message VmInfo {
 
   ConfidentialMode confidential_mode = 19;   // precise TEE mode; NONE for non-confidential VMs
   repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
+
+  // Host UDS path of the VM's control socket (Firecracker vsock). The agent
+  // dials it for guest-level protocols (program config push, code execution)
+  // and binds `<path>_<port>` listeners for guest-initiated connections.
+  // Empty for backends without one (program_mode VMs only today).
+  string control_socket_path = 21;
+  // Version string the guest init reported during the boot handshake; empty
+  // until the init signaled (or for VMs without the handshake). The agent
+  // formats its guest payloads according to this version.
+  string runtime_version = 22;
+  // Host-side tap addresses (no prefix). The agent passes them to the guest
+  // as default routes in its network configuration push.
+  string ipv4_gateway = 23;
+  string ipv6_gateway = 24;
 }
 
 message GetVmRequest      { string vm_id = 1; }

@@ -76,6 +76,7 @@ MINIMAL_SPEC = CreateVmSpec(
     gpus=[],
     numa_node=None,
     persistent=False,
+    program_mode=True,
 )
 
 FULL_VM_INFO = VmInfo(
@@ -99,6 +100,10 @@ FULL_VM_INFO = VmInfo(
     is_instance=True,
     confidential_mode=ConfidentialMode.SEV_ES,
     gpus=[GpuDevice(pci_host=PciAddress("0000:01:00.0"), device_id="10de:2204", model="RTX 3090", supports_x_vga=True)],
+    control_socket_path="/var/lib/aleph/vm/jailer/firecracker/3/root/tmp/v.sock",
+    runtime_version="2.0.0",
+    ipv4_gateway="172.16.4.1",
+    ipv6_gateway="fd00::1",
 )
 
 

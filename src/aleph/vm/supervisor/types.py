@@ -160,6 +160,11 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
+    # Program boot flow: enable the VMM control socket (vsock), wait for the
+    # guest init's ready signal as part of boot, and report the socket in
+    # VmInfo.control_socket_path. The guest-level protocols spoken over that
+    # socket are the agent's business, opaque to the supervisor.
+    program_mode: bool = False
 
     @property
     def rootfs(self) -> DiskSpec | None:
@@ -218,6 +223,16 @@ class VmInfo:
     confidential_mode: ConfidentialMode = ConfidentialMode.NONE
     # Exact PCI devices attached to this VM; mirrors HostInfo.gpus.
     gpus: list[GpuDevice] = field(default_factory=list)
+    # Host UDS path of the VM's control socket (Firecracker vsock); empty for
+    # backends without one. The agent dials it for guest-level protocols and
+    # binds `<path>_<port>` listeners for guest-initiated connections.
+    control_socket_path: str = ""
+    # Version the guest init reported during the boot handshake; empty until
+    # the init signaled (or for VMs without the handshake).
+    runtime_version: str = ""
+    # Host-side tap addresses (no prefix); the guest's default routes.
+    ipv4_gateway: str = ""
+    ipv6_gateway: str = ""
 
 
 @dataclass(frozen=True)

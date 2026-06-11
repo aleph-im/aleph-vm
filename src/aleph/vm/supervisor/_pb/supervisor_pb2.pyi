@@ -393,6 +393,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     NUMA_NODE_FIELD_NUMBER: builtins.int
     PERSISTENT_FIELD_NUMBER: builtins.int
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
+    PROGRAM_MODE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -406,6 +407,12 @@ class CreateVmRequest(google.protobuf.message.Message):
     """requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement."""
     persistent: builtins.bool
     """supervisor wraps in systemd if true"""
+    program_mode: builtins.bool
+    """Program boot flow: the supervisor enables the VMM control socket (vsock),
+    waits for the guest init's ready signal as part of boot, and reports the
+    socket in VmInfo.control_socket_path. It carries no Aleph vocabulary: the
+    payloads the agent exchanges over that socket are opaque to the supervisor.
+    """
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -436,9 +443,10 @@ class CreateVmRequest(google.protobuf.message.Message):
         numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
+        program_mode: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "program_mode", b"program_mode", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___CreateVmRequest = CreateVmRequest
@@ -599,6 +607,10 @@ class VmInfo(google.protobuf.message.Message):
     IS_INSTANCE_FIELD_NUMBER: builtins.int
     CONFIDENTIAL_MODE_FIELD_NUMBER: builtins.int
     GPUS_FIELD_NUMBER: builtins.int
+    CONTROL_SOCKET_PATH_FIELD_NUMBER: builtins.int
+    RUNTIME_VERSION_FIELD_NUMBER: builtins.int
+    IPV4_GATEWAY_FIELD_NUMBER: builtins.int
+    IPV6_GATEWAY_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     status: global___VmStatus.ValueType
     ipv4: builtins.str
@@ -627,6 +639,22 @@ class VmInfo(google.protobuf.message.Message):
     """
     confidential_mode: global___ConfidentialMode.ValueType
     """precise TEE mode; NONE for non-confidential VMs"""
+    control_socket_path: builtins.str
+    """Host UDS path of the VM's control socket (Firecracker vsock). The agent
+    dials it for guest-level protocols (program config push, code execution)
+    and binds `<path>_<port>` listeners for guest-initiated connections.
+    Empty for backends without one (program_mode VMs only today).
+    """
+    runtime_version: builtins.str
+    """Version string the guest init reported during the boot handshake; empty
+    until the init signaled (or for VMs without the handshake). The agent
+    formats its guest payloads according to this version.
+    """
+    ipv4_gateway: builtins.str
+    """Host-side tap addresses (no prefix). The agent passes them to the guest
+    as default routes in its network configuration push.
+    """
+    ipv6_gateway: builtins.str
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]:
         """exact PCI devices attached to this VM (mirrors HostInfo.gpus)"""
@@ -654,9 +682,13 @@ class VmInfo(google.protobuf.message.Message):
         is_instance: builtins.bool = ...,
         confidential_mode: global___ConfidentialMode.ValueType = ...,
         gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
+        control_socket_path: builtins.str = ...,
+        runtime_version: builtins.str = ...,
+        ipv4_gateway: builtins.str = ...,
+        ipv6_gateway: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "control_socket_path", b"control_socket_path", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "ipv4", b"ipv4", "ipv4_gateway", b"ipv4_gateway", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_gateway", b"ipv6_gateway", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "runtime_version", b"runtime_version", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___VmInfo = VmInfo

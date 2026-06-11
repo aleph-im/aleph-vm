@@ -152,6 +152,20 @@ def _confidential_mode(execution) -> ConfidentialMode:
     return ConfidentialMode.SEV
 
 
+def _control_socket_path(execution) -> str:
+    """Host UDS of the VM's vsock; programs only (the guest-protocol seam)."""
+    fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
+    if execution.is_program and fvm is not None:
+        return str(fvm.vsock_path)
+    return ""
+
+
+def _runtime_version(execution) -> str:
+    fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
+    runtime_config = getattr(fvm, "runtime_config", None) if fvm is not None else None
+    return runtime_config.version if runtime_config else ""
+
+
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
@@ -184,6 +198,10 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
             )
             for g in execution.gpus
         ],
+        control_socket_path=_control_socket_path(execution),
+        runtime_version=_runtime_version(execution),
+        ipv4_gateway=str(tap.host_ip.ip) if tap else "",
+        ipv6_gateway=str(tap.host_ipv6.ip) if tap else "",
     )
 
 
