@@ -406,8 +406,10 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
+        if spec.backend is Backend.FIRECRACKER and spec.program_mode:
+            return await self._create_program_from_spec(spec)
         if spec.backend is not Backend.QEMU:
-            msg = f"create_vm_from_spec supports QEMU only, got {spec.backend}"
+            msg = f"create_vm_from_spec supports QEMU instances and Firecracker programs, got {spec.backend}"
             raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)
@@ -447,6 +449,62 @@ class VmPool:
                 execution.mapped_ports = await get_port_mappings(vm_hash)
                 if execution.mapped_ports:
                     await execution.recreate_port_redirect_rules()
+            except Exception:
+                if execution.vm:
+                    await execution.vm.teardown()
+                elif tap_interface and vm_id is not None:
+                    teardown_nftables_for_vm(vm_id)
+                    await tap_interface.delete()
+                self.forget_vm(vm_hash)
+                raise
+
+            self._schedule_forget_on_stop(execution)
+            return execution
+
+    async def _create_program_from_spec(self, spec: CreateVmSpec) -> VmExecution:
+        """Message-free program (microvm) boot.
+
+        Boots the Firecracker VM from the spec's resolved paths, waits for the
+        guest init's ready signal (part of boot for program-mode VMs), and
+        returns. The guest-level protocols — config push, code execution, the
+        guest API — are the agent's business over the vsock control socket
+        reported in VmInfo.control_socket_path. Admission for spec-built VMs
+        is the agent's responsibility (see check_admission docstring).
+        """
+        if spec.persistent:
+            msg = "Persistent programs are not supported by the spec path yet; use the legacy create path"
+            raise InvalidBackendError(msg)
+
+        vm_hash = ItemHash(spec.vm_id)
+        async with self.creation_lock:
+            current_execution = self.executions.get(vm_hash)
+            if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                return current_execution
+
+            execution = VmExecution.from_spec(
+                spec,
+                snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
+            )
+            self.executions[vm_hash] = execution
+
+            tap_interface = None
+            vm_id = None
+            try:
+                await execution.prepare()  # resolves resources from the spec; no download
+
+                vm_id = self.get_unique_vm_id()
+
+                if self.network and spec.network.internet_access:
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, VmType.microvm)
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
+                    await self.network.create_tap(vm_id, tap_interface)
+
+                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                # start() boots the VMM and blocks through the init-ready
+                # handshake; configure() is a no-op for ephemeral programs.
+                await execution.start()
             except Exception:
                 if execution.vm:
                     await execution.vm.teardown()

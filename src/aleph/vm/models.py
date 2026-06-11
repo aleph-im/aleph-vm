@@ -29,6 +29,10 @@ from aleph.vm.controllers.firecracker.program import (
     AlephProgramResources,
 )
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.controllers.firecracker.spec_program import (
+    SpecFirecrackerProgram,
+    SpecProgramResources,
+)
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.controllers.qemu_confidential.instance import (
@@ -125,7 +129,12 @@ class VmExecution:
     # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
     spec: MessageSpec | CreateVmSpec
     resources: (
-        AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
+        AlephProgramResources
+        | AlephInstanceResources
+        | AlephQemuResources
+        | AlephQemuConfidentialInstance
+        | SpecProgramResources
+        | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: list[HostGPU]
@@ -511,7 +520,10 @@ class VmExecution:
 
             if isinstance(self.spec, CreateVmSpec):
                 # Spec path: every path is already resolved on disk; no download.
-                self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
+                if self.spec.backend is Backend.FIRECRACKER:
+                    self.resources = SpecProgramResources.from_spec(self.spec)
+                else:
+                    self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 self.times.prepared_at = datetime.now(tz=timezone.utc)
                 return
 
@@ -584,6 +596,17 @@ class VmExecution:
 
         vm: AlephVmControllerInterface
         if isinstance(self.spec, CreateVmSpec):
+            if self.spec.backend is Backend.FIRECRACKER:
+                assert isinstance(self.resources, SpecProgramResources)
+                self.vm = vm = SpecFirecrackerProgram(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    spec=self.spec,
+                    resources=self.resources,
+                    tap_interface=tap_interface,
+                    prepare_jailer=prepare,
+                )
+                return vm
             assert isinstance(self.resources, AlephQemuResources)
             hardware_resources = MachineResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
             self.vm = vm = AlephQemuInstance(
