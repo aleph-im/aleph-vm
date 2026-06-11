@@ -8,6 +8,11 @@ aborted without a trailer still maps to a sensible class).
 
 The channel is created lazily on first use so the object can be constructed
 before an event loop exists (e.g. at app wiring time).
+
+Every unary call carries a deadline: gRPC's default is no deadline at all,
+so a wedged supervisor would otherwise hang the agent's HTTP handler
+forever. Streams (logs, events, backup download) are long-lived by design
+and carry none.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import grpc
+from google.protobuf.message import Message
 
 from aleph.vm.supervisor import proto_convert as conv
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
@@ -64,6 +70,13 @@ from aleph.vm.supervisor.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Deadlines, in seconds. QUERY covers reads and quick host-side mutations
+# (port forwarding, journald reads); LIFECYCLE covers operations that boot or
+# tear down VMs — bounded by the spec's ready timeout plus VMM overhead, and
+# by in-flight run draining on the way down.
+QUERY_TIMEOUT_SECS = 30.0
+LIFECYCLE_TIMEOUT_SECS = 300.0
 
 ERROR_CLASS_BY_CODE: dict[ErrorCode, type[SupervisorError]] = {
     ErrorCode.VM_NOT_FOUND: VmNotFoundError,
@@ -135,111 +148,80 @@ class GrpcSupervisor(Supervisor):
             self._channel = None
             self._stub = None
 
+    async def _unary(self, method: str, request: Message, timeout: float):
+        """One unary RPC with a deadline, errors rebuilt class-exact."""
+        try:
+            return await getattr(self._ensure_stub(), method)(request, timeout=timeout)
+        except grpc.aio.AioRpcError as error:
+            raise translate_rpc_error(error) from error
+
     # ── Host ──
     async def health(self) -> HealthInfo:
-        try:
-            reply = await self._ensure_stub().Health(pb.HealthRequest())
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
-        return conv.health_info_from_pb(reply)
+        return conv.health_info_from_pb(await self._unary("Health", pb.HealthRequest(), QUERY_TIMEOUT_SECS))
 
     async def get_host_info(self) -> HostInfo:
-        try:
-            reply = await self._ensure_stub().GetHostInfo(pb.GetHostInfoRequest())
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
-        return conv.host_info_from_pb(reply)
+        return conv.host_info_from_pb(await self._unary("GetHostInfo", pb.GetHostInfoRequest(), QUERY_TIMEOUT_SECS))
 
     # ── Lifecycle ──
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().CreateVm(conv.create_vm_spec_to_pb(spec))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("CreateVm", conv.create_vm_spec_to_pb(spec), LIFECYCLE_TIMEOUT_SECS)
         return conv.vm_info_from_pb(reply)
 
     async def get_vm(self, vm_id: VmId) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().GetVm(pb.GetVmRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("GetVm", pb.GetVmRequest(vm_id=str(vm_id)), QUERY_TIMEOUT_SECS)
         return conv.vm_info_from_pb(reply)
 
     async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
-        try:
-            reply = await self._ensure_stub().GetVmSpec(pb.GetVmSpecRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("GetVmSpec", pb.GetVmSpecRequest(vm_id=str(vm_id)), QUERY_TIMEOUT_SECS)
         return conv.create_vm_spec_from_pb(reply)
 
     async def list_vms(self) -> list[VmInfo]:
-        try:
-            reply = await self._ensure_stub().ListVms(pb.ListVmsRequest())
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("ListVms", pb.ListVmsRequest(), QUERY_TIMEOUT_SECS)
         return [conv.vm_info_from_pb(info) for info in reply.vms]
 
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
-        try:
-            await self._ensure_stub().DeleteVm(pb.DeleteVmRequest(vm_id=str(vm_id), wipe=wipe))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        await self._unary("DeleteVm", pb.DeleteVmRequest(vm_id=str(vm_id), wipe=wipe), LIFECYCLE_TIMEOUT_SECS)
 
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().StopVm(pb.StopVmRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("StopVm", pb.StopVmRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
         return conv.vm_info_from_pb(reply)
 
     async def start_vm(self, vm_id: VmId) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().StartVm(pb.StartVmRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("StartVm", pb.StartVmRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
         return conv.vm_info_from_pb(reply)
 
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().RebootVm(pb.RebootVmRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("RebootVm", pb.RebootVmRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
         return conv.vm_info_from_pb(reply)
 
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().ReinstallVm(
-                pb.ReinstallVmRequest(vm_id=str(vm_id), wipe_volumes=wipe_volumes)
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "ReinstallVm",
+            pb.ReinstallVmRequest(vm_id=str(vm_id), wipe_volumes=wipe_volumes),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
         return conv.vm_info_from_pb(reply)
 
     # ── Port forwarding ──
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
-        try:
-            reply = await self._ensure_stub().AddPortForward(conv.port_forward_spec_to_pb(spec))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("AddPortForward", conv.port_forward_spec_to_pb(spec), QUERY_TIMEOUT_SECS)
         return conv.port_forward_info_from_pb(reply)
 
     async def remove_port_forward(self, vm_id: VmId, host_port: HostPort, protocol: Protocol) -> None:
-        try:
-            await self._ensure_stub().RemovePortForward(
-                pb.RemovePortForwardRequest(
-                    vm_id=str(vm_id), host_port=int(host_port), protocol=conv.PROTOCOL_TO_PB[protocol]
-                )
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        await self._unary(
+            "RemovePortForward",
+            pb.RemovePortForwardRequest(
+                vm_id=str(vm_id), host_port=int(host_port), protocol=conv.PROTOCOL_TO_PB[protocol]
+            ),
+            QUERY_TIMEOUT_SECS,
+        )
 
     async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]:
-        try:
-            reply = await self._ensure_stub().ListPortForwards(
-                pb.ListPortForwardsRequest(vm_id=str(vm_id) if vm_id is not None else "")
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "ListPortForwards",
+            pb.ListPortForwardsRequest(vm_id=str(vm_id) if vm_id is not None else ""),
+            QUERY_TIMEOUT_SECS,
+        )
         return [conv.port_forward_info_from_pb(info) for info in reply.forwards]
 
     # ── Events ──
@@ -255,12 +237,11 @@ class GrpcSupervisor(Supervisor):
 
     # ── Logs ──
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:
-        try:
-            reply = await self._ensure_stub().GetLogs(
-                pb.GetLogsRequest(vm_id=str(vm_id), max_lines=max_lines, from_tail=from_tail)
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "GetLogs",
+            pb.GetLogsRequest(vm_id=str(vm_id), max_lines=max_lines, from_tail=from_tail),
+            QUERY_TIMEOUT_SECS,
+        )
         return [conv.log_chunk_from_pb(chunk) for chunk in reply.lines]
 
     async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]:
@@ -275,30 +256,27 @@ class GrpcSupervisor(Supervisor):
 
     # ── Backups ──
     async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
-        try:
-            reply = await self._ensure_stub().StartBackup(
-                pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest)
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "StartBackup",
+            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
         return conv.backup_info_from_pb(reply)
 
     async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo:
-        try:
-            reply = await self._ensure_stub().GetBackupStatus(
-                pb.GetBackupStatusRequest(vm_id=str(vm_id), backup_id=str(backup_id))
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "GetBackupStatus",
+            pb.GetBackupStatusRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
+            QUERY_TIMEOUT_SECS,
+        )
         return conv.backup_info_from_pb(reply)
 
     async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]:
-        try:
-            reply = await self._ensure_stub().ListBackups(
-                pb.ListBackupsRequest(vm_id=str(vm_id) if vm_id is not None else "")
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "ListBackups",
+            pb.ListBackupsRequest(vm_id=str(vm_id) if vm_id is not None else ""),
+            QUERY_TIMEOUT_SECS,
+        )
         return [conv.backup_info_from_pb(info) for info in reply.backups]
 
     async def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]:
@@ -312,68 +290,62 @@ class GrpcSupervisor(Supervisor):
             call.cancel()
 
     async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None:
-        try:
-            await self._ensure_stub().DeleteBackup(pb.DeleteBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        await self._unary(
+            "DeleteBackup",
+            pb.DeleteBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
+            QUERY_TIMEOUT_SECS,
+        )
 
     async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().RestoreBackup(
-                pb.RestoreBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id))
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "RestoreBackup",
+            pb.RestoreBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
         return conv.vm_info_from_pb(reply)
 
     # ── Migration ──
     async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
-        try:
-            reply = await self._ensure_stub().ExportVm(
-                pb.ExportVmRequest(vm_id=str(vm_id), destination_dir=str(destination_dir))
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "ExportVm",
+            pb.ExportVmRequest(vm_id=str(vm_id), destination_dir=str(destination_dir)),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
         return conv.migration_info_from_pb(reply)
 
     async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
-        try:
-            reply = await self._ensure_stub().ImportVm(pb.ImportVmRequest(vm_id=str(vm_id), source_dir=str(source_dir)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "ImportVm",
+            pb.ImportVmRequest(vm_id=str(vm_id), source_dir=str(source_dir)),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
         return conv.vm_info_from_pb(reply)
 
     async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
-        try:
-            reply = await self._ensure_stub().GetMigrationStatus(
-                pb.GetMigrationStatusRequest(vm_id=str(vm_id), migration_id=str(migration_id))
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary(
+            "GetMigrationStatus",
+            pb.GetMigrationStatusRequest(vm_id=str(vm_id), migration_id=str(migration_id)),
+            QUERY_TIMEOUT_SECS,
+        )
         return conv.migration_info_from_pb(reply)
 
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
-        try:
-            await self._ensure_stub().InitializeConfidential(
-                pb.InitializeConfidentialRequest(vm_id=str(vm_id), session_bytes=session_bytes, godh_bytes=godh_bytes)
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        await self._unary(
+            "InitializeConfidential",
+            pb.InitializeConfidentialRequest(vm_id=str(vm_id), session_bytes=session_bytes, godh_bytes=godh_bytes),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
 
     async def get_measurement(self, vm_id: VmId) -> Measurement:
-        try:
-            reply = await self._ensure_stub().GetMeasurement(pb.GetMeasurementRequest(vm_id=str(vm_id)))
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        reply = await self._unary("GetMeasurement", pb.GetMeasurementRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
         return conv.measurement_from_pb(reply)
 
     async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None:
-        try:
-            await self._ensure_stub().InjectSecret(
-                pb.InjectSecretRequest(
-                    vm_id=str(vm_id), secret_header_bytes=secret_header_bytes, secret_bytes=secret_bytes
-                )
-            )
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
+        await self._unary(
+            "InjectSecret",
+            pb.InjectSecretRequest(
+                vm_id=str(vm_id), secret_header_bytes=secret_header_bytes, secret_bytes=secret_bytes
+            ),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
