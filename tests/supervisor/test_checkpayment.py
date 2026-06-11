@@ -2,12 +2,13 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aleph_message.models import Chain, InstanceContent, PaymentType
+from aleph_message.models import Chain, InstanceContent, ItemHash, PaymentType
 from aleph_message.status import MessageStatus
 
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.tasks import check_payment
+from aleph.vm.orchestrator.tasks import _group_executions_by_payment, check_payment
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.types import VmId
 
@@ -44,9 +45,9 @@ def _make_supervisor() -> MagicMock:
     return MagicMock(delete_vm=AsyncMock())
 
 
-def _make_registry() -> MagicMock:
-    """Return a fake AgentVmRegistry with a no-op forget."""
-    return MagicMock(forget=MagicMock())
+def _make_registry() -> AgentVmRegistry:
+    """Return a real AgentVmRegistry (check_payment groups via the registry)."""
+    return AgentVmRegistry()
 
 
 @pytest.mark.asyncio
@@ -95,8 +96,9 @@ async def test_enough_flow(mocker, fake_instance_content):
     assert execution.times.started_at is None
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -152,8 +154,9 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
     assert execution.times.started_at is None
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -192,8 +195,9 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     )
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -202,7 +206,7 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called
     # (VM may be re-paid and restarted).
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
-    registry.forget.assert_not_called()
+    assert ItemHash(hash) in registry
 
 
 @pytest.mark.asyncio
@@ -241,8 +245,9 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     )
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -250,7 +255,7 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
 
     # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called.
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
-    registry.forget.assert_not_called()
+    assert ItemHash(hash) in registry
 
 
 @pytest.mark.asyncio
@@ -282,15 +287,16 @@ async def test_message_removing_status(mocker, fake_instance_content):
     )
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
     await check_payment(pool=pool, supervisor=supervisor, registry=registry)
 
     supervisor.delete_vm.assert_not_called()
-    registry.forget.assert_not_called()
+    assert ItemHash(hash) in registry
 
 
 @pytest.mark.asyncio
@@ -324,8 +330,9 @@ async def test_removed_message_status(mocker, fake_instance_content):
     )
 
     pool.executions = {hash: execution}
+    registry.record(ItemHash(hash), message=message, original=message, persistent=execution.persistent)
 
-    executions_by_sender = pool.get_executions_by_address(payment_type=PaymentType.superfluid)
+    executions_by_sender = _group_executions_by_payment(pool, registry, PaymentType.superfluid)
     assert len(executions_by_sender) == 1
     assert executions_by_sender == {"0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9": {Chain.BASE: [execution]}}
 
@@ -340,5 +347,5 @@ async def test_removed_message_status(mocker, fake_instance_content):
     # Terminal-status dealloc: supervisor.delete_vm + delete_port_mappings (residual) + registry.forget
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
     mock_delete_port_mappings.assert_awaited_once_with(hash)
-    registry.forget.assert_called_once_with(hash)
+    assert ItemHash(hash) not in registry
     # pool.stop_vm and pool.forget_vm must NOT be called

@@ -580,11 +580,17 @@ async def update_allocations(request: web.Request):
         stopped_vms = []
         # Make a copy since the pool is modified
         for execution in list(pool.get_persistent_executions()):
+            # Payment tier comes from the agent registry, not the hypervisor
+            # object: spec-built and restart-restored executions carry no
+            # message, but their registry record (rehydrated from the agent DB)
+            # does. No record behaves as hold-tier, exactly like the old
+            # message-less False.
+            record = registry.get(execution.vm_hash)
             if (
                 execution.vm_hash not in allocations
                 and execution.is_running
-                and not execution.uses_payment_stream
-                and not execution.uses_payment_credit
+                and not (record and record.uses_payment_stream)
+                and not (record and record.uses_payment_credit)
                 and not execution.gpus
                 and not execution.is_confidential
             ):
