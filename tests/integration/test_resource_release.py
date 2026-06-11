@@ -86,8 +86,11 @@ async def test_networked_delete_releases_tap_and_firewall(supervisor):
     try:
         info = await supervisor.create_vm(fc_program_spec(vm_id, internet=True))
         assert info.ipv4.address
-        assert list_tap_interfaces() - taps_before, "expected a new TAP interface for the VM"
-        assert info.ipv4.address in nftables_ruleset()
+        new_taps = list_tap_interfaces() - taps_before
+        assert new_taps, "expected a new TAP interface for the VM"
+        tap_name = new_taps.pop()
+        # The firewall keys its per-VM chains on the TAP interface name.
+        assert tap_name in nftables_ruleset()
     finally:
         await delete_quietly(supervisor, vm_id)
 
@@ -97,9 +100,9 @@ async def test_networked_delete_releases_tap_and_firewall(supervisor):
         message=f"TAP leak: {list_tap_interfaces() - taps_before}",
     )
     await eventually(
-        lambda: info.ipv4.address not in nftables_ruleset(),
+        lambda: tap_name not in nftables_ruleset(),
         timeout=60,
-        message=f"firewall rules for {info.ipv4.address} survived delete",
+        message=f"firewall rules for {tap_name} survived delete",
     )
 
 
@@ -111,10 +114,13 @@ async def test_qemu_delete_releases_unit_tap_and_files(supervisor, daemon, ssh_k
     unit = f"aleph-vm-controller@{vm_id}.service"
     try:
         spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
-        info = await supervisor.create_vm(spec)
+        await supervisor.create_vm(spec)
         assert systemd_unit_active(unit)
         assert vm_processes(vm_id)
-        assert info.ipv4.address in nftables_ruleset()
+        new_taps = list_tap_interfaces() - taps_before
+        assert new_taps, "expected a new TAP interface for the VM"
+        tap_name = new_taps.pop()
+        assert tap_name in nftables_ruleset()
     finally:
         await delete_quietly(supervisor, vm_id)
 
@@ -126,9 +132,9 @@ async def test_qemu_delete_releases_unit_tap_and_files(supervisor, daemon, ssh_k
         message=f"TAP leak: {list_tap_interfaces() - taps_before}",
     )
     await eventually(
-        lambda: info.ipv4.address not in nftables_ruleset(),
+        lambda: tap_name not in nftables_ruleset(),
         timeout=60,
-        message=f"firewall rules for {info.ipv4.address} survived delete",
+        message=f"firewall rules for {tap_name} survived delete",
     )
     await eventually(
         lambda: execution_files(daemon, vm_id) == [],
