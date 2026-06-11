@@ -1,7 +1,7 @@
-"""Tests for VmExecution.wait_for_controller_ready polling logic."""
+"""Tests for VmExecution.wait_for_controller_ready/_stopped polling logic."""
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import InstanceContent, ItemHash
@@ -232,3 +232,81 @@ class TestWaitForControllerReady:
             await ex.wait_for_controller_ready()
 
         assert mgr.get_service_active_state.call_count == 30
+
+
+class TestWaitForControllerStopped:
+    """StopUnit only queues a job; stop() must wait for the unit to really
+    stop before tearing down the network, or qemu dies unflushed."""
+
+    @pytest.mark.asyncio
+    async def test_returns_immediately_when_inactive(self):
+        mgr = MagicMock()
+        mgr.get_service_active_state.return_value = "inactive"
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_stopped()
+
+        mgr.get_service_active_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_waits_through_active_and_deactivating(self):
+        mgr = MagicMock()
+        mgr.get_service_active_state.side_effect = ["active", "deactivating", "inactive"]
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_stopped()
+
+        assert mgr.get_service_active_state.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_failed_counts_as_stopped(self):
+        mgr = MagicMock()
+        mgr.get_service_active_state.return_value = "failed"
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_stopped()
+
+        mgr.get_service_active_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_timeout_without_raising(self):
+        """A unit stuck past systemd's own SIGKILL deadline: log and proceed
+        with teardown rather than blocking stop() forever."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.return_value = "active"
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_stopped()
+
+        assert mgr.get_service_active_state.call_count == 75
+
+
+class TestStopWaitsForController:
+    @pytest.mark.asyncio
+    async def test_teardown_happens_only_after_unit_stopped(self):
+        """The TAP interface must outlive qemu: deleting it while the guest
+        is still shutting down makes qemu abort without flushing the disk."""
+        events: list[str] = []
+        states = iter(["active", "deactivating", "inactive"])
+
+        mgr = MagicMock()
+        mgr.stop_and_disable = MagicMock(side_effect=lambda _svc: events.append("stop_unit"))
+
+        def poll(_svc):
+            events.append("poll")
+            return next(states)
+
+        mgr.get_service_active_state = MagicMock(side_effect=poll)
+
+        ex = _make_execution(mgr)
+        ex.vm = MagicMock()
+        ex.vm.support_snapshot = False
+        ex.vm.teardown = AsyncMock(side_effect=lambda: events.append("teardown"))
+        ex.record_usage = AsyncMock()
+        ex.removed_all_ports_redirection = AsyncMock()
+
+        await ex.stop()
+
+        assert events == ["stop_unit", "poll", "poll", "poll", "teardown"]
+        assert ex.times.stopped_at is not None
+        assert ex.stop_event.is_set()

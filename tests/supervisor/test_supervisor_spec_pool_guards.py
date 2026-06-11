@@ -76,3 +76,37 @@ async def test_forget_on_stop_does_not_remove_a_recreated_execution():
     await asyncio.sleep(0.05)
 
     assert pool.executions.get(_HASH) is new
+
+
+@pytest.mark.asyncio
+async def test_restart_persistent_vm_confirms_controller_before_returning(monkeypatch):
+    """RestartUnit only queues a systemd job: restart must wait until the
+    unit is confirmed active so callers get a truthful RUNNING status and a
+    crash-looping controller fails the start instead of timing out later."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aleph.vm import pool as pool_module
+    from aleph.vm.pool import VmPool
+
+    events: list[str] = []
+
+    execution = VmExecution.from_spec(_spec(), snapshot_manager=None, systemd_manager=MagicMock())
+    execution.save = AsyncMock()
+    execution.wait_for_controller_ready = AsyncMock(side_effect=lambda: events.append("wait_ready"))
+    monkeypatch.setattr(pool_module, "get_port_mappings", AsyncMock(return_value=[]))
+
+    pool = VmPool.__new__(VmPool)
+    pool.executions = {}
+    pool.network = None
+    pool.systemd_manager = MagicMock()
+    pool.systemd_manager.restart = MagicMock(side_effect=lambda _svc: events.append("restart_unit"))
+
+    await pool.restart_persistent_vm(execution)
+
+    assert events == ["restart_unit", "wait_ready"]
+    assert execution.times.started_at is not None
+
+    # Unblock the forget-on-stop task scheduled by the restart.
+    execution.stop_event.set()
+    await asyncio.sleep(0.05)

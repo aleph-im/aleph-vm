@@ -771,6 +771,35 @@ class VmExecution:
         msg = f"{self} controller service did not become active after {max_attempt} attempts"
         raise RuntimeError(msg)
 
+    async def wait_for_controller_stopped(self) -> None:
+        """Block until the controller unit has actually stopped.
+
+        StopUnit only queues a job: the controller then shuts the guest
+        down gracefully (ACPI powerdown, then QMP quit), which can take
+        up to systemd's TimeoutStopSec (60s). Tearing down the TAP
+        interface while qemu is still running makes its tap file
+        descriptor go bad; qemu then aborts without flushing the disk,
+        corrupting the rootfs.
+        """
+        if not self.systemd_manager:
+            return
+        # TimeoutStopSec is 60s, after which systemd SIGKILLs the
+        # controller; poll a little past that before giving up.
+        max_attempt = 75
+        for attempt in range(1, max_attempt + 1):
+            state = self.systemd_manager.get_service_active_state(self.controller_service)
+            if state in ("inactive", "failed"):
+                return
+            logger.debug(
+                "%s controller still '%s' while stopping (attempt %d/%d)",
+                self,
+                state,
+                attempt,
+                max_attempt,
+            )
+            await asyncio.sleep(1)
+        logger.warning("%s controller did not stop after %ds, tearing down anyway", self, max_attempt)
+
     async def non_blocking_wait_for_boot(self):
         """Wait for the controller process and mark the instance as started.
 
@@ -811,6 +840,7 @@ class VmExecution:
                 return
             if self.persistent and self.systemd_manager:
                 self.systemd_manager.stop_and_disable(self.controller_service)
+                await self.wait_for_controller_stopped()
             self.times.stopping_at = datetime.now(tz=timezone.utc)
             await self.all_runs_complete()
             await self.record_usage()

@@ -139,3 +139,7 @@ def remove_controller_configuration(vm_hash: str) -> None:
     get_controller_configuration_path(vm_hash).unlink(missing_ok=True)
     # Written by build_cloud_init_drive / create_cloud_init_drive_image.
     Path(f"{settings.EXECUTION_ROOT}/cloud-init-{vm_hash}.img").unlink(missing_ok=True)
+    # qemu does not unlink its UNIX control sockets on exit; once the VM
+    # is deleted they are dead files (a relaunch would bind over them).
+    for socket_kind in ("monitor", "qmp", "qga"):
+        Path(f"{settings.EXECUTION_ROOT}/{vm_hash}-{socket_kind}.socket").unlink(missing_ok=True)
