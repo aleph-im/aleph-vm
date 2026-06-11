@@ -8,9 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
+from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.vm_registry import (
     AgentVmRecord,
     AgentVmRegistry,
+    persist_record,
     rehydrate_registry,
 )
 
@@ -139,3 +141,84 @@ async def test_rehydrate_propagates_db_error(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="DB unavailable"):
         await rehydrate_registry(AgentVmRegistry())
+
+
+def test_record_payment_helpers():
+    stream = AgentVmRecord(
+        message=SimpleNamespace(payment=SimpleNamespace(is_stream=True, is_credit=False)),
+        original=MagicMock(),
+    )
+    credit = AgentVmRecord(
+        message=SimpleNamespace(payment=SimpleNamespace(is_stream=False, is_credit=True)),
+        original=MagicMock(),
+    )
+    hold = AgentVmRecord(message=SimpleNamespace(payment=None), original=MagicMock())
+
+    assert stream.uses_payment_stream is True and stream.uses_payment_credit is False
+    assert credit.uses_payment_stream is False and credit.uses_payment_credit is True
+    assert hold.uses_payment_stream is False and hold.uses_payment_credit is False
+
+
+@pytest.mark.asyncio
+async def test_persist_record_writes_agent_fields(monkeypatch):
+    saved: list[ExecutionRecord] = []
+    monkeypatch.setattr(
+        "aleph.vm.orchestrator.vm_registry.save_record",
+        AsyncMock(side_effect=saved.append),
+    )
+    message = MagicMock()
+    message.resources.vcpus = 2
+    message.resources.memory = 1024
+    message.model_dump_json.return_value = '{"m": 1}'
+    original = MagicMock()
+    original.model_dump_json.return_value = '{"o": 1}'
+
+    await persist_record(_HASH, AgentVmRecord(message=message, original=original, persistent=True))
+
+    assert len(saved) == 1
+    db = saved[0]
+    assert db.vm_hash == str(_HASH)
+    assert db.vm_id is None  # numeric hypervisor id unknown agent-side (debug-only column)
+    assert db.vcpus == 2 and db.memory == 1024
+    assert db.message == '{"m": 1}'
+    assert db.original_message == '{"o": 1}'
+    assert db.persistent is True
+    assert db.mapped_ports is None  # the PortMapping table is the authority
+    assert db.time_defined is not None
+    assert db.uuid  # fresh uuid per create, matching the old per-execution behavior
+
+
+@pytest.mark.asyncio
+async def test_persist_then_rehydrate_round_trip(monkeypatch):
+    """What persist_record writes is exactly what rehydrate_registry needs."""
+    saved: list[ExecutionRecord] = []
+    monkeypatch.setattr(
+        "aleph.vm.orchestrator.vm_registry.save_record",
+        AsyncMock(side_effect=saved.append),
+    )
+    message = MagicMock()
+    message.resources.vcpus = 1
+    message.resources.memory = 256
+    message.model_dump_json.return_value = '{"address": "0xabc"}'
+    original = MagicMock()
+    original.model_dump_json.return_value = '{"address": "0xabc"}'
+    await persist_record(_HASH, AgentVmRecord(message=message, original=original, persistent=True))
+
+    monkeypatch.setattr(
+        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        AsyncMock(return_value=saved),
+    )
+    parsed = MagicMock()
+    monkeypatch.setattr(
+        "aleph.vm.orchestrator.vm_registry.get_message_executable_content",
+        MagicMock(return_value=parsed),
+    )
+    registry = AgentVmRegistry()
+
+    count = await rehydrate_registry(registry)
+
+    assert count == 1
+    rec = registry.get(_HASH)
+    assert rec.message is parsed
+    assert rec.original is parsed
+    assert rec.persistent is True
