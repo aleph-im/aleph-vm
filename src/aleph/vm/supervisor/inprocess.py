@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import psutil
-from aleph_message.models.execution.environment import HypervisorType
+from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
 
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.supervisor.abc import Supervisor
@@ -30,8 +30,10 @@ from aleph.vm.supervisor.types import (
     BackupChunk,
     BackupId,
     BackupInfo,
+    ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
+    GpuDevice,
     GuestPort,
     HealthInfo,
     HealthStatus,
@@ -42,6 +44,7 @@ from aleph.vm.supervisor.types import (
     Measurement,
     MigrationId,
     MigrationInfo,
+    PciAddress,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
@@ -132,6 +135,23 @@ def _running_states(pool) -> dict[str, bool]:
     return states
 
 
+def _confidential_mode(execution) -> ConfidentialMode:
+    """Precise TEE mode for a VM. The agent reduces this to a bool; the
+    supervisor reports the generation it actually launched.
+
+    SEV vs SEV-ES is read from the AMD SEV policy on the confidential QEMU
+    object; SEV-SNP is a distinct launch path not yet emitted in-process. A
+    confidential VM whose hypervisor object is not created yet reports SEV
+    (it is confidential by definition; the sub-mode refines once launched).
+    """
+    if not execution.is_confidential:
+        return ConfidentialMode.NONE
+    policy = getattr(execution.vm, "confidential_policy", 0) or 0
+    if policy & AMDSEVPolicy.SEV_ES.value:
+        return ConfidentialMode.SEV_ES
+    return ConfidentialMode.SEV
+
+
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
@@ -154,6 +174,16 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         stopping_at_ns=_ns(times.stopping_at),
         stopped_at_ns=_ns(times.stopped_at),
         is_instance=bool(execution.is_instance),
+        confidential_mode=_confidential_mode(execution),
+        gpus=[
+            GpuDevice(
+                pci_host=PciAddress(g.pci_host),
+                device_id=g.device_id,
+                model=g.model or "",
+                supports_x_vga=g.supports_x_vga,
+            )
+            for g in execution.gpus
+        ],
     )
 
 
