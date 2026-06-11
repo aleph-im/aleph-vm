@@ -135,6 +135,14 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         return pb.DeleteVmResponse()
 
     @_translating
+    async def StopVm(self, request: pb.StopVmRequest, context) -> pb.VmInfo:
+        return conv.vm_info_to_pb(await self._supervisor.stop_vm(VmId(request.vm_id)))
+
+    @_translating
+    async def StartVm(self, request: pb.StartVmRequest, context) -> pb.VmInfo:
+        return conv.vm_info_to_pb(await self._supervisor.start_vm(VmId(request.vm_id)))
+
+    @_translating
     async def RebootVm(self, request: pb.RebootVmRequest, context) -> pb.VmInfo:
         return conv.vm_info_to_pb(await self._supervisor.reboot_vm(VmId(request.vm_id)))
 

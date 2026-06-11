@@ -266,3 +266,92 @@ async def test_get_vm_spec_message_built_vm_raises_unimplemented():
     sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
     with pytest.raises(NotImplementedSupervisorError):
         await sup.get_vm_spec(VM_ID)
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_persistent_keeps_execution_registered():
+    """StopVm leaves the VM observable (STOPPED) and defuses forget-on-stop."""
+    from datetime import datetime, timezone
+
+    execution = _make_execution(persistent=True)
+    old_stop_event = object()
+    execution.stop_event = old_stop_event
+    pool = _make_pool(executions={"itemhash123": execution})
+
+    async def fake_stop(vm_id):
+        execution.times.stopping_at = datetime.now(tz=timezone.utc)
+        execution.times.stopped_at = datetime.now(tz=timezone.utc)
+
+    pool.stop_vm = AsyncMock(side_effect=fake_stop)
+    sup = InProcessSupervisor(pool=pool)
+
+    info = await sup.stop_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.forget_vm.assert_not_called()
+    assert pool.executions["itemhash123"] is execution
+    assert execution.stop_event is not old_stop_event
+    from aleph.vm.supervisor.types import VmStatus
+
+    assert info.status is VmStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_ephemeral_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = _make_execution(persistent=False)
+    pool = _make_pool(executions={"itemhash123": execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.stop_vm(VM_ID)
+    pool.stop_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_vm_restarts_stopped_persistent_vm():
+    execution = _make_execution(persistent=True)
+    systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": False})  # stopped
+    pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
+    pool.restart_persistent_vm = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.start_vm(VM_ID)
+
+    pool.restart_persistent_vm.assert_awaited_once_with(execution)
+
+
+@pytest.mark.asyncio
+async def test_start_vm_running_is_a_noop_read():
+    execution = _make_execution(persistent=True)
+    systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})  # running
+    pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
+    pool.restart_persistent_vm = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    from aleph.vm.supervisor.types import VmStatus
+
+    info = await sup.start_vm(VM_ID)
+
+    pool.restart_persistent_vm.assert_not_awaited()
+    assert info.status is VmStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_start_vm_ephemeral_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = _make_execution(persistent=False)
+    pool = _make_pool(executions={"itemhash123": execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.start_vm(VM_ID)
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_unknown_raises_not_found():
+    sup = InProcessSupervisor(pool=_make_pool())
+    with pytest.raises(VmNotFoundError):
+        await sup.stop_vm(VmId("nope"))

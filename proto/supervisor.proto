@@ -38,6 +38,11 @@ service Supervisor {
   rpc GetVmSpec(GetVmSpecRequest) returns (CreateVmRequest);
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
   rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
+  // Stop a VM without releasing its definition: it stays listed (STOPPED)
+  // and StartVm brings it back. Persistent VMs only today; for ephemeral
+  // VMs the cycle is DeleteVm + CreateVm (UNIMPLEMENTED here).
+  rpc StopVm(StopVmRequest) returns (VmInfo);
+  rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
 
@@ -311,6 +316,8 @@ message VmInfo {
 
 message GetVmRequest      { string vm_id = 1; }
 message GetVmSpecRequest  { string vm_id = 1; }
+message StopVmRequest     { string vm_id = 1; }
+message StartVmRequest    { string vm_id = 1; }
 message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {

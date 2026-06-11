@@ -835,6 +835,36 @@ class GetVmSpecRequest(google.protobuf.message.Message):
 global___GetVmSpecRequest = GetVmSpecRequest
 
 @typing.final
+class StopVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___StopVmRequest = StopVmRequest
+
+@typing.final
+class StartVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___StartVmRequest = StartVmRequest
+
+@typing.final
 class ListVmsRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 

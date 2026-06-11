@@ -69,6 +69,16 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.DeleteVmRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.DeleteVmResponse.FromString,
                 _registered_method=True)
+        self.StopVm = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/StopVm',
+                request_serializer=supervisor__pb2.StopVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.StartVm = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/StartVm',
+                request_serializer=supervisor__pb2.StartVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
         self.RebootVm = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/RebootVm',
                 request_serializer=supervisor__pb2.RebootVmRequest.SerializeToString,
@@ -214,6 +224,21 @@ class SupervisorServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def DeleteVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopVm(self, request, context):
+        """Stop a VM without releasing its definition: it stays listed (STOPPED)
+        and StartVm brings it back. Persistent VMs only today; for ephemeral
+        VMs the cycle is DeleteVm + CreateVm (UNIMPLEMENTED here).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartVm(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -375,6 +400,16 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.DeleteVm,
                     request_deserializer=supervisor__pb2.DeleteVmRequest.FromString,
                     response_serializer=supervisor__pb2.DeleteVmResponse.SerializeToString,
+            ),
+            'StopVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopVm,
+                    request_deserializer=supervisor__pb2.StopVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'StartVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartVm,
+                    request_deserializer=supervisor__pb2.StartVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'RebootVm': grpc.unary_unary_rpc_method_handler(
                     servicer.RebootVm,
@@ -661,6 +696,60 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/DeleteVm',
             supervisor__pb2.DeleteVmRequest.SerializeToString,
             supervisor__pb2.DeleteVmResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/StopVm',
+            supervisor__pb2.StopVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/StartVm',
+            supervisor__pb2.StartVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
