@@ -46,7 +46,7 @@ BACKEND_UNSPECIFIED: Backend.ValueType  # 0
 BACKEND_FIRECRACKER: Backend.ValueType  # 1
 BACKEND_QEMU: Backend.ValueType  # 2
 BACKEND_QEMU_SEV: Backend.ValueType  # 3
-Global___Backend: typing_extensions.TypeAlias = Backend
+global___Backend = Backend
 
 class _VmStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -71,7 +71,31 @@ VM_STATUS_RUNNING: VmStatus.ValueType  # 3
 VM_STATUS_STOPPING: VmStatus.ValueType  # 4
 VM_STATUS_STOPPED: VmStatus.ValueType  # 5
 VM_STATUS_FAILED: VmStatus.ValueType  # 6
-Global___VmStatus: typing_extensions.TypeAlias = VmStatus
+global___VmStatus = VmStatus
+
+class _ConfidentialMode:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _ConfidentialModeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_ConfidentialMode.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    CONFIDENTIAL_MODE_NONE: _ConfidentialMode.ValueType  # 0
+    CONFIDENTIAL_MODE_SEV: _ConfidentialMode.ValueType  # 1
+    CONFIDENTIAL_MODE_SEV_ES: _ConfidentialMode.ValueType  # 2
+    CONFIDENTIAL_MODE_SEV_SNP: _ConfidentialMode.ValueType  # 3
+
+class ConfidentialMode(_ConfidentialMode, metaclass=_ConfidentialModeEnumTypeWrapper):
+    """The confidential-computing mode a VM is actually running under. Precise by
+    design: the agent reduces this to a boolean for Aleph APIs; the contract does
+    not pre-reduce it. SEV vs SEV-ES is distinguished by the AMD SEV policy;
+    SEV-SNP is a distinct launch path (not yet emitted by the in-process backend).
+    """
+
+CONFIDENTIAL_MODE_NONE: ConfidentialMode.ValueType  # 0
+CONFIDENTIAL_MODE_SEV: ConfidentialMode.ValueType  # 1
+CONFIDENTIAL_MODE_SEV_ES: ConfidentialMode.ValueType  # 2
+CONFIDENTIAL_MODE_SEV_SNP: ConfidentialMode.ValueType  # 3
+global___ConfidentialMode = ConfidentialMode
 
 class _BackupStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -93,7 +117,7 @@ BACKUP_STATUS_PENDING: BackupStatus.ValueType  # 1
 BACKUP_STATUS_RUNNING: BackupStatus.ValueType  # 2
 BACKUP_STATUS_COMPLETE: BackupStatus.ValueType  # 3
 BACKUP_STATUS_FAILED: BackupStatus.ValueType  # 4
-Global___BackupStatus: typing_extensions.TypeAlias = BackupStatus
+global___BackupStatus = BackupStatus
 
 class _MigrationPhase:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -117,7 +141,7 @@ MIGRATION_PHASE_EXPORTING: MigrationPhase.ValueType  # 2
 MIGRATION_PHASE_IMPORTING: MigrationPhase.ValueType  # 3
 MIGRATION_PHASE_COMPLETE: MigrationPhase.ValueType  # 4
 MIGRATION_PHASE_FAILED: MigrationPhase.ValueType  # 5
-Global___MigrationPhase: typing_extensions.TypeAlias = MigrationPhase
+global___MigrationPhase = MigrationPhase
 
 class _ErrorCode:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -179,7 +203,7 @@ ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
 ERROR_CODE_MIGRATION_IN_PROGRESS: ErrorCode.ValueType  # 13
 ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
 """Catch-all"""
-Global___ErrorCode: typing_extensions.TypeAlias = ErrorCode
+global___ErrorCode = ErrorCode
 
 @typing.final
 class HealthRequest(google.protobuf.message.Message):
@@ -191,7 +215,7 @@ class HealthRequest(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___HealthRequest: typing_extensions.TypeAlias = HealthRequest
+global___HealthRequest = HealthRequest
 
 @typing.final
 class HealthResponse(google.protobuf.message.Message):
@@ -210,7 +234,7 @@ class HealthResponse(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["status", b"status", "vm_count", b"vm_count"]) -> None: ...
 
-Global___HealthResponse: typing_extensions.TypeAlias = HealthResponse
+global___HealthResponse = HealthResponse
 
 @typing.final
 class GetHostInfoRequest(google.protobuf.message.Message):
@@ -220,7 +244,7 @@ class GetHostInfoRequest(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___GetHostInfoRequest: typing_extensions.TypeAlias = GetHostInfoRequest
+global___GetHostInfoRequest = GetHostInfoRequest
 
 @typing.final
 class HostInfo(google.protobuf.message.Message):
@@ -275,11 +299,11 @@ class HostInfo(google.protobuf.message.Message):
     primary external IPv4 of the host; empty when host networking is disabled
     """
     @property
-    def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___NumaNode]:
+    def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]:
         """Topology"""
 
     @property
-    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___GpuDevice]: ...
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]: ...
     def __init__(
         self,
         *,
@@ -291,8 +315,8 @@ class HostInfo(google.protobuf.message.Message):
         memory_mib: builtins.int = ...,
         memory_type: builtins.str = ...,
         memory_clock_mhz: builtins.int = ...,
-        numa_nodes: collections.abc.Iterable[Global___NumaNode] | None = ...,
-        gpus: collections.abc.Iterable[Global___GpuDevice] | None = ...,
+        numa_nodes: collections.abc.Iterable[global___NumaNode] | None = ...,
+        gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
         sev_supported: builtins.bool = ...,
         sev_es_supported: builtins.bool = ...,
         sev_snp_supported: builtins.bool = ...,
@@ -303,7 +327,7 @@ class HostInfo(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
 
-Global___HostInfo: typing_extensions.TypeAlias = HostInfo
+global___HostInfo = HostInfo
 
 @typing.final
 class NumaNode(google.protobuf.message.Message):
@@ -324,7 +348,7 @@ class NumaNode(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["cpu_count", b"cpu_count", "index", b"index", "memory_mib", b"memory_mib"]) -> None: ...
 
-Global___NumaNode: typing_extensions.TypeAlias = NumaNode
+global___NumaNode = NumaNode
 
 @typing.final
 class GpuDevice(google.protobuf.message.Message):
@@ -350,7 +374,7 @@ class GpuDevice(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
-Global___GpuDevice: typing_extensions.TypeAlias = GpuDevice
+global___GpuDevice = GpuDevice
 
 @typing.final
 class CreateVmRequest(google.protobuf.message.Message):
@@ -371,7 +395,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
-    backend: Global___Backend.ValueType
+    backend: global___Backend.ValueType
     kernel_path: builtins.str
     """empty for disk-boot"""
     initrd_path: builtins.str
@@ -383,15 +407,15 @@ class CreateVmRequest(google.protobuf.message.Message):
     persistent: builtins.bool
     """supervisor wraps in systemd if true"""
     @property
-    def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___DiskConfig]: ...
+    def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
-    def tee(self) -> Global___TeeConfig:
+    def tee(self) -> global___TeeConfig:
         """only meaningful when backend is *_SEV"""
 
     @property
-    def network(self) -> Global___NetworkConfig: ...
+    def network(self) -> global___NetworkConfig: ...
     @property
-    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___GpuConfig]: ...
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]: ...
     @property
     def ssh_authorized_keys(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
         """guest cloud-init SSH keys (agent-provided)"""
@@ -400,15 +424,15 @@ class CreateVmRequest(google.protobuf.message.Message):
         self,
         *,
         vm_id: builtins.str = ...,
-        backend: Global___Backend.ValueType = ...,
+        backend: global___Backend.ValueType = ...,
         kernel_path: builtins.str = ...,
         initrd_path: builtins.str = ...,
-        disks: collections.abc.Iterable[Global___DiskConfig] | None = ...,
+        disks: collections.abc.Iterable[global___DiskConfig] | None = ...,
         vcpus: builtins.int = ...,
         memory_mib: builtins.int = ...,
-        tee: Global___TeeConfig | None = ...,
-        network: Global___NetworkConfig | None = ...,
-        gpus: collections.abc.Iterable[Global___GpuConfig] | None = ...,
+        tee: global___TeeConfig | None = ...,
+        network: global___NetworkConfig | None = ...,
+        gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
         numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
@@ -417,7 +441,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
-Global___CreateVmRequest: typing_extensions.TypeAlias = CreateVmRequest
+global___CreateVmRequest = CreateVmRequest
 
 @typing.final
 class DiskConfig(google.protobuf.message.Message):
@@ -469,8 +493,8 @@ class DiskConfig(google.protobuf.message.Message):
     path: builtins.str
     """absolute host path"""
     readonly: builtins.bool
-    format: Global___DiskConfig.Format.ValueType
-    role: Global___DiskConfig.DiskRole.ValueType
+    format: global___DiskConfig.Format.ValueType
+    role: global___DiskConfig.DiskRole.ValueType
     mount: builtins.str
     """guest mount point (empty for rootfs); preserves the Aleph volume mount"""
     def __init__(
@@ -478,13 +502,13 @@ class DiskConfig(google.protobuf.message.Message):
         *,
         path: builtins.str = ...,
         readonly: builtins.bool = ...,
-        format: Global___DiskConfig.Format.ValueType = ...,
-        role: Global___DiskConfig.DiskRole.ValueType = ...,
+        format: global___DiskConfig.Format.ValueType = ...,
+        role: global___DiskConfig.DiskRole.ValueType = ...,
         mount: builtins.str = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["format", b"format", "mount", b"mount", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
 
-Global___DiskConfig: typing_extensions.TypeAlias = DiskConfig
+global___DiskConfig = DiskConfig
 
 @typing.final
 class TeeConfig(google.protobuf.message.Message):
@@ -508,7 +532,7 @@ class TeeConfig(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backend", b"backend", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
-Global___TeeConfig: typing_extensions.TypeAlias = TeeConfig
+global___TeeConfig = TeeConfig
 
 @typing.final
 class NetworkConfig(google.protobuf.message.Message):
@@ -531,7 +555,7 @@ class NetworkConfig(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["internet_access", b"internet_access", "ipv6_prefix_len", b"ipv6_prefix_len", "requested_ipv6", b"requested_ipv6"]) -> None: ...
 
-Global___NetworkConfig: typing_extensions.TypeAlias = NetworkConfig
+global___NetworkConfig = NetworkConfig
 
 @typing.final
 class GpuConfig(google.protobuf.message.Message):
@@ -549,7 +573,7 @@ class GpuConfig(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
-Global___GpuConfig: typing_extensions.TypeAlias = GpuConfig
+global___GpuConfig = GpuConfig
 
 @typing.final
 class VmInfo(google.protobuf.message.Message):
@@ -573,12 +597,14 @@ class VmInfo(google.protobuf.message.Message):
     STOPPING_AT_NS_FIELD_NUMBER: builtins.int
     STOPPED_AT_NS_FIELD_NUMBER: builtins.int
     IS_INSTANCE_FIELD_NUMBER: builtins.int
+    CONFIDENTIAL_MODE_FIELD_NUMBER: builtins.int
+    GPUS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    status: Global___VmStatus.ValueType
+    status: global___VmStatus.ValueType
     ipv4: builtins.str
     ipv6: builtins.str
     uptime_secs: builtins.int
-    backend: Global___Backend.ValueType
+    backend: global___Backend.ValueType
     numa_node: builtins.int
     """effective placement (0-indexed). Unset until status is BOOTING/RUNNING."""
     status_message: builtins.str
@@ -599,15 +625,21 @@ class VmInfo(google.protobuf.message.Message):
     the hypervisor backend: an instance may run under Firecracker or QEMU, so
     `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
     """
+    confidential_mode: global___ConfidentialMode.ValueType
+    """precise TEE mode; NONE for non-confidential VMs"""
+    @property
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]:
+        """exact PCI devices attached to this VM (mirrors HostInfo.gpus)"""
+
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        status: Global___VmStatus.ValueType = ...,
+        status: global___VmStatus.ValueType = ...,
         ipv4: builtins.str = ...,
         ipv6: builtins.str = ...,
         uptime_secs: builtins.int = ...,
-        backend: Global___Backend.ValueType = ...,
+        backend: global___Backend.ValueType = ...,
         numa_node: builtins.int | None = ...,
         status_message: builtins.str = ...,
         ipv4_network: builtins.str = ...,
@@ -620,12 +652,14 @@ class VmInfo(google.protobuf.message.Message):
         stopping_at_ns: builtins.int = ...,
         stopped_at_ns: builtins.int = ...,
         is_instance: builtins.bool = ...,
+        confidential_mode: global___ConfidentialMode.ValueType = ...,
+        gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "defined_at_ns", b"defined_at_ns", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
-Global___VmInfo: typing_extensions.TypeAlias = VmInfo
+global___VmInfo = VmInfo
 
 @typing.final
 class GetVmRequest(google.protobuf.message.Message):
@@ -640,7 +674,7 @@ class GetVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-Global___GetVmRequest: typing_extensions.TypeAlias = GetVmRequest
+global___GetVmRequest = GetVmRequest
 
 @typing.final
 class ListVmsRequest(google.protobuf.message.Message):
@@ -650,7 +684,7 @@ class ListVmsRequest(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___ListVmsRequest: typing_extensions.TypeAlias = ListVmsRequest
+global___ListVmsRequest = ListVmsRequest
 
 @typing.final
 class ListVmsResponse(google.protobuf.message.Message):
@@ -658,15 +692,15 @@ class ListVmsResponse(google.protobuf.message.Message):
 
     VMS_FIELD_NUMBER: builtins.int
     @property
-    def vms(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___VmInfo]: ...
+    def vms(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___VmInfo]: ...
     def __init__(
         self,
         *,
-        vms: collections.abc.Iterable[Global___VmInfo] | None = ...,
+        vms: collections.abc.Iterable[global___VmInfo] | None = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vms", b"vms"]) -> None: ...
 
-Global___ListVmsResponse: typing_extensions.TypeAlias = ListVmsResponse
+global___ListVmsResponse = ListVmsResponse
 
 @typing.final
 class DeleteVmRequest(google.protobuf.message.Message):
@@ -685,7 +719,7 @@ class DeleteVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id", "wipe", b"wipe"]) -> None: ...
 
-Global___DeleteVmRequest: typing_extensions.TypeAlias = DeleteVmRequest
+global___DeleteVmRequest = DeleteVmRequest
 
 @typing.final
 class DeleteVmResponse(google.protobuf.message.Message):
@@ -695,7 +729,7 @@ class DeleteVmResponse(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___DeleteVmResponse: typing_extensions.TypeAlias = DeleteVmResponse
+global___DeleteVmResponse = DeleteVmResponse
 
 @typing.final
 class RebootVmRequest(google.protobuf.message.Message):
@@ -714,7 +748,7 @@ class RebootVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-Global___RebootVmRequest: typing_extensions.TypeAlias = RebootVmRequest
+global___RebootVmRequest = RebootVmRequest
 
 @typing.final
 class ReinstallVmRequest(google.protobuf.message.Message):
@@ -733,7 +767,7 @@ class ReinstallVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
 
-Global___ReinstallVmRequest: typing_extensions.TypeAlias = ReinstallVmRequest
+global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
 class AddPortForwardRequest(google.protobuf.message.Message):
@@ -761,7 +795,7 @@ class AddPortForwardRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
-Global___AddPortForwardRequest: typing_extensions.TypeAlias = AddPortForwardRequest
+global___AddPortForwardRequest = AddPortForwardRequest
 
 @typing.final
 class PortForwardInfo(google.protobuf.message.Message):
@@ -785,7 +819,7 @@ class PortForwardInfo(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
-Global___PortForwardInfo: typing_extensions.TypeAlias = PortForwardInfo
+global___PortForwardInfo = PortForwardInfo
 
 @typing.final
 class RemovePortForwardRequest(google.protobuf.message.Message):
@@ -806,7 +840,7 @@ class RemovePortForwardRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id"]) -> None: ...
 
-Global___RemovePortForwardRequest: typing_extensions.TypeAlias = RemovePortForwardRequest
+global___RemovePortForwardRequest = RemovePortForwardRequest
 
 @typing.final
 class RemovePortForwardResponse(google.protobuf.message.Message):
@@ -816,7 +850,7 @@ class RemovePortForwardResponse(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___RemovePortForwardResponse: typing_extensions.TypeAlias = RemovePortForwardResponse
+global___RemovePortForwardResponse = RemovePortForwardResponse
 
 @typing.final
 class ListPortForwardsRequest(google.protobuf.message.Message):
@@ -832,7 +866,7 @@ class ListPortForwardsRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-Global___ListPortForwardsRequest: typing_extensions.TypeAlias = ListPortForwardsRequest
+global___ListPortForwardsRequest = ListPortForwardsRequest
 
 @typing.final
 class ListPortForwardsResponse(google.protobuf.message.Message):
@@ -840,15 +874,15 @@ class ListPortForwardsResponse(google.protobuf.message.Message):
 
     FORWARDS_FIELD_NUMBER: builtins.int
     @property
-    def forwards(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___PortForwardInfo]: ...
+    def forwards(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___PortForwardInfo]: ...
     def __init__(
         self,
         *,
-        forwards: collections.abc.Iterable[Global___PortForwardInfo] | None = ...,
+        forwards: collections.abc.Iterable[global___PortForwardInfo] | None = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["forwards", b"forwards"]) -> None: ...
 
-Global___ListPortForwardsResponse: typing_extensions.TypeAlias = ListPortForwardsResponse
+global___ListPortForwardsResponse = ListPortForwardsResponse
 
 @typing.final
 class GetLogsRequest(google.protobuf.message.Message):
@@ -873,7 +907,7 @@ class GetLogsRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["from_tail", b"from_tail", "max_lines", b"max_lines", "vm_id", b"vm_id"]) -> None: ...
 
-Global___GetLogsRequest: typing_extensions.TypeAlias = GetLogsRequest
+global___GetLogsRequest = GetLogsRequest
 
 @typing.final
 class GetLogsResponse(google.protobuf.message.Message):
@@ -881,15 +915,15 @@ class GetLogsResponse(google.protobuf.message.Message):
 
     LINES_FIELD_NUMBER: builtins.int
     @property
-    def lines(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___LogChunk]: ...
+    def lines(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___LogChunk]: ...
     def __init__(
         self,
         *,
-        lines: collections.abc.Iterable[Global___LogChunk] | None = ...,
+        lines: collections.abc.Iterable[global___LogChunk] | None = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["lines", b"lines"]) -> None: ...
 
-Global___GetLogsResponse: typing_extensions.TypeAlias = GetLogsResponse
+global___GetLogsResponse = GetLogsResponse
 
 @typing.final
 class StreamLogsRequest(google.protobuf.message.Message):
@@ -908,7 +942,7 @@ class StreamLogsRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["include_history", b"include_history", "vm_id", b"vm_id"]) -> None: ...
 
-Global___StreamLogsRequest: typing_extensions.TypeAlias = StreamLogsRequest
+global___StreamLogsRequest = StreamLogsRequest
 
 @typing.final
 class LogChunk(google.protobuf.message.Message):
@@ -948,17 +982,17 @@ class LogChunk(google.protobuf.message.Message):
     """unix ns at server-side capture time"""
     line: builtins.str
     """single log line, no trailing newline"""
-    source: Global___LogChunk.LogSource.ValueType
+    source: global___LogChunk.LogSource.ValueType
     def __init__(
         self,
         *,
         timestamp_ns: builtins.int = ...,
         line: builtins.str = ...,
-        source: Global___LogChunk.LogSource.ValueType = ...,
+        source: global___LogChunk.LogSource.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["line", b"line", "source", b"source", "timestamp_ns", b"timestamp_ns"]) -> None: ...
 
-Global___LogChunk: typing_extensions.TypeAlias = LogChunk
+global___LogChunk = LogChunk
 
 @typing.final
 class BackupInfo(google.protobuf.message.Message):
@@ -973,7 +1007,7 @@ class BackupInfo(google.protobuf.message.Message):
     vm_id: builtins.str
     backup_id: builtins.str
     """supervisor-issued"""
-    status: Global___BackupStatus.ValueType
+    status: global___BackupStatus.ValueType
     size_bytes: builtins.int
     """0 until COMPLETE"""
     created_at_unix_secs: builtins.int
@@ -984,14 +1018,14 @@ class BackupInfo(google.protobuf.message.Message):
         *,
         vm_id: builtins.str = ...,
         backup_id: builtins.str = ...,
-        status: Global___BackupStatus.ValueType = ...,
+        status: global___BackupStatus.ValueType = ...,
         size_bytes: builtins.int = ...,
         created_at_unix_secs: builtins.int = ...,
         error_message: builtins.str = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "status", b"status", "vm_id", b"vm_id"]) -> None: ...
 
-Global___BackupInfo: typing_extensions.TypeAlias = BackupInfo
+global___BackupInfo = BackupInfo
 
 @typing.final
 class StartBackupRequest(google.protobuf.message.Message):
@@ -1010,7 +1044,7 @@ class StartBackupRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
 
-Global___StartBackupRequest: typing_extensions.TypeAlias = StartBackupRequest
+global___StartBackupRequest = StartBackupRequest
 
 @typing.final
 class GetBackupStatusRequest(google.protobuf.message.Message):
@@ -1028,7 +1062,7 @@ class GetBackupStatusRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
 
-Global___GetBackupStatusRequest: typing_extensions.TypeAlias = GetBackupStatusRequest
+global___GetBackupStatusRequest = GetBackupStatusRequest
 
 @typing.final
 class ListBackupsRequest(google.protobuf.message.Message):
@@ -1043,7 +1077,7 @@ class ListBackupsRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-Global___ListBackupsRequest: typing_extensions.TypeAlias = ListBackupsRequest
+global___ListBackupsRequest = ListBackupsRequest
 
 @typing.final
 class ListBackupsResponse(google.protobuf.message.Message):
@@ -1051,15 +1085,15 @@ class ListBackupsResponse(google.protobuf.message.Message):
 
     BACKUPS_FIELD_NUMBER: builtins.int
     @property
-    def backups(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___BackupInfo]: ...
+    def backups(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___BackupInfo]: ...
     def __init__(
         self,
         *,
-        backups: collections.abc.Iterable[Global___BackupInfo] | None = ...,
+        backups: collections.abc.Iterable[global___BackupInfo] | None = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backups", b"backups"]) -> None: ...
 
-Global___ListBackupsResponse: typing_extensions.TypeAlias = ListBackupsResponse
+global___ListBackupsResponse = ListBackupsResponse
 
 @typing.final
 class DownloadBackupRequest(google.protobuf.message.Message):
@@ -1077,7 +1111,7 @@ class DownloadBackupRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
 
-Global___DownloadBackupRequest: typing_extensions.TypeAlias = DownloadBackupRequest
+global___DownloadBackupRequest = DownloadBackupRequest
 
 @typing.final
 class BackupChunk(google.protobuf.message.Message):
@@ -1096,7 +1130,7 @@ class BackupChunk(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["data", b"data", "offset", b"offset"]) -> None: ...
 
-Global___BackupChunk: typing_extensions.TypeAlias = BackupChunk
+global___BackupChunk = BackupChunk
 
 @typing.final
 class DeleteBackupRequest(google.protobuf.message.Message):
@@ -1114,7 +1148,7 @@ class DeleteBackupRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
 
-Global___DeleteBackupRequest: typing_extensions.TypeAlias = DeleteBackupRequest
+global___DeleteBackupRequest = DeleteBackupRequest
 
 @typing.final
 class DeleteBackupResponse(google.protobuf.message.Message):
@@ -1124,7 +1158,7 @@ class DeleteBackupResponse(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___DeleteBackupResponse: typing_extensions.TypeAlias = DeleteBackupResponse
+global___DeleteBackupResponse = DeleteBackupResponse
 
 @typing.final
 class RestoreBackupRequest(google.protobuf.message.Message):
@@ -1142,7 +1176,7 @@ class RestoreBackupRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
 
-Global___RestoreBackupRequest: typing_extensions.TypeAlias = RestoreBackupRequest
+global___RestoreBackupRequest = RestoreBackupRequest
 
 @typing.final
 class MigrationInfo(google.protobuf.message.Message):
@@ -1156,7 +1190,7 @@ class MigrationInfo(google.protobuf.message.Message):
     ERROR_MESSAGE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     migration_id: builtins.str
-    phase: Global___MigrationPhase.ValueType
+    phase: global___MigrationPhase.ValueType
     bytes_transferred: builtins.int
     bytes_total: builtins.int
     error_message: builtins.str
@@ -1165,14 +1199,14 @@ class MigrationInfo(google.protobuf.message.Message):
         *,
         vm_id: builtins.str = ...,
         migration_id: builtins.str = ...,
-        phase: Global___MigrationPhase.ValueType = ...,
+        phase: global___MigrationPhase.ValueType = ...,
         bytes_transferred: builtins.int = ...,
         bytes_total: builtins.int = ...,
         error_message: builtins.str = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["bytes_total", b"bytes_total", "bytes_transferred", b"bytes_transferred", "error_message", b"error_message", "migration_id", b"migration_id", "phase", b"phase", "vm_id", b"vm_id"]) -> None: ...
 
-Global___MigrationInfo: typing_extensions.TypeAlias = MigrationInfo
+global___MigrationInfo = MigrationInfo
 
 @typing.final
 class ExportVmRequest(google.protobuf.message.Message):
@@ -1199,7 +1233,7 @@ class ExportVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["destination_dir", b"destination_dir", "vm_id", b"vm_id"]) -> None: ...
 
-Global___ExportVmRequest: typing_extensions.TypeAlias = ExportVmRequest
+global___ExportVmRequest = ExportVmRequest
 
 @typing.final
 class ImportVmRequest(google.protobuf.message.Message):
@@ -1219,7 +1253,7 @@ class ImportVmRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["source_dir", b"source_dir", "vm_id", b"vm_id"]) -> None: ...
 
-Global___ImportVmRequest: typing_extensions.TypeAlias = ImportVmRequest
+global___ImportVmRequest = ImportVmRequest
 
 @typing.final
 class GetMigrationStatusRequest(google.protobuf.message.Message):
@@ -1237,7 +1271,7 @@ class GetMigrationStatusRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["migration_id", b"migration_id", "vm_id", b"vm_id"]) -> None: ...
 
-Global___GetMigrationStatusRequest: typing_extensions.TypeAlias = GetMigrationStatusRequest
+global___GetMigrationStatusRequest = GetMigrationStatusRequest
 
 @typing.final
 class InitializeConfidentialRequest(google.protobuf.message.Message):
@@ -1262,7 +1296,7 @@ class InitializeConfidentialRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["godh_bytes", b"godh_bytes", "session_bytes", b"session_bytes", "vm_id", b"vm_id"]) -> None: ...
 
-Global___InitializeConfidentialRequest: typing_extensions.TypeAlias = InitializeConfidentialRequest
+global___InitializeConfidentialRequest = InitializeConfidentialRequest
 
 @typing.final
 class InitializeConfidentialResponse(google.protobuf.message.Message):
@@ -1272,7 +1306,7 @@ class InitializeConfidentialResponse(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___InitializeConfidentialResponse: typing_extensions.TypeAlias = InitializeConfidentialResponse
+global___InitializeConfidentialResponse = InitializeConfidentialResponse
 
 @typing.final
 class GetMeasurementRequest(google.protobuf.message.Message):
@@ -1287,7 +1321,7 @@ class GetMeasurementRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-Global___GetMeasurementRequest: typing_extensions.TypeAlias = GetMeasurementRequest
+global___GetMeasurementRequest = GetMeasurementRequest
 
 @typing.final
 class Measurement(google.protobuf.message.Message):
@@ -1310,7 +1344,7 @@ class Measurement(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
 
-Global___Measurement: typing_extensions.TypeAlias = Measurement
+global___Measurement = Measurement
 
 @typing.final
 class InjectSecretRequest(google.protobuf.message.Message):
@@ -1331,7 +1365,7 @@ class InjectSecretRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["secret_bytes", b"secret_bytes", "secret_header_bytes", b"secret_header_bytes", "vm_id", b"vm_id"]) -> None: ...
 
-Global___InjectSecretRequest: typing_extensions.TypeAlias = InjectSecretRequest
+global___InjectSecretRequest = InjectSecretRequest
 
 @typing.final
 class InjectSecretResponse(google.protobuf.message.Message):
@@ -1341,7 +1375,7 @@ class InjectSecretResponse(google.protobuf.message.Message):
         self,
     ) -> None: ...
 
-Global___InjectSecretResponse: typing_extensions.TypeAlias = InjectSecretResponse
+global___InjectSecretResponse = InjectSecretResponse
 
 @typing.final
 class ErrorDetail(google.protobuf.message.Message):
@@ -1350,7 +1384,7 @@ class ErrorDetail(google.protobuf.message.Message):
     CODE_FIELD_NUMBER: builtins.int
     MESSAGE_FIELD_NUMBER: builtins.int
     VM_ID_FIELD_NUMBER: builtins.int
-    code: Global___ErrorCode.ValueType
+    code: global___ErrorCode.ValueType
     message: builtins.str
     """human-readable, agent surfaces verbatim"""
     vm_id: builtins.str
@@ -1358,10 +1392,10 @@ class ErrorDetail(google.protobuf.message.Message):
     def __init__(
         self,
         *,
-        code: Global___ErrorCode.ValueType = ...,
+        code: global___ErrorCode.ValueType = ...,
         message: builtins.str = ...,
         vm_id: builtins.str = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["code", b"code", "message", b"message", "vm_id", b"vm_id"]) -> None: ...
 
-Global___ErrorDetail: typing_extensions.TypeAlias = ErrorDetail
+global___ErrorDetail = ErrorDetail
