@@ -241,19 +241,27 @@ enum ConfidentialMode {
   CONFIDENTIAL_MODE_SEV_SNP = 3;
 }
 
+// One address family's assignment for a VM. All fields are empty until the
+// underlying tap device exists.
+message IpAssignment {
+  string address = 1;                // the guest's address, bare IP
+  string network_cidr = 2;           // the tap network, e.g. "172.16.3.0/24"
+  string gateway = 3;                // host-side tap address (bare IP); the guest's default route
+}
+
 message VmInfo {
   string vm_id = 1;
   VmStatus status = 2;
-  string ipv4 = 3;
-  string ipv6 = 4;
+  IpAssignment ipv4 = 3;
+  IpAssignment ipv6 = 4;
   uint64 uptime_secs = 5;
   Backend backend = 6;
   optional uint32 numa_node = 7;     // effective placement (0-indexed). Unset until status is BOOTING/RUNNING.
   string status_message = 8;         // human-readable, optional
 
-  // Tap networks (CIDR strings, e.g. "172.16.3.0/24"). Empty until the tap device exists.
-  string ipv4_network = 9;
-  string ipv6_network = 10;
+  // Was the flat ipv4_network/ipv6_network pair; folded into IpAssignment.
+  reserved 9, 10;
+  reserved "ipv4_network", "ipv6_network";
 
   // Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached.
   uint64 defined_at_ns = 11;
@@ -282,10 +290,9 @@ message VmInfo {
   // empty until the signal arrived (or for VMs without a channel). The client
   // interprets them (the Aleph runtime sends its version handshake here).
   bytes guest_ready_payload = 22;
-  // Host-side tap addresses (no prefix). The agent passes them to the guest
-  // as default routes in its network configuration push.
-  string ipv4_gateway = 23;
-  string ipv6_gateway = 24;
+  // Was the flat ipv4_gateway/ipv6_gateway pair; folded into IpAssignment.
+  reserved 23, 24;
+  reserved "ipv4_gateway", "ipv6_gateway";
 }
 
 message GetVmRequest      { string vm_id = 1; }

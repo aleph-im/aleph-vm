@@ -35,6 +35,7 @@ from aleph.vm.supervisor.types import (
     HealthStatus,
     HostInfo,
     HostPort,
+    IpAssignment,
     LogChunk,
     LogSource,
     Measurement,
@@ -274,17 +275,23 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
     )
 
 
+def ip_assignment_to_pb(ip: IpAssignment) -> pb.IpAssignment:
+    return pb.IpAssignment(address=ip.address, network_cidr=ip.network_cidr, gateway=ip.gateway)
+
+
+def ip_assignment_from_pb(msg: pb.IpAssignment) -> IpAssignment:
+    return IpAssignment(address=msg.address, network_cidr=msg.network_cidr, gateway=msg.gateway)
+
+
 def vm_info_to_pb(info: VmInfo) -> pb.VmInfo:
     msg = pb.VmInfo(
         vm_id=str(info.vm_id),
         status=VM_STATUS_TO_PB[info.status],
-        ipv4=info.ipv4,
-        ipv6=info.ipv6,
+        ipv4=ip_assignment_to_pb(info.ipv4),
+        ipv6=ip_assignment_to_pb(info.ipv6),
         uptime_secs=info.uptime_secs,
         backend=BACKEND_TO_PB[info.backend],
         status_message=info.status_message,
-        ipv4_network=info.ipv4_network,
-        ipv6_network=info.ipv6_network,
         defined_at_ns=info.defined_at_ns,
         preparing_at_ns=info.preparing_at_ns,
         prepared_at_ns=info.prepared_at_ns,
@@ -296,8 +303,6 @@ def vm_info_to_pb(info: VmInfo) -> pb.VmInfo:
         gpus=[gpu_device_to_pb(gpu) for gpu in info.gpus],
         guest_channel_path=info.guest_channel_path,
         guest_ready_payload=info.guest_ready_payload,
-        ipv4_gateway=info.ipv4_gateway,
-        ipv6_gateway=info.ipv6_gateway,
     )
     if info.numa_node is not None:
         msg.numa_node = info.numa_node
@@ -308,14 +313,12 @@ def vm_info_from_pb(msg: pb.VmInfo) -> VmInfo:
     return VmInfo(
         vm_id=VmId(msg.vm_id),
         status=VM_STATUS_FROM_PB[msg.status],
-        ipv4=msg.ipv4,
-        ipv6=msg.ipv6,
+        ipv4=ip_assignment_from_pb(msg.ipv4),
+        ipv6=ip_assignment_from_pb(msg.ipv6),
         uptime_secs=msg.uptime_secs,
         backend=BACKEND_FROM_PB[msg.backend],
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         status_message=msg.status_message,
-        ipv4_network=msg.ipv4_network,
-        ipv6_network=msg.ipv6_network,
         defined_at_ns=msg.defined_at_ns,
         preparing_at_ns=msg.preparing_at_ns,
         prepared_at_ns=msg.prepared_at_ns,
@@ -327,8 +330,6 @@ def vm_info_from_pb(msg: pb.VmInfo) -> VmInfo:
         gpus=[gpu_device_from_pb(gpu) for gpu in msg.gpus],
         guest_channel_path=msg.guest_channel_path,
         guest_ready_payload=msg.guest_ready_payload,
-        ipv4_gateway=msg.ipv4_gateway,
-        ipv6_gateway=msg.ipv6_gateway,
     )
 
 

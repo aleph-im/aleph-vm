@@ -17,6 +17,7 @@ from aleph.vm.storage import get_message
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
+    IpAssignment,
     LogChunk,
     LogSource,
     VmId,
@@ -35,8 +36,8 @@ def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> Vm
     return VmInfo(
         vm_id=VmId(vm_id),
         status=status,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,

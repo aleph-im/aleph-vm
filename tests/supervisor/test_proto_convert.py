@@ -24,6 +24,7 @@ from aleph.vm.supervisor.types import (
     HealthStatus,
     HostInfo,
     HostPort,
+    IpAssignment,
     LogChunk,
     LogSource,
     Measurement,
@@ -81,14 +82,12 @@ MINIMAL_SPEC = CreateVmSpec(
 FULL_VM_INFO = VmInfo(
     vm_id=VmId("cafe" * 16),
     status=VmStatus.RUNNING,
-    ipv4="172.16.4.2",
-    ipv6="fd00::42",
+    ipv4=IpAssignment(address="172.16.4.2", network_cidr="172.16.4.0/24", gateway="172.16.4.1"),
+    ipv6=IpAssignment(address="fd00::42", network_cidr="fd00::/64", gateway="fd00::1"),
     uptime_secs=1234,
     backend=Backend.QEMU,
     numa_node=0,
     status_message="all good",
-    ipv4_network="172.16.4.0/24",
-    ipv6_network="fd00::/64",
     defined_at_ns=1,
     preparing_at_ns=2,
     prepared_at_ns=3,
@@ -100,8 +99,6 @@ FULL_VM_INFO = VmInfo(
     gpus=[GpuDevice(pci_host=PciAddress("0000:01:00.0"), device_id="10de:2204", model="RTX 3090", supports_x_vga=True)],
     guest_channel_path="/var/lib/aleph/vm/jailer/firecracker/3/root/tmp/v.sock",
     guest_ready_payload=b"\x81\xa7version\xa52.0.0",
-    ipv4_gateway="172.16.4.1",
-    ipv6_gateway="fd00::1",
 )
 
 
@@ -128,8 +125,8 @@ def test_vm_info_round_trip_unset_numa():
     info = VmInfo(
         vm_id=VmId("beef" * 16),
         status=VmStatus.DEFINED,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.FIRECRACKER,
         numa_node=None,

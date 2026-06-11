@@ -7,7 +7,14 @@ from aleph_message.status import MessageStatus
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.tasks import _group_executions_by_payment, check_payment
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import (
+    Backend,
+    ConfidentialMode,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 
 @pytest.fixture()
@@ -53,8 +60,8 @@ def _make_info(vm_hash: str, *, started_at_ns: int = 0, confidential: bool = Fal
     return VmInfo(
         vm_id=VmId(vm_hash),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
