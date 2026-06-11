@@ -352,10 +352,15 @@ def main():
         PRINT_SYSTEM_LOGS=args.system_logs,
         PREALLOC_VM_COUNT=args.prealloc_vm_count,
         ALLOW_VM_NETWORKING=args.allow_vm_networking,
-        FAKE_DATA_PROGRAM=args.fake_data_program,
         DEBUG_ASYNCIO=args.debug_asyncio,
         FAKE_INSTANCE_BASE=args.fake_instance_base,
     )
+    # Only override FAKE_DATA_PROGRAM when -f/--fake-data-program was actually
+    # passed: the argparse default is None, and unconditionally writing it here
+    # silently discarded the ALEPH_VM_FAKE_DATA_PROGRAM environment variable
+    # (e.g. from /etc/aleph-vm/supervisor.env, as used by the CI droplet tests).
+    if args.fake_data_program:
+        settings.update(FAKE_DATA_PROGRAM=args.fake_data_program)
 
     if args.run_fake_instance:
         settings.USE_FAKE_INSTANCE_BASE = True
