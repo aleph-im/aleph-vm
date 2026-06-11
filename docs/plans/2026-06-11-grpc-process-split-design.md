@@ -200,3 +200,73 @@ Known gaps (intentional, follow-ups):
   `ALEPH_VM_USE_JAILER=False ALEPH_VM_ALLOW_VM_NETWORKING=False`, agent
   pointed at the daemon socket. The jailered/networked variant remains
   droplet-CI territory (root), as does the legacy fake-data job.
+
+## 7. Protocol review follow-through (2026-06-11, second pass)
+
+A full review of `proto/supervisor.proto` (vocabulary leaks, missing
+capabilities, gRPC idiom) was implemented as a commit series on this branch:
+
+**Vocabulary scrubbed off the wire:**
+
+- `DiskConfig.mount` dropped — dead on both backends (Firecracker mounts
+  travel over the guest channel; `QemuVM` never consumed the field).
+- `BACKEND_QEMU_SEV` dropped — the VMM and the TEE are orthogonal; a
+  confidential VM is `backend: QEMU` + a `TeeConfig` (presence selects the
+  launch path). The spec path rejects TEE specs explicitly
+  (`TeeUnavailableError`) until the confidential configuration is wired.
+- Enum-typed wire fields: `HealthStatus`, `Protocol` (port forwarding),
+  `TeeBackend` (TeeConfig + Measurement). `is_instance` name reserved.
+- `VmInfo` IP fields folded into `IpAssignment {address, network_cidr,
+  gateway}` × 2 families (old numbers/names reserved).
+- Guest hostname moved into `CreateVmRequest.hostname` — the base32
+  item-hash naming convention is computed agent-side now; the supervisor
+  falls back to a mechanical vm_id truncation.
+- `GuestChannel.ready_timeout_secs` — boot-time policy crosses the wire
+  (was supervisor-side `settings.INIT_TIMEOUT` only).
+- Same-host invariant (paths by reference over a shared filesystem) is now
+  stated in the proto header.
+
+**Capabilities added:**
+
+- `GetVmSpec` — the supervisor returns the spec a live VM was created from
+  (UNIMPLEMENTED for legacy message-built executions).
+- `CreateVm` idempotent on `vm_id` (same spec → current info; different
+  spec or collision with a message-built execution → ALREADY_EXISTS).
+- `RebootVm` actually reboots ephemeral spec-created VMs (stop + recreate
+  from the held spec).
+- `StopVm`/`StartVm` — stop without releasing the definition (persistent
+  VMs; the VM stays listed STOPPED, forget-on-stop defused the reinstall
+  way; StartVm runs through `restart_persistent_vm`). Ephemeral VMs answer
+  UNIMPLEMENTED (their cycle is DeleteVm + CreateVm).
+- `WatchEvents` — lifecycle transitions as a server stream (no replay;
+  snapshot via ListVms then watch). The split-mode agent runs a
+  reconnecting background watcher that drops per-VM agent state (guest API
+  process, configured mark, idle timers) when a VM leaves RUNNING — the
+  cross-process replacement for the in-process reap hooks.
+- Live log chunks are stamped at capture (the `timestamp_ns=0` sentinel
+  rendered as the 1970 epoch in clients).
+- Client deadlines on every unary RPC (30s queries / 300s lifecycle) via a
+  shared `_unary` helper; streams stay deadline-free.
+
+**Verified (second pass):** full suite 769 passed + 3 xfailed with the same
+9 environment-only failures; mypy error set identical to base
+(line-number-normalized diff); live e2e re-ran clean on the final contract
+(`ready_timeout_secs=20` on the wire, HTTP 200, clean DeleteVm).
+
+**Deferred (from the same review, by explicit decision):**
+
+- Resource accounting: allocated-vs-total in `HostInfo`, per-VM
+  `GetVmStats` — when admission/metrics migrate to split mode.
+- `google.rpc.Status` envelope instead of the custom
+  `aleph-supervisor-error-bin` trailer — when external (non-aleph-vm)
+  clients appear; the translation layers keep working either way.
+- Capabilities/version RPC — when agent and supervisor deploy
+  independently.
+- Migration contract reshape (directory-based Export/Import is provisional;
+  needs streaming or pull-based transport for host-to-host).
+- Cloud-init beyond hostname: opaque user-data/meta-data blobs (and
+  possibly a two-phase AllocateNetwork → CreateVm so the agent can render
+  network-config) — `ssh_authorized_keys`, developer keys and DNS
+  nameservers still materialise supervisor-side.
+- Spontaneous guest-death detection feeding WatchEvents (no component
+  observes VMM process exit today).
