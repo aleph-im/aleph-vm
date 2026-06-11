@@ -126,10 +126,22 @@ TimeoutStopSec=30
 """
 
 
-def _install_controller_unit(exec_root: Path) -> list[Path]:
+def _active_controller_units() -> list[str]:
+    out = subprocess.run(
+        ["systemctl", "list-units", "--plain", "--no-legend", "aleph-vm-controller@*.service"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    return [line.split()[0] for line in out.splitlines() if line.strip()]
+
+
+def _install_controller_unit(exec_root: Path, python_path: str) -> list[Path]:
     """Point aleph-vm-controller@ at this source tree and *exec_root*.
 
-    A drop-in overrides ExecStart/PYTHONPATH of whatever unit is installed;
+    A drop-in overrides ExecStart/PYTHONPATH of whatever unit is installed
+    (*python_path* must carry the same module resolution the daemon gets:
+    src plus the system-module shim, or the controller dies on import);
     a fallback unit in /run covers hosts with no aleph-vm package at all
     (/etc and /usr/lib unit files take precedence over /run, so the fallback
     is inert when a packaged unit exists).
@@ -145,7 +157,7 @@ def _install_controller_unit(exec_root: Path) -> list[Path]:
     _CONTROLLER_DROPIN_DIR.mkdir(parents=True, exist_ok=True)
     _CONTROLLER_DROPIN.write_text(
         "[Service]\n"
-        f"Environment=PYTHONPATH={REPO_ROOT / 'src'}\n"
+        f"Environment=PYTHONPATH={python_path}\n"
         f"WorkingDirectory={REPO_ROOT}\n"
         "ExecStart=\n"
         f"ExecStart={sys.executable} -m aleph.vm.controllers --config={exec_root}/%i-controller.json\n"
@@ -156,6 +168,13 @@ def _install_controller_unit(exec_root: Path) -> list[Path]:
 
 
 def _remove_controller_unit(created: list[Path]) -> None:
+    """Stop whatever controller units the session left, then drop the unit
+    override. Order matters: a still-running (or auto-restarting) unit that
+    outlives the drop-in restarts with the packaged ExecStart and crash-loops
+    against a config path that does not exist."""
+    for unit in _active_controller_units():
+        subprocess.run(["systemctl", "stop", unit], check=False)
+        subprocess.run(["systemctl", "reset-failed", unit], check=False)
     for path in created:
         path.unlink(missing_ok=True)
     if _CONTROLLER_DROPIN_DIR.exists() and not any(_CONTROLLER_DROPIN_DIR.iterdir()):
@@ -235,8 +254,36 @@ async def _delete_all_vms(socket_path: Path) -> None:
         await client.close()
 
 
+def _clean_unjailed_sockets() -> list[str]:
+    """Remove stale Firecracker sockets from earlier runs.
+
+    Unjailed Firecracker binds fixed paths (/tmp/v.sock,
+    /tmp/firecracker-<n>.socket); leftovers from an interrupted run as
+    another user (typically root) make CreateVm fail with EACCES. Returns
+    the paths it could not remove.
+    """
+    import stat
+
+    blocked: list[str] = []
+    for pattern in ("v.sock*", "firecracker-*.socket"):
+        for path in Path("/tmp").glob(pattern):
+            try:
+                if not stat.S_ISSOCK(path.lstat().st_mode):
+                    continue
+                path.unlink()
+            except OSError:
+                blocked.append(str(path))
+    return blocked
+
+
 @pytest.fixture(scope="session")
 def daemon(tmp_path_factory):
+    stale_sockets = _clean_unjailed_sockets()
+    if stale_sockets:
+        pytest.fail(
+            "stale Firecracker sockets owned by another user block this run: "
+            f"{stale_sockets}. Remove them first (sudo rm), or run the suite as root."
+        )
     root = tmp_path_factory.mktemp("avm-itest")
     (root / "exec").mkdir()
     (root / "cache").mkdir()
@@ -261,7 +308,17 @@ def daemon(tmp_path_factory):
         }
     )
 
-    unit_files = _install_controller_unit(root / "exec") if IS_ROOT else []
+    unit_files: list[Path] = []
+    taps_before: set[str] = set()
+    if IS_ROOT:
+        pre_existing = _active_controller_units()
+        if pre_existing:
+            pytest.fail(
+                "refusing to run: aleph-vm-controller units are already active on this "
+                f"host (the suite overrides the unit template): {pre_existing}"
+            )
+        taps_before = list_tap_interfaces()
+        unit_files = _install_controller_unit(root / "exec", os.pathsep.join(python_path))
 
     log_file = (root / "daemon.log").open("wb")
     process = subprocess.Popen(
@@ -307,6 +364,11 @@ def daemon(tmp_path_factory):
         process.wait(timeout=10)
     log_file.close()
     _remove_controller_unit(unit_files)
+    if IS_ROOT:
+        # Anything an interrupted test left behind (the guard above proved
+        # no taps of ours pre-existed beyond this snapshot).
+        for tap in list_tap_interfaces() - taps_before:
+            subprocess.run(["ip", "link", "del", tap], check=False)
 
 
 @pytest_asyncio.fixture
