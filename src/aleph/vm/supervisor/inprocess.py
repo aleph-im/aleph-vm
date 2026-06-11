@@ -487,7 +487,7 @@ class InProcessSupervisor(Supervisor):
                 # Keep the execution registered so the allocation loop cannot
                 # create a duplicate while we re-prepare (mirrors the old
                 # operate_reinstall persistent branch). Note: restart_persistent_vm
-                # re-registers the execution again after prepare() — the duplicate
+                # re-registers the execution again after prepare(); the duplicate
                 # write is intentional.
                 execution.stop_event = asyncio.Event()
                 self.pool.executions[execution.vm_hash] = execution

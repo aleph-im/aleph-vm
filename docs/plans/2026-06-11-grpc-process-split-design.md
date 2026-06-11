@@ -283,7 +283,7 @@ use):
   idempotent against a running job and against a non-expired archive
   (24h TTL, mirroring the operator endpoint). Optional best-effort guest
   fs-freeze (`quiesce_guest`).
-- Backups cover the rootfs disk only — symmetric with what restore can put
+- Backups cover the rootfs disk only, symmetric with what restore can put
   back. Supervisor-issued backup ids use microsecond timestamps (id = tar
   stem; a retry after a failure must get a fresh id).
 - Completed archives live on disk as the source of truth; only in-flight
@@ -293,8 +293,8 @@ use):
   the rootfs atomically and restarts; emits down-then-up events.
 
 **Integration suite** (`tests/integration/`, opt-in via `AVM_ITEST=1`):
-drives a real supervisor daemon over its UDS gRPC contract, agent-free —
-specs built inline from local artifacts. Self-gating: Firecracker tests run
+drives a real supervisor daemon over its UDS gRPC contract, agent-free
+(specs built inline from local artifacts). Self-gating: Firecracker tests run
 unprivileged (vsock-channel reachability); QEMU tests need root + a cloud
 image (IP/SSH reachability, persistent lifecycle via a systemd drop-in that
 points `aleph-vm-controller@` at the source tree under test). Covers
@@ -303,6 +303,6 @@ deletion + resource release (processes, files, TAPs, nftables, units), and
 the full backup→mutate→restore cycle.
 
 **Found by the suite:** the pool's forget-on-stop task deleted by hash, not
-identity — a reboot (or delete+create) that recreated the VM under the same
-vm_id could have its new execution removed from the pool by the old
+identity, so a reboot (or delete+create) that recreated the VM under the
+same vm_id could have its new execution removed from the pool by the old
 execution's reap task. Fixed in `_schedule_forget_on_stop`.

@@ -1,6 +1,6 @@
-"""Use case 3: deleting a VM releases what it held on the host — hypervisor
+"""Use case 3: deleting a VM releases what it held on the host (hypervisor
 processes, files under the execution root, TAP interfaces, firewall rules and
-systemd units. Creating and deleting repeatedly must not accumulate anything."""
+systemd units). Creating and deleting repeatedly must not accumulate anything."""
 
 from __future__ import annotations
 

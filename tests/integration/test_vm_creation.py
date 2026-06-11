@@ -1,7 +1,7 @@
 """Use case 1: creating a VM works and the guest is reachable from the host.
 
 Firecracker: reachability is the vsock guest channel (the guest's ready
-signal arrived and the host UDS exists). QEMU: reachability is IP — a TCP
+signal arrived and the host UDS exists). QEMU: reachability is IP, a TCP
 banner from the guest's sshd over the TAP network.
 """
 
