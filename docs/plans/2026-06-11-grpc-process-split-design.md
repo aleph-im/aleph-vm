@@ -177,5 +177,12 @@ Known gaps (intentional, follow-ups):
 - Persistent programs, backups/restore, confidential, migration, domains/
   HAProxy, GPU reservation and the advisory admission gate stay on the
   in-process pool (501 / skipped in split mode), matching the series' staging.
-- A real microvm boot through the split needs the droplet CI (no runtime
-  image / root locally); the fake-data program job is the gate to watch.
+- **Live e2e (2026-06-11, local, no jailer):** a real program microvm ran
+  through the full split — diagnostic-program message loaded from the Aleph
+  network, resources downloaded agent-side, `CreateVm` over the UDS gRPC
+  contract booted the VM in the daemon process (init handshake, runtime
+  2.0.0), the agent pushed the configuration and ran `/` over vsock
+  (HTTP 200), `DeleteVm` tore it down cleanly. Recipe: daemon with
+  `ALEPH_VM_USE_JAILER=False ALEPH_VM_ALLOW_VM_NETWORKING=False`, agent
+  pointed at the daemon socket. The jailered/networked variant remains
+  droplet-CI territory (root), as does the legacy fake-data job.
