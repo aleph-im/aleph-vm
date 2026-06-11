@@ -6,7 +6,6 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from aleph_message.models import (
     ExecutableContent,
@@ -377,13 +376,13 @@ class VmExecution:
     @property
     def is_instance(self) -> bool:
         if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend in {Backend.QEMU, Backend.QEMU_SEV}
+            return self.spec.backend is Backend.QEMU
         return isinstance(self.spec.message, InstanceContent)
 
     @property
     def is_confidential(self) -> bool:
         if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend is Backend.QEMU_SEV
+            return self.spec.tee is not None
         # FunctionEnvironment has no trusted_execution
         return True if getattr(self.spec.message.environment, "trusted_execution", None) else False
 
@@ -701,13 +700,9 @@ class VmExecution:
                     await self.wait_for_init()
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
-                else:
-                    # Wait for the controller to become active before
-                    # marking ready — avoids a race where ready_event
-                    # is set but the VM never actually started.
-                    if not await self.non_blocking_wait_for_boot():
-                        msg = f"{self} controller failed to start"
-                        raise RuntimeError(msg)
+                elif not await self.non_blocking_wait_for_boot():
+                    msg = f"{self} controller failed to start"
+                    raise RuntimeError(msg)
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)

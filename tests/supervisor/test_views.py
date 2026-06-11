@@ -6,7 +6,6 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -856,7 +855,6 @@ async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_inst
 
     from unittest.mock import AsyncMock, MagicMock
 
-    from aleph.vm.supervisor.errors import VmNotFoundError
     from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
 
     # Register in registry so the endpoint can find it.
@@ -877,7 +875,7 @@ async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_inst
     )
     web_app["supervisor"] = fake_sup
 
-    response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
+    response: web.Response = await client.post(f"/control/machine/{vm_hash}/update")
     assert response.status == 200, await response.text()
     response.raise_for_status()
     resp = await response.json()
@@ -917,7 +915,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
     web_app["supervisor"] = fake_sup
     web_app["vm_pool"].update_domain_mapping = AsyncMock()
 
-    response: web.Response = await client.post("/control/machine/{ref}/update".format(ref=vm_hash))
+    response: web.Response = await client.post(f"/control/machine/{vm_hash}/update")
     assert response.status == 200, await response.text()
     response.raise_for_status()
     resp = await response.json()

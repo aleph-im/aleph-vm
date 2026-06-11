@@ -759,7 +759,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error removing aleph chains: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to remove existing chains: {str(e)}"},
+                {"success": False, "error": f"Failed to remove existing chains: {e!s}"},
                 status=500,
             )
 
@@ -770,7 +770,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error initializing nftables: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to initialize network: {str(e)}"},
+                {"success": False, "error": f"Failed to initialize network: {e!s}"},
                 status=500,
             )
 
@@ -780,7 +780,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error recreating VM networks: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to recreate VM networks: {str(e)}"},
+                {"success": False, "error": f"Failed to recreate VM networks: {e!s}"},
                 status=500,
             )
 
@@ -865,7 +865,7 @@ async def regenerate_proxy(request: web.Request):
         except Exception as e:
             logger.error(f"Error regenerating HAProxy configuration: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to regenerate HAProxy configuration: {str(e)}"},
+                {"success": False, "error": f"Failed to regenerate HAProxy configuration: {e!s}"},
                 status=500,
             )
 

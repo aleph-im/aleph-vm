@@ -33,7 +33,7 @@ from aleph.vm.supervisor.types import (
 
 
 def test_enums_have_expected_members():
-    assert {b.name for b in Backend} == {"FIRECRACKER", "QEMU", "QEMU_SEV"}
+    assert {b.name for b in Backend} == {"FIRECRACKER", "QEMU"}
     assert {s.name for s in VmStatus} == {
         "DEFINED",
         "BOOTING",

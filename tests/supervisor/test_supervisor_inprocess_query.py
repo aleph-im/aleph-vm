@@ -6,7 +6,7 @@ from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import Backend, VmId, VmStatus
+from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
 
 
 def make_execution(
@@ -99,7 +99,8 @@ async def test_get_vm_unknown_raises_vm_not_found():
 
 
 @pytest.mark.asyncio
-async def test_confidential_instance_reports_qemu_sev_backend():
+async def test_confidential_instance_reports_qemu_backend_and_tee_mode():
+    """Backend is the VMM only; the TEE is carried by confidential_mode."""
     execution = make_execution(confidential=True)
     pool = FakePool(
         executions={"itemhash123": execution},
@@ -107,7 +108,8 @@ async def test_confidential_instance_reports_qemu_sev_backend():
     )
     sup = InProcessSupervisor(pool=pool)
     info = await sup.get_vm(VmId("itemhash123"))
-    assert info.backend is Backend.QEMU_SEV
+    assert info.backend is Backend.QEMU
+    assert info.confidential_mode is not ConfidentialMode.NONE
 
 
 @pytest.mark.asyncio

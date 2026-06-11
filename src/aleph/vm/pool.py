@@ -23,7 +23,7 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError, get_gpu_devices
-from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.errors import InvalidBackendError, TeeUnavailableError
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_configuration,
     spec_from_controller_configuration,
@@ -406,11 +406,14 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
+        if spec.tee is not None:
+            # The spec path builds a plain QemuVMConfiguration; a confidential
+            # launch (QemuConfidentialVMConfiguration) is not wired yet.
+            # Failing beats silently booting the VM unprotected.
+            msg = "Confidential (TEE) VMs are not supported by the spec path yet"
+            raise TeeUnavailableError(msg)
         if spec.backend is Backend.FIRECRACKER:
             return await self._create_firecracker_from_spec(spec)
-        if spec.backend is not Backend.QEMU:
-            msg = f"create_vm_from_spec supports QEMU and Firecracker VMs, got {spec.backend}"
-            raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)
         async with self.creation_lock:

@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from aleph.vm.orchestrator.metrics import Base, PortMapping, save_port_mappings
+from aleph.vm.orchestrator.metrics import Base, save_port_mappings
 
 
 @pytest_asyncio.fixture
@@ -128,7 +128,6 @@ async def test_save_port_mappings_protocol_change(async_session):
 
 def test_get_active_host_ports_missing_table(tmp_path):
     """_get_active_host_ports returns empty set when table doesn't exist."""
-    from unittest.mock import patch
 
     from aleph.vm.network.port_availability_checker import (
         _get_active_host_ports,
@@ -147,7 +146,6 @@ def test_get_active_host_ports_missing_table(tmp_path):
 
 def test_get_active_host_ports_with_data(tmp_path):
     """_get_active_host_ports returns host ports from the DB."""
-    from unittest.mock import patch
 
     from sqlalchemy import create_engine, text
 

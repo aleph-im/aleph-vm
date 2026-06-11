@@ -59,9 +59,29 @@ from aleph.vm.supervisor.types import (
 BACKEND_TO_PB = {
     Backend.FIRECRACKER: pb.BACKEND_FIRECRACKER,
     Backend.QEMU: pb.BACKEND_QEMU,
-    Backend.QEMU_SEV: pb.BACKEND_QEMU_SEV,
 }
 BACKEND_FROM_PB = {v: k for k, v in BACKEND_TO_PB.items()}
+
+TEE_BACKEND_TO_PB = {
+    TeeBackend.NONE: pb.TEE_BACKEND_UNSPECIFIED,
+    TeeBackend.SEV: pb.TEE_BACKEND_SEV,
+    TeeBackend.SEV_SNP: pb.TEE_BACKEND_SEV_SNP,
+    TeeBackend.TDX: pb.TEE_BACKEND_TDX,
+    TeeBackend.NVIDIA_CC: pb.TEE_BACKEND_NVIDIA_CC,
+}
+TEE_BACKEND_FROM_PB = {v: k for k, v in TEE_BACKEND_TO_PB.items()}
+
+HEALTH_STATUS_TO_PB = {
+    HealthStatus.OK: pb.HEALTH_STATUS_OK,
+    HealthStatus.DEGRADED: pb.HEALTH_STATUS_DEGRADED,
+}
+HEALTH_STATUS_FROM_PB = {v: k for k, v in HEALTH_STATUS_TO_PB.items()}
+
+PROTOCOL_TO_PB = {
+    Protocol.TCP: pb.PROTOCOL_TCP,
+    Protocol.UDP: pb.PROTOCOL_UDP,
+}
+PROTOCOL_FROM_PB = {v: k for k, v in PROTOCOL_TO_PB.items()}
 
 VM_STATUS_TO_PB = {
     VmStatus.DEFINED: pb.VM_STATUS_DEFINED,
@@ -159,7 +179,6 @@ def disk_spec_to_pb(disk: DiskSpec) -> pb.DiskConfig:
         readonly=disk.readonly,
         format=DISK_FORMAT_TO_PB[disk.format],
         role=DISK_ROLE_TO_PB[disk.role],
-        mount=disk.mount,
     )
 
 
@@ -169,7 +188,6 @@ def disk_spec_from_pb(msg: pb.DiskConfig) -> DiskSpec:
         readonly=msg.readonly,
         format=DISK_FORMAT_FROM_PB[msg.format],
         role=DISK_ROLE_FROM_PB[msg.role],
-        mount=msg.mount,
     )
 
 
@@ -196,7 +214,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
     if spec.tee is not None:
         request.tee.CopyFrom(
             pb.TeeConfig(
-                backend=spec.tee.backend.value,
+                backend=TEE_BACKEND_TO_PB[spec.tee.backend],
                 policy=spec.tee.policy,
                 session_dir=path_to_wire(Path(spec.tee.session_dir)),
             )
@@ -210,7 +228,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
     tee: TeeConfig | None = None
     if msg.HasField("tee"):
         tee = TeeConfig(
-            backend=TeeBackend(msg.tee.backend),
+            backend=TEE_BACKEND_FROM_PB[msg.tee.backend],
             policy=msg.tee.policy,
             session_dir=DirectoryPath(path_from_wire(msg.tee.session_dir)),
         )
@@ -318,11 +336,11 @@ def vm_info_from_pb(msg: pb.VmInfo) -> VmInfo:
 
 
 def health_info_to_pb(info: HealthInfo) -> pb.HealthResponse:
-    return pb.HealthResponse(status=info.status.value, vm_count=info.vm_count)
+    return pb.HealthResponse(status=HEALTH_STATUS_TO_PB[info.status], vm_count=info.vm_count)
 
 
 def health_info_from_pb(msg: pb.HealthResponse) -> HealthInfo:
-    return HealthInfo(status=HealthStatus(msg.status), vm_count=msg.vm_count)
+    return HealthInfo(status=HEALTH_STATUS_FROM_PB[msg.status], vm_count=msg.vm_count)
 
 
 def host_info_to_pb(info: HostInfo) -> pb.HostInfo:
@@ -377,7 +395,7 @@ def port_forward_info_to_pb(info: PortForwardInfo) -> pb.PortForwardInfo:
         vm_id=str(info.vm_id),
         host_port=int(info.host_port),
         vm_port=int(info.vm_port),
-        protocol=info.protocol.value,
+        protocol=PROTOCOL_TO_PB[info.protocol],
     )
 
 
@@ -386,7 +404,7 @@ def port_forward_info_from_pb(msg: pb.PortForwardInfo) -> PortForwardInfo:
         vm_id=VmId(msg.vm_id),
         host_port=HostPort(msg.host_port),
         vm_port=GuestPort(msg.vm_port),
-        protocol=Protocol(msg.protocol),
+        protocol=PROTOCOL_FROM_PB[msg.protocol],
     )
 
 
@@ -395,7 +413,7 @@ def port_forward_spec_to_pb(spec: PortForwardSpec) -> pb.AddPortForwardRequest:
         vm_id=str(spec.vm_id),
         host_port=int(spec.host_port),
         vm_port=int(spec.vm_port),
-        protocol=spec.protocol.value,
+        protocol=PROTOCOL_TO_PB[spec.protocol],
     )
 
 
@@ -404,7 +422,7 @@ def port_forward_spec_from_pb(msg: pb.AddPortForwardRequest) -> PortForwardSpec:
         vm_id=VmId(msg.vm_id),
         host_port=HostPort(msg.host_port),
         vm_port=GuestPort(msg.vm_port),
-        protocol=Protocol(msg.protocol),
+        protocol=PROTOCOL_FROM_PB[msg.protocol],
     )
 
 
@@ -492,7 +510,7 @@ def measurement_to_pb(measurement: Measurement) -> pb.Measurement:
     return pb.Measurement(
         vm_id=str(measurement.vm_id),
         measurement_bytes=measurement.measurement_bytes,
-        tee_backend=measurement.tee_backend.value,
+        tee_backend=TEE_BACKEND_TO_PB[measurement.tee_backend],
     )
 
 
@@ -500,5 +518,5 @@ def measurement_from_pb(msg: pb.Measurement) -> Measurement:
     return Measurement(
         vm_id=VmId(msg.vm_id),
         measurement_bytes=msg.measurement_bytes,
-        tee_backend=TeeBackend(msg.tee_backend),
+        tee_backend=TEE_BACKEND_FROM_PB[msg.tee_backend],
     )

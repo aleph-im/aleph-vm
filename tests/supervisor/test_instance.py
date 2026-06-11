@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from asyncio.subprocess import Process
 from pathlib import Path
 

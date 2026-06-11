@@ -7,6 +7,15 @@
 // and the supervisor (controllers, hypervisors, networking, systemd,
 // backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 // backport-design.md.
+//
+// SAME-HOST INVARIANT: this is a process boundary, not a network
+// boundary. Agent and supervisor share a filesystem; every path in this
+// contract (kernel_path, DiskConfig.path, TeeConfig.session_dir,
+// VmInfo.guest_channel_path, migration directories) is exchanged by
+// reference and must resolve identically on both sides, with file
+// ownership that lets the supervisor (and its jailer) read what the
+// agent downloaded. A remote supervisor would need a content-transfer
+// mechanism this contract deliberately does not define.
 
 syntax = "proto3";
 
@@ -57,8 +66,14 @@ service Supervisor {
 
 message HealthRequest {}
 
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_OK = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+}
+
 message HealthResponse {
-  string status = 1;       // "ok" | "degraded"
+  HealthStatus status = 1;
   uint32 vm_count = 2;
 }
 
@@ -110,11 +125,25 @@ message GpuDevice {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
 
+// The VMM. Orthogonal to confidential computing: a confidential VM is
+// `backend: BACKEND_QEMU` plus a `tee` config (whose presence selects the
+// confidential launch path).
 enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_FIRECRACKER = 1;
   BACKEND_QEMU = 2;
-  BACKEND_QEMU_SEV = 3;
+  // Was BACKEND_QEMU_SEV: it conflated the VMM with the TEE.
+  reserved 3;
+  reserved "BACKEND_QEMU_SEV";
+}
+
+// TEE attestation backend (see TeeConfig).
+enum TeeBackend {
+  TEE_BACKEND_UNSPECIFIED = 0;   // no TEE
+  TEE_BACKEND_SEV = 1;           // AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy
+  TEE_BACKEND_SEV_SNP = 2;
+  TEE_BACKEND_TDX = 3;
+  TEE_BACKEND_NVIDIA_CC = 4;
 }
 
 enum VmStatus {
@@ -135,7 +164,7 @@ message CreateVmRequest {
   repeated DiskConfig disks = 5;
   uint32 vcpus = 6;
   uint64 memory_mib = 7;
-  TeeConfig tee = 8;                 // only meaningful when backend is *_SEV
+  TeeConfig tee = 8;                 // presence selects the confidential launch path
   NetworkConfig network = 9;
   repeated GpuConfig gpus = 10;
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
@@ -159,7 +188,12 @@ message DiskConfig {
   bool readonly = 2;
   Format format = 3;
   DiskRole role = 4;
-  string mount = 5;                  // guest mount point (empty for rootfs); preserves the Aleph volume mount
+  // Was `mount` (guest mount point): where the guest mounts a disk is
+  // workload semantics no hypervisor mechanism consumes — the client owns
+  // it (Firecracker: pushed over the guest channel; QEMU: the guest's own
+  // configuration), keyed by disk order.
+  reserved 5;
+  reserved "mount";
 
   enum Format {
     FORMAT_UNSPECIFIED = 0;
@@ -180,7 +214,7 @@ message DiskConfig {
 }
 
 message TeeConfig {
-  string backend = 1;                // TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM).
+  TeeBackend backend = 1;            // attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
 }
@@ -234,6 +268,7 @@ message VmInfo {
   // derived client-side from its own records (or from the guest channel's
   // presence as a last resort).
   reserved 18;
+  reserved "is_instance";
 
   ConfidentialMode confidential_mode = 19;   // precise TEE mode; NONE for non-confidential VMs
   repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
@@ -277,24 +312,30 @@ message ReinstallVmRequest {
 
 // ── Port forwarding ──────────────────────────────────────────────────────
 
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_TCP = 1;
+  PROTOCOL_UDP = 2;
+}
+
 message AddPortForwardRequest {
   string vm_id = 1;
   uint32 host_port = 2;              // 0 = auto-allocate
   uint32 vm_port = 3;
-  string protocol = 4;               // "tcp" | "udp"
+  Protocol protocol = 4;
 }
 
 message PortForwardInfo {
   string vm_id = 1;
   uint32 host_port = 2;
   uint32 vm_port = 3;
-  string protocol = 4;
+  Protocol protocol = 4;
 }
 
 message RemovePortForwardRequest {
   string vm_id = 1;
   uint32 host_port = 2;
-  string protocol = 3;
+  Protocol protocol = 3;
 }
 
 message RemovePortForwardResponse {}
@@ -434,7 +475,7 @@ message GetMeasurementRequest { string vm_id = 1; }
 message Measurement {
   string vm_id = 1;
   bytes measurement_bytes = 2;       // attestation report / SEV launch measure
-  string tee_backend = 3;            // "sev-snp" | "tdx" | ...
+  TeeBackend tee_backend = 3;
 }
 
 message InjectSecretRequest {

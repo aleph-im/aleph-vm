@@ -10,6 +10,15 @@ This service is the infra-only boundary between the network-agent
 and the supervisor (controllers, hypervisors, networking, systemd,
 backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 backport-design.md.
+
+SAME-HOST INVARIANT: this is a process boundary, not a network
+boundary. Agent and supervisor share a filesystem; every path in this
+contract (kernel_path, DiskConfig.path, TeeConfig.session_dir,
+VmInfo.guest_channel_path, migration directories) is exchanged by
+reference and must resolve identically on both sides, with file
+ownership that lets the supervisor (and its jailer) read what the
+agent downloaded. A remote supervisor would need a content-transfer
+mechanism this contract deliberately does not define.
 """
 
 import builtins
@@ -28,6 +37,23 @@ else:
 
 DESCRIPTOR: google.protobuf.descriptor.FileDescriptor
 
+class _HealthStatus:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _HealthStatusEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_HealthStatus.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    HEALTH_STATUS_UNSPECIFIED: _HealthStatus.ValueType  # 0
+    HEALTH_STATUS_OK: _HealthStatus.ValueType  # 1
+    HEALTH_STATUS_DEGRADED: _HealthStatus.ValueType  # 2
+
+class HealthStatus(_HealthStatus, metaclass=_HealthStatusEnumTypeWrapper): ...
+
+HEALTH_STATUS_UNSPECIFIED: HealthStatus.ValueType  # 0
+HEALTH_STATUS_OK: HealthStatus.ValueType  # 1
+HEALTH_STATUS_DEGRADED: HealthStatus.ValueType  # 2
+global___HealthStatus = HealthStatus
+
 class _Backend:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -37,16 +63,45 @@ class _BackendEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTy
     BACKEND_UNSPECIFIED: _Backend.ValueType  # 0
     BACKEND_FIRECRACKER: _Backend.ValueType  # 1
     BACKEND_QEMU: _Backend.ValueType  # 2
-    BACKEND_QEMU_SEV: _Backend.ValueType  # 3
 
 class Backend(_Backend, metaclass=_BackendEnumTypeWrapper):
-    """── Lifecycle ────────────────────────────────────────────────────────────"""
+    """── Lifecycle ────────────────────────────────────────────────────────────
+
+    The VMM. Orthogonal to confidential computing: a confidential VM is
+    `backend: BACKEND_QEMU` plus a `tee` config (whose presence selects the
+    confidential launch path).
+    """
 
 BACKEND_UNSPECIFIED: Backend.ValueType  # 0
 BACKEND_FIRECRACKER: Backend.ValueType  # 1
 BACKEND_QEMU: Backend.ValueType  # 2
-BACKEND_QEMU_SEV: Backend.ValueType  # 3
 global___Backend = Backend
+
+class _TeeBackend:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _TeeBackendEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_TeeBackend.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    TEE_BACKEND_UNSPECIFIED: _TeeBackend.ValueType  # 0
+    """no TEE"""
+    TEE_BACKEND_SEV: _TeeBackend.ValueType  # 1
+    """AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy"""
+    TEE_BACKEND_SEV_SNP: _TeeBackend.ValueType  # 2
+    TEE_BACKEND_TDX: _TeeBackend.ValueType  # 3
+    TEE_BACKEND_NVIDIA_CC: _TeeBackend.ValueType  # 4
+
+class TeeBackend(_TeeBackend, metaclass=_TeeBackendEnumTypeWrapper):
+    """TEE attestation backend (see TeeConfig)."""
+
+TEE_BACKEND_UNSPECIFIED: TeeBackend.ValueType  # 0
+"""no TEE"""
+TEE_BACKEND_SEV: TeeBackend.ValueType  # 1
+"""AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy"""
+TEE_BACKEND_SEV_SNP: TeeBackend.ValueType  # 2
+TEE_BACKEND_TDX: TeeBackend.ValueType  # 3
+TEE_BACKEND_NVIDIA_CC: TeeBackend.ValueType  # 4
+global___TeeBackend = TeeBackend
 
 class _VmStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -96,6 +151,24 @@ CONFIDENTIAL_MODE_SEV: ConfidentialMode.ValueType  # 1
 CONFIDENTIAL_MODE_SEV_ES: ConfidentialMode.ValueType  # 2
 CONFIDENTIAL_MODE_SEV_SNP: ConfidentialMode.ValueType  # 3
 global___ConfidentialMode = ConfidentialMode
+
+class _Protocol:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _ProtocolEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_Protocol.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    PROTOCOL_UNSPECIFIED: _Protocol.ValueType  # 0
+    PROTOCOL_TCP: _Protocol.ValueType  # 1
+    PROTOCOL_UDP: _Protocol.ValueType  # 2
+
+class Protocol(_Protocol, metaclass=_ProtocolEnumTypeWrapper):
+    """── Port forwarding ──────────────────────────────────────────────────────"""
+
+PROTOCOL_UNSPECIFIED: Protocol.ValueType  # 0
+PROTOCOL_TCP: Protocol.ValueType  # 1
+PROTOCOL_UDP: Protocol.ValueType  # 2
+global___Protocol = Protocol
 
 class _BackupStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -223,13 +296,12 @@ class HealthResponse(google.protobuf.message.Message):
 
     STATUS_FIELD_NUMBER: builtins.int
     VM_COUNT_FIELD_NUMBER: builtins.int
-    status: builtins.str
-    """"ok" | "degraded" """
+    status: global___HealthStatus.ValueType
     vm_count: builtins.int
     def __init__(
         self,
         *,
-        status: builtins.str = ...,
+        status: global___HealthStatus.ValueType = ...,
         vm_count: builtins.int = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["status", b"status", "vm_count", b"vm_count"]) -> None: ...
@@ -411,7 +483,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
     def tee(self) -> global___TeeConfig:
-        """only meaningful when backend is *_SEV"""
+        """presence selects the confidential launch path"""
 
     @property
     def network(self) -> global___NetworkConfig: ...
@@ -520,14 +592,11 @@ class DiskConfig(google.protobuf.message.Message):
     READONLY_FIELD_NUMBER: builtins.int
     FORMAT_FIELD_NUMBER: builtins.int
     ROLE_FIELD_NUMBER: builtins.int
-    MOUNT_FIELD_NUMBER: builtins.int
     path: builtins.str
     """absolute host path"""
     readonly: builtins.bool
     format: global___DiskConfig.Format.ValueType
     role: global___DiskConfig.DiskRole.ValueType
-    mount: builtins.str
-    """guest mount point (empty for rootfs); preserves the Aleph volume mount"""
     def __init__(
         self,
         *,
@@ -535,9 +604,8 @@ class DiskConfig(google.protobuf.message.Message):
         readonly: builtins.bool = ...,
         format: global___DiskConfig.Format.ValueType = ...,
         role: global___DiskConfig.DiskRole.ValueType = ...,
-        mount: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["format", b"format", "mount", b"mount", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["format", b"format", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
 
 global___DiskConfig = DiskConfig
 
@@ -548,8 +616,8 @@ class TeeConfig(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
-    backend: builtins.str
-    """TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM)."""
+    backend: global___TeeBackend.ValueType
+    """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
     """empty = default"""
     session_dir: builtins.str
@@ -557,7 +625,7 @@ class TeeConfig(google.protobuf.message.Message):
     def __init__(
         self,
         *,
-        backend: builtins.str = ...,
+        backend: global___TeeBackend.ValueType = ...,
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
     ) -> None: ...
@@ -821,8 +889,6 @@ global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
 class AddPortForwardRequest(google.protobuf.message.Message):
-    """── Port forwarding ──────────────────────────────────────────────────────"""
-
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
@@ -833,15 +899,14 @@ class AddPortForwardRequest(google.protobuf.message.Message):
     host_port: builtins.int
     """0 = auto-allocate"""
     vm_port: builtins.int
-    protocol: builtins.str
-    """"tcp" | "udp" """
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
         vm_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
@@ -858,14 +923,14 @@ class PortForwardInfo(google.protobuf.message.Message):
     vm_id: builtins.str
     host_port: builtins.int
     vm_port: builtins.int
-    protocol: builtins.str
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
         vm_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
@@ -880,13 +945,13 @@ class RemovePortForwardRequest(google.protobuf.message.Message):
     PROTOCOL_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     host_port: builtins.int
-    protocol: builtins.str
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id"]) -> None: ...
 
@@ -1383,14 +1448,13 @@ class Measurement(google.protobuf.message.Message):
     vm_id: builtins.str
     measurement_bytes: builtins.bytes
     """attestation report / SEV launch measure"""
-    tee_backend: builtins.str
-    """"sev-snp" | "tdx" | ..."""
+    tee_backend: global___TeeBackend.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         measurement_bytes: builtins.bytes = ...,
-        tee_backend: builtins.str = ...,
+        tee_backend: global___TeeBackend.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
 

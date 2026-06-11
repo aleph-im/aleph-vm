@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from aleph.vm.conf import settings
 from aleph.vm.network.firewall import get_orphan_vm_chain_ids
 from aleph.vm.network.interfaces import (

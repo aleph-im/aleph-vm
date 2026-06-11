@@ -137,5 +137,5 @@ def translating_errors() -> Iterator[None]:
         yield
     except SupervisorError:
         raise
-    except Exception as exc:  # noqa: BLE001 - deliberate boundary catch-all
+    except Exception as exc:  # - deliberate boundary catch-all
         raise translate_exception(exc) from exc

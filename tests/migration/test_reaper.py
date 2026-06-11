@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files

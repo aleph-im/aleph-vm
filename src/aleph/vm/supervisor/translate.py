@@ -77,7 +77,6 @@ async def build_create_vm_spec(
             readonly=False,
             format=DiskFormat.QCOW2,
             role=DiskRole.ROOTFS,
-            mount="",
         )
     ] + [
         DiskSpec(
@@ -85,7 +84,6 @@ async def build_create_vm_spec(
             readonly=v.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
-            mount=v.mount,
         )
         for v in resources.volumes
     ]
@@ -143,7 +141,6 @@ async def build_program_create_vm_spec(
             readonly=True,
             format=DiskFormat.SQUASHFS,
             role=DiskRole.ROOTFS,
-            mount="",
         )
     ]
     if resources.code_encoding == Encoding.squashfs:
@@ -153,7 +150,6 @@ async def build_program_create_vm_spec(
                 readonly=True,
                 format=DiskFormat.SQUASHFS,
                 role=DiskRole.EXTRA,
-                mount="/opt/code",
             )
         )
     disks += [
@@ -162,7 +158,6 @@ async def build_program_create_vm_spec(
             readonly=volume.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
-            mount=volume.mount,
         )
         for volume in resources.volumes
     ]

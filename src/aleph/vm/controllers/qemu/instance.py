@@ -148,8 +148,10 @@ class AlephQemuResources(VmResources):
 
         resources.rootfs_path = spec.require_rootfs().path
 
+        # Guest mount points do not cross the supervisor boundary; the
+        # HostVolume.mount field only matters on the message (legacy) path.
         resources.volumes = [
-            HostVolume(mount=d.mount, path_on_host=d.path, read_only=d.readonly, size_mib=None)
+            HostVolume(mount="", path_on_host=d.path, read_only=d.readonly, size_mib=None)
             for d in spec.disks
             if d.role is DiskRole.EXTRA
         ]

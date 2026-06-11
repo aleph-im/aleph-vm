@@ -8,21 +8,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.errors import TeeUnavailableError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
+    DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
     NetworkConfig,
+    TeeBackend,
+    TeeConfig,
     VmId,
 )
 
 _HASH = "deadbeef" * 8
 
 
-def _spec(backend: Backend = Backend.QEMU) -> CreateVmSpec:
+def _spec(backend: Backend = Backend.QEMU, tee: TeeConfig | None = None) -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=VmId(_HASH),
         backend=backend,
@@ -38,7 +41,7 @@ def _spec(backend: Backend = Backend.QEMU) -> CreateVmSpec:
         ],
         vcpus=2,
         memory_mib=1024,
-        tee=None,
+        tee=tee,
         network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
         gpus=[],
         numa_node=None,
@@ -111,8 +114,11 @@ async def test_create_vm_from_spec_preloads_persisted_port_mappings(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_create_vm_from_spec_rejects_non_qemu():
+async def test_create_vm_from_spec_rejects_tee():
+    """A confidential spec must fail loudly: the spec path would otherwise
+    boot the VM without memory encryption."""
     pool = _bare_pool()
-    with pytest.raises(InvalidBackendError):
-        await pool.create_vm_from_spec(_spec(backend=Backend.QEMU_SEV))
+    tee = TeeConfig(backend=TeeBackend.SEV, policy="", session_dir=DirectoryPath(Path("/tmp/session")))
+    with pytest.raises(TeeUnavailableError):
+        await pool.create_vm_from_spec(_spec(tee=tee))
     assert pool.executions == {}

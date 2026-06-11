@@ -76,7 +76,7 @@ class MemorySize:
         """Return the raw unit count (mirrors Rust ``From<unit> for u64``)."""
         return self.count
 
-    def to_bytes(self) -> "Bytes":
+    def to_bytes(self) -> Bytes:
         """Convert to raw bytes.
 
         Raises ``MemConvOverflowError`` if the result would exceed ``U64_MAX``.
@@ -162,7 +162,7 @@ class Bytes(MemorySize):
     BYTES_PER_UNIT: ClassVar[int] = 1
     SUFFIX: ClassVar[str] = "B"
 
-    def to_bytes(self) -> "Bytes":
+    def to_bytes(self) -> Bytes:
         return self
 
 

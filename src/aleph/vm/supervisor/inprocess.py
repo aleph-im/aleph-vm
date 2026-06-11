@@ -61,11 +61,8 @@ logger = logging.getLogger(__name__)
 
 
 def _backend_of(execution) -> Backend:
-    if execution.is_program:
-        return Backend.FIRECRACKER
-    if execution.is_confidential:
-        return Backend.QEMU_SEV
-    if execution.hypervisor == HypervisorType.firecracker:
+    """The VMM only; confidential computing is reported via confidential_mode."""
+    if execution.is_program or execution.hypervisor == HypervisorType.firecracker:
         return Backend.FIRECRACKER
     return Backend.QEMU
 
