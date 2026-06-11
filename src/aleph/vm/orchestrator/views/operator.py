@@ -56,7 +56,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import LogChunk, LogSource, VmId, VmStatus
+from aleph.vm.supervisor.types import VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,

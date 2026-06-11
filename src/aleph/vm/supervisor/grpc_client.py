@@ -204,7 +204,9 @@ class GrpcSupervisor(Supervisor):
     async def remove_port_forward(self, vm_id: VmId, host_port: HostPort, protocol: Protocol) -> None:
         try:
             await self._ensure_stub().RemovePortForward(
-                pb.RemovePortForwardRequest(vm_id=str(vm_id), host_port=int(host_port), protocol=protocol.value)
+                pb.RemovePortForwardRequest(
+                    vm_id=str(vm_id), host_port=int(host_port), protocol=conv.PROTOCOL_TO_PB[protocol]
+                )
             )
         except grpc.aio.AioRpcError as error:
             raise translate_rpc_error(error) from error

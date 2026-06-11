@@ -75,7 +75,6 @@ def _make_spec(
                 readonly=True,
                 format=DiskFormat.RAW,
                 role=DiskRole.EXTRA,
-                mount="/mnt/data",
             )
         )
 
@@ -158,7 +157,9 @@ async def test_build_qemu_configuration_happy_path(monkeypatch: pytest.MonkeyPat
     assert len(vm_cfg.host_volumes) == 1
     assert vm_cfg.host_volumes[0].path_on_host == Path("/data/extra.img")
     assert vm_cfg.host_volumes[0].read_only is True
-    assert vm_cfg.host_volumes[0].mount == "/mnt/data"
+    # Guest mount points no longer cross the boundary; the controller-config
+    # field (never consumed by QemuVM) is written empty.
+    assert vm_cfg.host_volumes[0].mount == ""
 
     # vcpu_count
     assert vm_cfg.vcpu_count == 4

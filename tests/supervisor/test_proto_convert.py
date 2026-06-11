@@ -45,14 +45,12 @@ from aleph.vm.supervisor.types import (
 
 FULL_SPEC = CreateVmSpec(
     vm_id=VmId("cafe" * 16),
-    backend=Backend.QEMU_SEV,
+    backend=Backend.QEMU,
     kernel_path=Path("/opt/kernel/vmlinux.bin"),
     initrd_path=Path("/opt/kernel/initrd.img"),
     disks=[
         DiskSpec(path=Path("/var/cache/rootfs.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS),
-        DiskSpec(
-            path=Path("/var/cache/data.raw"), readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA, mount="/data"
-        ),
+        DiskSpec(path=Path("/var/cache/data.raw"), readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA),
     ],
     vcpus=4,
     memory_mib=4096,

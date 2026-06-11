@@ -33,7 +33,6 @@ from aleph.vm.supervisor.types import (
     ErrorCode,
     HostPort,
     MigrationId,
-    Protocol,
     VmId,
 )
 
@@ -89,7 +88,7 @@ def _translating(
             return await handler(self, request, context)
         except SupervisorError as error:
             await _abort(context, error)
-        except Exception as error:  # noqa: BLE001 - boundary catch-all
+        except Exception as error:  # - boundary catch-all
             logger.exception("Unhandled error in %s", handler.__name__)
             await _abort(context, translate_exception(error))
         raise AssertionError("abort() must raise")  # pragma: no cover
@@ -149,7 +148,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     @_translating
     async def RemovePortForward(self, request: pb.RemovePortForwardRequest, context) -> pb.RemovePortForwardResponse:
         await self._supervisor.remove_port_forward(
-            VmId(request.vm_id), HostPort(request.host_port), Protocol(request.protocol)
+            VmId(request.vm_id), HostPort(request.host_port), conv.PROTOCOL_FROM_PB[request.protocol]
         )
         return pb.RemovePortForwardResponse()
 
@@ -175,7 +174,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
                 yield conv.log_chunk_to_pb(chunk)
         except SupervisorError as error:
             await _abort(context, error)
-        except Exception as error:  # noqa: BLE001 - boundary catch-all
+        except Exception as error:  # - boundary catch-all
             logger.exception("Unhandled error in StreamLogs")
             await _abort(context, translate_exception(error))
 
@@ -202,7 +201,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
                 yield conv.backup_chunk_to_pb(chunk)
         except SupervisorError as error:
             await _abort(context, error)
-        except Exception as error:  # noqa: BLE001 - boundary catch-all
+        except Exception as error:  # - boundary catch-all
             logger.exception("Unhandled error in DownloadBackup")
             await _abort(context, translate_exception(error))
 

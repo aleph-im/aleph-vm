@@ -32,15 +32,11 @@ def make_spec(tmp_path: Path, *, code: bool = True, extra: int = 1, internet: bo
     if code:
         code_path = tmp_path / "code.squashfs"
         code_path.write_bytes(b"code")
-        disks.append(
-            DiskSpec(path=code_path, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.EXTRA, mount="/opt/code")
-        )
+        disks.append(DiskSpec(path=code_path, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.EXTRA))
     for index in range(extra):
         volume = tmp_path / f"volume{index}.ext4"
         volume.write_bytes(b"volume")
-        disks.append(
-            DiskSpec(path=volume, readonly=False, format=DiskFormat.RAW, role=DiskRole.EXTRA, mount=f"/data{index}")
-        )
+        disks.append(DiskSpec(path=volume, readonly=False, format=DiskFormat.RAW, role=DiskRole.EXTRA))
     return CreateVmSpec(
         vm_id=VmId(VM_HASH),
         backend=Backend.FIRECRACKER,

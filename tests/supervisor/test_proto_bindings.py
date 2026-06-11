@@ -77,8 +77,51 @@ def test_lifecycle_rpcs_defined():
 def test_backend_enum_complete():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
+    # The VMM only: confidential computing is selected by TeeConfig presence,
+    # not a backend variant (BACKEND_QEMU_SEV is reserved).
     values = {v.name for v in supervisor_pb2.Backend.DESCRIPTOR.values}
-    assert values == {"BACKEND_UNSPECIFIED", "BACKEND_FIRECRACKER", "BACKEND_QEMU", "BACKEND_QEMU_SEV"}
+    assert values == {"BACKEND_UNSPECIFIED", "BACKEND_FIRECRACKER", "BACKEND_QEMU"}
+
+
+def test_tee_backend_enum_complete():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.TeeBackend.DESCRIPTOR.values}
+    assert values == {
+        "TEE_BACKEND_UNSPECIFIED",
+        "TEE_BACKEND_SEV",
+        "TEE_BACKEND_SEV_SNP",
+        "TEE_BACKEND_TDX",
+        "TEE_BACKEND_NVIDIA_CC",
+    }
+    # Enum-typed on the wire, not stringly-typed.
+    tee_field = supervisor_pb2.TeeConfig.DESCRIPTOR.fields_by_name["backend"]
+    assert tee_field.enum_type is supervisor_pb2.TeeBackend.DESCRIPTOR
+    meas_field = supervisor_pb2.Measurement.DESCRIPTOR.fields_by_name["tee_backend"]
+    assert meas_field.enum_type is supervisor_pb2.TeeBackend.DESCRIPTOR
+
+
+def test_health_status_enum_typed():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.HealthStatus.DESCRIPTOR.values}
+    assert values == {"HEALTH_STATUS_UNSPECIFIED", "HEALTH_STATUS_OK", "HEALTH_STATUS_DEGRADED"}
+    field = supervisor_pb2.HealthResponse.DESCRIPTOR.fields_by_name["status"]
+    assert field.enum_type is supervisor_pb2.HealthStatus.DESCRIPTOR
+
+
+def test_protocol_enum_typed():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.Protocol.DESCRIPTOR.values}
+    assert values == {"PROTOCOL_UNSPECIFIED", "PROTOCOL_TCP", "PROTOCOL_UDP"}
+    for message in (
+        supervisor_pb2.AddPortForwardRequest,
+        supervisor_pb2.PortForwardInfo,
+        supervisor_pb2.RemovePortForwardRequest,
+    ):
+        field = message.DESCRIPTOR.fields_by_name["protocol"]
+        assert field.enum_type is supervisor_pb2.Protocol.DESCRIPTOR
 
 
 def test_create_vm_request_shape():
@@ -108,6 +151,8 @@ def test_disk_config_has_role_and_format_enums():
 
     disk_fields = {f.name for f in supervisor_pb2.DiskConfig.DESCRIPTOR.fields}
     assert {"path", "readonly", "format", "role"} <= disk_fields
+    # Guest mount points are client vocabulary; the wire does not carry them.
+    assert "mount" not in disk_fields
     formats = {v.name for v in supervisor_pb2.DiskConfig.Format.DESCRIPTOR.values}
     assert {"FORMAT_UNSPECIFIED", "FORMAT_RAW", "FORMAT_QCOW2", "FORMAT_SQUASHFS"} <= formats
     roles = {v.name for v in supervisor_pb2.DiskConfig.DiskRole.DESCRIPTOR.values}

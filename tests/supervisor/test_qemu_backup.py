@@ -3,7 +3,6 @@ import os
 import subprocess
 import tarfile
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest

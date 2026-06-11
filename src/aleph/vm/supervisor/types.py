@@ -23,9 +23,12 @@ DirectoryPath = NewType("DirectoryPath", Path)
 
 
 class Backend(Enum):
+    """The VMM. Orthogonal to confidential computing: a confidential VM is
+    QEMU plus a TeeConfig (whose presence selects the confidential launch
+    path)."""
+
     FIRECRACKER = "firecracker"
     QEMU = "qemu"
-    QEMU_SEV = "qemu_sev"
 
 
 class VmStatus(Enum):
@@ -106,6 +109,7 @@ class ErrorCode(Enum):
 
 class TeeBackend(Enum):
     NONE = ""
+    SEV = "sev"  # AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy
     SEV_SNP = "sev-snp"
     TDX = "tdx"
     NVIDIA_CC = "nvidia-cc"
@@ -118,11 +122,13 @@ class HealthStatus(Enum):
 
 @dataclass(frozen=True)
 class DiskSpec:
+    """A disk by host path. Where the guest mounts it is the client's
+    business (keyed by disk order); no mount point crosses the boundary."""
+
     path: Path
     readonly: bool
     format: DiskFormat
     role: DiskRole
-    mount: str = ""  # guest mount point; empty for rootfs. Preserves the Aleph volume mount.
 
 
 @dataclass(frozen=True)

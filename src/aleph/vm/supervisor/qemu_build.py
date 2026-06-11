@@ -106,11 +106,12 @@ async def build_qemu_configuration(
     """
     image_path = str(spec.require_rootfs().path)
 
-    # Extra / data volumes become host volumes.
-    # The real mount point is carried from the DiskSpec.
+    # Extra / data volumes become host volumes. The guest mount point is the
+    # client's business and no longer crosses the boundary; QemuVM never
+    # consumed the controller-config `mount` field, so it is written empty.
     host_volumes = [
         QemuVMHostVolume(
-            mount=disk.mount,
+            mount="",
             path_on_host=disk.path,
             read_only=disk.readonly,
         )
@@ -140,7 +141,7 @@ async def build_qemu_configuration(
         vm_id=vm_id,
         tap_interface=tap_interface,
         ssh_authorized_keys=spec.ssh_authorized_keys,
-        is_confidential=(spec.backend is Backend.QEMU_SEV),
+        is_confidential=(spec.tee is not None),
         has_gpu=bool(spec.gpus),
     )
     cloud_init_drive_path = str(cloud_init_path)
@@ -186,7 +187,6 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
             readonly=False,
             format=DiskFormat.QCOW2,
             role=DiskRole.ROOTFS,
-            mount="",
         )
     ] + [
         DiskSpec(
@@ -194,7 +194,6 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
             readonly=v.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
-            mount=v.mount,
         )
         for v in vm_cfg.host_volumes
     ]

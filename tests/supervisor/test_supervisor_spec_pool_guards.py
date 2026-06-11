@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from aleph.vm.models import VmExecution
-from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
