@@ -21,7 +21,8 @@ that points the controller at this source tree and the test execution root,
 so persistent VMs run the code under test rather than whatever is installed
 in /opt/aleph-vm.
 
-Typical runs:
+Typical runs — `just itest` (unprivileged, Firecracker only) and
+`just itest-root` (sudo, full set), or directly:
   AVM_ITEST=1 venv/bin/python -m pytest tests/integration -v          # FC only
   sudo AVM_ITEST=1 venv/bin/python -m pytest tests/integration -v     # full set
 """
