@@ -465,6 +465,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     NUMA_NODE_FIELD_NUMBER: builtins.int
     PERSISTENT_FIELD_NUMBER: builtins.int
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
+    HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
@@ -479,6 +480,10 @@ class CreateVmRequest(google.protobuf.message.Message):
     """requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement."""
     persistent: builtins.bool
     """supervisor wraps in systemd if true"""
+    hostname: builtins.str
+    """Guest hostname for provisioning (cloud-init). Naming is the client's
+    business; empty falls back to a mechanical derivation from vm_id.
+    """
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -519,10 +524,11 @@ class CreateVmRequest(google.protobuf.message.Message):
         numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
+        hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload

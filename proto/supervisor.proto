@@ -170,6 +170,9 @@ message CreateVmRequest {
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
   bool persistent = 12;              // supervisor wraps in systemd if true
   repeated string ssh_authorized_keys = 13; // guest cloud-init SSH keys (agent-provided)
+  // Guest hostname for provisioning (cloud-init). Naming is the client's
+  // business; empty falls back to a mechanical derivation from vm_id.
+  string hostname = 15;
   // Optional host⇄guest control channel (Firecracker vsock today; a QEMU
   // backend may implement it with virtio-vsock). When present, the supervisor
   // exposes the channel and waits for the guest's ready signal on

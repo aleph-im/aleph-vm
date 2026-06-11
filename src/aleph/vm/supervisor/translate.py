@@ -18,6 +18,7 @@ from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.program import AlephProgramResources
+from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.qemu.instance import AlephQemuResources
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
@@ -106,6 +107,9 @@ async def build_create_vm_spec(
         numa_node=None,
         persistent=True,
         ssh_authorized_keys=list(message.authorized_keys or []),
+        # Aleph's hostname convention (base32 of the item hash) is agent
+        # vocabulary; the supervisor applies whatever name it is given.
+        hostname=get_hostname_from_hash(vm_hash),
     )
 
 

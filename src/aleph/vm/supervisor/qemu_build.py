@@ -22,10 +22,7 @@ from aleph.vm.controllers.configuration import (
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
-from aleph.vm.controllers.qemu.cloudinit import (
-    create_cloud_init_drive_image,
-    get_hostname_from_hash,
-)
+from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
 from aleph.vm.sizes import MiB
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
@@ -49,6 +46,7 @@ async def build_cloud_init_drive(
     vm_id: int,
     tap_interface: TapInterface | None,
     ssh_authorized_keys: list[str],
+    hostname: str,
     is_confidential: bool,
     has_gpu: bool,
 ) -> Path:
@@ -56,9 +54,13 @@ async def build_cloud_init_drive(
 
     Network parameters are derived from *tap_interface* using the same
     expressions as AlephVmControllerInterface.get_ip / get_ipv6 etc.
+    The hostname is the client's (see CreateVmSpec.hostname); an empty one
+    falls back to a mechanical truncation of the VM id.
     """
     disk_image_path = settings.EXECUTION_ROOT / f"cloud-init-{vm_hash}.img"
-    hostname = get_hostname_from_hash(vm_hash)  # type: ignore[arg-type]
+    # Hostnames are capped at 63 characters per label; the 64-hex-char vm_id
+    # is truncated to fit.
+    hostname = hostname or vm_hash[:63]
 
     if tap_interface is not None:
         ip: str = tap_interface.guest_ip.with_prefixlen
@@ -141,6 +143,7 @@ async def build_qemu_configuration(
         vm_id=vm_id,
         tap_interface=tap_interface,
         ssh_authorized_keys=spec.ssh_authorized_keys,
+        hostname=spec.hostname,
         is_confidential=(spec.tee is not None),
         has_gpu=bool(spec.gpus),
     )
