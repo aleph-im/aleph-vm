@@ -282,3 +282,21 @@ async def test_get_vm_spec_round_trips_over_the_wire():
     harness = _ServerHarness(InProcessSupervisor(pool=pool))
     async with harness as client:
         assert await client.get_vm_spec(VmId("feed" * 16)) == spec
+
+
+@pytest.mark.asyncio
+async def test_unary_calls_carry_a_deadline(monkeypatch):
+    """A wedged supervisor must not hang the agent: unary RPCs time out."""
+    import asyncio as aio
+
+    from aleph.vm.supervisor.errors import InternalSupervisorError
+
+    class _WedgedSupervisor(InProcessSupervisor):
+        async def health(self):
+            await aio.sleep(30)
+
+    monkeypatch.setattr("aleph.vm.supervisor.grpc_client.QUERY_TIMEOUT_SECS", 0.2)
+    harness = _ServerHarness(_WedgedSupervisor(pool=FakePool()))
+    async with harness as client:
+        with pytest.raises(InternalSupervisorError):
+            await aio.wait_for(client.health(), timeout=5)
