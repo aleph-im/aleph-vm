@@ -281,7 +281,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm-runtime
     timeout-minutes: 10
-    needs: build_deb
+    needs: [build_deb, build_example_venv_volume]
 
     steps:
       - name: Checkout repository
@@ -330,6 +330,15 @@ jobs:
         with:
           name: "aleph-vm.debian-12.deb"
           path: packaging/target/
+
+      # The supervisor requires the example venv volume when running with fake data
+      # (ALEPH_VM_FAKE_DATA_VOLUME, asserted at startup). It is built by the
+      # build_example_venv_volume job; place it where `scp -pr ./examples` ships it.
+      - uses: actions/download-artifact@v4
+        name: "Download the example venv volume from artifacts."
+        with:
+          name: "example-volume-venv.squashfs"
+          path: examples/volumes/
 
       #      - name: Build Debian Package
       #        run: |
