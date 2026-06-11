@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -109,7 +110,7 @@ async def test_agent_watcher_drops_program_state_on_stop_event():
             consumed.set()
             await asyncio.Event().wait()  # block like a live stream
 
-    app = {
+    app: dict[str, Any] = {
         "supervisor": FakeSupervisor(),
         "expiry": MagicMock(),
         "update_watcher": MagicMock(),
