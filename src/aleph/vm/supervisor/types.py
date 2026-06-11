@@ -159,6 +159,9 @@ class GuestChannelSpec:
     client's business."""
 
     ready_port: int
+    # How long to wait for the ready signal before failing the boot; the
+    # client knows its guest image. 0 = supervisor default.
+    ready_timeout_secs: int = 0
 
 
 @dataclass(frozen=True)

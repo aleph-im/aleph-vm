@@ -212,7 +212,12 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
         hostname=spec.hostname,
     )
     if spec.guest_channel is not None:
-        request.guest_channel.CopyFrom(pb.GuestChannel(ready_port=spec.guest_channel.ready_port))
+        request.guest_channel.CopyFrom(
+            pb.GuestChannel(
+                ready_port=spec.guest_channel.ready_port,
+                ready_timeout_secs=spec.guest_channel.ready_timeout_secs,
+            )
+        )
     if spec.tee is not None:
         request.tee.CopyFrom(
             pb.TeeConfig(
@@ -254,7 +259,12 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
         hostname=msg.hostname,
         guest_channel=(
-            GuestChannelSpec(ready_port=msg.guest_channel.ready_port) if msg.HasField("guest_channel") else None
+            GuestChannelSpec(
+                ready_port=msg.guest_channel.ready_port,
+                ready_timeout_secs=msg.guest_channel.ready_timeout_secs,
+            )
+            if msg.HasField("guest_channel")
+            else None
         ),
     )
 
