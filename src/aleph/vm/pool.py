@@ -611,6 +611,11 @@ class VmPool:
                 # always re-apply them.
                 setup_nftables_for_vm(execution.vm.vm_id, interface=execution.vm.tap_interface)
         self.systemd_manager.restart(execution.controller_service)
+        # RestartUnit only queues a job: wait until the unit is confirmed
+        # active (with the crash-loop re-check) so callers get a truthful
+        # RUNNING status and a flapping controller fails the start loudly.
+        await execution.wait_for_controller_ready()
+        execution.times.started_at = datetime.now(tz=timezone.utc)
         # Reload port mappings from DB — stop() clears them in memory
         # but the DB retains them for persistent VMs.
         execution.mapped_ports = await get_port_mappings(execution.vm_hash)

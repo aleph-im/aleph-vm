@@ -358,9 +358,11 @@ async def test_stop_vm_unknown_raises_not_found():
 
 
 @pytest.mark.asyncio
-async def test_delete_vm_removes_controller_config_and_cloud_init_seed(monkeypatch, tmp_path):
-    """Delete releases the VM definition: the controller config and the
-    cloud-init seed must not outlive it (stop_vm keeps them for reattach)."""
+async def test_delete_vm_removes_on_disk_artifacts(monkeypatch, tmp_path):
+    """Delete releases the VM definition and runtime leftovers: the
+    controller config, the cloud-init seed and qemu's control sockets
+    (which qemu never unlinks) must not outlive it (stop_vm keeps the
+    definition files for reattach)."""
     from aleph.vm.controllers import configuration as configuration_module
 
     monkeypatch.setattr(configuration_module.settings, "EXECUTION_ROOT", tmp_path)
@@ -368,6 +370,9 @@ async def test_delete_vm_removes_controller_config_and_cloud_init_seed(monkeypat
     seed_file = tmp_path / f"cloud-init-{VM_ID}.img"
     config_file.write_text("{}")
     seed_file.write_bytes(b"seed")
+    socket_files = [tmp_path / f"{VM_ID}-{kind}.socket" for kind in ("monitor", "qmp", "qga")]
+    for socket_file in socket_files:
+        socket_file.touch()
 
     execution = make_execution()
     pool = _make_pool({str(VM_ID): execution})
@@ -377,3 +382,5 @@ async def test_delete_vm_removes_controller_config_and_cloud_init_seed(monkeypat
 
     assert not config_file.exists()
     assert not seed_file.exists()
+    for socket_file in socket_files:
+        assert not socket_file.exists()

@@ -306,3 +306,15 @@ the full backup→mutate→restore cycle.
 identity, so a reboot (or delete+create) that recreated the VM under the
 same vm_id could have its new execution removed from the pool by the old
 execution's reap task. Fixed in `_schedule_forget_on_stop`.
+
+Also found (visible only with real qemu): `VmExecution.stop()` queued the
+systemd stop and immediately tore down the network, deleting the TAP under
+the still-running qemu mid ACPI shutdown. qemu's tap fd goes bad
+(`TUNSETVNETHDRSZ ioctl() failed`), it aborts without flushing the qcow2,
+and the next boot panics on the corrupted image. stop() now waits for the
+controller unit to reach inactive/failed (`wait_for_controller_stopped`,
+bounded a little past systemd's TimeoutStopSec) before teardown. Related:
+`restart_persistent_vm` returned right after RestartUnit, so StartVm and
+RestoreBackup could report BOOTING (or worse, RUNNING on a flapping unit);
+it now awaits `wait_for_controller_ready`. Deletion also removes qemu's
+control sockets (`-monitor/-qmp/-qga .socket`), which qemu never unlinks.
