@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psutil
-from aleph_message.models import Chain, InstanceContent, ItemHash, Payment, PaymentType
+from aleph_message.models import InstanceContent, ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -911,58 +911,6 @@ class VmPool:
             if not used:
                 available_gpus.append(gpu)
         return available_gpus
-
-    def get_executions_by_address(
-        self,
-        payment_type: PaymentType,
-        running_states: dict[str, bool] | None = None,
-    ) -> dict[str, dict[str, list[VmExecution]]]:
-        """Return all executions of the given type, grouped by sender and by chain.
-
-        Args:
-            payment_type: Filter to this payment type.
-            running_states: Optional pre-computed mapping of
-                controller_service name -> active state, e.g. the result
-                of ``SystemDManager.get_services_active_states()``. When
-                provided, persistent executions are filtered by this map
-                instead of via the per-VM ``is_running`` property, which
-                otherwise issues a D-Bus round-trip per execution and
-                blocks the event loop.
-
-                Semantic note: the per-VM path also checked
-                ``is_service_enabled`` before reading the active state;
-                the batch path reads ActiveState only. Aleph-VM
-                controller services are always enabled via
-                ``EnableUnitFiles`` before ``StartUnit`` (see
-                ``SystemDManager.enable_and_start``), so the gap is
-                immaterial in practice; the same batch shortcut is
-                already used by ``load_persistent_executions``.
-        """
-        executions_by_address: dict[str, dict[str, list[VmExecution]]] = {}
-        for vm_hash, execution in self.executions.items():
-            message = execution.message
-            if message is None:
-                # Spec-built (supervisor-owned) executions carry no message;
-                # payment grouping is an agent concern.
-                continue
-            if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
-                # Ignore Diagnostic VM execution
-                continue
-
-            if running_states is not None and execution.persistent:
-                is_active = running_states.get(execution.controller_service, False)
-            else:
-                is_active = execution.is_running
-            if not is_active:
-                # Ignore the execution that is stopping or not running anymore
-                continue
-            execution_payment = message.payment if message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
-            if execution_payment.type == payment_type:
-                address = message.address
-                chain = execution_payment.chain
-                executions_by_address.setdefault(address, {})
-                executions_by_address[address].setdefault(chain, []).append(execution)
-        return executions_by_address
 
     def get_valid_reservation(self, resource) -> Reservation | None:
         if resource in self.reservations and self.reservations[resource].is_expired():

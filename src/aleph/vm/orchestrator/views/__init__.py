@@ -610,15 +610,19 @@ async def update_allocations(request: web.Request):
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances
         stopped_vms = []
-        # Make a copy since the pool is modified. get_persistent_executions
-        # already filtered by "running" via the batched map, so the extra
-        # is_running check the old code did here is both redundant and a
-        # per-VM D-Bus round-trip we now avoid.
-        for execution in list(pool.get_persistent_executions(running_states=running_states)):
+        # Make a copy since the pool is modified
+        for execution in list(pool.get_persistent_executions()):
+            # Payment tier comes from the agent registry, not the hypervisor
+            # object: spec-built and restart-restored executions carry no
+            # message, but their registry record (rehydrated from the agent DB)
+            # does. No record behaves as hold-tier, exactly like the old
+            # message-less False.
+            record = registry.get(execution.vm_hash)
             if (
                 execution.vm_hash not in allocations
-                and not execution.uses_payment_stream
-                and not execution.uses_payment_credit
+                and execution.is_running
+                and not (record and record.uses_payment_stream)
+                and not (record and record.uses_payment_credit)
                 and not execution.gpus
                 and not execution.is_confidential
             ):
