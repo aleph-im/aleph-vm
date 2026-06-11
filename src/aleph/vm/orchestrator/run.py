@@ -390,46 +390,52 @@ async def _ensure_program_vm(
     A VM this agent process did not configure is recreated rather than
     reused: the runtime accepts exactly one configuration push per boot, so
     "unknown" and "already configured" are indistinguishable from outside.
+
+    Serialised per VM: two concurrent cold requests must not both
+    create-and-configure (the second would push a second configuration to a
+    booted runtime). The first holds the lock through setup; followers then
+    take the fast path on re-check.
     """
     vm_id = VmId(str(vm_hash))
-    try:
-        info: VmInfo | None = await supervisor.get_vm(vm_id)
-    except VmNotFoundError:
-        info = None
-
-    if info is not None:
-        if info.status is VmStatus.RUNNING and program_client.is_ready(vm_id):
-            return info
-        logger.info("Program VM %s is %s/unconfigured; recreating", vm_hash, info.status.value)
-        await program_client.forget(vm_id)
+    async with program_client.creation_lock(vm_id):
         try:
-            await supervisor.delete_vm(vm_id)
+            info: VmInfo | None = await supervisor.get_vm(vm_id)
         except VmNotFoundError:
-            pass
-        await _wait_until_gone(supervisor, vm_id)
+            info = None
 
-    try:
-        spec, resources = await build_program_create_vm_spec(vm_hash, content)
-        await supervisor.create_vm(spec)
-        record = registry.record(vm_hash, message=content, original=original, persistent=False)
-        try:
-            info = await _wait_until_running(supervisor, vm_id)
-            await program_client.setup_program(info, content, resources)
-        except Exception:
-            registry.forget(vm_hash)
+        if info is not None:
+            if info.status is VmStatus.RUNNING and program_client.is_ready(vm_id):
+                return info
+            logger.info("Program VM %s is %s/unconfigured; recreating", vm_hash, info.status.value)
             await program_client.forget(vm_id)
             try:
                 await supervisor.delete_vm(vm_id)
+            except VmNotFoundError:
+                pass
+            await _wait_until_gone(supervisor, vm_id)
+
+        try:
+            spec, resources = await build_program_create_vm_spec(vm_hash, content)
+            await supervisor.create_vm(spec)
+            record = registry.record(vm_hash, message=content, original=original, persistent=False)
+            try:
+                info = await _wait_until_running(supervisor, vm_id)
+                await program_client.setup_program(info, content, resources)
             except Exception:
-                logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+                registry.forget(vm_hash)
+                await program_client.forget(vm_id)
+                try:
+                    await supervisor.delete_vm(vm_id)
+                except Exception:
+                    logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+                raise
+            await persist_record(vm_hash, record)
+            return info
+        except web.HTTPException:
             raise
-        await persist_record(vm_hash, record)
-        return info
-    except web.HTTPException:
-        raise
-    except Exception as error:
-        _raise_http_for_program_error(error, vm_hash)
-        raise  # pragma: no cover - _raise_http_for_program_error always raises
+        except Exception as error:
+            _raise_http_for_program_error(error, vm_hash)
+            raise  # pragma: no cover - _raise_http_for_program_error always raises
 
 
 def _program_result_response(result_raw: bytes, *, vm_hash: ItemHash, code_ref: str) -> web.Response:

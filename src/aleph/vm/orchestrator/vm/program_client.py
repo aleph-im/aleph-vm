@@ -136,6 +136,13 @@ class ProgramGuestClient:
     def __init__(self) -> None:
         self._configured: set[VmId] = set()
         self._guest_api_processes: dict[VmId, Process] = {}
+        self._creation_locks: dict[VmId, asyncio.Lock] = {}
+
+    def creation_lock(self, vm_id: VmId) -> asyncio.Lock:
+        """Serialises get-or-create per VM: the runtime accepts exactly one
+        configuration push per boot, so two concurrent cold requests must not
+        both create-and-configure."""
+        return self._creation_locks.setdefault(vm_id, asyncio.Lock())
 
     def is_ready(self, vm_id: VmId) -> bool:
         """True when this agent process configured the VM (safe to run code)."""

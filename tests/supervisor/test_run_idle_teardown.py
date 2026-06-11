@@ -74,6 +74,10 @@ class FakeProgramClient:
     def __init__(self, result: dict):
         self._result_raw = msgpack.dumps(result)
         self.forgotten: list[str] = []
+        self._locks: dict[VmId, asyncio.Lock] = {}
+
+    def creation_lock(self, vm_id: VmId) -> asyncio.Lock:
+        return self._locks.setdefault(vm_id, asyncio.Lock())
 
     def is_ready(self, vm_id: VmId) -> bool:
         return True

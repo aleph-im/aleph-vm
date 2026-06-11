@@ -147,3 +147,35 @@ The in-process mode remains the default; the flag is the strangler toggle.
   `recreate_network` endpoint is disabled.
 - `v.sock_53` ownership moves process: the guest only dials the guest API
   after the config push, so binding it agent-side post-RUNNING is race-free.
+
+## 6. Status (2026-06-11, end of first pass)
+
+Implemented on `dev-accelerate` (stacked on #976):
+
+- Stage A: `proto_convert` + `grpc_server` + `grpc_client` + daemon, with
+  conformance/wire-error/streaming tests over a real UDS channel.
+- Stage B: program path migrated (spec builder, `SpecFirecrackerProgram`
+  supervisor-side, `ProgramGuestClient` agent-side, `run.py` rewritten);
+  per-VM creation lock serialises concurrent cold requests.
+- Stage C: split mode behind `ALEPH_VM_SUPERVISOR_GRPC_SOCKET`; pool-only
+  endpoints 501.
+
+Verified: `tests/supervisor` 716 passed with the same 9 environment-only
+failures as the base branch (pyroute2/root/journald); `tests/migration` +
+`tests/network` green; mypy error set identical to base; ruff format /
+isort / proto-clean gates pass; cross-process smoke (daemon ⇄ agent webapp
+over UDS) exercised live.
+
+Known gaps (intentional, follow-ups):
+
+- **In-flight run vs reap:** `VmExecution.run_code` used to count concurrent
+  runs so `stop()` waited for them; across the boundary the supervisor has no
+  run tracking, so an expiry-fired delete during a long in-flight `run_code`
+  kills the connection (the request returns 502). Mitigated by the
+  cancel-at-request-start/schedule-at-request-end bracketing; a follow-up
+  could track in-flight runs agent-side and defer the reap.
+- Persistent programs, backups/restore, confidential, migration, domains/
+  HAProxy, GPU reservation and the advisory admission gate stay on the
+  in-process pool (501 / skipped in split mode), matching the series' staging.
+- A real microvm boot through the split needs the droplet CI (no runtime
+  image / root locally); the fake-data program job is the gate to watch.

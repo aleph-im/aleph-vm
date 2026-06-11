@@ -1,5 +1,6 @@
 """run._ensure_program_vm: the supervisor-driven program get-or-create."""
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -69,6 +70,10 @@ class FakeProgramClient:
         self._ready = ready
         self.setups: list[VmId] = []
         self.forgotten: list[VmId] = []
+        self._locks: dict[VmId, asyncio.Lock] = {}
+
+    def creation_lock(self, vm_id: VmId) -> asyncio.Lock:
+        return self._locks.setdefault(vm_id, asyncio.Lock())
 
     def is_ready(self, vm_id: VmId) -> bool:
         return self._ready
@@ -180,6 +185,45 @@ async def test_setup_failure_tears_down(patched_build):
     supervisor.delete_vm.assert_awaited()
     assert registry.get(VM_HASH) is None
     run_module.persist_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_requests_create_once(patched_build):
+    """Two concurrent requests to a cold program must yield ONE create and ONE
+    configuration push — the runtime accepts a single config per boot."""
+    state = {"created": False}
+
+    async def get_vm(vm_id):
+        if state["created"]:
+            return _info(VmStatus.RUNNING)
+        raise VmNotFoundError(vm_id)
+
+    async def create_vm(spec):
+        await asyncio.sleep(0)  # yield so the other request can race
+        state["created"] = True
+        return _info(VmStatus.RUNNING)
+
+    supervisor = SimpleNamespace(get_vm=get_vm, create_vm=AsyncMock(side_effect=create_vm), delete_vm=AsyncMock())
+    program_client = FakeProgramClient()
+    registry = AgentVmRegistry()
+
+    results = await asyncio.gather(
+        *(
+            run_module._ensure_program_vm(
+                VM_HASH,
+                _content(),
+                _content(),
+                supervisor=supervisor,
+                registry=registry,
+                program_client=program_client,
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert all(info.status is VmStatus.RUNNING for info in results)
+    supervisor.create_vm.assert_awaited_once()
+    assert program_client.setups == [VM_ID]
 
 
 @pytest.mark.asyncio
