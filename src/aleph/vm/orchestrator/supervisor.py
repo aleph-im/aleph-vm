@@ -245,8 +245,10 @@ def setup_webapp(pool: VmPool | None):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
-        app.on_startup.append(_start_event_watcher)
-        app.on_cleanup.append(_stop_event_watcher)
+        # type-ignores: aiohttp's Signal stubs reject perfectly valid
+        # `async (Application) -> None` handlers here.
+        app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
+        app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
 
     app["backup_state"] = BackupState()
     cors = setup(
