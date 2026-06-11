@@ -47,6 +47,7 @@ from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.http import get_session
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
+from aleph.vm.orchestrator.utils import require_vm_pool
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -410,7 +411,7 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -510,7 +511,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                     request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
                         vm_hash=vm_hash,
-                        pool=request.app["vm_pool"],
+                        pool=require_vm_pool(request),
                         supervisor=supervisor,
                         registry=request.app["vm_registry"],
                     )
@@ -528,7 +529,7 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -574,7 +575,7 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
 
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -650,7 +651,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         if not record.persistent:
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
-                pool=request.app["vm_pool"],
+                pool=require_vm_pool(request),
                 supervisor=supervisor,
                 registry=request.app["vm_registry"],
             )
@@ -842,7 +843,7 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            pool: VmPool = request.app["vm_pool"]
+            pool: VmPool = require_vm_pool(request)
             record = get_agent_record_or_404(request, vm_hash)
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
@@ -1180,7 +1181,7 @@ async def _do_restore(
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            pool: VmPool = request.app["vm_pool"]
+            pool: VmPool = require_vm_pool(request)
             record = get_agent_record_or_404(request, vm_hash)
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")

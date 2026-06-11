@@ -24,6 +24,7 @@ from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.version import __version__
 
@@ -160,14 +161,23 @@ async def http_not_found(request: web.Request):  # noqa: ARG001
 
 
 def setup_webapp(pool: VmPool | None):
-    """Create the webapp and set the VmPool
+    """Create the webapp and set the VmPool.
 
-    Only case where VmPool is None is in some tests that won't use it.
+    VmPool is None in two cases: tests that won't use it, and **split mode**
+    (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set), where the supervisor daemon owns
+    the pool and the agent reaches it over gRPC. In split mode the endpoints
+    that still require the in-process pool (backups, restore, confidential,
+    migration, network recreation, GPU reservation, persistent programs)
+    respond 501.
     """
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
-    app["supervisor"] = InProcessSupervisor(pool)
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        app["supervisor"] = GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
+    else:
+        app["supervisor"] = InProcessSupervisor(pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
@@ -280,7 +290,11 @@ async def drain_in_flight_requests(app: web.Application):
 
 
 async def stop_all_vms(app: web.Application):
-    pool: VmPool = app["vm_pool"]
+    pool: VmPool | None = app.get("vm_pool")
+    if pool is None:
+        # Split mode: the supervisor daemon owns the VMs; the agent's exit
+        # must not stop them.
+        return
     try:
         await pool.stop()
     except Exception:
@@ -330,8 +344,14 @@ def run():
 
     log_allocation_auth_config()
 
-    pool = VmPool()
-    asyncio.run(pool.setup())
+    split_mode = settings.SUPERVISOR_GRPC_SOCKET is not None
+    pool: VmPool | None
+    if split_mode:
+        # The supervisor daemon (python -m aleph.vm.supervisor) owns the pool.
+        pool = None
+    else:
+        pool = VmPool()
+        asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
@@ -384,8 +404,9 @@ def run():
 
         app.on_cleanup.append(close_session)
 
-        logger.info("Loading existing executions ...")
-        asyncio.run(pool.load_persistent_executions())
+        if pool is not None:
+            logger.info("Loading existing executions ...")
+            asyncio.run(pool.load_persistent_executions())
         # Each asyncio.run() creates and destroys its own event loop.
         # Discard any HTTP session created during setup/loading so it
         # doesn't hold a reference to the dead loop.
@@ -403,5 +424,5 @@ def run():
         else:
             raise
     finally:
-        if settings.ALLOW_VM_NETWORKING:
+        if pool is not None and settings.ALLOW_VM_NETWORKING:
             pool.teardown()

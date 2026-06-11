@@ -62,6 +62,7 @@ from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
+    require_vm_pool,
     update_aggregate_settings,
 )
 from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
@@ -725,7 +726,7 @@ async def recreate_network(request: web.Request):
     if network_recreation_lock is None:
         network_recreation_lock = asyncio.Lock()
 
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
 
     async with network_recreation_lock:
         logger.info("Starting network recreation process")
@@ -844,7 +845,7 @@ async def regenerate_proxy(request: web.Request):
     if proxy_regeneration_lock is None:
         proxy_regeneration_lock = asyncio.Lock()
 
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
 
     async with proxy_regeneration_lock:
         logger.info("Starting HAProxy configuration regeneration")
@@ -910,7 +911,11 @@ async def notify_allocation(request: web.Request):
     # or disk caps. This is the advisory gate; the authoritative gate runs
     # inside create_a_vm under the creation lock.
     try:
-        pool.check_admission(message.content, current_vm_hash=item_hash)
+        if pool is not None:
+            # Split mode: the advisory admission gate needs the in-process
+            # pool; admission for spec-built VMs is enforced by the agent
+            # before create (deferred in split mode).
+            pool.check_admission(message.content, current_vm_hash=item_hash)
     except InsufficientResourcesError as error:
         logger.warning("Refusing allocation %s: %s", item_hash, error)
         return web.HTTPServiceUnavailable(
@@ -1047,7 +1052,8 @@ async def notify_allocation(request: web.Request):
             update_watcher=update_watcher,
         )
         successful = True
-        await pool.update_domain_mapping()
+        if pool is not None:
+            await pool.update_domain_mapping()
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error
@@ -1078,7 +1084,7 @@ async def notify_allocation(request: web.Request):
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
     """Reserve a GPU"""
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
     try:
         data = await request.json()
         message = InstanceContent.model_validate(data)
@@ -1140,5 +1146,6 @@ async def operate_update(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
 
     await reconcile_port_forwards(supervisor, vm_id, record.message)
-    await request.app["vm_pool"].update_domain_mapping()
+    if request.app.get("vm_pool") is not None:
+        await request.app["vm_pool"].update_domain_mapping()
     return web.json_response({}, dumps=dumps_for_json, status=200)

@@ -32,6 +32,7 @@ from aleph.vm.migration.jobs import (
 )
 from aleph.vm.migration.runner import run_export, run_import
 from aleph.vm.models import MigrationState, VmExecution
+from aleph.vm.orchestrator.utils import require_vm_pool
 from aleph.vm.pool import VmPool
 from aleph.vm.utils import cors_allow_all, create_task_log_exceptions, dumps_for_json
 
@@ -84,7 +85,7 @@ async def migration_export(request: web.Request) -> web.Response:
     Returns 202 immediately. Caller polls GET /export/status for progress.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
     execution: VmExecution = get_execution_or_404(vm_hash, pool)
 
     if not execution.is_running:
@@ -238,7 +239,7 @@ async def migration_import(request: web.Request) -> web.Response:
     except pydantic.ValidationError as error:
         return web.json_response(data=error.json(), status=HTTPStatus.BAD_REQUEST)
 
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
     vm_hash = ItemHash(params.vm_hash)
 
     existing_exec = pool.executions.get(vm_hash)
@@ -350,7 +351,7 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     Refuses if no EXPORTED job exists (catches scheduler bugs that call cleanup too early).
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
 
     job = export_jobs.get(vm_hash)
     if job is None or job.state != MigrationState.EXPORTED:
