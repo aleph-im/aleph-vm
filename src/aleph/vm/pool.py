@@ -629,7 +629,12 @@ class VmPool:
             # (e.g. reinstall/restore), this old task should not remove it.
             if execution.stop_event is not stop_event:
                 return
-            self.forget_vm(execution.vm_hash)
+            # Forget by identity, not by hash: the same vm_id may already be
+            # a new execution (reboot and delete+create recreate it while
+            # this task races the old stop); only this task's own execution
+            # may be removed.
+            if self.executions.get(execution.vm_hash) is execution:
+                self.forget_vm(execution.vm_hash)
 
         execution._forget_task = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
