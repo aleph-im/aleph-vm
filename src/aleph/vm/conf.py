@@ -472,6 +472,14 @@ class Settings(BaseSettings):
     def check(self):
         """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
+        # QEMU control sockets live at EXECUTION_ROOT/<vm-hash>-monitor.socket
+        # and sun_path caps UNIX socket paths at 108 bytes; QEMU exits at
+        # startup when the path exceeds it ("UNIX socket path is too long").
+        longest_socket_path = len(str(self.EXECUTION_ROOT)) + 1 + 64 + len("-monitor.socket")
+        assert longest_socket_path <= 107, (
+            f"EXECUTION_ROOT '{self.EXECUTION_ROOT}' is too long for QEMU control sockets "
+            "(UNIX socket paths are limited to 108 bytes)"
+        )
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"

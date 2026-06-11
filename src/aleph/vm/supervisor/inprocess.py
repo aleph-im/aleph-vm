@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import psutil
 from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
 
+from aleph.vm.controllers.configuration import remove_controller_configuration
 from aleph.vm.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
     check_disk_space_for_multiple,
@@ -410,6 +411,9 @@ class InProcessSupervisor(Supervisor):
                 # this race on most reaps.
                 logger.debug("VM %s was not removed from pool after stop; forgetting it now", vm_id)
                 self.pool.forget_vm(vm_id)
+            # Delete releases the definition: the controller config and the
+            # cloud-init seed go too (stop_vm keeps them for reattach).
+            remove_controller_configuration(str(vm_id))
             if wipe:
                 # Mirrors the old operate_erase semantics exactly: persisted
                 # port mappings (persistent VMs keep them across stops) and

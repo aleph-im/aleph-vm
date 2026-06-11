@@ -737,7 +737,18 @@ class VmExecution:
                 self.controller_service,
             )
             if state == "active":
-                return
+                # A unit whose process dies right after start (e.g. qemu
+                # refusing its arguments, with Restart=on-failure) samples
+                # as "active" in the windows between crashes. Confirm the
+                # unit stayed active before declaring the VM started.
+                await asyncio.sleep(2)
+                state = self.systemd_manager.get_service_active_state(
+                    self.controller_service,
+                )
+                if state == "active":
+                    return
+                msg = f"{self} controller service went '{state}' right after starting (crash loop?)"
+                raise RuntimeError(msg)
             if state == "failed":
                 msg = f"{self} controller service entered 'failed' state"
                 raise RuntimeError(msg)

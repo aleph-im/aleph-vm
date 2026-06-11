@@ -127,3 +127,15 @@ def save_controller_configuration(vm_hash: str, configuration: Configuration) ->
         )
     config_file_path.chmod(0o644)
     return config_file_path
+
+
+def remove_controller_configuration(vm_hash: str) -> None:
+    """Remove the on-disk artifacts that define a VM across supervisor
+    restarts: the controller configuration and the cloud-init seed.
+
+    Delete-path only. A merely stopped persistent VM must keep these files;
+    they are what reattach (load_persistent_executions) and StartVm read.
+    """
+    get_controller_configuration_path(vm_hash).unlink(missing_ok=True)
+    # Written by build_cloud_init_drive / create_cloud_init_drive_image.
+    Path(f"{settings.EXECUTION_ROOT}/cloud-init-{vm_hash}.img").unlink(missing_ok=True)
