@@ -758,14 +758,16 @@ class ReinstallVmRequest(google.protobuf.message.Message):
     WIPE_VOLUMES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     wipe_volumes: builtins.bool
-    """false = reset rootfs only, keep writable data volumes"""
+    """false = reset rootfs only, keep writable data volumes."""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        wipe_volumes: builtins.bool = ...,
+        wipe_volumes: builtins.bool | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "wipe_volumes", b"wipe_volumes"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_wipe_volumes", b"_wipe_volumes"]) -> typing.Literal["wipe_volumes"] | None: ...
 
 global___ReinstallVmRequest = ReinstallVmRequest
 
