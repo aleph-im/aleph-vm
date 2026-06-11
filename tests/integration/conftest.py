@@ -225,11 +225,11 @@ def _system_module_shim(root: Path) -> Path | None:
 class Daemon:
     """Handle on the supervisor daemon process and its private roots."""
 
-    def __init__(self, process: subprocess.Popen, socket_path: Path, root: Path):
+    def __init__(self, process: subprocess.Popen, socket_path: Path, root: Path, exec_root: Path):
         self.process = process
         self.socket_path = socket_path
         self.root = root
-        self.exec_root = root / "exec"
+        self.exec_root = exec_root
         self.cache_root = root / "cache"
         self.log_path = root / "daemon.log"
 
@@ -295,10 +295,22 @@ def daemon(tmp_path_factory):
         # exist inside the unit's mount namespace, so the controller cannot
         # see its config, the disks, or the module shim. Root sessions
         # therefore live under /var/lib (removed on teardown).
-        root = Path(tempfile.mkdtemp(prefix="aleph-vm-itest-", dir="/var/lib"))
+        #
+        # The names are short on purpose: EXECUTION_ROOT prefixes qemu's UDS
+        # control sockets (<exec>/<64-hex>-monitor.socket) and sun_path caps
+        # UNIX socket paths at 108 bytes. Production's /var/lib/aleph/vm
+        # fits; a longer root makes qemu die at startup with "socket path is
+        # too long" (and the flapping unit still samples as active).
+        root = Path(tempfile.mkdtemp(prefix="avm-", dir="/var/lib"))
+        exec_root = root / "e"
+        max_socket_path = len(str(exec_root)) + 1 + 64 + len("-monitor.socket")
+        assert max_socket_path <= 107, f"execution root too long for qemu control sockets: {exec_root}"
     else:
         root = tmp_path_factory.mktemp("avm-itest")
-    (root / "exec").mkdir()
+        # Unprivileged runs never start QEMU (no systemd units), so the
+        # sun_path limit does not bite and the verbose path is fine.
+        exec_root = root / "exec"
+    exec_root.mkdir()
     (root / "cache").mkdir()
     socket_path = root / "supervisor.sock"
 
@@ -314,7 +326,7 @@ def daemon(tmp_path_factory):
         {
             "PYTHONPATH": os.pathsep.join(python_path),
             "ALEPH_VM_CACHE_ROOT": str(root / "cache"),
-            "ALEPH_VM_EXECUTION_ROOT": str(root / "exec"),
+            "ALEPH_VM_EXECUTION_ROOT": str(exec_root),
             "ALEPH_VM_USE_JAILER": "False",
             "ALEPH_VM_ALLOW_VM_NETWORKING": "True" if IS_ROOT else "False",
             "ALEPH_VM_PRINT_SYSTEM_LOGS": "True",
@@ -331,7 +343,7 @@ def daemon(tmp_path_factory):
                 f"host (the suite overrides the unit template): {pre_existing}"
             )
         taps_before = list_tap_interfaces()
-        unit_files = _install_controller_unit(root / "exec", os.pathsep.join(python_path))
+        unit_files = _install_controller_unit(exec_root, os.pathsep.join(python_path))
 
     log_file = (root / "daemon.log").open("wb")
     process = subprocess.Popen(
@@ -341,7 +353,7 @@ def daemon(tmp_path_factory):
         stderr=subprocess.STDOUT,
         cwd=REPO_ROOT,
     )
-    handle = Daemon(process, socket_path, root)
+    handle = Daemon(process, socket_path, root, exec_root)
 
     deadline = time.monotonic() + 60
     last_error: Exception | None = None
