@@ -1,5 +1,5 @@
-"""Use case 2: managing a running VM — logs, stop/start, reboot, lifecycle
-events and port forwards."""
+"""Use case 2: managing a running VM (logs, stop/start, reboot, lifecycle
+events and port forwards)."""
 
 from __future__ import annotations
 
