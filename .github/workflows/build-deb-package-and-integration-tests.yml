@@ -12,6 +12,13 @@ on:
 # This action build the package for Ubuntu and Debian
 # Then run e2e integration tests on Digital Ocean droplets (on demand VM)
 
+# Cancel superseded runs when new commits are pushed to a PR branch.
+# This also releases the global droplet concurrency groups earlier.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+
 jobs:
   build_deb:
     name: "Build ${{ matrix.os }} Package"
@@ -43,6 +50,18 @@ jobs:
 
       - name: Initialize git submodules
         run: git submodule init
+
+      # sevctl is built with `cargo install` at a rev pinned in packaging/Makefile,
+      # which takes ~2 minutes on every build. `target/bin/sevctl` is a file target
+      # in the Makefile, so restoring the binary from cache skips the build entirely.
+      # The key includes the Makefile (pins the sevctl rev) and the dockerfile
+      # (pins the toolchain used to build it).
+      - name: Cache the sevctl binary
+        uses: actions/cache@v4
+        with:
+          path: packaging/target/bin
+          key: sevctl-${{ matrix.os }}-${{ hashFiles('packaging/Makefile', format('packaging/{0}.dockerfile',
+            matrix.os)) }}
 
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
@@ -76,7 +95,27 @@ jobs:
       - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
         run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
+      # The runtime takes ~2 minutes to debootstrap and rarely changes. Cache it on
+      # the content of its build inputs, with a monthly stamp so the packages
+      # pulled by debootstrap and pip do not become indefinitely stale.
+      # The key is computed in shell because hashFiles() is re-evaluated in the
+      # cache post step, after the build filled the directory with the
+      # debootstrapped tree (hashing it times out).
+      - name: Compute runtime cache key
+        id: cache-key
+        run: |
+          input_hash=$(cat runtimes/aleph-${{ matrix.os }}-python/*.sh runtimes/aleph-${{ matrix.os }}-python/*.py runtimes/aleph-${{ matrix.os }}-python/*.html | sha256sum | cut -c -16)
+          echo "key=runtime-aleph-${{ matrix.os }}-python-$(date +%Y-%m)-${input_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the built runtime
+        id: cache-runtime
+        uses: actions/cache@v4
+        with:
+          path: runtimes/aleph-${{ matrix.os }}-python/rootfs.squashfs
+          key: ${{ steps.cache-key.outputs.key }}
+
       - name: Install dep and build
+        if: steps.cache-runtime.outputs.cache-hit != 'true'
         run: |
           sudo apt update
           sudo apt install -y debootstrap
@@ -207,6 +246,10 @@ jobs:
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
           echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> supervisor.env
           echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> supervisor.env
+          # Pin public resolvers for guest VMs: DNS auto-detection on the droplet
+          # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
+          # which is unreachable from inside the VMs and breaks all guest DNS.
+          echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
@@ -218,7 +261,12 @@ jobs:
           while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
+          # A full system upgrade takes ~1 minute. Only run it on pushes to main
+          # to catch incompatibilities with the latest distro packages, and skip
+          # it on pull requests to keep iteration fast.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
+          fi
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker pull ghcr.io/aleph-im/vm-connector:alpha"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector ghcr.io/aleph-im/vm-connector:alpha"
@@ -277,7 +325,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: droplet-aleph-vm-runtime
     timeout-minutes: 10
-    needs: build_deb
+    needs: [build_deb, build_rootfs, build_example_venv_volume]
 
     steps:
       - name: Checkout repository
@@ -285,9 +333,6 @@ jobs:
         with:
           # Fetch the whole history for all tags and branches (required for aleph.__version__)
           fetch-depth: 0
-
-      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
-        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
@@ -314,18 +359,28 @@ jobs:
           --ssh-keys ab:2b:25:16:46:6f:25:d0:80:63:e5:be:67:04:cb:64 \
           aleph-vm-ci-runtime
 
-      # We can probably reuse the previous artefact.
-      - name: "Build custom runtime"
-        run: |
-          sudo apt update
-          sudo apt install -y debootstrap
-          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+      # Reuse the runtime built by the build_rootfs job instead of spending
+      # ~2 minutes rebuilding it here with debootstrap.
+      - uses: actions/download-artifact@v4
+        name: "Download the runtime from artifacts."
+        with:
+          name: "aleph-debian-12-python.squashfs"
+          path: runtimes/aleph-debian-12-python/
 
       - uses: actions/download-artifact@v4
         name: "Download the debian package from artifacts."
         with:
           name: "aleph-vm.debian-12.deb"
           path: packaging/target/
+
+      # The supervisor requires the example venv volume when running with fake data
+      # (ALEPH_VM_FAKE_DATA_VOLUME, asserted at startup). It is built by the
+      # build_example_venv_volume job; place it where `scp -pr ./examples` ships it.
+      - uses: actions/download-artifact@v4
+        name: "Download the example venv volume from artifacts."
+        with:
+          name: "example-volume-venv.squashfs"
+          path: examples/volumes/
 
       #      - name: Build Debian Package
       #        run: |
@@ -354,12 +409,21 @@ jobs:
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
           echo ALEPH_VM_FAKE_DATA_PROGRAM=/opt/examples/example_fastapi >> supervisor.env
           echo ALEPH_VM_FAKE_DATA_RUNTIME=/opt/rootfs.squashfs >> supervisor.env
+          # Pin public resolvers for guest VMs: DNS auto-detection on the droplet
+          # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
+          # which is unreachable from inside the VMs and breaks all guest DNS.
+          echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
+          # A full system upgrade takes ~1 minute. Only run it on pushes to main
+          # to catch incompatibilities with the latest distro packages, and skip
+          # it on pull requests to keep iteration fast.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
+          fi
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 install -y docker.io apparmor-profiles"
           ssh root@${DROPLET_IPV4} "docker run -d -p 127.0.0.1:4021:4021/tcp --restart=always --name vm-connector alephim/vm-connector:alpha"
 
