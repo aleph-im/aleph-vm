@@ -54,6 +54,11 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.GetVmRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
+        self.GetVmSpec = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/GetVmSpec',
+                request_serializer=supervisor__pb2.GetVmSpecRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.CreateVmRequest.FromString,
+                _registered_method=True)
         self.ListVms = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/ListVms',
                 request_serializer=supervisor__pb2.ListVmsRequest.SerializeToString,
@@ -179,6 +184,9 @@ class SupervisorServicer(object):
 
     def CreateVm(self, request, context):
         """── VM lifecycle ──
+        Idempotent on vm_id: re-sending the same spec for a live VM returns its
+        current VmInfo (safe retry after UNAVAILABLE / DEADLINE_EXCEEDED); a
+        different spec for a live vm_id fails ALREADY_EXISTS.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -186,6 +194,15 @@ class SupervisorServicer(object):
 
     def GetVm(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetVmSpec(self, request, context):
+        """The spec a live VM was created from, as the supervisor holds it. Lets
+        the client rebuild its own records after a restart. UNIMPLEMENTED for
+        VMs created outside the spec path (legacy in-process executions).
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -343,6 +360,11 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.GetVm,
                     request_deserializer=supervisor__pb2.GetVmRequest.FromString,
                     response_serializer=supervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'GetVmSpec': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetVmSpec,
+                    request_deserializer=supervisor__pb2.GetVmSpecRequest.FromString,
+                    response_serializer=supervisor__pb2.CreateVmRequest.SerializeToString,
             ),
             'ListVms': grpc.unary_unary_rpc_method_handler(
                     servicer.ListVms,
@@ -558,6 +580,33 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/GetVm',
             supervisor__pb2.GetVmRequest.SerializeToString,
             supervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetVmSpec(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/GetVmSpec',
+            supervisor__pb2.GetVmSpecRequest.SerializeToString,
+            supervisor__pb2.CreateVmRequest.FromString,
             options,
             channel_credentials,
             insecure,

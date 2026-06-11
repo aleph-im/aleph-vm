@@ -164,6 +164,13 @@ class GrpcSupervisor(Supervisor):
             raise translate_rpc_error(error) from error
         return conv.vm_info_from_pb(reply)
 
+    async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
+        try:
+            reply = await self._ensure_stub().GetVmSpec(pb.GetVmSpecRequest(vm_id=str(vm_id)))
+        except grpc.aio.AioRpcError as error:
+            raise translate_rpc_error(error) from error
+        return conv.create_vm_spec_from_pb(reply)
+
     async def list_vms(self) -> list[VmInfo]:
         try:
             reply = await self._ensure_stub().ListVms(pb.ListVmsRequest())

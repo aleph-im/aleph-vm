@@ -174,3 +174,95 @@ def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
 
     assert deleted == 2
     assert not rootfs.exists() and not vol.exists() and ro.exists()
+
+
+def _spec_for(vm_hash: str):
+    from pathlib import Path
+
+    from aleph.vm.supervisor.types import (
+        Backend,
+        CreateVmSpec,
+        DiskFormat,
+        DiskRole,
+        DiskSpec,
+        NetworkConfig,
+    )
+
+    return CreateVmSpec(
+        vm_id=VmId(vm_hash),
+        backend=Backend.QEMU,
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=[
+            DiskSpec(path=Path("/data/rootfs.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)
+        ],
+        vcpus=1,
+        memory_mib=256,
+        tee=None,
+        network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reboot_ephemeral_spec_vm_recreates_from_held_spec():
+    """A spec-built ephemeral VM reboots for real: stop, then re-create from
+    the spec the supervisor holds — the client is not expected to know."""
+    spec = _spec_for("itemhash123")
+    execution = _make_execution(persistent=False)
+    execution.vm_spec = spec
+    recreated = make_execution(vm_hash="itemhash123", running=True)
+    pool = _make_pool(executions={"itemhash123": execution})
+    pool.create_vm_from_spec = AsyncMock(return_value=recreated)
+    sup = InProcessSupervisor(pool=pool)
+
+    info = await sup.reboot_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.create_vm_from_spec.assert_awaited_once_with(spec)
+    assert info.vm_id == "itemhash123"
+
+
+@pytest.mark.asyncio
+async def test_reboot_ephemeral_message_vm_stops_only():
+    """Message-built (legacy) ephemeral VMs keep the old contract: the agent
+    owns the message and re-creates through its own path."""
+    execution = _make_execution(persistent=False)
+    execution.vm_spec = None
+    pool = _make_pool(executions={"itemhash123": execution})
+    pool.create_vm_from_spec = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.reboot_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.create_vm_from_spec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_returns_held_spec():
+    spec = _spec_for("itemhash123")
+    execution = make_execution()
+    execution.vm_spec = spec
+    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+
+    assert await sup.get_vm_spec(VM_ID) == spec
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_unknown_vm_raises_not_found():
+    sup = InProcessSupervisor(pool=FakePool())
+    with pytest.raises(VmNotFoundError):
+        await sup.get_vm_spec(VmId("nope"))
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_message_built_vm_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = make_execution()  # vm_spec=None: legacy, message-built
+    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.get_vm_spec(VM_ID)

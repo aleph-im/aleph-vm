@@ -46,6 +46,11 @@ class LifecycleOps(ABC):
     async def get_vm(self, vm_id: VmId) -> VmInfo: ...
 
     @abstractmethod
+    async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
+        """The spec a live VM was created from. Raises
+        NotImplementedSupervisorError for VMs created outside the spec path."""
+
+    @abstractmethod
     async def list_vms(self) -> list[VmInfo]: ...
 
     @abstractmethod

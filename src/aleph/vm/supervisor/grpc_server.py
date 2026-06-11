@@ -120,6 +120,11 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         return conv.vm_info_to_pb(await self._supervisor.get_vm(VmId(request.vm_id)))
 
     @_translating
+    async def GetVmSpec(self, request: pb.GetVmSpecRequest, context) -> pb.CreateVmRequest:
+        spec = await self._supervisor.get_vm_spec(VmId(request.vm_id))
+        return conv.create_vm_spec_to_pb(spec)
+
+    @_translating
     async def ListVms(self, request: pb.ListVmsRequest, context) -> pb.ListVmsResponse:
         infos = await self._supervisor.list_vms()
         return pb.ListVmsResponse(vms=[conv.vm_info_to_pb(info) for info in infos])

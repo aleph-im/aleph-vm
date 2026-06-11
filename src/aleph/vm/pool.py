@@ -23,7 +23,11 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError, get_gpu_devices
-from aleph.vm.supervisor.errors import InvalidBackendError, TeeUnavailableError
+from aleph.vm.supervisor.errors import (
+    InvalidBackendError,
+    TeeUnavailableError,
+    VmAlreadyExistsError,
+)
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_configuration,
     spec_from_controller_configuration,
@@ -419,6 +423,7 @@ class VmPool:
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                self._require_same_spec(current_execution, spec)
                 return current_execution
 
             execution = VmExecution.from_spec(
@@ -486,6 +491,7 @@ class VmPool:
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                self._require_same_spec(current_execution, spec)
                 return current_execution
 
             execution = VmExecution.from_spec(
@@ -523,6 +529,15 @@ class VmPool:
 
             self._schedule_forget_on_stop(execution)
             return execution
+
+    @staticmethod
+    def _require_same_spec(current_execution: VmExecution, spec: CreateVmSpec) -> None:
+        """CreateVm idempotency: a retry with the identical spec returns the
+        live VM; a different spec for a live vm_id is a conflict (also covers
+        colliding with a message-built execution, whose vm_spec is None)."""
+        if current_execution.vm_spec != spec:
+            msg = f"VM {spec.vm_id} already exists with a different spec"
+            raise VmAlreadyExistsError(msg)
 
     def get_unique_vm_id(self) -> int:
         """Get a unique identifier for the VM.

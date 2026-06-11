@@ -240,3 +240,45 @@ async def test_reinstall_wipe_volumes_crosses_explicitly(wipe_volumes):
         with pytest.raises(VmNotFoundError):
             await client.reinstall_vm(VmId("x"), wipe_volumes=wipe_volumes)
     assert wrapped.calls == [("x", wipe_volumes)]
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_round_trips_over_the_wire():
+    """GetVmSpec returns the spec class-exact: DTO → proto → DTO."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from aleph.vm.supervisor.types import (
+        Backend,
+        CreateVmSpec,
+        DiskFormat,
+        DiskRole,
+        DiskSpec,
+        GuestChannelSpec,
+        NetworkConfig,
+    )
+
+    spec = CreateVmSpec(
+        vm_id=VmId("feed" * 16),
+        backend=Backend.FIRECRACKER,
+        kernel_path=Path("/opt/kernel/vmlinux.bin"),
+        initrd_path=Path(""),
+        disks=[
+            DiskSpec(
+                path=Path("/data/rootfs.squashfs"), readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.ROOTFS
+            )
+        ],
+        vcpus=1,
+        memory_mib=256,
+        tee=None,
+        network=NetworkConfig(internet_access=True, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=False,
+        guest_channel=GuestChannelSpec(ready_port=52, ready_timeout_secs=30),
+    )
+    pool = FakePool()
+    pool.executions["feed" * 16] = SimpleNamespace(vm_spec=spec)
+    harness = _ServerHarness(InProcessSupervisor(pool=pool))
+    async with harness as client:
+        assert await client.get_vm_spec(VmId("feed" * 16)) == spec

@@ -40,6 +40,7 @@ def make_execution(
         is_confidential=confidential,
         is_awaiting_confidential_init=False,
         hypervisor=hypervisor,
+        vm_spec=None,
         vm=vm,
         gpus=[],
     )
