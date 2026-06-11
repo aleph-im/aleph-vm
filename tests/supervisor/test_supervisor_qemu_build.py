@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -14,7 +15,6 @@ from aleph.vm.controllers.configuration import (
     HypervisorType,
     QemuVMConfiguration,
 )
-from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.sizes import MiB
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.qemu_build import build_qemu_configuration
@@ -96,6 +96,7 @@ def _make_spec(
         numa_node=None,
         persistent=True,
         ssh_authorized_keys=["ssh-rsa AAAA testkey"],
+        hostname="agent-chosen-name",
     )
 
 
@@ -176,12 +177,33 @@ async def test_build_qemu_configuration_happy_path(monkeypatch: pytest.MonkeyPat
 
     # cloud-init was called with the correct arguments derived from tap + spec
     assert captured, "create_cloud_init_drive_image was not called"
-    assert captured["hostname"] == get_hostname_from_hash(spec.vm_id)  # type: ignore[arg-type]
+    # Naming is the agent's: the spec hostname is applied verbatim.
+    assert captured["hostname"] == "agent-chosen-name"
     assert captured["ip"] == "10.0.0.2/30"
     assert captured["route"] == "10.0.0.1"
     assert captured["ipv6"] == "fc00::2/64"
     assert captured["ipv6_gateway"] == "fc00::1"
     assert captured["keys"] == spec.ssh_authorized_keys
+
+
+@pytest.mark.asyncio
+async def test_empty_hostname_falls_back_to_vm_id_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No agent-provided hostname: the supervisor derives one mechanically
+    (truncated vm_id), with no Aleph naming convention involved."""
+    captured: dict[str, object] = {}
+
+    async def fake_cloud_init(disk_image_path, hostname, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        captured["hostname"] = hostname
+
+    monkeypatch.setattr(
+        "aleph.vm.supervisor.qemu_build.create_cloud_init_drive_image",
+        fake_cloud_init,
+    )
+
+    spec = replace(_make_spec(), hostname="")
+    await build_qemu_configuration(spec, vm_id=7, tap_interface=None)
+
+    assert captured["hostname"] == spec.vm_id[:63]
 
 
 @pytest.mark.asyncio

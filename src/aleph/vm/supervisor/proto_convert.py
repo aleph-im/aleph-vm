@@ -209,6 +209,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
         gpus=[pb.GpuConfig(pci_host=str(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in spec.gpus],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
+        hostname=spec.hostname,
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(pb.GuestChannel(ready_port=spec.guest_channel.ready_port))
@@ -251,6 +252,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
+        hostname=msg.hostname,
         guest_channel=(
             GuestChannelSpec(ready_port=msg.guest_channel.ready_port) if msg.HasField("guest_channel") else None
         ),

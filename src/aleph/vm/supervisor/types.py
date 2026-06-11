@@ -176,6 +176,9 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
+    # Guest hostname for provisioning (cloud-init); naming is the client's
+    # business. Empty = mechanical fallback derived from vm_id.
+    hostname: str = ""
     # Optional host⇄guest control channel; None = no channel. See
     # GuestChannelSpec and VmInfo.guest_channel_path.
     guest_channel: GuestChannelSpec | None = None
