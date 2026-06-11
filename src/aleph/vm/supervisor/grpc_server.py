@@ -69,6 +69,11 @@ async def _abort(context: grpc.aio.ServicerContext, error: SupervisorError) -> N
         status = grpc.StatusCode.UNIMPLEMENTED
     else:
         status = STATUS_CODE_BY_ERROR.get(error.code, grpc.StatusCode.INTERNAL)
+        if error.code is ErrorCode.INTERNAL:
+            # INTERNAL means "not a vocabulary case" — keep the server-side
+            # cause (with the original traceback chained by translate) in the
+            # daemon log; the client only sees the message.
+            logger.exception("Aborting RPC with INTERNAL: %s", error, exc_info=error.__cause__ or error)
     detail = pb.ErrorDetail(code=conv.ERROR_CODE_TO_PB[error.code], message=str(error))
     await context.abort(status, str(error), trailing_metadata=((ERROR_TRAILER_KEY, detail.SerializeToString()),))
 
