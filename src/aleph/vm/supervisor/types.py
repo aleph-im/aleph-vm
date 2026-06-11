@@ -37,6 +37,13 @@ class VmStatus(Enum):
     FAILED = "failed"
 
 
+class ConfidentialMode(Enum):
+    NONE = "none"
+    SEV = "sev"
+    SEV_ES = "sev_es"
+    SEV_SNP = "sev_snp"
+
+
 class DiskFormat(Enum):
     RAW = "raw"
     QCOW2 = "qcow2"
@@ -206,6 +213,11 @@ class VmInfo:
     # `backend`: an instance may run under Firecracker or QEMU, so the backend
     # alone cannot recover this. Mirrors VmExecution.is_instance.
     is_instance: bool = False
+    # Precise confidential-computing mode (the agent reduces to a bool for Aleph
+    # APIs). NONE for non-confidential VMs.
+    confidential_mode: ConfidentialMode = ConfidentialMode.NONE
+    # Exact PCI devices attached to this VM; mirrors HostInfo.gpus.
+    gpus: list[GpuDevice] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

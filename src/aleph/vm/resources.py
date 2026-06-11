@@ -21,6 +21,8 @@ class HostGPU(BaseModel):
 
     pci_host: str = Field(description="GPU PCI host address")
     supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
+    device_id: str = Field(description="GPU vendor:device id, e.g. '10de:2504'", default="")
+    model: str | None = Field(description="GPU model name on the Aleph network", default=None)
 
     model_config = ConfigDict(extra="forbid")
 
