@@ -10,6 +10,12 @@ on:
     branches: [main]
 
 
+# Cancel superseded runs when new commits are pushed to a PR branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+
 jobs:
   tests-python:
     name: "Test Python code"
@@ -64,11 +70,29 @@ jobs:
           # this produces a 33 MB log
           #  find /opt
 
+      # The aleph-debian-12-python runtime takes ~2 minutes to debootstrap and
+      # rarely changes. Cache it on the content of its build scripts, with a
+      # monthly stamp so the packages pulled by debootstrap and pip do not
+      # become indefinitely stale. The key is shared with the build_rootfs job
+      # of the droplet test workflow.
+      - name: Compute monthly cache stamp
+        id: stamp
+        run: echo "month=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the aleph-debian-12-python runtime
+        id: cache-runtime
+        uses: actions/cache@v4
+        with:
+          path: runtimes/aleph-debian-12-python/rootfs.squashfs
+          key: runtime-aleph-debian-12-python-${{ steps.stamp.outputs.month }}-${{ hashFiles('runtimes/aleph-debian-12-python/**') }}
+
       - name: "Build custom runtimes"
         run: |
           sudo apt update
           sudo apt install -y debootstrap ndppd acl cloud-image-utils qemu-utils qemu-system-x86
-          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+          if [ ! -f runtimes/aleph-debian-12-python/rootfs.squashfs ]; then
+            cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+          fi
           cd runtimes/instance-rootfs && sudo ./create-ubuntu-22-04-qemu-disk.sh && cd ../..
           cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh && cd ../..
 
