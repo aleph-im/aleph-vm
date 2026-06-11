@@ -58,6 +58,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmEvent,
     VmId,
     VmInfo,
 )
@@ -240,6 +241,17 @@ class GrpcSupervisor(Supervisor):
         except grpc.aio.AioRpcError as error:
             raise translate_rpc_error(error) from error
         return [conv.port_forward_info_from_pb(info) for info in reply.forwards]
+
+    # ── Events ──
+    async def watch_events(self) -> AsyncIterator[VmEvent]:
+        call = self._ensure_stub().WatchEvents(pb.WatchEventsRequest())
+        try:
+            async for msg in call:
+                yield conv.vm_event_from_pb(msg)
+        except grpc.aio.AioRpcError as error:
+            raise translate_rpc_error(error) from error
+        finally:
+            call.cancel()
 
     # ── Logs ──
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]:

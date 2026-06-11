@@ -50,6 +50,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmEvent,
     VmId,
     VmInfo,
     VmStatus,
@@ -243,6 +244,32 @@ def _history_chunks(vm_id: VmId) -> list[LogChunk]:
 class InProcessSupervisor(Supervisor):
     def __init__(self, pool: VmPool):
         self.pool = pool
+        # Live watch_events subscribers; events are fan-out, no replay.
+        self._event_queues: set[asyncio.Queue[VmEvent]] = set()
+
+    # ── Events ──
+    def _emit_event(self, vm_id: VmId, old_status: VmStatus, new_status: VmStatus) -> None:
+        """Fan a lifecycle transition out to every watcher. Emission points
+        are the supervisor's own lifecycle methods: every transition crossing
+        the boundary is covered (spontaneous guest death is not detected
+        anywhere today; see the proto note on WatchEvents)."""
+        if not self._event_queues:
+            return
+        event = VmEvent(vm_id=vm_id, old_status=old_status, new_status=new_status, timestamp_ns=time.time_ns())
+        for queue in self._event_queues:
+            queue.put_nowait(event)
+
+    async def watch_events(self) -> AsyncIterator[VmEvent]:
+        queue: asyncio.Queue[VmEvent] = asyncio.Queue()
+        self._event_queues.add(queue)
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            self._event_queues.discard(queue)
+
+    def _status_snapshot(self, execution) -> VmStatus:
+        return _status_of(execution, _is_running(execution, self.pool))
 
     # Host
     async def health(self) -> HealthInfo:
@@ -264,7 +291,9 @@ class InProcessSupervisor(Supervisor):
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
         with translating_errors():
             execution = await self.pool.create_vm_from_spec(spec)
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            self._emit_event(spec.vm_id, VmStatus.DEFINED, info.status)
+            return info
 
     async def get_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
@@ -298,7 +327,9 @@ class InProcessSupervisor(Supervisor):
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if execution.vm_hash in self.pool.executions:
                 # Routine: the pool's _schedule_forget_on_stop task has usually
                 # not run yet by the time stop_vm returns, so delete_vm wins
@@ -319,12 +350,14 @@ class InProcessSupervisor(Supervisor):
             if not (execution.persistent and getattr(execution, "systemd_manager", None)):
                 msg = "Stopping an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
                 raise NotImplementedSupervisorError(msg)
+            old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
             # Keep the execution registered so the VM stays observable
             # (STOPPED) and start_vm has a handle. A fresh stop_event defuses
             # the pool's forget-on-stop task (same trick as reinstall).
             execution.stop_event = asyncio.Event()
             self.pool.executions[execution.vm_hash] = execution
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             return _to_vm_info(execution, running=False)
 
     async def start_vm(self, vm_id: VmId) -> VmInfo:
@@ -335,25 +368,37 @@ class InProcessSupervisor(Supervisor):
                 raise NotImplementedSupervisorError(msg)
             if _is_running(execution, self.pool):
                 return _to_vm_info(execution, running=True)
+            old_status = self._status_snapshot(execution)
             await self.pool.restart_persistent_vm(execution)
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            self._emit_event(vm_id, old_status, info.status)
+            return info
 
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             if execution.persistent and getattr(execution, "systemd_manager", None):
                 self.pool.systemd_manager.restart(execution.controller_service)
-                return _to_vm_info(execution, _is_running(execution, self.pool))
+                info = _to_vm_info(execution, _is_running(execution, self.pool))
+                # A reboot is a down-then-up pair; watchers that drop per-VM
+                # state on "down" must see the down.
+                self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
             spec = execution.vm_spec
             await self.pool.stop_vm(vm_id)
             if execution.vm_hash in self.pool.executions:
                 self.pool.forget_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if spec is not None:
                 # A real reboot: the supervisor holds the spec, so it can
                 # recreate the VM itself instead of returning a stopped husk
                 # and expecting the client to know it must re-create.
                 new_execution = await self.pool.create_vm_from_spec(spec)
-                return _to_vm_info(new_execution, _is_running(new_execution, self.pool))
+                info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
             # Message-built (legacy) ephemeral VMs: the agent owns the
             # message and re-creates through its own path.
             return _to_vm_info(execution, _is_running(execution, self.pool))
@@ -361,7 +406,9 @@ class InProcessSupervisor(Supervisor):
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if execution.persistent:
                 # Keep the execution registered so the allocation loop cannot
                 # create a duplicate while we re-prepare (mirrors the old
@@ -380,7 +427,10 @@ class InProcessSupervisor(Supervisor):
                 execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
                 # The agent re-creates non-persistent VMs through the create
                 # path (it owns the message); we return the stopped state.
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            if info.status is not VmStatus.STOPPED:
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+            return info
 
     # Port forwarding
     def _mapped_to_infos(self, execution) -> list[PortForwardInfo]:

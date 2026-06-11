@@ -25,6 +25,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmEvent,
     VmId,
     VmInfo,
 )
@@ -83,6 +84,13 @@ class PortForwardingOps(ABC):
     async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]: ...
 
 
+class EventsOps(ABC):
+    @abstractmethod
+    def watch_events(self) -> AsyncIterator[VmEvent]:
+        """Stream lifecycle transitions, no replay: snapshot with list_vms
+        first, then watch."""
+
+
 class LogsOps(ABC):
     @abstractmethod
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]: ...
@@ -137,6 +145,7 @@ class Supervisor(
     HostOps,
     LifecycleOps,
     PortForwardingOps,
+    EventsOps,
     LogsOps,
     BackupOps,
     MigrationOps,

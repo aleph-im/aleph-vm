@@ -255,6 +255,16 @@ class VmInfo:
 
 
 @dataclass(frozen=True)
+class VmEvent:
+    """A lifecycle transition, streamed by watch_events."""
+
+    vm_id: VmId
+    old_status: VmStatus
+    new_status: VmStatus
+    timestamp_ns: int
+
+
+@dataclass(frozen=True)
 class PortForwardSpec:
     vm_id: VmId
     host_port: HostPort

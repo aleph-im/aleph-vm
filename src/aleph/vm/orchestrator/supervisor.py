@@ -160,6 +160,37 @@ async def http_not_found(request: web.Request):  # noqa: ARG001
     return web.HTTPNotFound()
 
 
+async def watch_supervisor_events(app: web.Application) -> None:
+    """Split mode: consume the supervisor's WatchEvents stream and drop
+    agent-side per-VM state when a VM goes down.
+
+    This is the cross-process replacement for the in-process reap hooks: a
+    VM leaving RUNNING (stop, reboot's down-phase, delete, reinstall) must
+    drop the agent's guest-side program state (guest API process, configured
+    mark) and cancel pending idle-teardown timers. Reconnects on stream
+    failure; exits if the supervisor does not implement WatchEvents.
+    """
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+    from aleph.vm.supervisor.types import VmStatus
+
+    supervisor = app["supervisor"]
+    while True:
+        try:
+            async for event in supervisor.watch_events():
+                if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
+                    app["expiry"].cancel(event.vm_id)
+                    app["update_watcher"].cancel(event.vm_id)
+                    await app["program_client"].forget(event.vm_id)
+        except NotImplementedSupervisorError:
+            logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Supervisor event stream interrupted; reconnecting in 5s", exc_info=True)
+        await asyncio.sleep(5)
+
+
 def setup_webapp(pool: VmPool | None):
     """Create the webapp and set the VmPool.
 
@@ -200,6 +231,23 @@ def setup_webapp(pool: VmPool | None):
 
     app["expiry"].on_reaped = _on_expiry_reaped
     app["update_watcher"].on_reaped = _on_update_reaped
+
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        # In-process, the reap hooks above run in the same loop as the pool;
+        # across the boundary the supervisor's event stream is the only way
+        # to learn that a VM went down without polling.
+        async def _start_event_watcher(app: web.Application) -> None:
+            app["_event_watcher"] = asyncio.get_running_loop().create_task(watch_supervisor_events(app))
+
+        async def _stop_event_watcher(app: web.Application) -> None:
+            task = app.get("_event_watcher")
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        app.on_startup.append(_start_event_watcher)
+        app.on_cleanup.append(_stop_event_watcher)
+
     app["backup_state"] = BackupState()
     cors = setup(
         app,
