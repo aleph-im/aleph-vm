@@ -57,6 +57,15 @@ class LifecycleOps(ABC):
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None: ...
 
     @abstractmethod
+    async def stop_vm(self, vm_id: VmId) -> VmInfo:
+        """Stop without releasing the definition; the VM stays listed
+        (STOPPED) and start_vm brings it back. Persistent VMs only today."""
+
+    @abstractmethod
+    async def start_vm(self, vm_id: VmId) -> VmInfo:
+        """Start a stopped VM; a no-op (current info) if already running."""
+
+    @abstractmethod
     async def reboot_vm(self, vm_id: VmId) -> VmInfo: ...
 
     @abstractmethod

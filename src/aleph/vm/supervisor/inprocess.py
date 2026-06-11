@@ -313,6 +313,31 @@ class InProcessSupervisor(Supervisor):
                     await delete_port_mappings(execution.vm_hash)
                 execution.erase_volumes()
 
+    async def stop_vm(self, vm_id: VmId) -> VmInfo:
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Stopping an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                raise NotImplementedSupervisorError(msg)
+            await self.pool.stop_vm(vm_id)
+            # Keep the execution registered so the VM stays observable
+            # (STOPPED) and start_vm has a handle. A fresh stop_event defuses
+            # the pool's forget-on-stop task (same trick as reinstall).
+            execution.stop_event = asyncio.Event()
+            self.pool.executions[execution.vm_hash] = execution
+            return _to_vm_info(execution, running=False)
+
+    async def start_vm(self, vm_id: VmId) -> VmInfo:
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Starting an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                raise NotImplementedSupervisorError(msg)
+            if _is_running(execution, self.pool):
+                return _to_vm_info(execution, running=True)
+            await self.pool.restart_persistent_vm(execution)
+            return _to_vm_info(execution, _is_running(execution, self.pool))
+
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)

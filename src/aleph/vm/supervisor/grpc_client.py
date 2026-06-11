@@ -184,6 +184,20 @@ class GrpcSupervisor(Supervisor):
         except grpc.aio.AioRpcError as error:
             raise translate_rpc_error(error) from error
 
+    async def stop_vm(self, vm_id: VmId) -> VmInfo:
+        try:
+            reply = await self._ensure_stub().StopVm(pb.StopVmRequest(vm_id=str(vm_id)))
+        except grpc.aio.AioRpcError as error:
+            raise translate_rpc_error(error) from error
+        return conv.vm_info_from_pb(reply)
+
+    async def start_vm(self, vm_id: VmId) -> VmInfo:
+        try:
+            reply = await self._ensure_stub().StartVm(pb.StartVmRequest(vm_id=str(vm_id)))
+        except grpc.aio.AioRpcError as error:
+            raise translate_rpc_error(error) from error
+        return conv.vm_info_from_pb(reply)
+
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         try:
             reply = await self._ensure_stub().RebootVm(pb.RebootVmRequest(vm_id=str(vm_id)))

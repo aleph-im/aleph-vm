@@ -352,6 +352,8 @@ def test_full_service_surface_pinned():
         "GetVmSpec",
         "ListVms",
         "DeleteVm",
+        "StopVm",
+        "StartVm",
         "RebootVm",
         "ReinstallVm",
         # Port forwarding
