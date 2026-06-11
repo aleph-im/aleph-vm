@@ -151,6 +151,7 @@ async def create_backup_archive(
     backup_files: dict[str, Path],
     destination_dir: Path,
     source_sizes: dict[str, int] | None = None,
+    timestamp: str | None = None,
 ) -> Path:
     """Create a tar archive containing all backup QCOW2 files.
 
@@ -160,11 +161,14 @@ async def create_backup_archive(
         destination_dir: Where to write the tar and its .sha256 sidecar.
         source_sizes: Optional mapping of volume name to original disk
             size in bytes (before backup compression).
+        timestamp: Archive timestamp (UTC, ``%Y%m%dT%H%M%SZ``). Defaults to
+            now; callers that issued a backup id upfront pass it so the tar
+            stem matches the id.
 
     Returns:
         Path to the created tar archive.
     """
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = timestamp or datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tar_path = destination_dir / f"{vm_hash}-{timestamp}.tar"
 
     await asyncio.to_thread(
