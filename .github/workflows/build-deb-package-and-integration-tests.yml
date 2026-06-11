@@ -18,6 +18,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+
 jobs:
   build_deb:
     name: "Build ${{ matrix.os }} Package"
@@ -59,7 +60,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packaging/target/bin
-          key: sevctl-${{ matrix.os }}-${{ hashFiles('packaging/Makefile', format('packaging/{0}.dockerfile', matrix.os)) }}
+          key: sevctl-${{ matrix.os }}-${{ hashFiles('packaging/Makefile', format('packaging/{0}.dockerfile',
+            matrix.os)) }}
 
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
@@ -94,18 +96,23 @@ jobs:
         run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
       # The runtime takes ~2 minutes to debootstrap and rarely changes. Cache it on
-      # the content of its build scripts, with a monthly stamp so the packages
+      # the content of its build inputs, with a monthly stamp so the packages
       # pulled by debootstrap and pip do not become indefinitely stale.
-      - name: Compute monthly cache stamp
-        id: stamp
-        run: echo "month=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      # The key is computed in shell because hashFiles() is re-evaluated in the
+      # cache post step, after the build filled the directory with the
+      # debootstrapped tree (hashing it times out).
+      - name: Compute runtime cache key
+        id: cache-key
+        run: |
+          input_hash=$(cat runtimes/aleph-${{ matrix.os }}-python/*.sh runtimes/aleph-${{ matrix.os }}-python/*.py runtimes/aleph-${{ matrix.os }}-python/*.html | sha256sum | cut -c -16)
+          echo "key=runtime-aleph-${{ matrix.os }}-python-$(date +%Y-%m)-${input_hash}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the built runtime
         id: cache-runtime
         uses: actions/cache@v4
         with:
           path: runtimes/aleph-${{ matrix.os }}-python/rootfs.squashfs
-          key: runtime-aleph-${{ matrix.os }}-python-${{ steps.stamp.outputs.month }}-${{ hashFiles(format('runtimes/aleph-{0}-python/**', matrix.os)) }}
+          key: ${{ steps.cache-key.outputs.key }}
 
       - name: Install dep and build
         if: steps.cache-runtime.outputs.cache-hit != 'true'
