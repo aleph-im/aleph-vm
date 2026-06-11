@@ -55,9 +55,6 @@ def test_spec_properties_for_qemu_instance():
     assert execution.is_program is False
     assert execution.is_confidential is False
     assert execution.hypervisor is HypervisorType.qemu
-    # Payment flags are agent-side; absent without a message.
-    assert execution.uses_payment_stream is False
-    assert execution.uses_payment_credit is False
 
 
 def test_from_spec_sets_spec_and_no_message():

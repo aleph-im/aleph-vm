@@ -326,3 +326,9 @@ def test_vm_execution_has_no_update_watch_api():
 
     for gone in ("start_watching_for_updates", "watch_for_updates", "cancel_update"):
         assert not hasattr(VmExecution, gone), f"{gone} should be removed from VmExecution"
+
+
+def test_vm_execution_has_no_payment_api():
+    """Payment tier is agent knowledge (AgentVmRecord), not a hypervisor-object concern."""
+    assert not hasattr(VmExecution, "uses_payment_stream")
+    assert not hasattr(VmExecution, "uses_payment_credit")

@@ -14,7 +14,9 @@ from aiohttp import web
 from aleph_message.models import (
     AggregateMessage,
     AlephMessage,
+    Chain,
     InstanceContent,
+    Payment,
     PaymentType,
     ProgramMessage,
     parse_message,
@@ -23,6 +25,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import reconcile_port_forwards
 from aleph.vm.orchestrator.utils import (
@@ -190,7 +193,7 @@ async def watch_for_messages(
                 if key == "port-forwarding":
                     await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
-                    await _handle_domains_aggregate(message, pool)
+                    await _handle_domains_aggregate(message, pool, registry)
 
 
 async def _handle_port_forwarding_aggregate(
@@ -222,7 +225,7 @@ async def _handle_port_forwarding_aggregate(
             logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
-async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
+async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, registry: AgentVmRegistry):
     """Update HAProxy domain mapping when a domains aggregate changes.
 
     The aggregate content maps domain names to instance configs:
@@ -232,11 +235,16 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool):
     """
     address = message.content.address
 
-    # Trigger if the address owns any running instance on this node.
+    # Trigger if the address owns any running instance on this node. The owner
+    # address comes from the agent registry, not the hypervisor object —
+    # spec-built and restored executions carry no message.
     # This covers both additions (new domain pointing to local instance)
     # and deletions (domain removed — need to clean up the map).
     has_local_instance = any(
-        execution.is_instance and execution.vm and execution.message and execution.message.address == address
+        execution.is_instance
+        and execution.vm
+        and (record := registry.get(execution.vm_hash)) is not None
+        and record.message.address == address
         for execution in pool.executions.values()
     )
     if not has_local_instance:
@@ -301,6 +309,48 @@ async def monitor_payments(app: web.Application):
                 logger.debug("monitor_payments exiting: event loop closed")
                 return
             logger.warning(f"check_payment failed {e}", exc_info=True)
+
+
+def _group_executions_by_payment(
+    pool: VmPool,
+    registry: AgentVmRegistry,
+    payment_type: PaymentType,
+    running_states: dict[str, bool] | None = None,
+) -> dict[str, dict[Chain, list[VmExecution]]]:
+    """Group running executions by sender address and chain for one payment type.
+
+    The message (payment tier, owner address) comes from the agent registry;
+    the execution supplies only structural facts. Replaces the pool method that
+    read the message off the hypervisor object — and thereby skipped spec-built
+    and restart-restored VMs entirely.
+
+    running_states: optional pre-computed mapping of controller_service name
+        -> active state (e.g. the result of
+        ``SystemDManager.get_services_active_states()``). When provided,
+        persistent executions are filtered by this map instead of the per-VM
+        ``is_running`` property, which otherwise issues a D-Bus round-trip per
+        execution and blocks the event loop.
+    """
+    executions_by_address: dict[str, dict[Chain, list[VmExecution]]] = {}
+    for vm_hash, execution in pool.executions.items():
+        record = registry.get(vm_hash)
+        if record is None:
+            # The agent has no message for this VM (e.g. the diagnostic fake
+            # never enters the registry); payment grouping cannot apply.
+            continue
+        if execution.vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
+            # Ignore the diagnostic VM
+            continue
+        if running_states is not None and execution.persistent:
+            is_active = running_states.get(execution.controller_service, False)
+        else:
+            is_active = execution.is_running
+        if not is_active:
+            continue
+        payment = record.message.payment if record.message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
+        if payment.type == payment_type:
+            executions_by_address.setdefault(record.message.address, {}).setdefault(payment.chain, []).append(execution)
+    return executions_by_address
 
 
 async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry):
@@ -369,8 +419,8 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
         running_states = {}
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-    for execution_address, chains in pool.get_executions_by_address(
-        payment_type=PaymentType.hold, running_states=running_states
+    for execution_address, chains in _group_executions_by_payment(
+        pool, registry, PaymentType.hold, running_states=running_states
     ).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions if execution.is_confidential]
@@ -398,8 +448,8 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
         logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
 
     # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
-    for execution_address, chains in pool.get_executions_by_address(
-        payment_type=PaymentType.credit, running_states=running_states
+    for execution_address, chains in _group_executions_by_payment(
+        pool, registry, PaymentType.credit, running_states=running_states
     ).items():
         for chain, executions in chains.items():
             executions = [execution for execution in executions]
@@ -423,8 +473,8 @@ async def check_payment(pool: VmPool, supervisor: Supervisor, registry: AgentVmR
                 required_credits = await compute_required_credit_balance(executions)
 
     # Check if the balance held in the wallet is sufficient stream tier resources
-    for execution_address, chains in pool.get_executions_by_address(
-        payment_type=PaymentType.superfluid, running_states=running_states
+    for execution_address, chains in _group_executions_by_payment(
+        pool, registry, PaymentType.superfluid, running_states=running_states
     ).items():
         for chain, executions in chains.items():
             try:
