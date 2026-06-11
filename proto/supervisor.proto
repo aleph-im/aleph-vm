@@ -27,8 +27,15 @@ service Supervisor {
   rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
 
   // ── VM lifecycle ──
+  // Idempotent on vm_id: re-sending the same spec for a live VM returns its
+  // current VmInfo (safe retry after UNAVAILABLE / DEADLINE_EXCEEDED); a
+  // different spec for a live vm_id fails ALREADY_EXISTS.
   rpc CreateVm(CreateVmRequest) returns (VmInfo);
   rpc GetVm(GetVmRequest) returns (VmInfo);
+  // The spec a live VM was created from, as the supervisor holds it. Lets
+  // the client rebuild its own records after a restart. UNIMPLEMENTED for
+  // VMs created outside the spec path (legacy in-process executions).
+  rpc GetVmSpec(GetVmSpecRequest) returns (CreateVmRequest);
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
   rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
@@ -303,6 +310,7 @@ message VmInfo {
 }
 
 message GetVmRequest      { string vm_id = 1; }
+message GetVmSpecRequest  { string vm_id = 1; }
 message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
@@ -312,9 +320,10 @@ message DeleteVmRequest {
 message DeleteVmResponse  {}
 message RebootVmRequest {
   string vm_id = 1;
-  // Note: aleph-vm performs soft reboot only today (systemd restart
-  // for persistent VMs, recreate for ephemeral). Firecracker has no
-  // reboot API. Add a `hard` option when a real implementation lands.
+  // Note: aleph-vm performs soft reboot only today: systemd restart for
+  // persistent VMs; for ephemeral spec-created VMs the supervisor stops the
+  // VM and recreates it from the spec it holds. Firecracker has no reboot
+  // API. Add a `hard` option when a real implementation lands.
 }
 message ReinstallVmRequest {
   string vm_id = 1;

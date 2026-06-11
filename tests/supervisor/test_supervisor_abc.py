@@ -18,6 +18,7 @@ EXPECTED_METHODS = {
     "get_host_info",
     "create_vm",
     "get_vm",
+    "get_vm_spec",
     "list_vms",
     "delete_vm",
     "reboot_vm",
@@ -44,10 +45,10 @@ EXPECTED_METHODS = {
 STREAMING_METHODS = {"stream_logs", "download_backup"}
 
 
-def test_supervisor_aggregates_all_25_methods():
+def test_supervisor_aggregates_all_26_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 25
+    assert len(EXPECTED_METHODS) == 26
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -67,7 +68,7 @@ def test_all_boundary_methods_are_coroutines():
 def test_capability_abcs_partition_the_surface():
     by_abc = {
         HostOps: {"health", "get_host_info"},
-        LifecycleOps: {"create_vm", "get_vm", "list_vms", "delete_vm", "reboot_vm", "reinstall_vm"},
+        LifecycleOps: {"create_vm", "get_vm", "get_vm_spec", "list_vms", "delete_vm", "reboot_vm", "reinstall_vm"},
         PortForwardingOps: {"add_port_forward", "remove_port_forward", "list_port_forwards"},
         LogsOps: {"get_logs", "stream_logs"},
         BackupOps: {

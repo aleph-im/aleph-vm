@@ -820,6 +820,21 @@ class GetVmRequest(google.protobuf.message.Message):
 global___GetVmRequest = GetVmRequest
 
 @typing.final
+class GetVmSpecRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___GetVmSpecRequest = GetVmSpecRequest
+
+@typing.final
 class ListVmsRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
@@ -880,9 +895,10 @@ class RebootVmRequest(google.protobuf.message.Message):
 
     VM_ID_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    """Note: aleph-vm performs soft reboot only today (systemd restart
-    for persistent VMs, recreate for ephemeral). Firecracker has no
-    reboot API. Add a `hard` option when a real implementation lands.
+    """Note: aleph-vm performs soft reboot only today: systemd restart for
+    persistent VMs; for ephemeral spec-created VMs the supervisor stops the
+    VM and recreates it from the spec it holds. Firecracker has no reboot
+    API. Add a `hard` option when a real implementation lands.
     """
     def __init__(
         self,

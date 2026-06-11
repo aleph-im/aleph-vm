@@ -71,7 +71,7 @@ def test_lifecycle_rpcs_defined():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
-    assert {"CreateVm", "GetVm", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
+    assert {"CreateVm", "GetVm", "GetVmSpec", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
 
 
 def test_backend_enum_complete():
@@ -349,6 +349,7 @@ def test_full_service_surface_pinned():
         # Lifecycle
         "CreateVm",
         "GetVm",
+        "GetVmSpec",
         "ListVms",
         "DeleteVm",
         "RebootVm",
