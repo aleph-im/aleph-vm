@@ -262,6 +262,15 @@ async def create_vm_execution(
         await persist_record(vm_hash, record)
         return None
 
+    if pool is None:
+        # Split mode: the legacy create path (confidential / GPU / firecracker
+        # instances, persistent programs) has not crossed the gRPC boundary.
+        raise web.HTTPNotImplemented(
+            reason="Unavailable in split mode",
+            text=f"VM {vm_hash} requires the legacy create path, which is not available "
+            "when the agent runs separately from the supervisor.",
+        )
+
     execution = await pool.create_a_vm(
         vm_hash=vm_hash,
         message=content,
@@ -537,6 +546,11 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
 
 async def _run_code_on_request_legacy(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
     """Persistent programs: the un-migrated pool/VmExecution serving path."""
+    if pool is None:
+        raise web.HTTPNotImplemented(
+            reason="Unavailable in split mode",
+            text="Persistent programs are not served yet when the agent runs separately from the supervisor.",
+        )
     supervisor: Supervisor = request.app["supervisor"]
     expiry: ExpiryManager = request.app["expiry"]
     update_watcher: UpdateWatcher = request.app["update_watcher"]
@@ -687,6 +701,11 @@ async def _run_code_on_event_legacy(
     registry: AgentVmRegistry,
 ):
     """Persistent programs: the un-migrated pool/VmExecution event path."""
+    if pool is None:
+        raise web.HTTPNotImplemented(
+            reason="Unavailable in split mode",
+            text="Persistent programs are not served yet when the agent runs separately from the supervisor.",
+        )
     vm_id = VmId(str(vm_hash))
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
