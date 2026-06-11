@@ -41,7 +41,6 @@ from .tasks import (
 from .views import (
     about_config,
     about_execution_records,
-    about_executions,
     about_login,
     debug_haproxy,
     list_executions,
@@ -193,7 +192,6 @@ def setup_webapp(pool: VmPool | None):
         web.get("/about/login", about_login),
         web.get("/about/executions/list", list_executions),
         web.get("/v2/about/executions/list", list_executions_v2),
-        web.get("/about/executions/details", about_executions),
         web.get("/about/executions/records", about_execution_records),
         web.get("/about/usage/system", about_system_usage),
         web.get("/about/certificates", about_certificates),

@@ -10,7 +10,6 @@ from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
 from aleph.vm.conf import settings
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.http import get_session
 from aleph.vm.utils import to_normalized_address
@@ -159,28 +158,21 @@ async def get_stream(sender: str, receiver: str, chain: str) -> Decimal:
     return Decimal(stream)
 
 
-async def compute_required_balance(executions: Iterable[VmExecution]) -> Decimal:
-    """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
+async def compute_required_balance(vm_hashes: Iterable[ItemHash]) -> Decimal:
+    """Balance required for the resources of the given VMs (from messages + pricing aggregate)."""
     costs = await asyncio.gather(
-        *(
-            fetch_execution_price(execution.vm_hash, [PaymentType.hold], payment_type_required=False)
-            for execution in executions
-        )
+        *(fetch_execution_price(vm_hash, [PaymentType.hold], payment_type_required=False) for vm_hash in vm_hashes)
     )
     return sum(costs, Decimal(0))
 
 
-async def compute_required_credit_balance(executions: Iterable[VmExecution]) -> Decimal:
-    """Get the balance required for the resources of the user from the messages and the pricing aggregate."""
-    costs = await asyncio.gather(
-        *(fetch_execution_price(execution.vm_hash, [PaymentType.credit]) for execution in executions)
-    )
+async def compute_required_credit_balance(vm_hashes: Iterable[ItemHash]) -> Decimal:
+    """Credit balance required for the resources of the given VMs."""
+    costs = await asyncio.gather(*(fetch_execution_price(vm_hash, [PaymentType.credit]) for vm_hash in vm_hashes))
     return sum(costs, Decimal(0))
 
 
-async def compute_required_flow(executions: Iterable[VmExecution]) -> Decimal:
-    """Compute the flow required for a collection of executions, typically all executions from a specific address"""
-    flows = await asyncio.gather(
-        *(fetch_execution_price(execution.vm_hash, [PaymentType.superfluid]) for execution in executions)
-    )
+async def compute_required_flow(vm_hashes: Iterable[ItemHash]) -> Decimal:
+    """Stream flow required for a collection of VMs (typically all from one address)."""
+    flows = await asyncio.gather(*(fetch_execution_price(vm_hash, [PaymentType.superfluid]) for vm_hash in vm_hashes))
     return sum(flows, Decimal(0))

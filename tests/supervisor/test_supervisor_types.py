@@ -1,16 +1,20 @@
-from dataclasses import FrozenInstanceError
+"""VmInfo contract carries precise TEE mode + attached GPUs; no agent-only fields."""
+
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
 
 from aleph.vm.supervisor.types import (
     Backend,
+    ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
     ErrorCode,
+    GpuDevice,
     GpuSpec,
     HealthInfo,
     HealthStatus,
@@ -90,3 +94,40 @@ def test_supporting_dtos_construct():
     assert LogChunk(timestamp_ns=1, line="hello", source=LogSource.SERIAL).line == "hello"
     assert HealthInfo(status=HealthStatus.OK, vm_count=3).vm_count == 3
     assert HostInfo(cpu_count=8, memory_mib=16000).cpu_count == 8
+
+
+def _minimal_vm_info(**overrides) -> VmInfo:
+    base = dict(
+        vm_id=VmId("vm-a"),
+        status=VmStatus.RUNNING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+    )
+    base.update(overrides)
+    return VmInfo(**base)
+
+
+def test_vm_info_defaults_are_non_confidential_and_gpuless():
+    info = _minimal_vm_info()
+    assert info.confidential_mode is ConfidentialMode.NONE
+    assert info.gpus == []
+
+
+def test_vm_info_carries_precise_mode_and_devices():
+    gpu = GpuDevice(pci_host="0000:01:00.0", device_id="10de:2504", model="RTX 3090", supports_x_vga=True)
+    info = _minimal_vm_info(confidential_mode=ConfidentialMode.SEV_ES, gpus=[gpu])
+    assert info.confidential_mode is ConfidentialMode.SEV_ES
+    assert info.gpus[0].device_id == "10de:2504"
+
+
+def test_vm_info_has_no_persistent_field():
+    """persistent is an agent fact (registry), never on the supervisor contract."""
+    assert "persistent" not in {f.name for f in fields(VmInfo)}
+
+
+def test_confidential_mode_members():
+    assert [m.name for m in ConfidentialMode] == ["NONE", "SEV", "SEV_ES", "SEV_SNP"]
