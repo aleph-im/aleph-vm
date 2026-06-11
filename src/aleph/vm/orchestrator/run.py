@@ -8,10 +8,11 @@ from aiohttp import ClientResponseError, web
 from aiohttp.web_exceptions import (
     HTTPBadGateway,
     HTTPBadRequest,
+    HTTPGatewayTimeout,
     HTTPInternalServerError,
     HTTPServiceUnavailable,
 )
-from aleph_message.models import InstanceContent, ItemHash
+from aleph_message.models import InstanceContent, ItemHash, ProgramContent
 from aleph_message.models.execution.environment import HypervisorType
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
@@ -26,12 +27,17 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
+from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor import errors as supervisor_errors
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.translate import build_create_vm_spec
+from aleph.vm.supervisor.translate import (
+    build_create_vm_spec,
+    build_program_create_vm_spec,
+)
 from aleph.vm.supervisor.types import (
     GuestPort,
     HostPort,
@@ -272,9 +278,12 @@ async def create_vm_execution_or_raise_http_error(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    persistent: bool = False,
 ) -> VmExecution | None:
     try:
-        return await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry)
+        return await create_vm_execution(
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=persistent
+        )
     except ResourceDownloadError as error:
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
@@ -312,6 +321,158 @@ async def create_vm_execution_or_raise_http_error(
         raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
 
 
+async def _resolve_program_content(vm_hash: ItemHash, registry: AgentVmRegistry):
+    """The (message, original) contents for a program, from the agent's own
+    registry when known, else loaded from the network."""
+    record = registry.get(vm_hash)
+    if record is not None:
+        return record.message, record.original
+    message, original_message = await load_updated_message(vm_hash)
+    return message.content, original_message.content
+
+
+def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
+    """Map program create/setup failures to HTTP responses.
+
+    Two vocabularies meet here: the agent-side download phase raises the
+    controller-internal exceptions (ResourceDownloadError, FileTooLargeError),
+    while the supervisor boundary raises the closed SupervisorError set.
+    """
+    if isinstance(error, (ResourceDownloadError, supervisor_errors.ResourceDownloadError)):
+        logger.exception(error)
+        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
+    if isinstance(error, (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError)):
+        logger.warning("Refusing %s: %s", vm_hash, error)
+        raise HTTPServiceUnavailable(
+            reason="Insufficient capacity",
+            text="This CRN cannot host the requested workload at this time.",
+        ) from error
+    if isinstance(error, (FileTooLargeError, supervisor_errors.FileTooLargeError)):
+        raise HTTPInternalServerError(reason=str(error) or "File too large") from error
+    if isinstance(error, (VmSetupError, supervisor_errors.VmSetupError)):
+        logger.exception(error)
+        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
+    if isinstance(error, (MicroVMFailedInitError, supervisor_errors.MicroVMInitError)):
+        logger.exception(error)
+        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
+    if isinstance(error, (HostNotFoundError, supervisor_errors.HostNotFoundError)):
+        logger.exception(error)
+        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
+    if isinstance(error, ClientResponseError):
+        logger.exception(error)
+        if error.status == 404:
+            raise HTTPInternalServerError(reason=f"Item hash {vm_hash} not found") from error
+        raise HTTPInternalServerError(reason=f"Error downloading {vm_hash}") from error
+    logger.exception(error)
+    raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
+
+
+async def _ensure_program_vm(
+    vm_hash: ItemHash,
+    content: ProgramContent,
+    original,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    program_client: ProgramGuestClient,
+) -> VmInfo:
+    """Get-or-create a serving-ready program VM through the supervisor.
+
+    A VM this agent process did not configure is recreated rather than
+    reused: the runtime accepts exactly one configuration push per boot, so
+    "unknown" and "already configured" are indistinguishable from outside.
+    """
+    vm_id = VmId(str(vm_hash))
+    try:
+        info: VmInfo | None = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        info = None
+
+    if info is not None:
+        if info.status is VmStatus.RUNNING and program_client.is_ready(vm_id):
+            return info
+        logger.info("Program VM %s is %s/unconfigured; recreating", vm_hash, info.status.value)
+        await program_client.forget(vm_id)
+        try:
+            await supervisor.delete_vm(vm_id)
+        except VmNotFoundError:
+            pass
+        await _wait_until_gone(supervisor, vm_id)
+
+    try:
+        spec, resources = await build_program_create_vm_spec(vm_hash, content)
+        await supervisor.create_vm(spec)
+        record = registry.record(vm_hash, message=content, original=original, persistent=False)
+        try:
+            info = await _wait_until_running(supervisor, vm_id)
+            await program_client.setup_program(info, content, resources)
+        except Exception:
+            registry.forget(vm_hash)
+            await program_client.forget(vm_id)
+            try:
+                await supervisor.delete_vm(vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+            raise
+        await persist_record(vm_hash, record)
+        return info
+    except web.HTTPException:
+        raise
+    except Exception as error:
+        _raise_http_for_program_error(error, vm_hash)
+        raise  # pragma: no cover - _raise_http_for_program_error always raises
+
+
+def _program_result_response(result_raw: bytes, *, vm_hash: ItemHash, code_ref: str) -> web.Response:
+    """Translate the runtime's msgpack reply into the HTTP response."""
+    result = msgpack.loads(result_raw, raw=False)
+
+    logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
+
+    if "traceback" in result:
+        # An error took place, the stacktrace of the error will be returned.
+        # TODO: Add an option for VM developers to prevent stacktraces from being exposed.
+
+        # The Diagnostics VM checks for the proper handling of exceptions.
+        # This fills the logs with noisy stack traces, so we ignore this specific error.
+        ignored_errors = ['raise CustomError("Whoops")', "main.CustomError: Whoops"]
+
+        if settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS and any(
+            ignored_error in result["traceback"] for ignored_error in ignored_errors
+        ):
+            logger.debug('Ignored traceback from CustomError("Whoops")')
+        else:
+            logger.warning(result["traceback"])
+
+        return web.Response(
+            status=HTTPInternalServerError.status_code,
+            reason="Error in VM execution",
+            body=result["traceback"],
+            content_type="text/plain",
+        )
+
+    # HTTP Headers require specific data structure
+    headers = CIMultiDict([(key.decode().lower(), value.decode()) for key, value in result["headers"]["headers"]])
+    if "content-length" not in headers:
+        headers["Content-Length".lower()] = str(len(result["body"]["body"]))
+    for header in ["Content-Encoding", "Transfer-Encoding", "Vary"]:
+        if header in headers:
+            del headers[header]
+
+    headers.update(
+        {
+            "Aleph-Program-ItemHash": str(vm_hash),
+            "Aleph-Program-Code-Ref": code_ref,
+        }
+    )
+
+    return web.Response(
+        status=result["headers"]["status"],
+        body=result["body"]["body"],
+        headers=headers,
+    )
+
+
 async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
@@ -319,8 +480,67 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     supervisor: Supervisor = request.app["supervisor"]
     expiry: ExpiryManager = request.app["expiry"]
     update_watcher: UpdateWatcher = request.app["update_watcher"]
+    registry: AgentVmRegistry = request.app["vm_registry"]
+    program_client: ProgramGuestClient = request.app["program_client"]
     vm_id = VmId(str(vm_hash))
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
+
+    content, original = await _resolve_program_content(vm_hash, registry)
+    if not isinstance(content, ProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
+
+    if content.on.persistent:
+        # Persistent programs still run through the legacy pool path (systemd
+        # controller + in-pool execution); spec-path support is deferred.
+        return await _run_code_on_request_legacy(vm_hash, path, pool, request)
+
+    info = await _ensure_program_vm(
+        vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
+    )
+
+    scope: dict = await build_asgi_scope(path, request)
+    timeout = content.resources.seconds
+
+    try:
+        result_raw: bytes = await program_client.run_code(info, scope, timeout=timeout)
+
+        if result_raw == b"":
+            # Missing result from the init process of the virtual machine, not
+            # even an error message. It may have completely crashed. Tear it
+            # down; it will be recreated on a future request.
+            await supervisor.delete_vm(vm_id)
+            await program_client.forget(vm_id)
+
+            return web.Response(
+                status=HTTPBadGateway.status_code,
+                reason="No response from VM",
+                text="VM did not respond and was shut down",
+            )
+
+        return _program_result_response(result_raw, vm_hash=vm_hash, code_ref=content.code.ref)
+    except asyncio.TimeoutError:
+        logger.warning(f"VM {vm_hash} did not respond within `resource.seconds`")
+        return HTTPGatewayTimeout(body="Program did not respond within `resource.seconds`")
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
+    finally:
+        if settings.REUSE_TIMEOUT > 0:
+            if settings.WATCH_FOR_UPDATES:
+                update_watcher.watch(vm_id, vm_hash, request.app["pubsub"])
+            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+        else:
+            update_watcher.cancel(vm_id)
+            await supervisor.delete_vm(vm_id)
+            await program_client.forget(vm_id)
+
+
+async def _run_code_on_request_legacy(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
+    """Persistent programs: the un-migrated pool/VmExecution serving path."""
+    supervisor: Supervisor = request.app["supervisor"]
+    expiry: ExpiryManager = request.app["expiry"]
+    update_watcher: UpdateWatcher = request.app["update_watcher"]
+    vm_id = VmId(str(vm_hash))
 
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
@@ -332,12 +552,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         execution = None
 
     if not execution:
-        # Programs always take the legacy create path (they are never spec-eligible),
-        # which ignores the supervisor. Use the app-wide registry so the agent's
-        # update-watcher (which reads app["vm_registry"]) sees the record it creates.
         registry = request.app["vm_registry"]
         execution = await create_vm_execution_or_raise_http_error(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
         )
         if execution is None:
             # Spec-eligible messages are instances; they cannot serve code requests.
@@ -352,9 +569,6 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         result_raw: bytes = await execution.run_code(scope=scope)
 
         if result_raw == b"":
-            # Missing result from the init process of the virtual machine, not even an error message.
-            # It may have completely crashed.
-
             # Stop the virtual machine due to failing init.
             # It will be restarted on a future request.
             await execution.stop()
@@ -365,61 +579,10 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
                 text="VM did not respond and was shut down",
             )
 
+        return _program_result_response(result_raw, vm_hash=vm_hash, code_ref=execution.message.code.ref)
     except asyncio.TimeoutError:
         logger.warning(f"VM{execution.vm_id} did not respond within `resource.seconds`")
-        return web.HTTPGatewayTimeout(body="Program did not respond within `resource.seconds`")
-    except UnpackValueError as error:
-        logger.exception(error)
-        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
-
-    try:
-        result = msgpack.loads(result_raw, raw=False)
-
-        logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
-
-        if "traceback" in result:
-            # An error took place, the stacktrace of the error will be returned.
-            # TODO: Add an option for VM developers to prevent stacktraces from being exposed.
-
-            # The Diagnostics VM checks for the proper handling of exceptions.
-            # This fills the logs with noisy stack traces, so we ignore this specific error.
-            ignored_errors = ['raise CustomError("Whoops")', "main.CustomError: Whoops"]
-
-            if settings.IGNORE_TRACEBACK_FROM_DIAGNOSTICS and any(
-                ignored_error in result["traceback"] for ignored_error in ignored_errors
-            ):
-                logger.debug('Ignored traceback from CustomError("Whoops")')
-            else:
-                logger.warning(result["traceback"])
-
-            return web.Response(
-                status=HTTPInternalServerError.status_code,
-                reason="Error in VM execution",
-                body=result["traceback"],
-                content_type="text/plain",
-            )
-
-        # HTTP Headers require specific data structure
-        headers = CIMultiDict([(key.decode().lower(), value.decode()) for key, value in result["headers"]["headers"]])
-        if "content-length" not in headers:
-            headers["Content-Length".lower()] = str(len(result["body"]["body"]))
-        for header in ["Content-Encoding", "Transfer-Encoding", "Vary"]:
-            if header in headers:
-                del headers[header]
-
-        headers.update(
-            {
-                "Aleph-Program-ItemHash": execution.vm_hash,
-                "Aleph-Program-Code-Ref": execution.message.code.ref,
-                # "Aleph-Compute-Vm-Id": str(execution.vm.vm_id),
-            }
-        )
-
-        return web.Response(
-            status=result["headers"]["status"],
-            body=result["body"]["body"],
-            headers=headers,
-        )
+        return HTTPGatewayTimeout(body="Program did not respond within `resource.seconds`")
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
@@ -445,6 +608,7 @@ async def run_code_on_event(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     registry: AgentVmRegistry,
+    program_client: ProgramGuestClient,
 ):
     """
     Execute code in response to an event.
@@ -452,13 +616,84 @@ async def run_code_on_event(
     vm_id = VmId(str(vm_hash))
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
+    content, original = await _resolve_program_content(vm_hash, registry)
+    if not isinstance(content, ProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
+    if content.on.persistent:
+        # Persistent programs still run through the legacy pool path.
+        return await _run_code_on_event_legacy(
+            vm_hash,
+            event,
+            pubsub,
+            pool,
+            supervisor=supervisor,
+            expiry=expiry,
+            update_watcher=update_watcher,
+            registry=registry,
+        )
+
+    info = await _ensure_program_vm(
+        vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
+    )
+
+    scope: dict = await build_event_scope(event)
+
+    try:
+        result_raw: bytes = await program_client.run_code(info, scope, timeout=content.resources.seconds)
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
+
+    try:
+        result = msgpack.loads(result_raw, raw=False)
+
+        logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
+
+        if "traceback" in result:
+            logger.warning(result["traceback"])
+            return web.Response(
+                status=HTTPInternalServerError.status_code,
+                reason="Error in VM execution",
+                body=result["traceback"],
+                content_type="text/plain",
+            )
+
+        logger.info(f"Result: {result['body']}")
+        return result["body"]
+
+    except UnpackValueError as error:
+        logger.exception(error)
+        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
+    finally:
+        if settings.REUSE_TIMEOUT > 0:
+            if settings.WATCH_FOR_UPDATES:
+                update_watcher.watch(vm_id, vm_hash, pubsub)
+            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+        else:
+            update_watcher.cancel(vm_id)
+            await supervisor.delete_vm(vm_id)
+            await program_client.forget(vm_id)
+
+
+async def _run_code_on_event_legacy(
+    vm_hash: ItemHash,
+    event,
+    pubsub: PubSub,
+    pool: VmPool,
+    *,
+    supervisor: Supervisor,
+    expiry: ExpiryManager,
+    update_watcher: UpdateWatcher,
+    registry: AgentVmRegistry,
+):
+    """Persistent programs: the un-migrated pool/VmExecution event path."""
+    vm_id = VmId(str(vm_hash))
+
     execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
 
     if not execution:
-        # programs use the legacy create path; the registry is the agent's
-        # shared known-VM store (so the watcher reads the same record).
         execution = await create_vm_execution_or_raise_http_error(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry
+            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
         )
         if execution is None:
             # Spec-eligible messages are instances; they cannot serve code requests.
