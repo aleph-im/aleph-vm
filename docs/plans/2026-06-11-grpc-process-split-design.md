@@ -270,3 +270,39 @@ capabilities, gRPC idiom) was implemented as a commit series on this branch:
   nameservers still materialise supervisor-side.
 - Spontaneous guest-death detection feeding WatchEvents (no component
   observes VMM process exit today).
+
+## 8. BackupOps + integration suite (2026-06-11, third pass)
+
+**BackupOps wired.** The six `BackupOps` methods were stubs; the gRPC
+plumbing (proto RPCs, server handlers, client methods, conversions) already
+existed. `InProcessSupervisor` now implements them on top of
+`controllers/qemu/backup.py` (the machinery the agent's operator HTTP views
+use):
+
+- One async backup job per VM, serialized per-VM against restore;
+  idempotent against a running job and against a non-expired archive
+  (24h TTL, mirroring the operator endpoint). Optional best-effort guest
+  fs-freeze (`quiesce_guest`).
+- Backups cover the rootfs disk only — symmetric with what restore can put
+  back. Supervisor-issued backup ids use microsecond timestamps (id = tar
+  stem; a retry after a failure must get a fresh id).
+- Completed archives live on disk as the source of truth; only in-flight
+  and failed runs are held in memory. Download streams 1 MiB offset-tagged
+  chunks. Restore extracts the rootfs member (member-streamed, no
+  extractall), verifies it, stops the VM with forget-on-stop defused, swaps
+  the rootfs atomically and restarts; emits down-then-up events.
+
+**Integration suite** (`tests/integration/`, opt-in via `AVM_ITEST=1`):
+drives a real supervisor daemon over its UDS gRPC contract, agent-free —
+specs built inline from local artifacts. Self-gating: Firecracker tests run
+unprivileged (vsock-channel reachability); QEMU tests need root + a cloud
+image (IP/SSH reachability, persistent lifecycle via a systemd drop-in that
+points `aleph-vm-controller@` at the source tree under test). Covers
+creation, management (logs/reboot/events/port-forwards/stop-start),
+deletion + resource release (processes, files, TAPs, nftables, units), and
+the full backup→mutate→restore cycle.
+
+**Found by the suite:** the pool's forget-on-stop task deleted by hash, not
+identity — a reboot (or delete+create) that recreated the VM under the same
+vm_id could have its new execution removed from the pool by the old
+execution's reap task. Fixed in `_schedule_forget_on_stop`.
