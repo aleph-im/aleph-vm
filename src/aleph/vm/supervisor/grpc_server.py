@@ -171,6 +171,17 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         infos = await self._supervisor.list_port_forwards(vm_id)
         return pb.ListPortForwardsResponse(forwards=[conv.port_forward_info_to_pb(info) for info in infos])
 
+    # ── Events ──
+    async def WatchEvents(self, request: pb.WatchEventsRequest, context) -> AsyncIterator[pb.VmEvent]:
+        try:
+            async for event in self._supervisor.watch_events():
+                yield conv.vm_event_to_pb(event)
+        except SupervisorError as error:
+            await _abort(context, error)
+        except Exception as error:  # noqa: BLE001 - boundary catch-all
+            logger.exception("Unhandled error in WatchEvents")
+            await _abort(context, translate_exception(error))
+
     # ── Logs ──
     @_translating
     async def GetLogs(self, request: pb.GetLogsRequest, context) -> pb.GetLogsResponse:

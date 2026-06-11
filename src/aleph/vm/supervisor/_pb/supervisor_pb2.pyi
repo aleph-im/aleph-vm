@@ -961,6 +961,43 @@ class ReinstallVmRequest(google.protobuf.message.Message):
 global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
+class WatchEventsRequest(google.protobuf.message.Message):
+    """── Events ───────────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___WatchEventsRequest = WatchEventsRequest
+
+@typing.final
+class VmEvent(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    OLD_STATUS_FIELD_NUMBER: builtins.int
+    NEW_STATUS_FIELD_NUMBER: builtins.int
+    TIMESTAMP_NS_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    old_status: global___VmStatus.ValueType
+    new_status: global___VmStatus.ValueType
+    timestamp_ns: builtins.int
+    """unix ns UTC at emission"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        old_status: global___VmStatus.ValueType = ...,
+        new_status: global___VmStatus.ValueType = ...,
+        timestamp_ns: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["new_status", b"new_status", "old_status", b"old_status", "timestamp_ns", b"timestamp_ns", "vm_id", b"vm_id"]) -> None: ...
+
+global___VmEvent = VmEvent
+
+@typing.final
 class AddPortForwardRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 

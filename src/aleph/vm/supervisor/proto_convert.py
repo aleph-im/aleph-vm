@@ -50,6 +50,7 @@ from aleph.vm.supervisor.types import (
     Protocol,
     TeeBackend,
     TeeConfig,
+    VmEvent,
     VmId,
     VmInfo,
     VmStatus,
@@ -436,6 +437,27 @@ def port_forward_spec_from_pb(msg: pb.AddPortForwardRequest) -> PortForwardSpec:
         host_port=HostPort(msg.host_port),
         vm_port=GuestPort(msg.vm_port),
         protocol=PROTOCOL_FROM_PB[msg.protocol],
+    )
+
+
+# ── Events ───────────────────────────────────────────────────────────────────
+
+
+def vm_event_to_pb(event: VmEvent) -> pb.VmEvent:
+    return pb.VmEvent(
+        vm_id=str(event.vm_id),
+        old_status=VM_STATUS_TO_PB[event.old_status],
+        new_status=VM_STATUS_TO_PB[event.new_status],
+        timestamp_ns=event.timestamp_ns,
+    )
+
+
+def vm_event_from_pb(msg: pb.VmEvent) -> VmEvent:
+    return VmEvent(
+        vm_id=VmId(msg.vm_id),
+        old_status=VM_STATUS_FROM_PB[msg.old_status],
+        new_status=VM_STATUS_FROM_PB[msg.new_status],
+        timestamp_ns=msg.timestamp_ns,
     )
 
 

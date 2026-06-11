@@ -86,7 +86,7 @@ async def test_is_a_supervisor(harness):
 
 @pytest.mark.asyncio
 async def test_streaming_methods_are_async_generators(harness):
-    for name in ("stream_logs", "download_backup"):
+    for name in ("stream_logs", "download_backup", "watch_events"):
         assert inspect.isasyncgenfunction(getattr(harness, name))
 
 

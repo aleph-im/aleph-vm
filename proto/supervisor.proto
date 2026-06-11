@@ -51,6 +51,15 @@ service Supervisor {
   rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
 
+  // ── Events ──
+  // Lifecycle transitions as a server stream, no replay: snapshot with
+  // ListVms first, then watch. This is the client's replacement for
+  // in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
+  // goes down). Today events reflect transitions the supervisor itself
+  // performs (create/stop/start/reboot/reinstall/delete); spontaneous
+  // guest-death detection is a future extension.
+  rpc WatchEvents(WatchEventsRequest) returns (stream VmEvent);
+
   // ── Logs ──
   rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
   rpc StreamLogs(StreamLogsRequest) returns (stream LogChunk);
@@ -338,6 +347,17 @@ message ReinstallVmRequest {
                                      // `optional` so the server can distinguish unset from false:
                                      // the Python ABC defaults wipe_volumes to true, so an unset
                                      // field is treated as true.
+}
+
+// ── Events ───────────────────────────────────────────────────────────────
+
+message WatchEventsRequest {}
+
+message VmEvent {
+  string vm_id = 1;
+  VmStatus old_status = 2;
+  VmStatus new_status = 3;
+  uint64 timestamp_ns = 4;           // unix ns UTC at emission
 }
 
 // ── Port forwarding ──────────────────────────────────────────────────────

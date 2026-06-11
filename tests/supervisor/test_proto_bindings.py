@@ -360,6 +360,8 @@ def test_full_service_surface_pinned():
         "AddPortForward",
         "RemovePortForward",
         "ListPortForwards",
+        # Events
+        "WatchEvents",
         # Logs
         "GetLogs",
         "StreamLogs",

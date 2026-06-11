@@ -104,6 +104,11 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.ListPortForwardsRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.ListPortForwardsResponse.FromString,
                 _registered_method=True)
+        self.WatchEvents = channel.unary_stream(
+                '/aleph.supervisor.v1.Supervisor/WatchEvents',
+                request_serializer=supervisor__pb2.WatchEventsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmEvent.FromString,
+                _registered_method=True)
         self.GetLogs = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/GetLogs',
                 request_serializer=supervisor__pb2.GetLogsRequest.SerializeToString,
@@ -275,6 +280,19 @@ class SupervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WatchEvents(self, request, context):
+        """── Events ──
+        Lifecycle transitions as a server stream, no replay: snapshot with
+        ListVms first, then watch. This is the client's replacement for
+        in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
+        goes down). Today events reflect transitions the supervisor itself
+        performs (create/stop/start/reboot/reinstall/delete); spontaneous
+        guest-death detection is a future extension.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetLogs(self, request, context):
         """── Logs ──
         """
@@ -435,6 +453,11 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.ListPortForwards,
                     request_deserializer=supervisor__pb2.ListPortForwardsRequest.FromString,
                     response_serializer=supervisor__pb2.ListPortForwardsResponse.SerializeToString,
+            ),
+            'WatchEvents': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchEvents,
+                    request_deserializer=supervisor__pb2.WatchEventsRequest.FromString,
+                    response_serializer=supervisor__pb2.VmEvent.SerializeToString,
             ),
             'GetLogs': grpc.unary_unary_rpc_method_handler(
                     servicer.GetLogs,
@@ -885,6 +908,33 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/ListPortForwards',
             supervisor__pb2.ListPortForwardsRequest.SerializeToString,
             supervisor__pb2.ListPortForwardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/WatchEvents',
+            supervisor__pb2.WatchEventsRequest.SerializeToString,
+            supervisor__pb2.VmEvent.FromString,
             options,
             channel_credentials,
             insecure,
