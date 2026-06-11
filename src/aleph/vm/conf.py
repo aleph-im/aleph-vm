@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
+    SUPERVISOR_GRPC_SOCKET: Path | None = Field(
+        None,
+        description="Unix socket of the supervisor gRPC daemon. When set, the agent talks to a separate "
+        "supervisor process over gRPC instead of running the in-process supervisor; the daemon "
+        "(python -m aleph.vm.supervisor) serves on this socket. Default to EXECUTION_ROOT/supervisor.sock "
+        "for the daemon; unset means in-process mode for the agent.",
+    )
+
     # Public domain name
     DOMAIN_NAME: str = Field(
         default="localhost",
