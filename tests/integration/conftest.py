@@ -36,6 +36,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -72,7 +73,11 @@ FC_RUNTIME = Path(
 
 
 def _default_qemu_image() -> Path | None:
-    for name in ("debian13.img", "ubuntu26.img", "debian12.img"):
+    # rootfs.img is what the create-*-qemu-disk.sh scripts (and the pytest CI
+    # job) leave behind. Validated images first: debian13.img hangs in GRUB
+    # without a VGA device and ubuntu26.img never serves SSH under the
+    # controller's machine config (2026-06-11), so they come last.
+    for name in ("rootfs.img", "debian12.img", "ubuntu22.img", "debian13.img", "ubuntu26.img"):
         candidate = REPO_ROOT / "runtimes" / "instance-rootfs" / name
         if candidate.exists():
             return candidate
@@ -284,7 +289,15 @@ def daemon(tmp_path_factory):
             "stale Firecracker sockets owned by another user block this run: "
             f"{stale_sockets}. Remove them first (sudo rm), or run the suite as root."
         )
-    root = tmp_path_factory.mktemp("avm-itest")
+    if IS_ROOT:
+        # The packaged controller unit runs with PrivateTmp=yes: anything the
+        # suite stores under /tmp or /var/tmp (pytest's tmp roots) does not
+        # exist inside the unit's mount namespace, so the controller cannot
+        # see its config, the disks, or the module shim. Root sessions
+        # therefore live under /var/lib (removed on teardown).
+        root = Path(tempfile.mkdtemp(prefix="aleph-vm-itest-", dir="/var/lib"))
+    else:
+        root = tmp_path_factory.mktemp("avm-itest")
     (root / "exec").mkdir()
     (root / "cache").mkdir()
     socket_path = root / "supervisor.sock"
@@ -369,6 +382,7 @@ def daemon(tmp_path_factory):
         # no taps of ours pre-existed beyond this snapshot).
         for tap in list_tap_interfaces() - taps_before:
             subprocess.run(["ip", "link", "del", tap], check=False)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest_asyncio.fixture
