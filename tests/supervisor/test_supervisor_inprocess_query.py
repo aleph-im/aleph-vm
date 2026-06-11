@@ -73,8 +73,8 @@ async def test_get_vm_maps_a_running_qemu_instance():
     assert info.vm_id == "itemhash123"
     assert info.status is VmStatus.RUNNING
     assert info.backend is Backend.QEMU
-    assert info.ipv4 == "10.0.0.2"
-    assert info.ipv6 == "fd00::2"
+    assert info.ipv4.address == "10.0.0.2"
+    assert info.ipv6.address == "fd00::2"
     assert info.uptime_secs >= 100
 
 
@@ -149,8 +149,8 @@ async def test_get_vm_reports_networks_and_lifecycle_timestamps():
 
     info = await sup.get_vm(VmId("itemhash123"))
 
-    assert info.ipv4_network == "172.16.3.0/24"
-    assert info.ipv6_network == "fc00:1:2:3::/64"
+    assert info.ipv4.network_cidr == "172.16.3.0/24"
+    assert info.ipv6.network_cidr == "fc00:1:2:3::/64"
     started = execution.times.started_at
     assert info.started_at_ns == int(started.timestamp()) * 1_000_000_000 + started.microsecond * 1_000
     assert info.preparing_at_ns == 0
@@ -165,8 +165,8 @@ async def test_get_vm_without_tap_reports_empty_networks():
 
     info = await sup.get_vm(VmId("itemhash123"))
 
-    assert info.ipv4_network == ""
-    assert info.ipv6_network == ""
+    assert info.ipv4.network_cidr == ""
+    assert info.ipv6.network_cidr == ""
 
 
 @pytest.mark.asyncio

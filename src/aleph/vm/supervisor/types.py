@@ -207,18 +207,25 @@ class CreateVmSpec:
 
 
 @dataclass(frozen=True)
+class IpAssignment:
+    """One address family's assignment for a VM; all fields empty until the
+    tap device exists."""
+
+    address: str = ""  # the guest's address, bare IP
+    network_cidr: str = ""  # the tap network, e.g. "172.16.3.0/24"
+    gateway: str = ""  # host-side tap address (bare IP); the guest's default route
+
+
+@dataclass(frozen=True)
 class VmInfo:
     vm_id: VmId
     status: VmStatus
-    ipv4: str
-    ipv6: str
+    ipv4: IpAssignment
+    ipv6: IpAssignment
     uptime_secs: int
     backend: Backend
     numa_node: int | None
     status_message: str
-    # Tap networks (CIDR strings); empty until the tap device exists.
-    ipv4_network: str = ""
-    ipv6_network: str = ""
     # Lifecycle timestamps, unix nanoseconds UTC; 0 = stage not reached.
     defined_at_ns: int = 0
     preparing_at_ns: int = 0
@@ -239,9 +246,6 @@ class VmInfo:
     # Raw bytes the guest sent with its ready signal, passed through opaquely;
     # empty until the signal arrived (or for VMs without a channel).
     guest_ready_payload: bytes = b""
-    # Host-side tap addresses (no prefix); the guest's default routes.
-    ipv4_gateway: str = ""
-    ipv6_gateway: str = ""
 
 
 @dataclass(frozen=True)

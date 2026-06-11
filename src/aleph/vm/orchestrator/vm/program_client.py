@@ -105,13 +105,15 @@ def build_program_configuration(
     code, volumes = build_code_and_volumes(resources)
     input_data = read_input_data(resources.data_path)
 
-    ipv4 = info.ipv4 or None
+    ipv4 = info.ipv4.address or None
     ipv6: str | None = None
-    if info.ipv6:
-        # The runtime expects the guest IPv6 with its prefix; VmInfo carries
-        # the bare address plus the tap network, recompose `addr/prefixlen`.
-        prefix_len = info.ipv6_network.rsplit("/", 1)[1] if "/" in info.ipv6_network else ""
-        ipv6 = f"{info.ipv6}/{prefix_len}" if prefix_len else info.ipv6
+    if info.ipv6.address:
+        # The runtime expects the guest IPv6 with its prefix; the assignment
+        # carries the bare address plus the tap network, recompose
+        # `addr/prefixlen`.
+        network = info.ipv6.network_cidr
+        prefix_len = network.rsplit("/", 1)[1] if "/" in network else ""
+        ipv6 = f"{info.ipv6.address}/{prefix_len}" if prefix_len else info.ipv6.address
 
     if ipv4 and settings.ALLOW_VM_NETWORKING and not settings.DNS_NAMESERVERS:
         msg = "Invalid configuration: DNS nameservers missing"
@@ -132,8 +134,8 @@ def build_program_configuration(
     return ProgramConfiguration(
         ip=ipv4,
         ipv6=ipv6,
-        route=info.ipv4_gateway or None,
-        ipv6_gateway=info.ipv6_gateway or None,
+        route=info.ipv4.gateway or None,
+        ipv6_gateway=info.ipv6.gateway or None,
         dns_servers=nameservers,
         code=code,
         encoding=resources.code_encoding,

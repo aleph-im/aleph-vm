@@ -14,7 +14,7 @@ from aleph.vm.orchestrator.vm.program_client import (
     build_code_and_volumes,
     build_program_configuration,
 )
-from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
 
 VM_HASH = "feed" * 16
 
@@ -39,18 +39,14 @@ def _info(**overrides) -> VmInfo:
     defaults = dict(
         vm_id=VmId(VM_HASH),
         status=VmStatus.RUNNING,
-        ipv4="172.16.4.2",
-        ipv6="fd00::42",
+        ipv4=IpAssignment(address="172.16.4.2", network_cidr="172.16.4.0/24", gateway="172.16.4.1"),
+        ipv6=IpAssignment(address="fd00::42", network_cidr="fd00::/124", gateway="fd00::1"),
         uptime_secs=0,
         backend=Backend.FIRECRACKER,
         numa_node=None,
         status_message="",
-        ipv4_network="172.16.4.0/24",
-        ipv6_network="fd00::/124",
         guest_channel_path="/tmp/v.sock",
         guest_ready_payload=b"",
-        ipv4_gateway="172.16.4.1",
-        ipv6_gateway="fd00::1",
     )
     defaults.update(overrides)
     return VmInfo(**defaults)
@@ -110,7 +106,7 @@ def test_configuration_network_fields(tmp_path, mocker):
 
 def test_configuration_without_networking(tmp_path, mocker):
     mocker.patch.object(settings, "USE_DEVELOPER_SSH_KEYS", False)
-    info = _info(ipv4="", ipv6="", ipv4_network="", ipv6_network="", ipv4_gateway="", ipv6_gateway="")
+    info = _info(ipv4=IpAssignment(), ipv6=IpAssignment())
 
     config = build_program_configuration(info, _content(), _resources(tmp_path, encoding=Encoding.zip))
 

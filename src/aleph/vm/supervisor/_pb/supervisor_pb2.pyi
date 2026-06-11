@@ -675,6 +675,34 @@ class GpuConfig(google.protobuf.message.Message):
 global___GpuConfig = GpuConfig
 
 @typing.final
+class IpAssignment(google.protobuf.message.Message):
+    """One address family's assignment for a VM. All fields are empty until the
+    underlying tap device exists.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    ADDRESS_FIELD_NUMBER: builtins.int
+    NETWORK_CIDR_FIELD_NUMBER: builtins.int
+    GATEWAY_FIELD_NUMBER: builtins.int
+    address: builtins.str
+    """the guest's address, bare IP"""
+    network_cidr: builtins.str
+    """the tap network, e.g. "172.16.3.0/24" """
+    gateway: builtins.str
+    """host-side tap address (bare IP); the guest's default route"""
+    def __init__(
+        self,
+        *,
+        address: builtins.str = ...,
+        network_cidr: builtins.str = ...,
+        gateway: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["address", b"address", "gateway", b"gateway", "network_cidr", b"network_cidr"]) -> None: ...
+
+global___IpAssignment = IpAssignment
+
+@typing.final
 class VmInfo(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
@@ -686,8 +714,6 @@ class VmInfo(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     NUMA_NODE_FIELD_NUMBER: builtins.int
     STATUS_MESSAGE_FIELD_NUMBER: builtins.int
-    IPV4_NETWORK_FIELD_NUMBER: builtins.int
-    IPV6_NETWORK_FIELD_NUMBER: builtins.int
     DEFINED_AT_NS_FIELD_NUMBER: builtins.int
     PREPARING_AT_NS_FIELD_NUMBER: builtins.int
     PREPARED_AT_NS_FIELD_NUMBER: builtins.int
@@ -699,21 +725,14 @@ class VmInfo(google.protobuf.message.Message):
     GPUS_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_PATH_FIELD_NUMBER: builtins.int
     GUEST_READY_PAYLOAD_FIELD_NUMBER: builtins.int
-    IPV4_GATEWAY_FIELD_NUMBER: builtins.int
-    IPV6_GATEWAY_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     status: global___VmStatus.ValueType
-    ipv4: builtins.str
-    ipv6: builtins.str
     uptime_secs: builtins.int
     backend: global___Backend.ValueType
     numa_node: builtins.int
     """effective placement (0-indexed). Unset until status is BOOTING/RUNNING."""
     status_message: builtins.str
     """human-readable, optional"""
-    ipv4_network: builtins.str
-    """Tap networks (CIDR strings, e.g. "172.16.3.0/24"). Empty until the tap device exists."""
-    ipv6_network: builtins.str
     defined_at_ns: builtins.int
     """Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached."""
     preparing_at_ns: builtins.int
@@ -735,11 +754,10 @@ class VmInfo(google.protobuf.message.Message):
     empty until the signal arrived (or for VMs without a channel). The client
     interprets them (the Aleph runtime sends its version handshake here).
     """
-    ipv4_gateway: builtins.str
-    """Host-side tap addresses (no prefix). The agent passes them to the guest
-    as default routes in its network configuration push.
-    """
-    ipv6_gateway: builtins.str
+    @property
+    def ipv4(self) -> global___IpAssignment: ...
+    @property
+    def ipv6(self) -> global___IpAssignment: ...
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]:
         """exact PCI devices attached to this VM (mirrors HostInfo.gpus)"""
@@ -749,14 +767,12 @@ class VmInfo(google.protobuf.message.Message):
         *,
         vm_id: builtins.str = ...,
         status: global___VmStatus.ValueType = ...,
-        ipv4: builtins.str = ...,
-        ipv6: builtins.str = ...,
+        ipv4: global___IpAssignment | None = ...,
+        ipv6: global___IpAssignment | None = ...,
         uptime_secs: builtins.int = ...,
         backend: global___Backend.ValueType = ...,
         numa_node: builtins.int | None = ...,
         status_message: builtins.str = ...,
-        ipv4_network: builtins.str = ...,
-        ipv6_network: builtins.str = ...,
         defined_at_ns: builtins.int = ...,
         preparing_at_ns: builtins.int = ...,
         prepared_at_ns: builtins.int = ...,
@@ -768,11 +784,9 @@ class VmInfo(google.protobuf.message.Message):
         gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
         guest_channel_path: builtins.str = ...,
         guest_ready_payload: builtins.bytes = ...,
-        ipv4_gateway: builtins.str = ...,
-        ipv6_gateway: builtins.str = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "guest_channel_path", b"guest_channel_path", "guest_ready_payload", b"guest_ready_payload", "ipv4", b"ipv4", "ipv4_gateway", b"ipv4_gateway", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_gateway", b"ipv6_gateway", "ipv6_network", b"ipv6_network", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "guest_channel_path", b"guest_channel_path", "guest_ready_payload", b"guest_ready_payload", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___VmInfo = VmInfo

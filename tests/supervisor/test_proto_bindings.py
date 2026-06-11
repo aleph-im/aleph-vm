@@ -332,7 +332,7 @@ def test_log_source_has_stderr():
 
     assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
 
-    from aleph.vm.supervisor.types import LogSource
+    from aleph.vm.supervisor.types import IpAssignment, LogSource
 
     assert LogSource.STDERR.value == "stderr"
 
@@ -382,8 +382,8 @@ def test_full_service_surface_pinned():
 
 def test_vm_info_network_and_lifecycle_fields_default():
     info = supervisor_pb2.VmInfo()
-    assert info.ipv4_network == ""
-    assert info.ipv6_network == ""
+    assert info.ipv4.network_cidr == ""
+    assert info.ipv6.network_cidr == ""
     for field in (
         "defined_at_ns",
         "preparing_at_ns",
@@ -405,19 +405,19 @@ def test_host_info_host_ipv4_defaults_empty():
 
 
 def test_vm_info_dataclass_new_fields_default():
-    from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
+    from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
 
     info = VmInfo(
         vm_id=VmId("x"),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
         status_message="",
     )
-    assert info.ipv4_network == ""
+    assert info.ipv4.network_cidr == ""
     assert info.defined_at_ns == 0
     assert info.stopped_at_ns == 0
     assert not hasattr(info, "is_instance")

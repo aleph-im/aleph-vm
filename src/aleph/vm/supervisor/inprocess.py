@@ -39,6 +39,7 @@ from aleph.vm.supervisor.types import (
     HealthStatus,
     HostInfo,
     HostPort,
+    IpAssignment,
     LogChunk,
     LogSource,
     Measurement,
@@ -167,17 +168,25 @@ def _guest_ready_payload(execution) -> bytes:
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
+    ipv4 = IpAssignment(
+        address=str(tap.guest_ip.ip) if tap else "",
+        network_cidr=str(tap.ip_network) if tap else "",
+        gateway=str(tap.host_ip.ip) if tap and getattr(tap, "host_ip", None) else "",
+    )
+    ipv6 = IpAssignment(
+        address=str(tap.guest_ipv6.ip) if tap else "",
+        network_cidr=str(tap.ipv6_network) if tap else "",
+        gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
+    )
     return VmInfo(
         vm_id=VmId(str(execution.vm_hash)),
         status=_status_of(execution, running),
-        ipv4=str(tap.guest_ip.ip) if tap else "",
-        ipv6=str(tap.guest_ipv6.ip) if tap else "",
+        ipv4=ipv4,
+        ipv6=ipv6,
         uptime_secs=_uptime_secs(execution, running),
         backend=_backend_of(execution),
         numa_node=None,
         status_message="",
-        ipv4_network=str(tap.ip_network) if tap else "",
-        ipv6_network=str(tap.ipv6_network) if tap else "",
         defined_at_ns=_ns(times.defined_at),
         preparing_at_ns=_ns(times.preparing_at),
         prepared_at_ns=_ns(times.prepared_at),
@@ -197,8 +206,6 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         ],
         guest_channel_path=_guest_channel_path(execution),
         guest_ready_payload=_guest_ready_payload(execution),
-        ipv4_gateway=str(tap.host_ip.ip) if tap and getattr(tap, "host_ip", None) else "",
-        ipv6_gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
     )
 
 

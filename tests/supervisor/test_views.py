@@ -21,7 +21,7 @@ from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
-from aleph.vm.supervisor.types import VmId
+from aleph.vm.supervisor.types import IpAssignment, VmId
 
 
 @pytest.fixture()
@@ -865,8 +865,8 @@ async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_inst
         return_value=VmInfo(
             vm_id=VmId(vm_hash),
             status=VmStatus.BOOTING,
-            ipv4="",
-            ipv6="",
+            ipv4=IpAssignment(),
+            ipv6=IpAssignment(),
             uptime_secs=0,
             backend=Backend.QEMU,
             numa_node=None,
@@ -904,8 +904,8 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
         return_value=VmInfo(
             vm_id=VmId(vm_hash),
             status=VmStatus.RUNNING,
-            ipv4="",
-            ipv6="",
+            ipv4=IpAssignment(),
+            ipv6=IpAssignment(),
             uptime_secs=0,
             backend=Backend.QEMU,
             numa_node=None,
@@ -1202,8 +1202,8 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     vm_info = VmInfo(
         vm_id=VmId(vm_hash),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
@@ -1401,8 +1401,8 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     vm_info = VmInfo(
         vm_id=VmId(vm_hash),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
@@ -1446,8 +1446,8 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
     vm_info = VmInfo(
         vm_id=VmId(vm_hash),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
@@ -1545,8 +1545,8 @@ def _running_vm_info(
     return VmInfo(
         vm_id=VmId(str(vm_hash)),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,

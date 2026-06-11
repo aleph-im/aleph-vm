@@ -26,6 +26,7 @@ from aleph.vm.supervisor.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    IpAssignment,
     NetworkConfig,
     VmId,
     VmInfo,
@@ -63,8 +64,8 @@ def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
     return VmInfo(
         vm_id=VmId(str(_HASH)),
         status=status,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,

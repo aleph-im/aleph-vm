@@ -276,8 +276,8 @@ async def list_executions(request: web.Request) -> web.Response:
         {
             info.vm_id: {
                 "networking": {
-                    "ipv4": info.ipv4_network,
-                    "ipv6": info.ipv6_network,
+                    "ipv4": info.ipv4.network_cidr,
+                    "ipv6": info.ipv6.network_cidr,
                 },
                 # cast: info.vm_id is a VmId (opaque str at the boundary); the
                 # agent knows its own VMs are keyed by item hash. See the
@@ -307,14 +307,14 @@ async def list_executions_v2(request: web.Request) -> web.Response:
             info.vm_id: {
                 "networking": (
                     {
-                        "ipv4_network": info.ipv4_network,
+                        "ipv4_network": info.ipv4.network_cidr,
                         "host_ipv4": host_info.host_ipv4,
-                        "ipv6_network": info.ipv6_network,
-                        "ipv6_ip": info.ipv6,
-                        "ipv4_ip": info.ipv4,
+                        "ipv6_network": info.ipv6.network_cidr,
+                        "ipv6_ip": info.ipv6.address,
+                        "ipv4_ip": info.ipv4.address,
                         "mapped_ports": mapped_ports.get(info.vm_id, {}),
                     }
-                    if info.ipv4_network
+                    if info.ipv4.network_cidr
                     else {}
                 ),
                 "status": _times_dict(info),
