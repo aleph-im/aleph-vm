@@ -72,31 +72,43 @@ class TestWaitForControllerReady:
     """Test the polling logic in wait_for_controller_ready."""
 
     @pytest.mark.asyncio
-    async def test_returns_immediately_when_active(self):
+    async def test_returns_when_stably_active(self):
+        """'active' must hold on a confirmation re-check: a unit whose
+        process dies right after start samples as active between crashes."""
         mgr = MagicMock()
         mgr.get_service_active_state.return_value = "active"
         ex = _make_execution(mgr)
 
         await ex.wait_for_controller_ready()
 
-        mgr.get_service_active_state.assert_called_once_with(
-            ex.controller_service,
-        )
+        assert mgr.get_service_active_state.call_count == 2
+        mgr.get_service_active_state.assert_called_with(ex.controller_service)
+
+    @pytest.mark.asyncio
+    async def test_fails_when_active_does_not_hold(self):
+        """Crash loop: active on first sight, dead on the re-check."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.side_effect = ["active", "failed"]
+        ex = _make_execution(mgr)
+
+        with pytest.raises(RuntimeError, match="crash loop"):
+            await ex.wait_for_controller_ready()
 
     @pytest.mark.asyncio
     async def test_polls_until_active(self):
         mgr = MagicMock()
-        # activating for 2 attempts, then active
+        # activating for 2 attempts, then stably active
         mgr.get_service_active_state.side_effect = [
             "activating",
             "activating",
+            "active",
             "active",
         ]
         ex = _make_execution(mgr)
 
         await ex.wait_for_controller_ready()
 
-        assert mgr.get_service_active_state.call_count == 3
+        assert mgr.get_service_active_state.call_count == 4
 
     @pytest.mark.asyncio
     async def test_fast_fails_on_failed_state(self):
@@ -130,12 +142,13 @@ class TestWaitForControllerReady:
             "inactive",
             "activating",
             "active",
+            "active",
         ]
         ex = _make_execution(mgr)
 
         await ex.wait_for_controller_ready()
 
-        assert mgr.get_service_active_state.call_count == 3
+        assert mgr.get_service_active_state.call_count == 4
 
     @pytest.mark.asyncio
     async def test_fast_fails_on_failed_after_activating(self):
@@ -200,12 +213,13 @@ class TestWaitForControllerReady:
             "unknown",
             "unknown",
             "active",
+            "active",
         ]
         ex = _make_execution(mgr)
 
         await ex.wait_for_controller_ready()
 
-        assert mgr.get_service_active_state.call_count == 3
+        assert mgr.get_service_active_state.call_count == 4
 
     @pytest.mark.asyncio
     async def test_unknown_state_times_out(self):

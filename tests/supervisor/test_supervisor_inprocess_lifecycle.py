@@ -355,3 +355,25 @@ async def test_stop_vm_unknown_raises_not_found():
     sup = InProcessSupervisor(pool=_make_pool())
     with pytest.raises(VmNotFoundError):
         await sup.stop_vm(VmId("nope"))
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_removes_controller_config_and_cloud_init_seed(monkeypatch, tmp_path):
+    """Delete releases the VM definition: the controller config and the
+    cloud-init seed must not outlive it (stop_vm keeps them for reattach)."""
+    from aleph.vm.controllers import configuration as configuration_module
+
+    monkeypatch.setattr(configuration_module.settings, "EXECUTION_ROOT", tmp_path)
+    config_file = tmp_path / f"{VM_ID}-controller.json"
+    seed_file = tmp_path / f"cloud-init-{VM_ID}.img"
+    config_file.write_text("{}")
+    seed_file.write_bytes(b"seed")
+
+    execution = make_execution()
+    pool = _make_pool({str(VM_ID): execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.delete_vm(VM_ID)
+
+    assert not config_file.exists()
+    assert not seed_file.exists()
