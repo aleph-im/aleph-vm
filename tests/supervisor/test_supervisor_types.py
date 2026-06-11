@@ -43,7 +43,7 @@ def test_enums_have_expected_members():
         "FAILED",
     }
     assert {f.name for f in DiskFormat} == {"RAW", "QCOW2", "SQUASHFS"}
-    assert {r.name for r in DiskRole} == {"ROOTFS", "CODE", "RUNTIME", "DATA", "EXTRA"}
+    assert {r.name for r in DiskRole} == {"ROOTFS", "EXTRA"}
     assert {p.name for p in Protocol} == {"TCP", "UDP"}
     assert {s.name for s in LogSource} == {"SERIAL", "STDOUT", "STDERR", "SYSTEMD"}
     assert "INTERNAL" in {c.name for c in ErrorCode}

@@ -18,6 +18,7 @@ from aleph.vm.supervisor.types import (
     ErrorCode,
     GpuDevice,
     GpuSpec,
+    GuestChannelSpec,
     GuestPort,
     HealthInfo,
     HealthStatus,
@@ -50,7 +51,7 @@ FULL_SPEC = CreateVmSpec(
     disks=[
         DiskSpec(path=Path("/var/cache/rootfs.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS),
         DiskSpec(
-            path=Path("/var/cache/data.raw"), readonly=True, format=DiskFormat.RAW, role=DiskRole.DATA, mount="/data"
+            path=Path("/var/cache/data.raw"), readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA, mount="/data"
         ),
     ],
     vcpus=4,
@@ -76,7 +77,7 @@ MINIMAL_SPEC = CreateVmSpec(
     gpus=[],
     numa_node=None,
     persistent=False,
-    program_mode=True,
+    guest_channel=GuestChannelSpec(ready_port=52),
 )
 
 FULL_VM_INFO = VmInfo(
@@ -97,11 +98,10 @@ FULL_VM_INFO = VmInfo(
     started_at_ns=5,
     stopping_at_ns=0,
     stopped_at_ns=0,
-    is_instance=True,
     confidential_mode=ConfidentialMode.SEV_ES,
     gpus=[GpuDevice(pci_host=PciAddress("0000:01:00.0"), device_id="10de:2204", model="RTX 3090", supports_x_vga=True)],
-    control_socket_path="/var/lib/aleph/vm/jailer/firecracker/3/root/tmp/v.sock",
-    runtime_version="2.0.0",
+    guest_channel_path="/var/lib/aleph/vm/jailer/firecracker/3/root/tmp/v.sock",
+    guest_ready_payload=b"\x81\xa7version\xa52.0.0",
     ipv4_gateway="172.16.4.1",
     ipv6_gateway="fd00::1",
 )
@@ -118,6 +118,7 @@ def test_create_vm_spec_round_trip_minimal():
     assert restored.initrd_path == Path("")
     assert restored.tee is None
     assert restored.numa_node is None
+    assert restored.guest_channel == GuestChannelSpec(ready_port=52)
     assert restored == MINIMAL_SPEC
 
 

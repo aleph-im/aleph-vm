@@ -1370,7 +1370,6 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
         status_message="",
         confidential_mode=ConfidentialMode.NONE,
         gpus=[],
-        is_instance=True,
     )
 
     pool = _FakeVmPool()
@@ -1571,7 +1570,6 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
         status_message="",
         confidential_mode=ConfidentialMode.NONE,
         gpus=[],
-        is_instance=True,
     )
 
     pool = _FakeVmPool()
@@ -1617,7 +1615,6 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
         status_message="",
         confidential_mode=ConfidentialMode.NONE,
         gpus=[],
-        is_instance=True,
     )
 
     pool = _FakeVmPool()
@@ -1715,7 +1712,6 @@ def _running_vm_info(
         backend=Backend.QEMU,
         numa_node=None,
         status_message="",
-        is_instance=True,
         confidential_mode=confidential_mode,
         gpus=gpus,
     )

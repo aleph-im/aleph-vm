@@ -27,9 +27,11 @@ from aleph.vm.supervisor.types import (
     DiskRole,
     DiskSpec,
     GpuSpec,
+    GuestChannelSpec,
     NetworkConfig,
     VmId,
 )
+from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 
 
 async def build_create_vm_spec(
@@ -131,12 +133,16 @@ async def build_program_create_vm_spec(
     resources = AlephProgramResources(message, namespace=str(vm_hash))
     await resources.download_all()
 
+    # The runtime image is the program's root filesystem: plain ROOTFS on the
+    # wire. The code disk (squashfs encoding only) and the volumes are EXTRA
+    # disks; their ORDER is the contract — the agent derives guest device
+    # names (vdb, vdc, ...) from it for its configuration push.
     disks: list[DiskSpec] = [
         DiskSpec(
             path=resources.rootfs_path,
             readonly=True,
             format=DiskFormat.SQUASHFS,
-            role=DiskRole.RUNTIME,
+            role=DiskRole.ROOTFS,
             mount="",
         )
     ]
@@ -146,7 +152,7 @@ async def build_program_create_vm_spec(
                 path=resources.code_path,
                 readonly=True,
                 format=DiskFormat.SQUASHFS,
-                role=DiskRole.CODE,
+                role=DiskRole.EXTRA,
                 mount="/opt/code",
             )
         )
@@ -178,6 +184,6 @@ async def build_program_create_vm_spec(
         gpus=[],
         numa_node=None,
         persistent=False,
-        program_mode=True,
+        guest_channel=GuestChannelSpec(ready_port=RUNTIME_CONTROL_PORT),
     )
     return spec, resources

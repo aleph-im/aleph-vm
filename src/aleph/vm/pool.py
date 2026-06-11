@@ -406,10 +406,10 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
-        if spec.backend is Backend.FIRECRACKER and spec.program_mode:
-            return await self._create_program_from_spec(spec)
+        if spec.backend is Backend.FIRECRACKER:
+            return await self._create_firecracker_from_spec(spec)
         if spec.backend is not Backend.QEMU:
-            msg = f"create_vm_from_spec supports QEMU instances and Firecracker programs, got {spec.backend}"
+            msg = f"create_vm_from_spec supports QEMU and Firecracker VMs, got {spec.backend}"
             raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)
@@ -461,18 +461,22 @@ class VmPool:
             self._schedule_forget_on_stop(execution)
             return execution
 
-    async def _create_program_from_spec(self, spec: CreateVmSpec) -> VmExecution:
-        """Message-free program (microvm) boot.
+    async def _create_firecracker_from_spec(self, spec: CreateVmSpec) -> VmExecution:
+        """Message-free Firecracker boot.
 
-        Boots the Firecracker VM from the spec's resolved paths, waits for the
-        guest init's ready signal (part of boot for program-mode VMs), and
-        returns. The guest-level protocols — config push, code execution, the
-        guest API — are the agent's business over the vsock control socket
-        reported in VmInfo.control_socket_path. Admission for spec-built VMs
-        is the agent's responsibility (see check_admission docstring).
+        Boots the VM from the spec's resolved paths and, when the spec carries
+        a guest channel, waits for the guest's ready signal as part of boot.
+        The guest-level protocols spoken over the channel are the client's
+        business (VmInfo.guest_channel_path). Admission for spec-built VMs is
+        the agent's responsibility (see check_admission docstring).
         """
+        if spec.guest_channel is None:
+            # Firecracker VMs without a guest channel (full instances under
+            # FC) have no spec-path boot flow yet; they keep the legacy path.
+            msg = "Firecracker spec VMs require a guest_channel"
+            raise InvalidBackendError(msg)
         if spec.persistent:
-            msg = "Persistent programs are not supported by the spec path yet; use the legacy create path"
+            msg = "Persistent Firecracker spec VMs are not supported yet; use the legacy create path"
             raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)

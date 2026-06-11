@@ -63,8 +63,8 @@ def _running_info() -> VmInfo:
         backend=Backend.FIRECRACKER,
         numa_node=None,
         status_message="",
-        control_socket_path="/tmp/does-not-matter/v.sock",
-        runtime_version="2.0.0",
+        guest_channel_path="/tmp/does-not-matter/v.sock",
+        guest_ready_payload=b"",
     )
 
 

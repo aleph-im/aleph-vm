@@ -1,15 +1,16 @@
-"""Message-free Firecracker program controller, driven by a CreateVmSpec.
+"""Message-free Firecracker controller for guest-channel VMs, driven by a
+CreateVmSpec.
 
-The supervisor side of the program (microvm) split: boots a Firecracker VM
-from resolved on-disk paths only — no Aleph message, no download, no guest
-configuration. The Aleph-runtime protocols (config push, code execution,
-guest API) are the agent's business, spoken over the vsock control socket
-this VM exposes (reported via VmInfo.control_socket_path).
+Boots a Firecracker VM from resolved on-disk paths only — no Aleph message,
+no download, no guest configuration. The guest-level protocols (the Aleph
+config push, code execution, guest API) are the client's business, spoken
+over the vsock channel this VM exposes (reported via
+VmInfo.guest_channel_path); the guest's ready signal on the channel is part
+of boot.
 
-Drive order is part of the contract with the agent: root device (the
-RUNTIME-role disk), then the CODE-role disk if present, then EXTRA disks in
-spec order. The agent derives guest device names (vdb, vdc, …) from that
-order when it builds its configuration push.
+Drive order is part of the contract with the client: the ROOTFS-role disk is
+the root device, then the EXTRA disks in spec order. The client derives guest
+device names (vdb, vdc, …) from that order.
 """
 
 from __future__ import annotations
@@ -41,32 +42,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SpecProgramResources:
-    """Resolved paths for a spec-driven program boot. No download happens
-    here: the agent prepared every file and the spec carries the paths."""
+    """Resolved paths for a spec-driven boot. No download happens here: the
+    client prepared every file and the spec carries the paths."""
 
     kernel_image_path: Path
-    rootfs_path: Path  # the RUNTIME-role disk: a program's root filesystem
-    code_disk: DiskSpec | None
+    rootfs_path: Path
     extra_disks: list[DiskSpec] = field(default_factory=list)
 
     @classmethod
     def from_spec(cls, spec: CreateVmSpec) -> SpecProgramResources:
         kernel_path = spec.kernel_path
         if not str(kernel_path) or str(kernel_path) == ".":
-            raise InvalidBackendError("A program spec requires a kernel_path")
+            raise InvalidBackendError("A Firecracker spec requires a kernel_path")
 
-        runtime_disks = [disk for disk in spec.disks if disk.role is DiskRole.RUNTIME]
-        if len(runtime_disks) != 1:
-            raise InvalidBackendError(f"A program spec requires exactly one RUNTIME disk, got {len(runtime_disks)}")
-
-        code_disks = [disk for disk in spec.disks if disk.role is DiskRole.CODE]
-        if len(code_disks) > 1:
-            raise InvalidBackendError(f"A program spec carries at most one CODE disk, got {len(code_disks)}")
-
+        rootfs = spec.require_rootfs()
         return cls(
             kernel_image_path=kernel_path,
-            rootfs_path=runtime_disks[0].path,
-            code_disk=code_disks[0] if code_disks else None,
+            rootfs_path=rootfs.path,
             extra_disks=[disk for disk in spec.disks if disk.role is DiskRole.EXTRA],
         )
 
@@ -75,7 +67,7 @@ class SpecProgramResources:
 
 
 class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
-    """Spec-driven program microvm: VMM boot + init handshake only."""
+    """Spec-driven guest-channel microvm: VMM boot + ready handshake only."""
 
     resources: SpecProgramResources  # type: ignore[assignment]
     is_instance = False
@@ -106,7 +98,7 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
         logger.debug("Setup started for spec program VM=%s", self.vm_id)
         await setfacl()
 
-        extra_disks = ([self.resources.code_disk] if self.resources.code_disk else []) + self.resources.extra_disks
+        extra_disks = self.resources.extra_disks
         self._firecracker_config = FirecrackerConfig(
             boot_source=BootSource(
                 kernel_image_path=Path(self.fvm.enable_kernel(self.resources.kernel_image_path)),
@@ -134,8 +126,9 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
         )
 
     async def wait_for_init(self) -> None:
-        """The init-ready handshake is part of boot for program-mode VMs."""
-        await self.fvm.wait_for_init()
+        """The guest's ready handshake is part of boot for channel VMs."""
+        ready_port = self.spec.guest_channel.ready_port if self.spec.guest_channel else 52
+        await self.fvm.wait_for_init(ready_port=ready_port)
 
     async def start_guest_api(self):
         """Agent-owned across the boundary: the agent binds `<vsock>_53` itself."""

@@ -29,6 +29,7 @@ from aleph.vm.supervisor.types import (
     ErrorCode,
     GpuDevice,
     GpuSpec,
+    GuestChannelSpec,
     GuestPort,
     HealthInfo,
     HealthStatus,
@@ -89,9 +90,6 @@ DISK_FORMAT_FROM_PB = {v: k for k, v in DISK_FORMAT_TO_PB.items()}
 
 DISK_ROLE_TO_PB = {
     DiskRole.ROOTFS: pb.DiskConfig.DISK_ROLE_ROOTFS,
-    DiskRole.CODE: pb.DiskConfig.DISK_ROLE_CODE,
-    DiskRole.RUNTIME: pb.DiskConfig.DISK_ROLE_RUNTIME,
-    DiskRole.DATA: pb.DiskConfig.DISK_ROLE_DATA,
     DiskRole.EXTRA: pb.DiskConfig.DISK_ROLE_EXTRA,
 }
 DISK_ROLE_FROM_PB = {v: k for k, v in DISK_ROLE_TO_PB.items()}
@@ -192,8 +190,9 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
         gpus=[pb.GpuConfig(pci_host=str(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in spec.gpus],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
-        program_mode=spec.program_mode,
     )
+    if spec.guest_channel is not None:
+        request.guest_channel.CopyFrom(pb.GuestChannel(ready_port=spec.guest_channel.ready_port))
     if spec.tee is not None:
         request.tee.CopyFrom(
             pb.TeeConfig(
@@ -233,7 +232,9 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
-        program_mode=msg.program_mode,
+        guest_channel=(
+            GuestChannelSpec(ready_port=msg.guest_channel.ready_port) if msg.HasField("guest_channel") else None
+        ),
     )
 
 
@@ -273,11 +274,10 @@ def vm_info_to_pb(info: VmInfo) -> pb.VmInfo:
         started_at_ns=info.started_at_ns,
         stopping_at_ns=info.stopping_at_ns,
         stopped_at_ns=info.stopped_at_ns,
-        is_instance=info.is_instance,
         confidential_mode=CONFIDENTIAL_MODE_TO_PB[info.confidential_mode],
         gpus=[gpu_device_to_pb(gpu) for gpu in info.gpus],
-        control_socket_path=info.control_socket_path,
-        runtime_version=info.runtime_version,
+        guest_channel_path=info.guest_channel_path,
+        guest_ready_payload=info.guest_ready_payload,
         ipv4_gateway=info.ipv4_gateway,
         ipv6_gateway=info.ipv6_gateway,
     )
@@ -305,11 +305,10 @@ def vm_info_from_pb(msg: pb.VmInfo) -> VmInfo:
         started_at_ns=msg.started_at_ns,
         stopping_at_ns=msg.stopping_at_ns,
         stopped_at_ns=msg.stopped_at_ns,
-        is_instance=msg.is_instance,
         confidential_mode=CONFIDENTIAL_MODE_FROM_PB[msg.confidential_mode],
         gpus=[gpu_device_from_pb(gpu) for gpu in msg.gpus],
-        control_socket_path=msg.control_socket_path,
-        runtime_version=msg.runtime_version,
+        guest_channel_path=msg.guest_channel_path,
+        guest_ready_payload=msg.guest_ready_payload,
         ipv4_gateway=msg.ipv4_gateway,
         ipv6_gateway=msg.ipv6_gateway,
     )

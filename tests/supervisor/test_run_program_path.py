@@ -15,6 +15,7 @@ from aleph.vm.supervisor.errors import InsufficientResourcesError, VmNotFoundErr
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
+    GuestChannelSpec,
     NetworkConfig,
     VmId,
     VmInfo,
@@ -42,8 +43,8 @@ def _info(status: VmStatus) -> VmInfo:
         backend=Backend.FIRECRACKER,
         numa_node=None,
         status_message="",
-        control_socket_path="/tmp/v.sock",
-        runtime_version="2.0.0",
+        guest_channel_path="/tmp/v.sock",
+        guest_ready_payload=b"",
     )
 
 
@@ -61,7 +62,7 @@ def _spec() -> CreateVmSpec:
         gpus=[],
         numa_node=None,
         persistent=False,
-        program_mode=True,
+        guest_channel=GuestChannelSpec(ready_port=52),
     )
 
 
@@ -112,7 +113,7 @@ async def test_creates_when_absent(patched_build):
     assert info.status is VmStatus.RUNNING
     supervisor.create_vm.assert_awaited_once()
     created_spec = supervisor.create_vm.await_args.args[0]
-    assert created_spec.program_mode and created_spec.backend is Backend.FIRECRACKER
+    assert created_spec.guest_channel is not None and created_spec.backend is Backend.FIRECRACKER
     assert program_client.setups == [VM_ID]
     assert registry.get(VM_HASH) is not None
     run_module.persist_record.assert_awaited_once()
@@ -175,7 +176,7 @@ async def test_setup_failure_tears_down(patched_build):
     )
     registry = AgentVmRegistry()
     program_client = FakeProgramClient()
-    program_client.setup_program = AsyncMock(side_effect=RuntimeError("config push failed"))
+    program_client.setup_program = AsyncMock(side_effect=RuntimeError("config push failed"))  # type: ignore[method-assign]
 
     with pytest.raises(web.HTTPInternalServerError):
         await run_module._ensure_program_vm(

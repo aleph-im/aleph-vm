@@ -1,14 +1,15 @@
 """Agent-side guest protocols for program (microvm) VMs.
 
-The supervisor boots a program VM and reports its vsock control socket in
-``VmInfo.control_socket_path``; everything Aleph-specific that used to live
-in the Firecracker program controller happens here, in the agent process:
+The supervisor boots a guest-channel VM and reports the channel's host
+endpoint in ``VmInfo.guest_channel_path``; everything Aleph-specific that
+used to live in the Firecracker program controller happens here, in the
+agent process:
 
 - the **guest API** server the program calls (a host process bound to
-  ``<control_socket>_53``);
+  ``<channel>_<GUEST_API_PORT>``);
 - the **configuration push** (code, entrypoint, variables, network, volumes)
-  over ``CONNECT 52``;
-- **code execution** (`run_code`) over ``CONNECT 52``.
+  over ``CONNECT <RUNTIME_CONTROL_PORT>``;
+- **code execution** (`run_code`) on the same port.
 
 State is per-supervisor-VM: a VM the agent did not configure in this process
 is not in ``configured`` and must be recreated before serving (the runtime
@@ -22,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
-from multiprocessing import Process
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from string import ascii_lowercase
 
@@ -48,6 +49,7 @@ from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
 from aleph.vm.storage import chown_to_jailman
 from aleph.vm.supervisor.types import VmId, VmInfo
+from aleph.vm.utils.runtime_channel import GUEST_API_PORT, RUNTIME_CONTROL_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,20 @@ def build_code_and_volumes(resources: AlephProgramResources) -> tuple[bytes | No
         for index, volume in enumerate(resources.volumes)
     ]
     return code, volumes
+
+
+def runtime_config_from_ready_payload(payload: bytes) -> RuntimeConfiguration:
+    """Parse the guest's opaque ready payload into the runtime handshake.
+
+    The Aleph runtime init sends a msgpack ``{"version": ...}`` blob with its
+    ready signal; older runtimes send nothing, which means version 1.0.0 —
+    the same defaulting the hypervisor-side parser used to do before the
+    payload became pass-through.
+    """
+    if not payload:
+        return RuntimeConfiguration(version="1.0.0")
+    config_dict = msgpack.loads(payload, raw=False)
+    return RuntimeConfiguration(version=config_dict["version"])
 
 
 def build_program_configuration(
@@ -136,7 +152,7 @@ class ProgramGuestClient:
 
     def __init__(self) -> None:
         self._configured: set[VmId] = set()
-        self._guest_api_processes: dict[VmId, Process] = {}
+        self._guest_api_processes: dict[VmId, BaseProcess] = {}
         self._creation_locks: dict[VmId, asyncio.Lock] = {}
 
     def creation_lock(self, vm_id: VmId) -> asyncio.Lock:
@@ -152,22 +168,22 @@ class ProgramGuestClient:
     async def setup_program(self, info: VmInfo, message: ProgramContent, resources: AlephProgramResources) -> None:
         """Bring a freshly-booted program VM to serving state: guest API up,
         configuration pushed. Must run exactly once per VM boot."""
-        if not info.control_socket_path:
-            msg = f"VM {info.vm_id} reports no control socket; was it created with program_mode?"
+        if not info.guest_channel_path:
+            msg = f"VM {info.vm_id} reports no guest channel; was it created with one?"
             raise VmSetupError(msg)
         await self._start_guest_api(info)
         await self._push_configuration(info, message, resources)
         self._configured.add(info.vm_id)
 
     async def _start_guest_api(self, info: VmInfo) -> None:
-        vsock_path = Path(f"{info.control_socket_path}_53")
+        vsock_path = Path(f"{info.guest_channel_path}_{GUEST_API_PORT}")
         vsock_path.unlink(missing_ok=True)  # a previous run's socket would alias the old process
         vsock_path.parent.mkdir(parents=True, exist_ok=True)
         logger.debug("Starting guest API for %s on %s", info.vm_id, vsock_path)
         # Explicit fork: the guest API inherits the parent's loaded settings,
         # which the old controller relied on implicitly (fork was the Linux
         # default before Python 3.14).
-        process: Process = multiprocessing.get_context("fork").Process(
+        process: BaseProcess = multiprocessing.get_context("fork").Process(
             target=run_guest_api,
             args=(vsock_path, ItemHash(str(info.vm_id)), settings.SENTRY_DSN, settings.DOMAIN_NAME),
         )
@@ -189,15 +205,15 @@ class ProgramGuestClient:
 
     async def _push_configuration(self, info: VmInfo, message: ProgramContent, resources) -> None:
         program_config = build_program_configuration(info, message, resources)
-        runtime_config = RuntimeConfiguration(version=info.runtime_version or "1.0.0")
+        runtime_config = runtime_config_from_ready_payload(info.guest_ready_payload)
         versioned_config = program_config.to_runtime_format(runtime_config)
         payload = versioned_config.as_msgpack()
         length = f"{len(payload)}\n".encode()
 
         logger.debug("Pushing program configuration to %s", info.vm_id)
-        reader, writer = await asyncio.open_unix_connection(path=info.control_socket_path)
+        reader, writer = await asyncio.open_unix_connection(path=info.guest_channel_path)
         try:
-            writer.write(b"CONNECT 52\n" + length + payload)
+            writer.write(f"CONNECT {RUNTIME_CONTROL_PORT}\n".encode() + length + payload)
             await writer.drain()
             await asyncio.wait_for(reader.readline(), timeout=60)
             response_raw = await asyncio.wait_for(reader.read(1_000_000), timeout=60)
@@ -214,14 +230,14 @@ class ProgramGuestClient:
 
         async def communicate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
             payload = RunCodePayload(scope=scope)
-            writer.write(b"CONNECT 52\n" + payload.as_msgpack())
+            writer.write(f"CONNECT {RUNTIME_CONTROL_PORT}\n".encode() + payload.as_msgpack())
             await writer.drain()
             ack: bytes = await reader.readline()
             logger.debug("ack=%s", ack.decode())
             return await reader.read()
 
         try:
-            reader, writer = await asyncio.open_unix_connection(path=info.control_socket_path)
+            reader, writer = await asyncio.open_unix_connection(path=info.guest_channel_path)
         except (ConnectionRefusedError, FileNotFoundError) as error:
             msg = "MicroVM may have crashed"
             raise VmInitNotConnectedError(msg) from error
