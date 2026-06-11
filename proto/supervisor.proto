@@ -184,6 +184,10 @@ message CreateVmRequest {
 
 message GuestChannel {
   uint32 ready_port = 1;             // the guest connects here to signal readiness
+  // How long the supervisor waits for the ready signal before failing the
+  // boot. Workload policy: the client knows how long its guest image
+  // legitimately takes. 0 = supervisor default.
+  uint32 ready_timeout_secs = 2;
 }
 
 message DiskConfig {

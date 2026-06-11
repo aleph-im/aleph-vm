@@ -541,14 +541,21 @@ class GuestChannel(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     READY_PORT_FIELD_NUMBER: builtins.int
+    READY_TIMEOUT_SECS_FIELD_NUMBER: builtins.int
     ready_port: builtins.int
     """the guest connects here to signal readiness"""
+    ready_timeout_secs: builtins.int
+    """How long the supervisor waits for the ready signal before failing the
+    boot. Workload policy: the client knows how long its guest image
+    legitimately takes. 0 = supervisor default.
+    """
     def __init__(
         self,
         *,
         ready_port: builtins.int = ...,
+        ready_timeout_secs: builtins.int = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["ready_port", b"ready_port"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["ready_port", b"ready_port", "ready_timeout_secs", b"ready_timeout_secs"]) -> None: ...
 
 global___GuestChannel = GuestChannel
 

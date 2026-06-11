@@ -183,6 +183,10 @@ async def build_program_create_vm_spec(
         gpus=[],
         numa_node=None,
         persistent=False,
-        guest_channel=GuestChannelSpec(ready_port=RUNTIME_CONTROL_PORT),
+        guest_channel=GuestChannelSpec(
+            ready_port=RUNTIME_CONTROL_PORT,
+            # The agent owns the boot-time policy for its runtime images.
+            ready_timeout_secs=int(settings.INIT_TIMEOUT),
+        ),
     )
     return spec, resources

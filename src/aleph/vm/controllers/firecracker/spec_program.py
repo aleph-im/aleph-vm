@@ -93,6 +93,11 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
             prepare_jailer=prepare_jailer,
         )
         self.spec = spec
+        # The ready-wait bound is workload policy carried by the spec; the
+        # supervisor's settings.INIT_TIMEOUT (set in super().__init__) is
+        # only the fallback for channels that do not state one.
+        if spec.guest_channel is not None and spec.guest_channel.ready_timeout_secs:
+            self.fvm.init_timeout = float(spec.guest_channel.ready_timeout_secs)
 
     async def setup(self) -> None:
         logger.debug("Setup started for spec program VM=%s", self.vm_id)

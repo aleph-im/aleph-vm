@@ -118,6 +118,38 @@ async def test_setup_builds_firecracker_config(tmp_path, mocker):
 
 
 @pytest.mark.asyncio
+async def test_ready_timeout_from_spec_overrides_supervisor_default(tmp_path, mocker):
+    from dataclasses import replace
+
+    from aleph.vm.conf import settings
+
+    mocker.patch.object(settings, "USE_JAILER", False)
+    spec = make_spec(tmp_path)
+    spec = replace(spec, guest_channel=GuestChannelSpec(ready_port=52, ready_timeout_secs=90))
+    vm = SpecFirecrackerProgram(
+        vm_id=3,
+        vm_hash=spec.vm_id,
+        spec=spec,
+        resources=SpecProgramResources.from_spec(spec),
+        tap_interface=None,
+        prepare_jailer=False,
+    )
+    assert vm.fvm.init_timeout == 90.0
+
+    # 0 (unset) keeps the supervisor's default.
+    spec_default = replace(spec, guest_channel=GuestChannelSpec(ready_port=52))
+    vm_default = SpecFirecrackerProgram(
+        vm_id=4,
+        vm_hash=spec_default.vm_id,
+        spec=spec_default,
+        resources=SpecProgramResources.from_spec(spec_default),
+        tap_interface=None,
+        prepare_jailer=False,
+    )
+    assert vm_default.fvm.init_timeout == settings.INIT_TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_guest_api_is_agent_owned(tmp_path, mocker):
     from aleph.vm.conf import settings
 

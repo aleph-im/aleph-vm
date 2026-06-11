@@ -76,7 +76,7 @@ MINIMAL_SPEC = CreateVmSpec(
     gpus=[],
     numa_node=None,
     persistent=False,
-    guest_channel=GuestChannelSpec(ready_port=52),
+    guest_channel=GuestChannelSpec(ready_port=52, ready_timeout_secs=45),
 )
 
 FULL_VM_INFO = VmInfo(
@@ -113,7 +113,7 @@ def test_create_vm_spec_round_trip_minimal():
     assert restored.initrd_path == Path("")
     assert restored.tee is None
     assert restored.numa_node is None
-    assert restored.guest_channel == GuestChannelSpec(ready_port=52)
+    assert restored.guest_channel == GuestChannelSpec(ready_port=52, ready_timeout_secs=45)
     assert restored == MINIMAL_SPEC
 
 
