@@ -79,20 +79,16 @@ async def test_get_vm_maps_a_running_qemu_instance():
 
 
 @pytest.mark.asyncio
-async def test_get_vm_reports_is_instance():
-    """is_instance is carried from the execution, independent of the backend."""
-    instance = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
-    instance.is_instance = True
-    program = make_execution(vm_hash="p", hypervisor=HypervisorType.firecracker)
-    program.is_instance = False
-    pool = FakePool(executions={"i": instance, "p": program})
-    sup = InProcessSupervisor(pool=pool)
-
-    assert (await sup.get_vm(VmId("i"))).is_instance is True
-    # A firecracker instance still reports FIRECRACKER for backend, so the flag
-    # is the only way to recover instance-ness.
-    assert (await sup.get_vm(VmId("i"))).backend is Backend.FIRECRACKER
-    assert (await sup.get_vm(VmId("p"))).is_instance is False
+async def test_vm_info_has_no_is_instance_field():
+    """The instance/program distinction is agent vocabulary: the wire must not
+    carry it. The agent derives it from its registry (or from the guest
+    channel's presence as a registry-miss fallback)."""
+    execution = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
+    sup = InProcessSupervisor(pool=FakePool(executions={"i": execution}))
+    info = await sup.get_vm(VmId("i"))
+    assert not hasattr(info, "is_instance")
+    # An instance under Firecracker still reports the FIRECRACKER backend.
+    assert info.backend is Backend.FIRECRACKER
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,6 @@ def _execution(*, confidential=False, policy=0, gpus=()):
         vm_hash="abc",
         vm=vm,
         times=times,
-        is_instance=True,
         is_program=False,
         is_confidential=confidential,
         hypervisor=None,

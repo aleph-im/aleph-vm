@@ -152,18 +152,19 @@ def _confidential_mode(execution) -> ConfidentialMode:
     return ConfidentialMode.SEV
 
 
-def _control_socket_path(execution) -> str:
-    """Host UDS of the VM's vsock; programs only (the guest-protocol seam)."""
+def _guest_channel_path(execution) -> str:
+    """Host UDS endpoint of the guest channel (Firecracker vsock); empty for
+    VMs without one."""
     fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
     if execution.is_program and fvm is not None:
         return str(fvm.vsock_path)
     return ""
 
 
-def _runtime_version(execution) -> str:
+def _guest_ready_payload(execution) -> bytes:
+    """Raw bytes from the guest's ready signal, passed through opaquely."""
     fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
-    runtime_config = getattr(fvm, "runtime_config", None) if fvm is not None else None
-    return runtime_config.version if runtime_config else ""
+    return getattr(fvm, "init_payload", b"") if fvm is not None else b""
 
 
 def _to_vm_info(execution, running: bool) -> VmInfo:
@@ -187,7 +188,6 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         started_at_ns=_ns(times.started_at),
         stopping_at_ns=_ns(times.stopping_at),
         stopped_at_ns=_ns(times.stopped_at),
-        is_instance=bool(execution.is_instance),
         confidential_mode=_confidential_mode(execution),
         gpus=[
             GpuDevice(
@@ -198,8 +198,8 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
             )
             for g in execution.gpus
         ],
-        control_socket_path=_control_socket_path(execution),
-        runtime_version=_runtime_version(execution),
+        guest_channel_path=_guest_channel_path(execution),
+        guest_ready_payload=_guest_ready_payload(execution),
         ipv4_gateway=str(tap.host_ip.ip) if tap and getattr(tap, "host_ip", None) else "",
         ipv6_gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
     )

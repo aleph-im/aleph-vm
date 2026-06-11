@@ -202,16 +202,18 @@ async def debug_haproxy(request: web.Request) -> web.Response:
 
 
 def _vm_type_name(record: AgentVmRecord | None, info: VmInfo) -> str:
-    """vm_type label: from the agent's message when known, otherwise from the
-    supervisor's instance flag (spec-created / reattached VMs without a registry
-    record) — the same VmExecution.is_instance the old views fell back to.
+    """vm_type label: from the agent's message when known; otherwise a
+    best-effort guess from the guest channel (registry-miss fallback for
+    spec-created / reattached VMs).
 
-    The instance flag is used rather than the backend because the backend alone
-    cannot recover instance-ness: an instance running under Firecracker reports
-    Backend.FIRECRACKER yet is still an instance."""
+    The instance/program distinction is agent vocabulary the wire no longer
+    carries. Every VM the agent runs as a microvm has a guest channel and
+    instances have none, so the channel's presence recovers the label for VMs
+    we lost the record of. (Backend alone cannot: an instance running under
+    Firecracker reports Backend.FIRECRACKER yet is still an instance.)"""
     if record is not None:
         return VmType.from_message_content(record.message).name
-    return VmType.instance.name if info.is_instance else VmType.microvm.name
+    return VmType.microvm.name if info.guest_channel_path else VmType.instance.name
 
 
 def _datetime_from_ns(ns: int) -> datetime | None:

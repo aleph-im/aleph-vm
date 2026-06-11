@@ -97,17 +97,31 @@ supervisor-side:
 | guest API process (`{vsock}_53`) | agent |
 | idle expiry / update-watch / teardown decision | agent (already migrated) |
 
-Contract additions (regenerated bindings committed):
+Contract additions (regenerated bindings committed; reworked 2026-06-11 to
+stay hypervisor- and workload-agnostic — review feedback):
 
-- `CreateVmRequest.program_mode: bool` — supervisor uses the program boot
-  flow (vsock init handshake, no cloud-init); carries no Aleph vocabulary.
-- `VmInfo.control_socket_path: string` — host UDS path of the VM's vsock;
-  empty for backends without one.
-- `VmInfo.runtime_version: string` — the version string the guest init
-  reported during the handshake (the agent needs it to format the config
-  push); empty until init signaled / for non-program VMs.
-- `VmInfo.ipv4_gateway` / `ipv6_gateway` — host-side tap addresses, needed
-  by the agent to fill the guest network config it pushes.
+- `CreateVmRequest.guest_channel: GuestChannel { ready_port }` — optional
+  host⇄guest control channel (Firecracker vsock today; QEMU could implement
+  it with virtio-vsock). When present, the supervisor exposes the channel
+  and waits for the guest's ready signal on `ready_port` as part of boot.
+  What is spoken over the channel is the client's business. (Replaced the
+  earlier `program_mode: bool`, which leaked the program/instance
+  distinction onto the wire.)
+- `VmInfo.guest_channel_path: string` — host UDS endpoint of the channel;
+  empty when the VM has none (QEMU instances).
+- `VmInfo.guest_ready_payload: bytes` — the raw bytes the guest sent with
+  its ready signal, passed through opaquely; the agent parses the Aleph
+  runtime's msgpack version handshake out of it. (Replaced
+  `runtime_version`, which required the supervisor to parse the payload.)
+- `VmInfo.ipv4_gateway` / `ipv6_gateway` — host-side tap addresses (bare,
+  no prefix), the guest's default routes for the agent's config push.
+- `DiskRole` collapsed to ROOTFS/EXTRA: workload roles (code/runtime/data)
+  are client vocabulary, mapped onto guest devices via disk order.
+- `VmInfo.is_instance` removed (field 18 reserved): the instance/program
+  distinction is derived agent-side from the registry, with the guest
+  channel's presence as the registry-miss fallback for labeling.
+- The Aleph runtime's channel conventions (control port 52, guest API port
+  53) live in `aleph.vm.utils.runtime_channel`, agent-side.
 
 Supervisor side: `pool.create_vm_from_spec` accepts
 `backend=FIRECRACKER, program_mode=True` specs and builds a message-free

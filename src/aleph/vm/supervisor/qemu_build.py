@@ -115,7 +115,7 @@ async def build_qemu_configuration(
             read_only=disk.readonly,
         )
         for disk in spec.disks
-        if disk.role in {DiskRole.EXTRA, DiskRole.DATA}
+        if disk.role is DiskRole.EXTRA
     ]
 
     vcpu_count = spec.vcpus

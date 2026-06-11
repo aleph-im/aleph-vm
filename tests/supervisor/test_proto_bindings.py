@@ -111,14 +111,13 @@ def test_disk_config_has_role_and_format_enums():
     formats = {v.name for v in supervisor_pb2.DiskConfig.Format.DESCRIPTOR.values}
     assert {"FORMAT_UNSPECIFIED", "FORMAT_RAW", "FORMAT_QCOW2", "FORMAT_SQUASHFS"} <= formats
     roles = {v.name for v in supervisor_pb2.DiskConfig.DiskRole.DESCRIPTOR.values}
-    assert {
+    # Mechanism-only: root device or not. Workload roles (code/runtime/data)
+    # are client vocabulary, mapped onto devices via disk order.
+    assert roles == {
         "DISK_ROLE_UNSPECIFIED",
         "DISK_ROLE_ROOTFS",
-        "DISK_ROLE_CODE",
-        "DISK_ROLE_RUNTIME",
-        "DISK_ROLE_DATA",
         "DISK_ROLE_EXTRA",
-    } <= roles
+    }
 
 
 def test_vm_info_has_status_enum_and_core_fields():
@@ -350,7 +349,9 @@ def test_vm_info_network_and_lifecycle_fields_default():
         "stopped_at_ns",
     ):
         assert getattr(info, field) == 0
-    assert info.is_instance is False
+    # The instance/program distinction is client vocabulary; the wire does
+    # not carry it (field 18 is reserved).
+    assert not hasattr(info, "is_instance")
 
 
 def test_host_info_host_ipv4_defaults_empty():
@@ -374,7 +375,9 @@ def test_vm_info_dataclass_new_fields_default():
     assert info.ipv4_network == ""
     assert info.defined_at_ns == 0
     assert info.stopped_at_ns == 0
-    assert info.is_instance is False
+    assert not hasattr(info, "is_instance")
+    assert info.guest_channel_path == ""
+    assert info.guest_ready_payload == b""
 
 
 def test_host_info_dataclass_host_ipv4_defaults_empty():

@@ -47,8 +47,8 @@ def _info(**overrides) -> VmInfo:
         status_message="",
         ipv4_network="172.16.4.0/24",
         ipv6_network="fd00::/124",
-        control_socket_path="/tmp/v.sock",
-        runtime_version="2.0.0",
+        guest_channel_path="/tmp/v.sock",
+        guest_ready_payload=b"",
         ipv4_gateway="172.16.4.1",
         ipv6_gateway="fd00::1",
     )
@@ -126,3 +126,18 @@ def test_configuration_requires_dns_when_networked(tmp_path, mocker):
 
     with pytest.raises(ValueError, match="DNS nameservers missing"):
         build_program_configuration(_info(), _content(), _resources(tmp_path, encoding=Encoding.zip))
+
+
+def test_ready_payload_parsing():
+    import msgpack
+
+    from aleph.vm.orchestrator.vm.program_client import (
+        runtime_config_from_ready_payload,
+    )
+
+    # The Aleph runtime sends a msgpack version handshake with its ready signal.
+    config = runtime_config_from_ready_payload(msgpack.dumps({"version": "2.0.0"}))
+    assert config.version == "2.0.0"
+    # Older runtimes send nothing: 1.0.0, same defaulting the hypervisor-side
+    # parser applied before the payload became opaque pass-through.
+    assert runtime_config_from_ready_payload(b"").version == "1.0.0"

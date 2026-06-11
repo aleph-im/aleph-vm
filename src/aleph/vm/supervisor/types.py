@@ -51,10 +51,10 @@ class DiskFormat(Enum):
 
 
 class DiskRole(Enum):
+    """Mechanism-only: which disk is the root device. Everything else is
+    attached in spec order; guest device names derive from that order."""
+
     ROOTFS = "rootfs"
-    CODE = "code"
-    RUNTIME = "runtime"
-    DATA = "data"
     EXTRA = "extra"
 
 
@@ -146,6 +146,16 @@ class GpuSpec:
 
 
 @dataclass(frozen=True)
+class GuestChannelSpec:
+    """Host⇄guest control channel request (Firecracker vsock today). The
+    supervisor exposes the channel and waits for the guest's ready signal on
+    `ready_port` as part of boot; the payloads spoken over it are the
+    client's business."""
+
+    ready_port: int
+
+
+@dataclass(frozen=True)
 class CreateVmSpec:
     vm_id: VmId
     backend: Backend
@@ -160,19 +170,16 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
-    # Program boot flow: enable the VMM control socket (vsock), wait for the
-    # guest init's ready signal as part of boot, and report the socket in
-    # VmInfo.control_socket_path. The guest-level protocols spoken over that
-    # socket are the agent's business, opaque to the supervisor.
-    program_mode: bool = False
+    # Optional host⇄guest control channel; None = no channel. See
+    # GuestChannelSpec and VmInfo.guest_channel_path.
+    guest_channel: GuestChannelSpec | None = None
 
     @property
     def rootfs(self) -> DiskSpec | None:
         """The single rootfs disk, or None for a rootfs-less spec.
 
-        Instances carry exactly one ROOTFS disk; programs carry none (their root
-        image is the runtime disk). Raises if more than one ROOTFS disk is
-        present, which is a malformed spec.
+        Raises if more than one ROOTFS disk is present, which is a malformed
+        spec.
         """
         # Local import: aleph.vm.supervisor.errors imports ErrorCode from this
         # module, so a top-level import would be circular.
@@ -214,22 +221,18 @@ class VmInfo:
     started_at_ns: int = 0
     stopping_at_ns: int = 0
     stopped_at_ns: int = 0
-    # True for instances (full VMs), false for programs/microvms. Independent of
-    # `backend`: an instance may run under Firecracker or QEMU, so the backend
-    # alone cannot recover this. Mirrors VmExecution.is_instance.
-    is_instance: bool = False
     # Precise confidential-computing mode (the agent reduces to a bool for Aleph
     # APIs). NONE for non-confidential VMs.
     confidential_mode: ConfidentialMode = ConfidentialMode.NONE
     # Exact PCI devices attached to this VM; mirrors HostInfo.gpus.
     gpus: list[GpuDevice] = field(default_factory=list)
-    # Host UDS path of the VM's control socket (Firecracker vsock); empty for
-    # backends without one. The agent dials it for guest-level protocols and
+    # Host UDS endpoint of the guest control channel; empty when the VM was
+    # created without one. The client dials it for guest-level protocols and
     # binds `<path>_<port>` listeners for guest-initiated connections.
-    control_socket_path: str = ""
-    # Version the guest init reported during the boot handshake; empty until
-    # the init signaled (or for VMs without the handshake).
-    runtime_version: str = ""
+    guest_channel_path: str = ""
+    # Raw bytes the guest sent with its ready signal, passed through opaquely;
+    # empty until the signal arrived (or for VMs without a channel).
+    guest_ready_payload: bytes = b""
     # Host-side tap addresses (no prefix); the guest's default routes.
     ipv4_gateway: str = ""
     ipv6_gateway: str = ""

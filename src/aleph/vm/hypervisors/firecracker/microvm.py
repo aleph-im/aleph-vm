@@ -87,6 +87,8 @@ class MicroVM:
     drives: list[Drive]
     init_timeout: float
     runtime_config: RuntimeConfiguration | None
+    # Raw bytes from the guest's ready signal; b"" until it arrives.
+    init_payload: bytes = b""
     mounted_rootfs: Path | None = None
     _unix_socket: Server | None = None
     enable_log: bool
@@ -142,6 +144,7 @@ class MicroVM:
         self.drives = []
         self.init_timeout = init_timeout
         self.runtime_config = None
+        self.init_payload = b""
         self.enable_log = enable_log
 
     def to_dict(self) -> dict:
@@ -393,13 +396,20 @@ class MicroVM:
         self.drives.append(drive)
         return drive
 
-    async def wait_for_init(self) -> None:
-        """Wait for a connection from the init in the VM"""
+    async def wait_for_init(self, ready_port: int = 52) -> None:
+        """Wait for a connection from the init in the VM.
+
+        The raw bytes the guest sends with its ready signal are kept in
+        ``self.init_payload`` for pass-through consumers (the supervisor
+        contract reports them opaquely); the legacy RuntimeConfiguration parse
+        is preserved for the in-process program path.
+        """
         logger.debug("Waiting for init...")
         queue: asyncio.Queue[RuntimeConfiguration] = asyncio.Queue()
 
         async def unix_client_connected(reader: asyncio.StreamReader, _writer: asyncio.StreamWriter):
             data = await reader.read(1_000_000)
+            self.init_payload = data or b""
             if data:
                 config_dict: dict[str, Any] = msgpack.loads(data)
                 runtime_config = RuntimeConfiguration(version=config_dict["version"])
@@ -410,9 +420,11 @@ class MicroVM:
             logger.debug("Runtime version: %s", runtime_config)
             await queue.put(runtime_config)
 
-        self._unix_socket = await asyncio.start_unix_server(unix_client_connected, path=f"{self.vsock_path}_52")
+        self._unix_socket = await asyncio.start_unix_server(
+            unix_client_connected, path=f"{self.vsock_path}_{ready_port}"
+        )
         if self.use_jailer:
-            system(f"chown jailman:jailman {self.vsock_path}_52")
+            system(f"chown jailman:jailman {self.vsock_path}_{ready_port}")
         try:
             self.runtime_config = await asyncio.wait_for(queue.get(), timeout=self.init_timeout)
             logger.debug("...signal from init received")

@@ -15,6 +15,7 @@ from aleph.vm.supervisor.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    GuestChannelSpec,
     NetworkConfig,
     VmId,
 )
@@ -27,11 +28,13 @@ def make_spec(tmp_path: Path, *, code: bool = True, extra: int = 1, internet: bo
     runtime = tmp_path / "runtime.squashfs"
     kernel.write_bytes(b"kernel")
     runtime.write_bytes(b"runtime")
-    disks = [DiskSpec(path=runtime, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.RUNTIME)]
+    disks = [DiskSpec(path=runtime, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.ROOTFS)]
     if code:
         code_path = tmp_path / "code.squashfs"
         code_path.write_bytes(b"code")
-        disks.append(DiskSpec(path=code_path, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.CODE))
+        disks.append(
+            DiskSpec(path=code_path, readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.EXTRA, mount="/opt/code")
+        )
     for index in range(extra):
         volume = tmp_path / f"volume{index}.ext4"
         volume.write_bytes(b"volume")
@@ -51,7 +54,7 @@ def make_spec(tmp_path: Path, *, code: bool = True, extra: int = 1, internet: bo
         gpus=[],
         numa_node=None,
         persistent=False,
-        program_mode=True,
+        guest_channel=GuestChannelSpec(ready_port=52),
     )
 
 
@@ -60,14 +63,13 @@ def test_resources_from_spec(tmp_path):
     resources = SpecProgramResources.from_spec(spec)
     assert resources.kernel_image_path == spec.kernel_path
     assert resources.rootfs_path.name == "runtime.squashfs"
-    assert resources.code_disk is not None and resources.code_disk.path.name == "code.squashfs"
-    assert [disk.path.name for disk in resources.extra_disks] == ["volume0.ext4", "volume1.ext4"]
+    # EXTRA disks keep spec order: code first, then volumes.
+    assert [disk.path.name for disk in resources.extra_disks] == ["code.squashfs", "volume0.ext4", "volume1.ext4"]
 
 
 def test_resources_from_spec_without_code(tmp_path):
     spec = make_spec(tmp_path, code=False, extra=0)
     resources = SpecProgramResources.from_spec(spec)
-    assert resources.code_disk is None
     assert resources.extra_disks == []
 
 
@@ -78,13 +80,13 @@ def test_resources_require_kernel(tmp_path):
         SpecProgramResources.from_spec(broken)
 
 
-def test_resources_require_exactly_one_runtime(tmp_path):
+def test_resources_require_a_rootfs(tmp_path):
     spec = make_spec(tmp_path)
-    no_runtime = CreateVmSpec(
-        **{**spec.__dict__, "disks": [disk for disk in spec.disks if disk.role is not DiskRole.RUNTIME]}
+    no_rootfs = CreateVmSpec(
+        **{**spec.__dict__, "disks": [disk for disk in spec.disks if disk.role is not DiskRole.ROOTFS]}
     )
     with pytest.raises(InvalidBackendError):
-        SpecProgramResources.from_spec(no_runtime)
+        SpecProgramResources.from_spec(no_rootfs)
 
 
 @pytest.mark.asyncio
