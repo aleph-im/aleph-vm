@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing
 from multiprocessing import Process
 from pathlib import Path
 from string import ascii_lowercase
@@ -160,14 +161,28 @@ class ProgramGuestClient:
 
     async def _start_guest_api(self, info: VmInfo) -> None:
         vsock_path = Path(f"{info.control_socket_path}_53")
+        vsock_path.unlink(missing_ok=True)  # a previous run's socket would alias the old process
         vsock_path.parent.mkdir(parents=True, exist_ok=True)
         logger.debug("Starting guest API for %s on %s", info.vm_id, vsock_path)
-        process = Process(
+        # Explicit fork: the guest API inherits the parent's loaded settings,
+        # which the old controller relied on implicitly (fork was the Linux
+        # default before Python 3.14).
+        process: Process = multiprocessing.get_context("fork").Process(
             target=run_guest_api,
             args=(vsock_path, ItemHash(str(info.vm_id)), settings.SENTRY_DSN, settings.DOMAIN_NAME),
         )
         process.start()
+        # Bounded wait: the old controller looped forever here, hanging the
+        # request if the guest API child died at startup.
+        deadline = asyncio.get_running_loop().time() + 10
         while not vsock_path.exists():
+            if not process.is_alive():
+                msg = f"Guest API process for {info.vm_id} died at startup (exit code {process.exitcode})"
+                raise VmSetupError(msg)
+            if asyncio.get_running_loop().time() >= deadline:
+                process.terminate()
+                msg = f"Guest API for {info.vm_id} did not bind {vsock_path} within 10s"
+                raise VmSetupError(msg)
             await asyncio.sleep(0.01)
         await chown_to_jailman(vsock_path)
         self._guest_api_processes[info.vm_id] = process
