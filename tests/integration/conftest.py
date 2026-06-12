@@ -243,18 +243,69 @@ def _system_module_shim(root: Path) -> Path | None:
 class Daemon:
     """Handle on the supervisor daemon process and its private roots."""
 
-    def __init__(self, process: subprocess.Popen, socket_path: Path, root: Path, exec_root: Path):
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        socket_path: Path,
+        root: Path,
+        exec_root: Path,
+        env: dict[str, str] | None = None,
+        log_handle=None,
+    ):
         self.process = process
         self.socket_path = socket_path
         self.root = root
         self.exec_root = exec_root
         self.cache_root = root / "cache"
         self.log_path = root / "daemon.log"
+        # Kept so restart_daemon can relaunch the exact same daemon.
+        self.env = env or {}
+        self.log_handle = log_handle
 
     def log_tail(self, lines: int = 50) -> str:
         if not self.log_path.exists():
             return "<no daemon log>"
         return "\n".join(self.log_path.read_text(errors="replace").splitlines()[-lines:])
+
+
+def _spawn_daemon_process(daemon_env: dict[str, str], socket_path: Path, log_path: Path):
+    """Start a supervisor daemon process; returns (process, log_handle)."""
+    log_file = log_path.open("ab")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "aleph.vm.supervisor", "--socket", str(socket_path)],
+        env=daemon_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        cwd=REPO_ROOT,
+    )
+    return process, log_file
+
+
+async def restart_daemon(daemon: Daemon) -> None:
+    """SIGTERM the daemon (running VMs survive: persistent ones live in
+    systemd units) and start a fresh one on the same roots and socket;
+    returns once the new daemon answers health, so it has already run
+    load_persistent_executions."""
+    daemon.process.terminate()
+    await asyncio.to_thread(daemon.process.wait, 30)
+    if daemon.log_handle is not None:
+        daemon.log_handle.close()
+
+    daemon.process, daemon.log_handle = _spawn_daemon_process(daemon.env, daemon.socket_path, daemon.log_path)
+
+    deadline = asyncio.get_event_loop().time() + 60
+    last_error: Exception | None = None
+    while asyncio.get_event_loop().time() < deadline:
+        if daemon.process.poll() is not None:
+            pytest.fail(f"supervisor daemon exited during restart:\n{daemon.log_tail()}")
+        if daemon.socket_path.exists():
+            try:
+                await _health_once(daemon.socket_path)
+                return
+            except Exception as exc:
+                last_error = exc
+        await asyncio.sleep(0.5)
+    pytest.fail(f"restarted supervisor daemon never became healthy ({last_error}):\n{daemon.log_tail()}")
 
 
 async def _health_once(socket_path: Path) -> None:
@@ -363,15 +414,8 @@ def daemon(tmp_path_factory):
         taps_before = list_tap_interfaces()
         unit_files = _install_controller_unit(exec_root, os.pathsep.join(python_path))
 
-    log_file = (root / "daemon.log").open("wb")
-    process = subprocess.Popen(
-        [sys.executable, "-m", "aleph.vm.supervisor", "--socket", str(socket_path)],
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        cwd=REPO_ROOT,
-    )
-    handle = Daemon(process, socket_path, root, exec_root)
+    process, log_file = _spawn_daemon_process(env, socket_path, root / "daemon.log")
+    handle = Daemon(process, socket_path, root, exec_root, env=env, log_handle=log_file)
 
     deadline = time.monotonic() + 60
     last_error: Exception | None = None
@@ -399,13 +443,15 @@ def daemon(tmp_path_factory):
         asyncio.run(_delete_all_vms(socket_path))
     except Exception:
         pass
-    process.terminate()
+    # restart_daemon may have replaced the process and log handle mid-session.
+    handle.process.terminate()
     try:
-        process.wait(timeout=30)
+        handle.process.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
-    log_file.close()
+        handle.process.kill()
+        handle.process.wait(timeout=10)
+    if handle.log_handle is not None:
+        handle.log_handle.close()
     _remove_controller_unit(unit_files)
     if IS_ROOT:
         # Anything an interrupted test left behind (the guard above proved
@@ -491,12 +537,26 @@ def make_qemu_rootfs(daemon: Daemon, vm_id: VmId) -> Path:
     return overlay
 
 
+def make_data_disk(daemon: Daemon, vm_id: VmId, size_mib: int = 64) -> Path:
+    """A blank qcow2 data disk for DiskRole.EXTRA attachment."""
+    disks = daemon.root / "disks"
+    disks.mkdir(exist_ok=True)
+    path = disks / f"{vm_id}-data.qcow2"
+    subprocess.run(
+        ["qemu-img", "create", "-f", "qcow2", str(path), f"{size_mib}M"],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
 def qemu_instance_spec(
     vm_id: VmId,
     rootfs: Path,
     *,
     ssh_pubkey: str = "",
     hostname: str = "",
+    extra_disks: list[DiskSpec] | None = None,
     vcpus: int = 1,
     # The Ubuntu 26.04 kernel reserves a kexec-handover (KHO) scratch area
     # at boot when physical memory layout allows: ~550 MiB on a 768 MiB
@@ -511,7 +571,10 @@ def qemu_instance_spec(
         backend=Backend.QEMU,
         kernel_path=Path(""),
         initrd_path=Path(""),
-        disks=[DiskSpec(path=rootfs, readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)],
+        disks=[
+            DiskSpec(path=rootfs, readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS),
+            *(extra_disks or []),
+        ],
         vcpus=vcpus,
         memory_mib=memory_mib,
         tee=None,
