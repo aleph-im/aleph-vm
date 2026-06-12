@@ -54,7 +54,11 @@ async def test_backup_restore_cycle(supervisor, daemon, ssh_keypair, tmp_path):
         await wait_for_ssh(key_path, info.ipv4.address)
 
         # ── Back up the pristine state ──
-        job = await supervisor.start_backup(vm_id)
+        # quiesce_guest: an unquiesced copy of a live disk is crash-consistent
+        # at best, and the restored guest sometimes fails to boot from it
+        # (observed on the slower CI runners). fsfreeze through the guest
+        # agent is how a backup of a running VM is meant to be taken.
+        job = await supervisor.start_backup(vm_id, quiesce_guest=True)
         assert job.status in (BackupStatus.RUNNING, BackupStatus.COMPLETE)
         backup_id = job.backup_id
 

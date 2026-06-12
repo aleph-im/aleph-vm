@@ -48,7 +48,7 @@ async def test_extra_disk_data_survives_stop_start_and_wipe_erases_it(supervisor
         vm_id,
         make_qemu_rootfs(daemon, vm_id),
         ssh_pubkey=pubkey,
-        extra_disks=[DiskSpec(path=data_disk, readonly=False, format=DiskFormat.QCOW2, role=DiskRole.EXTRA)],
+        extra_disks=[DiskSpec(path=data_disk, readonly=False, format=DiskFormat.RAW, role=DiskRole.EXTRA)],
     )
     try:
         info = await supervisor.create_vm(spec)

@@ -171,7 +171,12 @@ jobs:
           # Unit lifecycle + controller logs first, with the guest console
           # forwarding filtered out (it otherwise drowns the 500-line tail).
           sudo journalctl --no-pager -b -u 'aleph-vm-controller@*' | grep -vE ' vm-[0-9a-f]{64}-(stdout|stderr)\[' | tail -n 500 || true
-          sudo journalctl --no-pager -b | grep -E ' vm-[0-9a-f]{64}-(stdout|stderr)\[' | tail -n 500 || true
+          # Then each guest's console tail separately: one global tail only
+          # shows the last VM, hiding whichever guest actually failed.
+          for ident in $(sudo journalctl -b -F SYSLOG_IDENTIFIER | grep -E '^vm-[0-9a-f]{64}-stdout$' | sort); do
+            echo "=== console of ${ident} ==="
+            sudo journalctl --no-pager -b -t "${ident}" | tail -n 150 || true
+          done
 
   code-quality-shell:
     runs-on: ubuntu-22.04
