@@ -3,6 +3,7 @@ import os
 import subprocess
 import tarfile
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -348,6 +349,55 @@ async def test_create_backup_archive_with_source_sizes(tmp_path):
     assert stored["vm_hash"] == "vm789"
 
 
+@pytest.mark.asyncio
+async def test_create_backup_archive_writes_via_staging(tmp_path, mocker):
+    """The final .tar path must never hold a half-written archive: the
+    presence of the .tar is what every reader (status, listing, download,
+    find_existing_backup) takes as backup completion, and these can read
+    it concurrently from another task."""
+    f1 = tmp_path / "rootfs.qcow2"
+    f1.write_bytes(b"content")
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    opened: list[str] = []
+    real_open = tarfile.open
+
+    def recording_open(name, *args, **kwargs):
+        opened.append(Path(name).name)
+        return real_open(name, *args, **kwargs)
+
+    mocker.patch("aleph.vm.controllers.qemu.backup.tarfile.open", recording_open)
+
+    tar_path = await create_backup_archive(
+        vm_hash="vm123",
+        backup_files={"rootfs.qcow2": f1},
+        destination_dir=dest,
+    )
+
+    assert all(name.endswith(".tar.partial") for name in opened)
+    assert tar_path.exists()
+    assert not tar_path.with_suffix(".tar.partial").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_backup_archive_failure_leaves_no_tar(tmp_path):
+    """A failed archive run must not leave a .tar (a reader would treat it
+    as a complete backup) nor a stray .tar.partial."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        await create_backup_archive(
+            vm_hash="vm123",
+            backup_files={"rootfs.qcow2": tmp_path / "missing.qcow2"},
+            destination_dir=dest,
+        )
+
+    assert list(dest.glob("*.tar")) == []
+    assert list(dest.glob("*.tar.partial")) == []
+
+
 # --- cleanup_expired_backups ---
 
 
@@ -387,6 +437,23 @@ def test_cleanup_expired_backups_none_expired(tmp_path):
 def test_cleanup_expired_backups_empty_dir(tmp_path):
     deleted = cleanup_expired_backups(tmp_path)
     assert deleted == 0
+
+
+def test_cleanup_expired_backups_removes_stale_partials(tmp_path):
+    """A .tar.partial past the TTL is a write whose daemon died mid-backup;
+    a fresh one belongs to a backup running right now and must survive."""
+    stale = tmp_path / "vm1-20240101T000000Z.tar.partial"
+    stale.write_bytes(b"half-written")
+    old_mtime = time.time() - (25 * 3600)
+    os.utime(stale, (old_mtime, old_mtime))
+
+    in_flight = tmp_path / "vm2-20240102T000000Z.tar.partial"
+    in_flight.write_bytes(b"being-written")
+
+    cleanup_expired_backups(tmp_path, ttl_hours=24)
+
+    assert not stale.exists()
+    assert in_flight.exists()
 
 
 # --- find_existing_backup ---
