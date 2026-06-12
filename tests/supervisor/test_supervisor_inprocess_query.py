@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aleph_message.models.execution.environment import HypervisorType
@@ -42,6 +43,7 @@ def make_execution(
         vm_spec=None,
         vm=vm,
         gpus=[],
+        wait_for_controller_ready=AsyncMock(),
     )
 
 

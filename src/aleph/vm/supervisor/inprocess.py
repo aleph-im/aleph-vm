@@ -458,6 +458,10 @@ class InProcessSupervisor(Supervisor):
             old_status = self._status_snapshot(execution)
             if execution.persistent and getattr(execution, "systemd_manager", None):
                 self.pool.systemd_manager.restart(execution.controller_service)
+                # RestartUnit only queues a job: wait until the unit is
+                # confirmed active so the reported status is truthful.
+                await execution.wait_for_controller_ready()
+                execution.times.started_at = datetime.now(tz=timezone.utc)
                 info = _to_vm_info(execution, _is_running(execution, self.pool))
                 # A reboot is a down-then-up pair; watchers that drop per-VM
                 # state on "down" must see the down.

@@ -58,15 +58,22 @@ async def test_delete_unknown_vm_raises():
 
 @pytest.mark.asyncio
 async def test_reboot_persistent_vm_restarts_systemd_and_returns_info():
+    """RestartUnit only queues a job: reboot must confirm the unit is back
+    up before reporting, or callers see BOOTING for a healthy reboot."""
+    events = []
     execution = make_execution(running=True)
+    execution.wait_for_controller_ready = AsyncMock(side_effect=lambda: events.append("wait_ready"))
     systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})
-    systemd.restart = MagicMock()
+    systemd.restart = MagicMock(side_effect=lambda _svc: events.append("restart_unit"))
     pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
     sup = InProcessSupervisor(pool=pool)
 
+    old_started_at = execution.times.started_at
     info = await sup.reboot_vm(VmId("itemhash123"))
 
     systemd.restart.assert_called_once_with("aleph-vm-controller@itemhash123.service")
+    assert events == ["restart_unit", "wait_ready"]
+    assert execution.times.started_at > old_started_at
     assert info.vm_id == "itemhash123"
 
 
