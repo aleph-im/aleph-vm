@@ -62,12 +62,12 @@ test *args="tests":
 
 # Supervisor integration tests without root (real Firecracker boots over the gRPC daemon; QEMU/networking tests skip).
 itest *args="tests/integration":
-    AVM_ITEST=1 {{ py }} -m pytest -v -p no:cacheprovider {{ args }}
+    AVM_ITEST=1 {{ py }} -m pytest -v -p no:cacheprovider --durations=10 {{ args }}
 
 # Full supervisor integration tests with sudo (QEMU, TAP networking, port forwards, backups/restores).
 itest-root *args="tests/integration":
     sudo --preserve-env=AVM_ITEST_FC_KERNEL,AVM_ITEST_FC_RUNTIME,AVM_ITEST_QEMU_IMAGE \
-        env AVM_ITEST=1 {{ py }} -m pytest -v -p no:cacheprovider {{ args }}
+        env AVM_ITEST=1 {{ py }} -m pytest -v -p no:cacheprovider --durations=10 {{ args }}
 
 # Whole-package type check (the CI mypy gate).
 check-typing:
