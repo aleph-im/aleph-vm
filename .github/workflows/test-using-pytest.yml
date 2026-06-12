@@ -111,6 +111,66 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: aleph-im/aleph-vm
 
+  tests-integration:
+    name: "Supervisor integration tests"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
+        run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
+
+      - name: Install required system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-psutil acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto ndppd cloud-image-utils qemu-utils qemu-system-x86
+
+      - name: Install hatch
+        run: |
+          # virtualenv 21 brings a breaking change that's not supported by hatch 1.16
+          # The suite runs under sudo, so hatch must be importable as root.
+          sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs "virtualenv<21"
+
+      - name: Install Firecracker and its guest kernel
+        run: |
+          sudo useradd jailman
+          sudo mkdir --parents /opt/firecracker/
+          sudo curl -fsSL -o "/opt/firecracker/vmlinux.bin" "https://ipfs.aleph.cloud/ipfs/QmQvQnZg9rB2fhmuminFSYgtGGzEhfbiTMobppUXVfGBmD"
+
+          rm -fr /tmp/firecracker-release
+          mkdir --parents /tmp/firecracker-release /opt/firecracker
+          curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz | tar -xz --no-same-owner --directory /tmp/firecracker-release
+          cp /tmp/firecracker-release/release-v*/firecracker-v*[!.debug] /opt/firecracker/firecracker
+          cp /tmp/firecracker-release/release-v*/jailer-v*[!.debug] /opt/firecracker/jailer
+          chmod +x /opt/firecracker/firecracker
+          chmod +x /opt/firecracker/jailer
+
+      - name: Build the Firecracker runtime
+        run: cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh
+
+      - name: Download the QEMU cloud image (Ubuntu 24.04)
+        run: cd runtimes/instance-rootfs && sudo ./create-ubuntu-24-04-qemu-disk.sh
+
+      - name: Run supervisor integration tests
+        env:
+          # Guests resolve through the supervisor-provided resolver; the
+          # runner's systemd-resolved (127.0.0.53) is unreachable from a VM,
+          # so pin public nameservers (same as the droplet CI).
+          ALEPH_VM_DNS_NAMESERVERS: '["1.1.1.1","8.8.8.8"]'
+        run: |-
+          sudo --preserve-env=ALEPH_VM_DNS_NAMESERVERS \
+            env AVM_ITEST=1 \
+            AVM_ITEST_QEMU_IMAGE="$PWD/runtimes/instance-rootfs/rootfs.img" \
+            hatch run testing:python -m pytest -v -p no:cacheprovider --durations=10 tests/integration
+
+      - name: Dump controller unit journal on failure
+        if: failure()
+        run: |-
+          sudo journalctl --no-pager -b -u 'aleph-vm-controller@*' | tail -n 500 || true
+          sudo journalctl --no-pager -b | grep -E ' vm-[0-9a-f]{64}-(stdout|stderr)' | tail -n 500 || true
+
   code-quality-shell:
     runs-on: ubuntu-22.04
 
