@@ -130,20 +130,33 @@ def _create_tar_and_checksum(
     timestamp: str,
     source_sizes: dict[str, int] | None,
 ) -> None:
-    """Synchronous tar + sha256 + metadata creation (run via to_thread)."""
-    with tarfile.open(tar_path, "w") as tar:
-        for member_name, file_path in backup_files.items():
-            tar.add(str(file_path), arcname=member_name)
+    """Synchronous tar + sha256 + metadata creation (run via to_thread).
 
-    checksum = _sha256_file(tar_path)
-    sidecar = tar_path.with_suffix(".tar.sha256")
-    sidecar.write_text(f"{checksum}  {tar_path.name}\n")
+    The tar is written to a .tar.partial staging name and renamed into
+    place last: the .tar appearing on disk is what marks a backup
+    complete everywhere (status, listing, download, find_existing_backup),
+    so the final path must never hold a half-written archive.
+    """
+    staging = tar_path.with_suffix(".tar.partial")
+    try:
+        with tarfile.open(staging, "w") as tar:
+            for member_name, file_path in backup_files.items():
+                tar.add(str(file_path), arcname=member_name)
 
-    meta: dict = {"vm_hash": vm_hash, "created_at": timestamp}
-    if source_sizes:
-        meta["source_sizes"] = source_sizes
-    meta_path = tar_path.with_suffix(".tar.meta.json")
-    meta_path.write_text(json.dumps(meta))
+        checksum = _sha256_file(staging)
+        sidecar = tar_path.with_suffix(".tar.sha256")
+        sidecar.write_text(f"{checksum}  {tar_path.name}\n")
+
+        meta: dict = {"vm_hash": vm_hash, "created_at": timestamp}
+        if source_sizes:
+            meta["source_sizes"] = source_sizes
+        meta_path = tar_path.with_suffix(".tar.meta.json")
+        meta_path.write_text(json.dumps(meta))
+
+        staging.rename(tar_path)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
 
 
 async def create_backup_archive(
@@ -196,6 +209,13 @@ def cleanup_expired_backups(
     """
     cutoff = time.time() - (ttl_hours * 3600)
     deleted = 0
+
+    # A .tar.partial older than the TTL is an archive whose writer died
+    # mid-backup (live ones are renamed to .tar within minutes).
+    for partial in backup_dir.glob("*.tar.partial"):
+        if partial.stat().st_mtime < cutoff:
+            partial.unlink()
+            logger.info("Deleted stale partial backup %s", partial.name)
 
     for tar_file in backup_dir.glob("*.tar"):
         if tar_file.stat().st_mtime < cutoff:
