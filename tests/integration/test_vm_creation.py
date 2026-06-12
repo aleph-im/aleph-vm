@@ -88,6 +88,13 @@ async def test_qemu_create_boots_and_is_reachable_over_ip(supervisor, daemon, ss
         banner = await wait_for_tcp_banner(info.ipv4.address, 22)
         assert banner.startswith(b"SSH-"), f"unexpected banner: {banner!r}"
 
+        # IPv6: the address is statically pushed into the guest via the
+        # cloud-init network config, so it must answer over the TAP too.
+        assert info.ipv6.address, "a TAP-networked instance must have an IPv6 assignment"
+        assert info.ipv6.gateway
+        banner6 = await wait_for_tcp_banner(info.ipv6.address, 22, timeout=60)
+        assert banner6.startswith(b"SSH-"), f"unexpected banner over IPv6: {banner6!r}"
+
         assert await supervisor.get_vm_spec(vm_id) == spec
     finally:
         await supervisor.delete_vm(vm_id)

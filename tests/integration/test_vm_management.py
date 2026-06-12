@@ -74,68 +74,97 @@ async def test_firecracker_reboot_comes_back_ready(supervisor):
 
 
 @requires_fc
-async def test_watch_events_streams_create_and_delete(supervisor):
+async def test_watch_events_streams_full_lifecycle_to_all_subscribers(supervisor):
+    """create, reboot (a down-then-up pair) and delete must each reach the
+    stream, and every subscriber sees the same fan-out."""
     vm_id = fresh_vm_id()
-    events = []
-    got_two = asyncio.Event()
+    expected_transitions = [
+        (VmStatus.DEFINED, VmStatus.RUNNING),  # create
+        (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
+        (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
+        (VmStatus.RUNNING, VmStatus.STOPPED),  # delete
+    ]
 
-    async def consume():
+    async def consume(events: list, done: asyncio.Event):
         async for event in supervisor.watch_events():
             if event.vm_id != vm_id:
                 continue
             events.append(event)
-            if len(events) == 2:
-                got_two.set()
+            if len(events) == len(expected_transitions):
+                done.set()
                 return
 
-    consumer = asyncio.ensure_future(consume())
-    await asyncio.sleep(0.5)  # let the stream subscribe server-side
+    streams = [([], asyncio.Event()) for _ in range(2)]
+    consumers = [asyncio.ensure_future(consume(events, done)) for events, done in streams]
+    await asyncio.sleep(0.5)  # let the streams subscribe server-side
 
     await supervisor.create_vm(fc_program_spec(vm_id))
+    await supervisor.reboot_vm(vm_id)
     await supervisor.delete_vm(vm_id)
-    await asyncio.wait_for(got_two.wait(), timeout=30)
-    consumer.cancel()
-    await asyncio.gather(consumer, return_exceptions=True)
+    for _events, done in streams:
+        await asyncio.wait_for(done.wait(), timeout=30)
+    for consumer in consumers:
+        consumer.cancel()
+    await asyncio.gather(*consumers, return_exceptions=True)
 
-    assert [(e.old_status, e.new_status) for e in events] == [
-        (VmStatus.DEFINED, VmStatus.RUNNING),
-        (VmStatus.RUNNING, VmStatus.STOPPED),
-    ]
-    assert events[0].timestamp_ns <= events[1].timestamp_ns
+    for events, _done in streams:
+        assert [(e.old_status, e.new_status) for e in events] == expected_transitions
+        timestamps = [e.timestamp_ns for e in events]
+        assert timestamps == sorted(timestamps)
 
 
 @requires_root
 @requires_fc
-async def test_port_forwards_round_trip(supervisor):
+@pytest.mark.parametrize("protocol", [Protocol.TCP, Protocol.UDP])
+async def test_port_forwards_round_trip(supervisor, protocol):
     vm_id = fresh_vm_id()
     await supervisor.create_vm(fc_program_spec(vm_id, internet=True))
     try:
         info = await supervisor.add_port_forward(
-            PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=GuestPort(8080), protocol=Protocol.TCP)
+            PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=GuestPort(8080), protocol=protocol)
         )
         assert info.host_port > 0
         assert info.vm_port == 8080
 
         listed = await supervisor.list_port_forwards(vm_id)
-        assert [(f.vm_port, f.host_port, f.protocol) for f in listed] == [(8080, info.host_port, Protocol.TCP)]
+        assert [(f.vm_port, f.host_port, f.protocol) for f in listed] == [(8080, info.host_port, protocol)]
         # The redirect actually landed in the host firewall.
         assert str(info.host_port) in nftables_ruleset()
 
-        await supervisor.remove_port_forward(vm_id, info.host_port, Protocol.TCP)
+        await supervisor.remove_port_forward(vm_id, info.host_port, protocol)
         assert await supervisor.list_port_forwards(vm_id) == []
     finally:
         await supervisor.delete_vm(vm_id)
+
+
+async def test_get_host_info_reports_the_machine(supervisor):
+    info = await supervisor.get_host_info()
+    assert info.cpu_count >= 1
+    assert info.memory_mib > 0
+    assert info.cpu_architecture
+    assert info.kernel_version
+    assert info.hostname
 
 
 @requires_qemu
 async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
     """One boot, the whole persistent lifecycle: stop keeps the VM defined,
     start brings it back, reboot restarts it; the guest is reachable after
-    each transition."""
+    each transition and every transition reaches the event stream."""
     _, pubkey = ssh_keypair
     vm_id = fresh_vm_id()
     spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
     info = await supervisor.create_vm(spec)
+
+    events: list = []
+
+    async def consume():
+        async for event in supervisor.watch_events():
+            if event.vm_id == vm_id:
+                events.append((event.old_status, event.new_status))
+
+    consumer = asyncio.ensure_future(consume())
+    await asyncio.sleep(0.5)  # let the stream subscribe server-side
     try:
         await wait_for_tcp_banner(info.ipv4.address, 22)
 
@@ -157,5 +186,16 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
         rebooted = await supervisor.reboot_vm(vm_id)
         assert rebooted.status is VmStatus.RUNNING
         await wait_for_tcp_banner(rebooted.ipv4.address, 22)
+
+        # Persistent transitions are observable: stop, start, reboot pair.
+        await eventually(lambda: len(events) >= 4, timeout=10, message=f"missing lifecycle events: {events}")
+        assert events == [
+            (VmStatus.RUNNING, VmStatus.STOPPED),  # stop_vm
+            (VmStatus.STOPPED, VmStatus.RUNNING),  # start_vm
+            (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
+            (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
+        ]
     finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
         await supervisor.delete_vm(vm_id)
