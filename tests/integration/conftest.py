@@ -140,7 +140,12 @@ Type=simple
 RestartSec=5s
 ExecStart=/bin/false
 KillMode=mixed
-TimeoutStopSec=30
+# Must exceed the controller's 50s ACPI grace window (GRACEFUL_SHUTDOWN_TIMEOUT)
+# or systemd SIGKILLs qemu mid-shutdown; matches the packaged unit.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
 """
 
 
