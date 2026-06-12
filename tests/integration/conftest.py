@@ -30,6 +30,7 @@ Typical runs are `just itest` (unprivileged, Firecracker only) and
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import secrets
@@ -108,6 +109,18 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if Path(item.fspath).parent == HERE:
             item.add_marker(skip)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Closed grpc.aio channels can sit in reference cycles (exception
+    # chains keep frames alive, and frames keep the client alive), so the
+    # last ones are only freed by the GC pass that runs during interpreter
+    # shutdown. AioChannel.__dealloc__ then tries to join grpc's poller
+    # thread, which Python 3.14 forbids at that point and reports as an
+    # ignored PythonFinalizationError traceback after a green run. One
+    # cyclic GC pass while the interpreter is still alive frees the
+    # channels safely.
+    gc.collect()
 
 
 # ---------------------------------------------------------------------------
