@@ -317,7 +317,7 @@ def daemon(tmp_path_factory):
         root = Path(tempfile.mkdtemp(prefix="avm-", dir="/var/lib"))
         exec_root = root / "e"
         max_socket_path = len(str(exec_root)) + 1 + 64 + len("-monitor.socket")
-        assert max_socket_path <= 107, f"execution root too long for qemu control sockets: {exec_root}"
+        assert max_socket_path <= 108, f"execution root too long for qemu control sockets: {exec_root}"
     else:
         root = tmp_path_factory.mktemp("avm-itest")
         # Unprivileged runs never start QEMU (no systemd units), so the

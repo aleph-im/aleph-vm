@@ -473,10 +473,14 @@ class Settings(BaseSettings):
         """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
         # QEMU control sockets live at EXECUTION_ROOT/<vm-hash>-monitor.socket
-        # and sun_path caps UNIX socket paths at 108 bytes; QEMU exits at
-        # startup when the path exceeds it ("UNIX socket path is too long").
+        # and sun_path caps UNIX socket paths at 108 bytes. QEMU accepts a
+        # path that exactly fills those 108 bytes (no NUL needed) and exits
+        # at startup on 109+ ("UNIX socket path is too long"). Python-side
+        # clients need a NUL (107 max) but only ever connect to the
+        # -qmp.socket, whose suffix is 4 bytes shorter, so the longest
+        # bound path stays the binding constraint.
         longest_socket_path = len(str(self.EXECUTION_ROOT)) + 1 + 64 + len("-monitor.socket")
-        assert longest_socket_path <= 107, (
+        assert longest_socket_path <= 108, (
             f"EXECUTION_ROOT '{self.EXECUTION_ROOT}' is too long for QEMU control sockets "
             "(UNIX socket paths are limited to 108 bytes)"
         )
