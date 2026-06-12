@@ -13,9 +13,6 @@ from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import NotImplementedSupervisorError
 
 STUB_METHODS = {
-    "export_vm",
-    "import_vm",
-    "get_migration_status",
     "initialize_confidential",
     "get_measurement",
     "inject_secret",

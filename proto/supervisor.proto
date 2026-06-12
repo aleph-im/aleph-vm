@@ -570,6 +570,7 @@ enum ErrorCode {
   // Backup / migration
   ERROR_CODE_BACKUP_NOT_FOUND = 12;
   ERROR_CODE_MIGRATION_IN_PROGRESS = 13;
+  ERROR_CODE_MIGRATION_NOT_FOUND = 14;
 
   // Catch-all
   ERROR_CODE_INTERNAL = 99;

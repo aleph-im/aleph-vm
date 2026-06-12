@@ -241,6 +241,7 @@ class _ErrorCodeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._Enum
     ERROR_CODE_BACKUP_NOT_FOUND: _ErrorCode.ValueType  # 12
     """Backup / migration"""
     ERROR_CODE_MIGRATION_IN_PROGRESS: _ErrorCode.ValueType  # 13
+    ERROR_CODE_MIGRATION_NOT_FOUND: _ErrorCode.ValueType  # 14
     ERROR_CODE_INTERNAL: _ErrorCode.ValueType  # 99
     """Catch-all"""
 
@@ -274,6 +275,7 @@ ERROR_CODE_HOST_NOT_FOUND: ErrorCode.ValueType  # 11
 ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
 """Backup / migration"""
 ERROR_CODE_MIGRATION_IN_PROGRESS: ErrorCode.ValueType  # 13
+ERROR_CODE_MIGRATION_NOT_FOUND: ErrorCode.ValueType  # 14
 ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
 """Catch-all"""
 global___ErrorCode = ErrorCode

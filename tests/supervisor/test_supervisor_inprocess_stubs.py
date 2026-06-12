@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+from aleph.vm.supervisor.errors import NotImplementedSupervisorError, VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.supervisor.types import DirectoryPath, VmId
 
@@ -22,8 +22,9 @@ def test_can_instantiate(supervisor):
 
 
 @pytest.mark.asyncio
-async def test_migration_confidential_are_stubbed(supervisor):
-    with pytest.raises(NotImplementedSupervisorError):
+async def test_confidential_is_stubbed_and_migration_is_real(supervisor):
+    # Migration is implemented: an unknown VM is a lookup error, not a stub.
+    with pytest.raises(VmNotFoundError):
         await supervisor.export_vm(VmId("abc"), DirectoryPath(Path("/tmp/x")))
     with pytest.raises(NotImplementedSupervisorError):
         await supervisor.get_measurement(VmId("abc"))

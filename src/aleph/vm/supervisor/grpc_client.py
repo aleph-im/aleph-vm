@@ -37,6 +37,7 @@ from aleph.vm.supervisor.errors import (
     InvalidBackendError,
     MicroVMInitError,
     MigrationInProgressError,
+    MigrationNotFoundError,
     NotImplementedSupervisorError,
     PortUnavailableError,
     ResourceDownloadError,
@@ -92,6 +93,7 @@ ERROR_CLASS_BY_CODE: dict[ErrorCode, type[SupervisorError]] = {
     ErrorCode.HOST_NOT_FOUND: HostNotFoundError,
     ErrorCode.BACKUP_NOT_FOUND: BackupNotFoundError,
     ErrorCode.MIGRATION_IN_PROGRESS: MigrationInProgressError,
+    ErrorCode.MIGRATION_NOT_FOUND: MigrationNotFoundError,
     ErrorCode.INTERNAL: InternalSupervisorError,
 }
 
