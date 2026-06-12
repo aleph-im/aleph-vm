@@ -74,7 +74,12 @@ class SystemDManager:
         return self._bus
 
     def stop_and_disable(self, service: str) -> None:
-        if self.is_service_active(service):
+        # Gate the stop on the unit's actual ActiveState, never on its
+        # enablement: a unit can be active without being enabled (e.g. a
+        # template with no [Install] section cannot be enabled at all), and
+        # skipping the stop silently leaves qemu running while the caller
+        # tears down its network.
+        if self.get_service_active_state(service) not in ("inactive", "failed", "not-loaded"):
             self.stop(service)
         if self.is_service_enabled(service):
             self.disable(service)
