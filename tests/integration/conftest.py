@@ -538,12 +538,17 @@ def make_qemu_rootfs(daemon: Daemon, vm_id: VmId) -> Path:
 
 
 def make_data_disk(daemon: Daemon, vm_id: VmId, size_mib: int = 64) -> Path:
-    """A blank qcow2 data disk for DiskRole.EXTRA attachment."""
+    """A blank raw data disk for DiskRole.EXTRA attachment.
+
+    Raw on purpose: the controller attaches host volumes without a format,
+    so qemu treats the file as a raw device. A qcow2 here would expose its
+    container bytes to the guest, not a 64 MiB disk.
+    """
     disks = daemon.root / "disks"
     disks.mkdir(exist_ok=True)
-    path = disks / f"{vm_id}-data.qcow2"
+    path = disks / f"{vm_id}-data.img"
     subprocess.run(
-        ["qemu-img", "create", "-f", "qcow2", str(path), f"{size_mib}M"],
+        ["qemu-img", "create", "-f", "raw", str(path), f"{size_mib}M"],
         check=True,
         capture_output=True,
     )

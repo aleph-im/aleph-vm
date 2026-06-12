@@ -94,7 +94,7 @@ async def test_watch_events_streams_full_lifecycle_to_all_subscribers(supervisor
                 done.set()
                 return
 
-    streams = [([], asyncio.Event()) for _ in range(2)]
+    streams: list[tuple[list, asyncio.Event]] = [([], asyncio.Event()) for _ in range(2)]
     consumers = [asyncio.ensure_future(consume(events, done)) for events, done in streams]
     await asyncio.sleep(0.5)  # let the streams subscribe server-side
 
@@ -141,7 +141,8 @@ async def test_get_host_info_reports_the_machine(supervisor):
     info = await supervisor.get_host_info()
     assert info.cpu_count >= 1
     assert info.memory_mib > 0
-    assert info.cpu_architecture
+    # cpu_architecture/vendor/model are best-effort (empty on some cloud
+    # hosts, e.g. GitHub's Azure runners); only assert what every host has.
     assert info.kernel_version
     assert info.hostname
 
