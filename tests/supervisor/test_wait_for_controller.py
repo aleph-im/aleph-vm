@@ -269,6 +269,20 @@ class TestWaitForControllerStopped:
         mgr.get_service_active_state.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_not_loaded_counts_as_stopped(self):
+        """systemd garbage-collects a cleanly stopped unit; a poll can go
+        straight from 'deactivating' to NoSuchUnit without ever sampling
+        'inactive'. Treating that as still-stopping burned the full 75s
+        timeout on every stop."""
+        mgr = MagicMock()
+        mgr.get_service_active_state.side_effect = ["deactivating", "not-loaded"]
+        ex = _make_execution(mgr)
+
+        await ex.wait_for_controller_stopped()
+
+        assert mgr.get_service_active_state.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_gives_up_after_timeout_without_raising(self):
         """A unit stuck past systemd's own SIGKILL deadline: log and proceed
         with teardown rather than blocking stop() forever."""
