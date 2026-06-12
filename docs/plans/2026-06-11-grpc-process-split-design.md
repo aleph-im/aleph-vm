@@ -318,3 +318,14 @@ bounded a little past systemd's TimeoutStopSec) before teardown. Related:
 RestoreBackup could report BOOTING (or worse, RUNNING on a flapping unit);
 it now awaits `wait_for_controller_ready`. Deletion also removes qemu's
 control sockets (`-monitor/-qmp/-qga .socket`), which qemu never unlinks.
+
+Not a supervisor bug but worth recording: the Ubuntu 26.04 (resolute)
+kernel attempts a kexec-handover (KHO) scratch reservation at every boot.
+On a 768 MiB guest the reservation is ~550 MiB; whether it succeeds
+depends on the KASLR-randomized kernel placement, so small guests boot or
+OOM-panic ("System is deadlocked on memory", PID 1, t≈0.8s) at random,
+roughly a coin flip per boot. At 2048 MiB the reservation always fits and
+boots are deterministic. The itest QEMU spec therefore uses 2048 MiB.
+Production implication: ubuntu26 instances with ≤1 GiB of RAM will
+randomly fail to boot until the image carries `kho=off` on the kernel
+command line (or Ubuntu changes the default).

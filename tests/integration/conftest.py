@@ -480,7 +480,13 @@ def qemu_instance_spec(
     ssh_pubkey: str = "",
     hostname: str = "",
     vcpus: int = 1,
-    memory_mib: int = 768,
+    # The Ubuntu 26.04 kernel reserves a kexec-handover (KHO) scratch area
+    # at boot when physical memory layout allows: ~550 MiB on a 768 MiB
+    # guest, leaving ~72 MiB and panicking PID 1 with "System is deadlocked
+    # on memory". Whether the reservation succeeds depends on KASLR, so 768
+    # MiB guests boot or panic at random. At 2048 MiB the reservation always
+    # fits (~650 MiB) and the guest still has 1.2 GiB: boots deterministic.
+    memory_mib: int = 2048,
 ) -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=vm_id,
