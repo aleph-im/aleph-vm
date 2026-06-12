@@ -128,11 +128,12 @@ class SystemDManager:
         """Return the ActiveState string for a systemd service.
 
         Possible values: "active", "activating", "deactivating",
-        "inactive", "failed".  Returns "unknown" on D-Bus errors,
-        including when the unit has never been loaded (GetUnit raises
-        NoSuchUnit, e.g. right after EnableUnitFiles but before
-        StartUnit is processed).  Callers should retry on "unknown"
-        rather than treating it as terminal.
+        "inactive", "failed", plus two synthetic ones: "not-loaded" when
+        the unit is not loaded in systemd (GetUnit raises NoSuchUnit;
+        happens before the first StartUnit, and again once a cleanly
+        stopped unit is garbage-collected) and "unknown" on other D-Bus
+        errors.  Callers should retry on "unknown"; "not-loaded" means
+        the unit is positively not running.
         """
         try:
             manager = self._get_manager()
@@ -153,6 +154,8 @@ class SystemDManager:
                 )
             )
         except DBusException as error:
+            if error.get_dbus_name() == "org.freedesktop.systemd1.NoSuchUnit":
+                return "not-loaded"
             logger.error("Failed to get active state for %s: %s", service, error)
             return "unknown"
 

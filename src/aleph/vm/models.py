@@ -788,7 +788,10 @@ class VmExecution:
         max_attempt = 75
         for attempt in range(1, max_attempt + 1):
             state = self.systemd_manager.get_service_active_state(self.controller_service)
-            if state in ("inactive", "failed"):
+            # "not-loaded" counts as stopped: systemd garbage-collects a
+            # unit once it reaches a clean inactive state, so a 1s poll
+            # can miss the brief "inactive" window entirely.
+            if state in ("inactive", "failed", "not-loaded"):
                 return
             logger.debug(
                 "%s controller still '%s' while stopping (attempt %d/%d)",
