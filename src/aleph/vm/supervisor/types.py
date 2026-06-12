@@ -104,6 +104,7 @@ class ErrorCode(Enum):
     HOST_NOT_FOUND = "host_not_found"
     BACKUP_NOT_FOUND = "backup_not_found"
     MIGRATION_IN_PROGRESS = "migration_in_progress"
+    MIGRATION_NOT_FOUND = "migration_not_found"
     INTERNAL = "internal"
 
 

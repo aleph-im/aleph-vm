@@ -45,6 +45,7 @@ ERROR_TRAILER_KEY = "aleph-supervisor-error-bin"
 STATUS_CODE_BY_ERROR = {
     ErrorCode.VM_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.BACKUP_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
+    ErrorCode.MIGRATION_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.HOST_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.VM_ALREADY_EXISTS: grpc.StatusCode.ALREADY_EXISTS,
     ErrorCode.INSUFFICIENT_RESOURCES: grpc.StatusCode.RESOURCE_EXHAUSTED,
