@@ -30,16 +30,26 @@ pytestmark = pytest.mark.asyncio
 
 @requires_fc
 async def test_firecracker_delete_releases_host_resources(supervisor, daemon):
-    baseline = len(hypervisor_children(daemon))
+    # Track this VM's own hypervisor PIDs by set difference rather than
+    # comparing raw counts: a previous test's firecracker can still be
+    # mid-teardown (delete_vm returns before the host reaps the process),
+    # which would contaminate a count-based baseline.
+    before = set(hypervisor_children(daemon))
     vm_id = fresh_vm_id()
+    new_pids: set[int] = set()
     try:
         await supervisor.create_vm(fc_program_spec(vm_id))
-        assert len(hypervisor_children(daemon)) == baseline + 1
+        await eventually(
+            lambda: len(set(hypervisor_children(daemon)) - before) == 1,
+            timeout=30,
+            message="firecracker process did not appear for the new VM",
+        )
+        new_pids = set(hypervisor_children(daemon)) - before
     finally:
         await delete_quietly(supervisor, vm_id)
 
     await eventually(
-        lambda: len(hypervisor_children(daemon)) == baseline,
+        lambda: not (new_pids & set(hypervisor_children(daemon))),
         timeout=60,
         message="hypervisor process survived delete",
     )
@@ -55,7 +65,10 @@ async def test_firecracker_delete_releases_host_resources(supervisor, daemon):
 async def test_repeated_create_delete_cycles_do_not_accumulate(supervisor, daemon):
     """Same vm_id created and deleted in a tight loop: no process, file or
     pool-state buildup between cycles."""
-    baseline = len(hypervisor_children(daemon))
+    # Same set-difference rationale as the test above: a neighbour's
+    # firecracker may still be reaping when this test starts, so measure
+    # accumulation relative to the PIDs that were already present.
+    before = set(hypervisor_children(daemon))
     vm_id = fresh_vm_id()
     try:
         for cycle in range(3):
@@ -63,7 +76,7 @@ async def test_repeated_create_delete_cycles_do_not_accumulate(supervisor, daemo
             assert info.status is VmStatus.RUNNING, f"cycle {cycle}: boot failed"
             await supervisor.delete_vm(vm_id)
             await eventually(
-                lambda: len(hypervisor_children(daemon)) == baseline,
+                lambda: not (set(hypervisor_children(daemon)) - before),
                 timeout=60,
                 message=f"cycle {cycle}: hypervisor process survived delete",
             )
