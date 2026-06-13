@@ -58,15 +58,22 @@ async def test_delete_unknown_vm_raises():
 
 @pytest.mark.asyncio
 async def test_reboot_persistent_vm_restarts_systemd_and_returns_info():
+    """RestartUnit only queues a job: reboot must confirm the unit is back
+    up before reporting, or callers see BOOTING for a healthy reboot."""
+    events = []
     execution = make_execution(running=True)
+    execution.wait_for_controller_ready = AsyncMock(side_effect=lambda: events.append("wait_ready"))
     systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})
-    systemd.restart = MagicMock()
+    systemd.restart = MagicMock(side_effect=lambda _svc: events.append("restart_unit"))
     pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
     sup = InProcessSupervisor(pool=pool)
 
+    old_started_at = execution.times.started_at
     info = await sup.reboot_vm(VmId("itemhash123"))
 
     systemd.restart.assert_called_once_with("aleph-vm-controller@itemhash123.service")
+    assert events == ["restart_unit", "wait_ready"]
+    assert execution.times.started_at > old_started_at
     assert info.vm_id == "itemhash123"
 
 
@@ -174,3 +181,213 @@ def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
 
     assert deleted == 2
     assert not rootfs.exists() and not vol.exists() and ro.exists()
+
+
+def _spec_for(vm_hash: str):
+    from pathlib import Path
+
+    from aleph.vm.supervisor.types import (
+        Backend,
+        CreateVmSpec,
+        DiskFormat,
+        DiskRole,
+        DiskSpec,
+        NetworkConfig,
+    )
+
+    return CreateVmSpec(
+        vm_id=VmId(vm_hash),
+        backend=Backend.QEMU,
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=[
+            DiskSpec(path=Path("/data/rootfs.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)
+        ],
+        vcpus=1,
+        memory_mib=256,
+        tee=None,
+        network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reboot_ephemeral_spec_vm_recreates_from_held_spec():
+    """A spec-built ephemeral VM reboots for real: stop, then re-create from
+    the spec the supervisor holds — the client is not expected to know."""
+    spec = _spec_for("itemhash123")
+    execution = _make_execution(persistent=False)
+    execution.vm_spec = spec
+    recreated = make_execution(vm_hash="itemhash123", running=True)
+    pool = _make_pool(executions={"itemhash123": execution})
+    pool.create_vm_from_spec = AsyncMock(return_value=recreated)
+    sup = InProcessSupervisor(pool=pool)
+
+    info = await sup.reboot_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.create_vm_from_spec.assert_awaited_once_with(spec)
+    assert info.vm_id == "itemhash123"
+
+
+@pytest.mark.asyncio
+async def test_reboot_ephemeral_message_vm_stops_only():
+    """Message-built (legacy) ephemeral VMs keep the old contract: the agent
+    owns the message and re-creates through its own path."""
+    execution = _make_execution(persistent=False)
+    execution.vm_spec = None
+    pool = _make_pool(executions={"itemhash123": execution})
+    pool.create_vm_from_spec = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.reboot_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.create_vm_from_spec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_returns_held_spec():
+    spec = _spec_for("itemhash123")
+    execution = make_execution()
+    execution.vm_spec = spec
+    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+
+    assert await sup.get_vm_spec(VM_ID) == spec
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_unknown_vm_raises_not_found():
+    sup = InProcessSupervisor(pool=FakePool())
+    with pytest.raises(VmNotFoundError):
+        await sup.get_vm_spec(VmId("nope"))
+
+
+@pytest.mark.asyncio
+async def test_get_vm_spec_message_built_vm_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = make_execution()  # vm_spec=None: legacy, message-built
+    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.get_vm_spec(VM_ID)
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_persistent_keeps_execution_registered():
+    """StopVm leaves the VM observable (STOPPED) and defuses forget-on-stop."""
+    from datetime import datetime, timezone
+
+    execution = _make_execution(persistent=True)
+    old_stop_event = object()
+    execution.stop_event = old_stop_event
+    pool = _make_pool(executions={"itemhash123": execution})
+
+    async def fake_stop(vm_id):
+        execution.times.stopping_at = datetime.now(tz=timezone.utc)
+        execution.times.stopped_at = datetime.now(tz=timezone.utc)
+
+    pool.stop_vm = AsyncMock(side_effect=fake_stop)
+    sup = InProcessSupervisor(pool=pool)
+
+    info = await sup.stop_vm(VM_ID)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.forget_vm.assert_not_called()
+    assert pool.executions["itemhash123"] is execution
+    assert execution.stop_event is not old_stop_event
+    from aleph.vm.supervisor.types import VmStatus
+
+    assert info.status is VmStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_ephemeral_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = _make_execution(persistent=False)
+    pool = _make_pool(executions={"itemhash123": execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.stop_vm(VM_ID)
+    pool.stop_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_vm_restarts_stopped_persistent_vm():
+    execution = _make_execution(persistent=True)
+    systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": False})  # stopped
+    pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
+    pool.restart_persistent_vm = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.start_vm(VM_ID)
+
+    pool.restart_persistent_vm.assert_awaited_once_with(execution)
+
+
+@pytest.mark.asyncio
+async def test_start_vm_running_is_a_noop_read():
+    execution = _make_execution(persistent=True)
+    systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})  # running
+    pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
+    pool.restart_persistent_vm = AsyncMock()
+    sup = InProcessSupervisor(pool=pool)
+
+    from aleph.vm.supervisor.types import VmStatus
+
+    info = await sup.start_vm(VM_ID)
+
+    pool.restart_persistent_vm.assert_not_awaited()
+    assert info.status is VmStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_start_vm_ephemeral_raises_unimplemented():
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+
+    execution = _make_execution(persistent=False)
+    pool = _make_pool(executions={"itemhash123": execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.start_vm(VM_ID)
+
+
+@pytest.mark.asyncio
+async def test_stop_vm_unknown_raises_not_found():
+    sup = InProcessSupervisor(pool=_make_pool())
+    with pytest.raises(VmNotFoundError):
+        await sup.stop_vm(VmId("nope"))
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_removes_on_disk_artifacts(monkeypatch, tmp_path):
+    """Delete releases the VM definition and runtime leftovers: the
+    controller config, the cloud-init seed and qemu's control sockets
+    (which qemu never unlinks) must not outlive it (stop_vm keeps the
+    definition files for reattach)."""
+    from aleph.vm.controllers import configuration as configuration_module
+
+    monkeypatch.setattr(configuration_module.settings, "EXECUTION_ROOT", tmp_path)
+    config_file = tmp_path / f"{VM_ID}-controller.json"
+    seed_file = tmp_path / f"cloud-init-{VM_ID}.img"
+    config_file.write_text("{}")
+    seed_file.write_bytes(b"seed")
+    socket_files = [tmp_path / f"{VM_ID}-{kind}.socket" for kind in ("monitor", "qmp", "qga")]
+    for socket_file in socket_files:
+        socket_file.touch()
+
+    execution = make_execution()
+    pool = _make_pool({str(VM_ID): execution})
+    sup = InProcessSupervisor(pool=pool)
+
+    await sup.delete_vm(VM_ID)
+
+    assert not config_file.exists()
+    assert not seed_file.exists()
+    for socket_file in socket_files:
+        assert not socket_file.exists()

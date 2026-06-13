@@ -1,6 +1,5 @@
 import math
 from datetime import datetime, timezone
-from typing import Optional
 
 import psutil
 from aiohttp import web
@@ -119,7 +118,11 @@ class MachineCapability(BaseModel):
 
 
 def get_machine_gpus(request: web.Request) -> GpuProperties:
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool | None = request.app["vm_pool"]
+    if pool is None:
+        # Split mode: GPU inventory still lives on the in-process pool;
+        # report none until GetHostInfo carries it.
+        return GpuProperties(devices=[], available_devices=[])
     gpus = pool.gpus
     available_gpus = pool.get_available_gpus()
 
@@ -211,8 +214,13 @@ async def about_system_usage(request: web.Request):
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            available_kB=pool.calculate_available_disk() // 1000,
-            # available_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000,
+            # Split mode: reservation-aware accounting lives on the in-process
+            # pool; fall back to the raw free space.
+            available_kB=(
+                pool.calculate_available_disk() // 1000
+                if pool is not None
+                else psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000
+            ),
         ),
         period=UsagePeriod(
             start_timestamp=period_start,

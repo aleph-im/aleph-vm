@@ -62,6 +62,7 @@ from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
+    require_vm_pool,
     update_aggregate_settings,
 )
 from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
@@ -201,16 +202,18 @@ async def debug_haproxy(request: web.Request) -> web.Response:
 
 
 def _vm_type_name(record: AgentVmRecord | None, info: VmInfo) -> str:
-    """vm_type label: from the agent's message when known, otherwise from the
-    supervisor's instance flag (spec-created / reattached VMs without a registry
-    record) — the same VmExecution.is_instance the old views fell back to.
+    """vm_type label: from the agent's message when known; otherwise a
+    best-effort guess from the guest channel (registry-miss fallback for
+    spec-created / reattached VMs).
 
-    The instance flag is used rather than the backend because the backend alone
-    cannot recover instance-ness: an instance running under Firecracker reports
-    Backend.FIRECRACKER yet is still an instance."""
+    The instance/program distinction is agent vocabulary the wire no longer
+    carries. Every VM the agent runs as a microvm has a guest channel and
+    instances have none, so the channel's presence recovers the label for VMs
+    we lost the record of. (Backend alone cannot: an instance running under
+    Firecracker reports Backend.FIRECRACKER yet is still an instance.)"""
     if record is not None:
         return VmType.from_message_content(record.message).name
-    return VmType.instance.name if info.is_instance else VmType.microvm.name
+    return VmType.microvm.name if info.guest_channel_path else VmType.instance.name
 
 
 def _datetime_from_ns(ns: int) -> datetime | None:
@@ -273,8 +276,8 @@ async def list_executions(request: web.Request) -> web.Response:
         {
             info.vm_id: {
                 "networking": {
-                    "ipv4": info.ipv4_network,
-                    "ipv6": info.ipv6_network,
+                    "ipv4": info.ipv4.network_cidr,
+                    "ipv6": info.ipv6.network_cidr,
                 },
                 # cast: info.vm_id is a VmId (opaque str at the boundary); the
                 # agent knows its own VMs are keyed by item hash. See the
@@ -304,14 +307,14 @@ async def list_executions_v2(request: web.Request) -> web.Response:
             info.vm_id: {
                 "networking": (
                     {
-                        "ipv4_network": info.ipv4_network,
+                        "ipv4_network": info.ipv4.network_cidr,
                         "host_ipv4": host_info.host_ipv4,
-                        "ipv6_network": info.ipv6_network,
-                        "ipv6_ip": info.ipv6,
-                        "ipv4_ip": info.ipv4,
+                        "ipv6_network": info.ipv6.network_cidr,
+                        "ipv6_ip": info.ipv6.address,
+                        "ipv4_ip": info.ipv4.address,
                         "mapped_ports": mapped_ports.get(info.vm_id, {}),
                     }
-                    if info.ipv4_network
+                    if info.ipv4.network_cidr
                     else {}
                 ),
                 "status": _times_dict(info),
@@ -725,7 +728,7 @@ async def recreate_network(request: web.Request):
     if network_recreation_lock is None:
         network_recreation_lock = asyncio.Lock()
 
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
 
     async with network_recreation_lock:
         logger.info("Starting network recreation process")
@@ -756,7 +759,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error removing aleph chains: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to remove existing chains: {str(e)}"},
+                {"success": False, "error": f"Failed to remove existing chains: {e!s}"},
                 status=500,
             )
 
@@ -767,7 +770,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error initializing nftables: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to initialize network: {str(e)}"},
+                {"success": False, "error": f"Failed to initialize network: {e!s}"},
                 status=500,
             )
 
@@ -777,7 +780,7 @@ async def recreate_network(request: web.Request):
         except Exception as e:
             logger.error(f"Error recreating VM networks: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to recreate VM networks: {str(e)}"},
+                {"success": False, "error": f"Failed to recreate VM networks: {e!s}"},
                 status=500,
             )
 
@@ -844,7 +847,7 @@ async def regenerate_proxy(request: web.Request):
     if proxy_regeneration_lock is None:
         proxy_regeneration_lock = asyncio.Lock()
 
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
 
     async with proxy_regeneration_lock:
         logger.info("Starting HAProxy configuration regeneration")
@@ -862,7 +865,7 @@ async def regenerate_proxy(request: web.Request):
         except Exception as e:
             logger.error(f"Error regenerating HAProxy configuration: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to regenerate HAProxy configuration: {str(e)}"},
+                {"success": False, "error": f"Failed to regenerate HAProxy configuration: {e!s}"},
                 status=500,
             )
 
@@ -910,7 +913,11 @@ async def notify_allocation(request: web.Request):
     # or disk caps. This is the advisory gate; the authoritative gate runs
     # inside create_a_vm under the creation lock.
     try:
-        pool.check_admission(message.content, current_vm_hash=item_hash)
+        if pool is not None:
+            # Split mode: the advisory admission gate needs the in-process
+            # pool; admission for spec-built VMs is enforced by the agent
+            # before create (deferred in split mode).
+            pool.check_admission(message.content, current_vm_hash=item_hash)
     except InsufficientResourcesError as error:
         logger.warning("Refusing allocation %s: %s", item_hash, error)
         return web.HTTPServiceUnavailable(
@@ -1047,7 +1054,8 @@ async def notify_allocation(request: web.Request):
             update_watcher=update_watcher,
         )
         successful = True
-        await pool.update_domain_mapping()
+        if pool is not None:
+            await pool.update_domain_mapping()
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error
@@ -1078,7 +1086,7 @@ async def notify_allocation(request: web.Request):
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
     """Reserve a GPU"""
-    pool: VmPool = request.app["vm_pool"]
+    pool: VmPool = require_vm_pool(request)
     try:
         data = await request.json()
         message = InstanceContent.model_validate(data)
@@ -1140,5 +1148,6 @@ async def operate_update(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
 
     await reconcile_port_forwards(supervisor, vm_id, record.message)
-    await request.app["vm_pool"].update_domain_mapping()
+    if request.app.get("vm_pool") is not None:
+        await request.app["vm_pool"].update_domain_mapping()
     return web.json_response({}, dumps=dumps_for_json, status=200)

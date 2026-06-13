@@ -1,7 +1,5 @@
 """Tests for Interface.from_entrypoint() method."""
 
-import pytest
-
 from aleph.vm.controllers.firecracker.program import Interface
 
 

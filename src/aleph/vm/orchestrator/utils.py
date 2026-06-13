@@ -88,3 +88,23 @@ def get_compatible_gpus() -> list[Any]:
     if not cached:
         return []
     return cached["compatible_gpus"]
+
+
+def require_vm_pool(request) -> Any:
+    """The in-process VmPool, or 501 in split mode.
+
+    Endpoints whose capability has not crossed the gRPC boundary yet
+    (backups, restore, confidential, migration, network recreation, GPU
+    reservation, persistent programs) still need the in-process pool. When
+    the agent runs in split mode (ALEPH_VM_SUPERVISOR_GRPC_SOCKET set) the
+    pool lives in the supervisor daemon and these endpoints are unavailable.
+    """
+    from aiohttp import web
+
+    pool = request.app.get("vm_pool")
+    if pool is None:
+        raise web.HTTPNotImplemented(
+            reason="Unavailable in split mode",
+            text="This operation is not available yet when the agent runs separately from the supervisor.",
+        )
+    return pool

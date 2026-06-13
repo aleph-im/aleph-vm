@@ -20,9 +20,11 @@ from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
+from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
 from aleph.vm.version import __version__
 
@@ -158,22 +160,96 @@ async def http_not_found(request: web.Request):  # noqa: ARG001
     return web.HTTPNotFound()
 
 
-def setup_webapp(pool: VmPool | None):
-    """Create the webapp and set the VmPool
+async def watch_supervisor_events(app: web.Application) -> None:
+    """Split mode: consume the supervisor's WatchEvents stream and drop
+    agent-side per-VM state when a VM goes down.
 
-    Only case where VmPool is None is in some tests that won't use it.
+    This is the cross-process replacement for the in-process reap hooks: a
+    VM leaving RUNNING (stop, reboot's down-phase, delete, reinstall) must
+    drop the agent's guest-side program state (guest API process, configured
+    mark) and cancel pending idle-teardown timers. Reconnects on stream
+    failure; exits if the supervisor does not implement WatchEvents.
+    """
+    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+    from aleph.vm.supervisor.types import VmStatus
+
+    supervisor = app["supervisor"]
+    while True:
+        try:
+            async for event in supervisor.watch_events():
+                if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
+                    app["expiry"].cancel(event.vm_id)
+                    app["update_watcher"].cancel(event.vm_id)
+                    await app["program_client"].forget(event.vm_id)
+        except NotImplementedSupervisorError:
+            logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Supervisor event stream interrupted; reconnecting in 5s", exc_info=True)
+        await asyncio.sleep(5)
+
+
+def setup_webapp(pool: VmPool | None):
+    """Create the webapp and set the VmPool.
+
+    VmPool is None in two cases: tests that won't use it, and **split mode**
+    (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set), where the supervisor daemon owns
+    the pool and the agent reaches it over gRPC. In split mode the endpoints
+    that still require the in-process pool (backups, restore, confidential,
+    migration, network recreation, GPU reservation, persistent programs)
+    respond 501.
     """
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
-    app["supervisor"] = InProcessSupervisor(pool)
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        app["supervisor"] = GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
+    else:
+        app["supervisor"] = InProcessSupervisor(pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
-    # Each idle-teardown facility cancels the other's timer when it reaps a VM,
-    # so an expired or updated VM never leaks the sibling's pending task.
-    app["expiry"].on_reaped = app["update_watcher"].cancel
-    app["update_watcher"].on_reaped = app["expiry"].cancel
+    app["program_client"] = ProgramGuestClient()
+
+    # When a reaper tears a VM down: each idle-teardown facility cancels the
+    # other's timer (an expired or updated VM never leaks the sibling's pending
+    # task), and the agent's guest-side program state (guest API process,
+    # configured mark) is dropped.
+    def _drop_program_guest_state(vm_id) -> None:
+        asyncio.get_running_loop().create_task(app["program_client"].forget(vm_id))
+
+    def _on_expiry_reaped(vm_id) -> None:
+        app["update_watcher"].cancel(vm_id)
+        _drop_program_guest_state(vm_id)
+
+    def _on_update_reaped(vm_id) -> None:
+        app["expiry"].cancel(vm_id)
+        _drop_program_guest_state(vm_id)
+
+    app["expiry"].on_reaped = _on_expiry_reaped
+    app["update_watcher"].on_reaped = _on_update_reaped
+
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        # In-process, the reap hooks above run in the same loop as the pool;
+        # across the boundary the supervisor's event stream is the only way
+        # to learn that a VM went down without polling.
+        async def _start_event_watcher(app: web.Application) -> None:
+            app["_event_watcher"] = asyncio.get_running_loop().create_task(watch_supervisor_events(app))
+
+        async def _stop_event_watcher(app: web.Application) -> None:
+            task = app.get("_event_watcher")
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        # type-ignores: aiohttp's Signal stubs reject perfectly valid
+        # `async (Application) -> None` handlers here.
+        app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
+        app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
+
     app["backup_state"] = BackupState()
     cors = setup(
         app,
@@ -264,7 +340,11 @@ async def drain_in_flight_requests(app: web.Application):
 
 
 async def stop_all_vms(app: web.Application):
-    pool: VmPool = app["vm_pool"]
+    pool: VmPool | None = app.get("vm_pool")
+    if pool is None:
+        # Split mode: the supervisor daemon owns the VMs; the agent's exit
+        # must not stop them.
+        return
     try:
         await pool.stop()
     except Exception:
@@ -287,6 +367,13 @@ async def stop_update_watcher(app: web.Application) -> None:
         await update_watcher.cancel_all()
 
 
+async def stop_program_client(app: web.Application) -> None:
+    """on_cleanup hook: stop the agent-owned guest API processes."""
+    program_client = app.get("program_client")
+    if program_client is not None:
+        await program_client.forget_all()
+
+
 async def _run_migration_reaper(app: web.Application) -> None:
     """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
     pool = app.get("vm_pool")
@@ -307,8 +394,14 @@ def run():
 
     log_allocation_auth_config()
 
-    pool = VmPool()
-    asyncio.run(pool.setup())
+    split_mode = settings.SUPERVISOR_GRPC_SOCKET is not None
+    pool: VmPool | None
+    if split_mode:
+        # The supervisor daemon (python -m aleph.vm.supervisor) owns the pool.
+        pool = None
+    else:
+        pool = VmPool()
+        asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
@@ -354,14 +447,16 @@ def run():
 
         app.on_cleanup.append(stop_expiry_manager)
         app.on_cleanup.append(stop_update_watcher)
+        app.on_cleanup.append(stop_program_client)
         app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.orchestrator.http import close_session, reset_session
 
         app.on_cleanup.append(close_session)
 
-        logger.info("Loading existing executions ...")
-        asyncio.run(pool.load_persistent_executions())
+        if pool is not None:
+            logger.info("Loading existing executions ...")
+            asyncio.run(pool.load_persistent_executions())
         # Each asyncio.run() creates and destroys its own event loop.
         # Discard any HTTP session created during setup/loading so it
         # doesn't hold a reference to the dead loop.
@@ -379,5 +474,5 @@ def run():
         else:
             raise
     finally:
-        if settings.ALLOW_VM_NETWORKING:
+        if pool is not None and settings.ALLOW_VM_NETWORKING:
             pool.teardown()

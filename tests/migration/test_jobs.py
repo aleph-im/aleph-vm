@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from aleph_message.models import ItemHash

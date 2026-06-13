@@ -9,19 +9,46 @@ NotImplementedSupervisorError.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
+import shutil
+import tarfile
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
 from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
 
+from aleph.vm.conf import settings
+from aleph.vm.controllers.configuration import remove_controller_configuration
+from aleph.vm.controllers.qemu.backup import (
+    InsufficientDiskSpaceError,
+    check_disk_space_for_multiple,
+    cleanup_expired_backups,
+    create_backup_archive,
+    create_qemu_disk_backup,
+    find_existing_backup,
+    get_backup_directory,
+    restore_rootfs,
+    verify_qemu_disk,
+)
+from aleph.vm.migration.helpers import compress_disk, compute_sha256
 from aleph.vm.orchestrator.metrics import delete_port_mappings
+from aleph.vm.supervisor import migrate
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
+    BackupNotFoundError,
+    InsufficientResourcesError,
+    InternalSupervisorError,
+    InvalidBackendError,
+    MigrationInProgressError,
+    MigrationNotFoundError,
     NotImplementedSupervisorError,
+    VmAlreadyExistsError,
     VmNotFoundError,
     translating_errors,
 )
@@ -30,24 +57,29 @@ from aleph.vm.supervisor.types import (
     BackupChunk,
     BackupId,
     BackupInfo,
+    BackupStatus,
     ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
+    DiskFormat,
     GpuDevice,
     GuestPort,
     HealthInfo,
     HealthStatus,
     HostInfo,
     HostPort,
+    IpAssignment,
     LogChunk,
     LogSource,
     Measurement,
     MigrationId,
     MigrationInfo,
+    MigrationPhase,
     PciAddress,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmEvent,
     VmId,
     VmInfo,
     VmStatus,
@@ -61,11 +93,8 @@ logger = logging.getLogger(__name__)
 
 
 def _backend_of(execution) -> Backend:
-    if execution.is_program:
-        return Backend.FIRECRACKER
-    if execution.is_confidential:
-        return Backend.QEMU_SEV
-    if execution.hypervisor == HypervisorType.firecracker:
+    """The VMM only; confidential computing is reported via confidential_mode."""
+    if execution.is_program or execution.hypervisor == HypervisorType.firecracker:
         return Backend.FIRECRACKER
     return Backend.QEMU
 
@@ -152,20 +181,43 @@ def _confidential_mode(execution) -> ConfidentialMode:
     return ConfidentialMode.SEV
 
 
+def _guest_channel_path(execution) -> str:
+    """Host UDS endpoint of the guest channel (Firecracker vsock); empty for
+    VMs without one."""
+    fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
+    if execution.is_program and fvm is not None:
+        return str(fvm.vsock_path)
+    return ""
+
+
+def _guest_ready_payload(execution) -> bytes:
+    """Raw bytes from the guest's ready signal, passed through opaquely."""
+    fvm = getattr(execution.vm, "fvm", None) if execution.vm else None
+    return getattr(fvm, "init_payload", b"") if fvm is not None else b""
+
+
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
+    ipv4 = IpAssignment(
+        address=str(tap.guest_ip.ip) if tap else "",
+        network_cidr=str(tap.ip_network) if tap else "",
+        gateway=str(tap.host_ip.ip) if tap and getattr(tap, "host_ip", None) else "",
+    )
+    ipv6 = IpAssignment(
+        address=str(tap.guest_ipv6.ip) if tap else "",
+        network_cidr=str(tap.ipv6_network) if tap else "",
+        gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
+    )
     return VmInfo(
         vm_id=VmId(str(execution.vm_hash)),
         status=_status_of(execution, running),
-        ipv4=str(tap.guest_ip.ip) if tap else "",
-        ipv6=str(tap.guest_ipv6.ip) if tap else "",
+        ipv4=ipv4,
+        ipv6=ipv6,
         uptime_secs=_uptime_secs(execution, running),
         backend=_backend_of(execution),
         numa_node=None,
         status_message="",
-        ipv4_network=str(tap.ip_network) if tap else "",
-        ipv6_network=str(tap.ipv6_network) if tap else "",
         defined_at_ns=_ns(times.defined_at),
         preparing_at_ns=_ns(times.preparing_at),
         prepared_at_ns=_ns(times.prepared_at),
@@ -173,7 +225,6 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         started_at_ns=_ns(times.started_at),
         stopping_at_ns=_ns(times.stopping_at),
         stopped_at_ns=_ns(times.stopped_at),
-        is_instance=bool(execution.is_instance),
         confidential_mode=_confidential_mode(execution),
         gpus=[
             GpuDevice(
@@ -184,6 +235,8 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
             )
             for g in execution.gpus
         ],
+        guest_channel_path=_guest_channel_path(execution),
+        guest_ready_payload=_guest_ready_payload(execution),
     )
 
 
@@ -217,9 +270,95 @@ def _history_chunks(vm_id: VmId) -> list[LogChunk]:
     return chunks
 
 
+# The single archive member a supervisor backup carries today: the rootfs
+# disk. Extra data disks are not backed up (restore replaces the rootfs only,
+# and an asymmetric archive would be a trap).
+_BACKUP_ROOTFS_MEMBER = "rootfs.qcow2"
+_BACKUP_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _validate_backup_id(vm_id: VmId, backup_id: BackupId) -> None:
+    """Reject ids that are not of this VM or that could escape the backup
+    directory (the id becomes a file name)."""
+    malformed = not backup_id or "/" in backup_id or "\\" in backup_id or ".." in backup_id
+    if malformed or not backup_id.startswith(f"{vm_id}-"):
+        raise BackupNotFoundError(backup_id)
+
+
+def _backup_info_from_tar(tar_path: Path, vm_id: VmId) -> BackupInfo:
+    stat = tar_path.stat()
+    return BackupInfo(
+        vm_id=vm_id,
+        backup_id=BackupId(tar_path.stem),
+        status=BackupStatus.COMPLETE,
+        size_bytes=stat.st_size,
+        created_at_unix_secs=int(stat.st_mtime),
+        error_message="",
+    )
+
+
+def _extract_rootfs_member(tar_path: Path, destination: Path) -> None:
+    """Stream the rootfs member of a backup archive to *destination*.
+
+    Member-streamed on purpose (no extractall): archive member names never
+    touch the filesystem, so a crafted archive cannot escape the backup
+    directory.
+    """
+    with tarfile.open(tar_path, "r") as tar:
+        try:
+            member = tar.getmember(_BACKUP_ROOTFS_MEMBER)
+        except KeyError:
+            msg = f"Backup archive {tar_path.name} has no {_BACKUP_ROOTFS_MEMBER} member"
+            raise InternalSupervisorError(msg) from None
+        source = tar.extractfile(member)
+        if source is None:
+            msg = f"Backup member {_BACKUP_ROOTFS_MEMBER} in {tar_path.name} is not a regular file"
+            raise InternalSupervisorError(msg)
+        with source, destination.open("wb") as dst:
+            shutil.copyfileobj(source, dst)
+
+
 class InProcessSupervisor(Supervisor):
     def __init__(self, pool: VmPool):
         self.pool = pool
+        # Live watch_events subscribers; events are fan-out, no replay.
+        self._event_queues: set[asyncio.Queue[VmEvent]] = set()
+        # Backup bookkeeping. Completed archives live on disk (the source of
+        # truth); _backup_jobs only holds in-flight and failed runs.
+        self._backup_jobs: dict[BackupId, BackupInfo] = {}
+        self._backup_tasks: dict[VmId, asyncio.Task] = {}
+        # Serializes backup, restore and export per VM: none of them may
+        # touch the disks while another one converts or swaps them.
+        self._backup_locks: dict[VmId, asyncio.Lock] = {}
+        # Migration bookkeeping: jobs are kept (also after completion) so
+        # get_migration_status stays answerable; tasks track in-flight
+        # exports per VM.
+        self._migration_jobs: dict[MigrationId, MigrationInfo] = {}
+        self._migration_tasks: dict[VmId, asyncio.Task] = {}
+
+    # ── Events ──
+    def _emit_event(self, vm_id: VmId, old_status: VmStatus, new_status: VmStatus) -> None:
+        """Fan a lifecycle transition out to every watcher. Emission points
+        are the supervisor's own lifecycle methods: every transition crossing
+        the boundary is covered (spontaneous guest death is not detected
+        anywhere today; see the proto note on WatchEvents)."""
+        if not self._event_queues:
+            return
+        event = VmEvent(vm_id=vm_id, old_status=old_status, new_status=new_status, timestamp_ns=time.time_ns())
+        for queue in self._event_queues:
+            queue.put_nowait(event)
+
+    async def watch_events(self) -> AsyncIterator[VmEvent]:
+        queue: asyncio.Queue[VmEvent] = asyncio.Queue()
+        self._event_queues.add(queue)
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            self._event_queues.discard(queue)
+
+    def _status_snapshot(self, execution) -> VmStatus:
+        return _status_of(execution, _is_running(execution, self.pool))
 
     # Host
     async def health(self) -> HealthInfo:
@@ -241,7 +380,9 @@ class InProcessSupervisor(Supervisor):
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
         with translating_errors():
             execution = await self.pool.create_vm_from_spec(spec)
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            self._emit_event(spec.vm_id, VmStatus.DEFINED, info.status)
+            return info
 
     async def get_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
@@ -263,16 +404,30 @@ class InProcessSupervisor(Supervisor):
             raise VmNotFoundError(vm_id)
         return execution
 
+    async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
+        with translating_errors():
+            execution = self._require(vm_id)
+            spec = execution.vm_spec
+            if spec is None:
+                msg = f"VM {vm_id} was created outside the spec path (message-built); no spec is held"
+                raise NotImplementedSupervisorError(msg)
+            return spec
+
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if execution.vm_hash in self.pool.executions:
                 # Routine: the pool's _schedule_forget_on_stop task has usually
                 # not run yet by the time stop_vm returns, so delete_vm wins
                 # this race on most reaps.
                 logger.debug("VM %s was not removed from pool after stop; forgetting it now", vm_id)
                 self.pool.forget_vm(vm_id)
+            # Delete releases the definition: the controller config and the
+            # cloud-init seed go too (stop_vm keeps them for reattach).
+            remove_controller_configuration(str(vm_id))
             if wipe:
                 # Mirrors the old operate_erase semantics exactly: persisted
                 # port mappings (persistent VMs keep them across stops) and
@@ -281,25 +436,80 @@ class InProcessSupervisor(Supervisor):
                     await delete_port_mappings(execution.vm_hash)
                 execution.erase_volumes()
 
+    async def stop_vm(self, vm_id: VmId) -> VmInfo:
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Stopping an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                raise NotImplementedSupervisorError(msg)
+            old_status = self._status_snapshot(execution)
+            await self.pool.stop_vm(vm_id)
+            # Keep the execution registered so the VM stays observable
+            # (STOPPED) and start_vm has a handle. A fresh stop_event defuses
+            # the pool's forget-on-stop task (same trick as reinstall).
+            execution.stop_event = asyncio.Event()
+            self.pool.executions[execution.vm_hash] = execution
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+            return _to_vm_info(execution, running=False)
+
+    async def start_vm(self, vm_id: VmId) -> VmInfo:
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Starting an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                raise NotImplementedSupervisorError(msg)
+            if _is_running(execution, self.pool):
+                return _to_vm_info(execution, running=True)
+            old_status = self._status_snapshot(execution)
+            await self.pool.restart_persistent_vm(execution)
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            self._emit_event(vm_id, old_status, info.status)
+            return info
+
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             if execution.persistent and getattr(execution, "systemd_manager", None):
                 self.pool.systemd_manager.restart(execution.controller_service)
-            else:
-                await self.pool.stop_vm(vm_id)
+                # RestartUnit only queues a job: wait until the unit is
+                # confirmed active so the reported status is truthful.
+                await execution.wait_for_controller_ready()
+                execution.times.started_at = datetime.now(tz=timezone.utc)
+                info = _to_vm_info(execution, _is_running(execution, self.pool))
+                # A reboot is a down-then-up pair; watchers that drop per-VM
+                # state on "down" must see the down.
+                self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
+            spec = execution.vm_spec
+            await self.pool.stop_vm(vm_id)
+            if execution.vm_hash in self.pool.executions:
                 self.pool.forget_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+            if spec is not None:
+                # A real reboot: the supervisor holds the spec, so it can
+                # recreate the VM itself instead of returning a stopped husk
+                # and expecting the client to know it must re-create.
+                new_execution = await self.pool.create_vm_from_spec(spec)
+                info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
+            # Message-built (legacy) ephemeral VMs: the agent owns the
+            # message and re-creates through its own path.
             return _to_vm_info(execution, _is_running(execution, self.pool))
 
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
         with translating_errors():
             execution = self._require(vm_id)
+            old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
+            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if execution.persistent:
                 # Keep the execution registered so the allocation loop cannot
                 # create a duplicate while we re-prepare (mirrors the old
                 # operate_reinstall persistent branch). Note: restart_persistent_vm
-                # re-registers the execution again after prepare() — the duplicate
+                # re-registers the execution again after prepare(); the duplicate
                 # write is intentional.
                 execution.stop_event = asyncio.Event()
                 self.pool.executions[execution.vm_hash] = execution
@@ -313,7 +523,10 @@ class InProcessSupervisor(Supervisor):
                 execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
                 # The agent re-creates non-persistent VMs through the create
                 # path (it owns the message); we return the stopped state.
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            if info.status is not VmStatus.STOPPED:
+                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+            return info
 
     # Port forwarding
     def _mapped_to_infos(self, execution) -> list[PortForwardInfo]:
@@ -394,41 +607,357 @@ class InProcessSupervisor(Supervisor):
         try:
             while True:
                 log_type, message = await queue.get()
-                # Live queue items carry no timestamp; 0 is the "live" sentinel.
-                yield LogChunk(timestamp_ns=0, line=message, source=_log_source(log_type))
+                # Live queue items carry no timestamp; stamp at capture so
+                # the wire never carries a magic 0 (which clients rendered
+                # as the 1970 epoch).
+                yield LogChunk(timestamp_ns=time.time_ns(), line=message, source=_log_source(log_type))
                 queue.task_done()
         finally:
             execution.vm.unregister_queue(queue)
 
     # Backups
+    def _qemu_rootfs_path(self, execution) -> Path:
+        """The on-disk rootfs of a QEMU VM; backups and restores operate on it."""
+        if _backend_of(execution) is not Backend.QEMU:
+            msg = "Backups operate on the rootfs disk image; only QEMU VMs have one"
+            raise InvalidBackendError(msg)
+        resources = getattr(execution.vm, "resources", None) if execution.vm else None
+        rootfs_path = getattr(resources, "rootfs_path", None)
+        if not rootfs_path:
+            msg = f"VM {execution.vm_hash} has no rootfs disk image"
+            raise InternalSupervisorError(msg)
+        return Path(rootfs_path)
+
     async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
-        raise NotImplementedSupervisorError("start_backup")
+        with translating_errors():
+            execution = self._require(vm_id)
+            rootfs_path = self._qemu_rootfs_path(execution)
+            backup_dir = get_backup_directory()
+            cleanup_expired_backups(backup_dir)
+
+            # Idempotent: a backup already running for this VM is the answer
+            # to a second StartBackup, not a conflict.
+            running_task = self._backup_tasks.get(vm_id)
+            if running_task is not None and not running_task.done():
+                for job in self._backup_jobs.values():
+                    if job.vm_id == vm_id and job.status is BackupStatus.RUNNING:
+                        return job
+
+            # A non-expired archive is also the answer; expiry (24h TTL)
+            # defines backup freshness, mirroring the old operator endpoint.
+            existing = find_existing_backup(backup_dir, str(vm_id))
+            if existing is not None:
+                return _backup_info_from_tar(existing, vm_id)
+
+            try:
+                await check_disk_space_for_multiple([rootfs_path], backup_dir)
+            except InsufficientDiskSpaceError as exc:
+                raise InsufficientResourcesError(str(exc)) from exc
+
+            # Microsecond precision: a retry right after a failed run must get
+            # a fresh id (the id is also the tar stem, which keeps the format
+            # dash-free for list_backups' rsplit).
+            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            backup_id = BackupId(f"{vm_id}-{timestamp}")
+            job = BackupInfo(
+                vm_id=vm_id,
+                backup_id=backup_id,
+                status=BackupStatus.RUNNING,
+                size_bytes=0,
+                created_at_unix_secs=int(time.time()),
+                error_message="",
+            )
+            # This run supersedes earlier failed attempts for the VM.
+            for old_id, old_job in list(self._backup_jobs.items()):
+                if old_job.vm_id == vm_id and old_job.status is BackupStatus.FAILED:
+                    del self._backup_jobs[old_id]
+            self._backup_jobs[backup_id] = job
+            self._backup_tasks[vm_id] = asyncio.create_task(
+                self._run_backup(execution, vm_id, backup_id, timestamp, rootfs_path, backup_dir, quiesce_guest)
+            )
+            return job
+
+    async def _run_backup(
+        self,
+        execution,
+        vm_id: VmId,
+        backup_id: BackupId,
+        timestamp: str,
+        rootfs_path: Path,
+        backup_dir: Path,
+        quiesce_guest: bool,
+    ) -> None:
+        lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
+        disk_backup: Path | None = None
+        try:
+            async with lock:
+                client = None
+                frozen = False
+                if quiesce_guest and _is_running(execution, self.pool):
+                    client, frozen = await self._try_fsfreeze(execution)
+                try:
+                    disk_backup = await create_qemu_disk_backup(str(vm_id), rootfs_path, backup_dir)
+                finally:
+                    if frozen and client is not None:
+                        await self._try_fsthaw(client, vm_id)
+                await verify_qemu_disk(disk_backup)
+                await create_backup_archive(
+                    vm_hash=str(vm_id),
+                    backup_files={_BACKUP_ROOTFS_MEMBER: disk_backup},
+                    destination_dir=backup_dir,
+                    source_sizes={_BACKUP_ROOTFS_MEMBER: rootfs_path.stat().st_size},
+                    timestamp=timestamp,
+                )
+                # The archive on disk is now the record; drop the live job.
+                self._backup_jobs.pop(backup_id, None)
+        except Exception as exc:
+            logger.exception("Backup %s failed", backup_id)
+            self._backup_jobs[backup_id] = BackupInfo(
+                vm_id=vm_id,
+                backup_id=backup_id,
+                status=BackupStatus.FAILED,
+                size_bytes=0,
+                created_at_unix_secs=int(time.time()),
+                error_message=str(exc),
+            )
+        finally:
+            if disk_backup is not None:
+                disk_backup.unlink(missing_ok=True)
+            self._backup_tasks.pop(vm_id, None)
+
+    async def _try_fsfreeze(self, execution):
+        """Best-effort guest fs-freeze through the QEMU guest agent; the
+        backup proceeds unfrozen when the agent is unavailable."""
+        from aleph.vm.controllers.qemu.client import QemuVmClient
+
+        try:
+            client = QemuVmClient(execution.vm)
+            frozen = await asyncio.wait_for(client.guest_fsfreeze_freeze(), timeout=30)
+            logger.info("Froze %s filesystem(s) for %s", frozen, execution.vm_hash)
+            return client, True
+        except Exception as exc:
+            logger.warning("fsfreeze unavailable for %s, proceeding without: %s", execution.vm_hash, exc)
+            return None, False
+
+    async def _try_fsthaw(self, client, vm_id: VmId) -> None:
+        try:
+            await client.guest_fsfreeze_thaw()
+        except Exception:
+            logger.exception("Failed to thaw filesystems for %s", vm_id)
 
     async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo:
-        raise NotImplementedSupervisorError("get_backup_status")
+        with translating_errors():
+            _validate_backup_id(vm_id, backup_id)
+            tar_path = get_backup_directory() / f"{backup_id}.tar"
+            if tar_path.exists():
+                return _backup_info_from_tar(tar_path, vm_id)
+            job = self._backup_jobs.get(backup_id)
+            if job is not None:
+                return job
+            raise BackupNotFoundError(backup_id)
 
     async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]:
-        raise NotImplementedSupervisorError("list_backups")
+        with translating_errors():
+            backup_dir = get_backup_directory()
+            pattern = f"{vm_id}-*.tar" if vm_id else "*.tar"
+            # The archive stem is "<vm_id>-<timestamp>"; neither part contains
+            # a dash (hex item hash, %Y%m%dT%H%M%SZ), so rsplit is exact.
+            infos = [
+                _backup_info_from_tar(tar_path, VmId(tar_path.stem.rsplit("-", 1)[0]))
+                for tar_path in sorted(backup_dir.glob(pattern))
+            ]
+            infos += [job for job in self._backup_jobs.values() if vm_id is None or job.vm_id == vm_id]
+            return infos
 
     async def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]:
-        raise NotImplementedSupervisorError("download_backup")
-        yield  # pragma: no cover - makes this an async generator
+        with translating_errors():
+            _validate_backup_id(vm_id, backup_id)
+            tar_path = get_backup_directory() / f"{backup_id}.tar"
+            if not tar_path.exists():
+                raise BackupNotFoundError(backup_id)
+        offset = 0
+        with tar_path.open("rb") as tar_file:
+            while True:
+                data = await asyncio.to_thread(tar_file.read, _BACKUP_DOWNLOAD_CHUNK_BYTES)
+                if not data:
+                    return
+                yield BackupChunk(data=data, offset=offset)
+                offset += len(data)
 
     async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None:
-        raise NotImplementedSupervisorError("delete_backup")
+        with translating_errors():
+            _validate_backup_id(vm_id, backup_id)
+            job = self._backup_jobs.get(backup_id)
+            if job is not None and job.status is BackupStatus.RUNNING:
+                msg = f"Backup {backup_id} is still running"
+                raise InternalSupervisorError(msg)
+            tar_path = get_backup_directory() / f"{backup_id}.tar"
+            existed = tar_path.exists()
+            tar_path.unlink(missing_ok=True)
+            tar_path.with_suffix(".tar.sha256").unlink(missing_ok=True)
+            tar_path.with_suffix(".tar.meta.json").unlink(missing_ok=True)
+            # Deleting a FAILED record is also a valid delete.
+            if self._backup_jobs.pop(backup_id, None) is None and not existed:
+                raise BackupNotFoundError(backup_id)
 
     async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo:
-        raise NotImplementedSupervisorError("restore_backup")
+        with translating_errors():
+            execution = self._require(vm_id)
+            rootfs_path = self._qemu_rootfs_path(execution)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Restoring an ephemeral VM is not supported; only persistent QEMU VMs can be restored"
+                raise NotImplementedSupervisorError(msg)
+            _validate_backup_id(vm_id, backup_id)
+            backup_dir = get_backup_directory()
+            tar_path = backup_dir / f"{backup_id}.tar"
+            if not tar_path.exists():
+                raise BackupNotFoundError(backup_id)
+
+            lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
+            async with lock:
+                staging = backup_dir / f"{backup_id}.restore.qcow2"
+                try:
+                    await asyncio.to_thread(_extract_rootfs_member, tar_path, staging)
+                    await verify_qemu_disk(staging)
+                    old_status = self._status_snapshot(execution)
+                    if _is_running(execution, self.pool):
+                        await self.pool.stop_vm(vm_id)
+                        # Fresh stop_event defuses the pool's forget-on-stop
+                        # task; the VM stays registered through the swap (same
+                        # trick as stop_vm and reinstall_vm).
+                        execution.stop_event = asyncio.Event()
+                        self.pool.executions[execution.vm_hash] = execution
+                        self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+                    await restore_rootfs(staging, rootfs_path)
+                    await self.pool.restart_persistent_vm(execution)
+                finally:
+                    staging.unlink(missing_ok=True)
+                info = _to_vm_info(execution, _is_running(execution, self.pool))
+                if info.status is not VmStatus.STOPPED:
+                    self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
 
     # Migration
+    def _update_migration(self, migration_id: MigrationId, **changes) -> None:
+        self._migration_jobs[migration_id] = dataclasses.replace(self._migration_jobs[migration_id], **changes)
+
     async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
-        raise NotImplementedSupervisorError("export_vm")
+        """Stop the VM and dump it (standalone disks + manifest) into a
+        host-local directory. Asynchronous: returns the PREPARING job;
+        poll get_migration_status. The VM is left STOPPED on success (it
+        is leaving this host) and restarted on failure."""
+        with translating_errors():
+            execution = self._require(vm_id)
+            if _backend_of(execution) is not Backend.QEMU:
+                raise InvalidBackendError("Export is only supported for QEMU VMs")
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                raise NotImplementedSupervisorError("Export requires a persistent VM")
+            spec = execution.vm_spec
+            if spec is None:
+                msg = f"VM {vm_id} was created outside the spec path (message-built); no spec to export"
+                raise NotImplementedSupervisorError(msg)
+
+            running_task = self._migration_tasks.get(vm_id)
+            if running_task is not None and not running_task.done():
+                raise MigrationInProgressError(f"An export of {vm_id} is already running")
+
+            destination = Path(destination_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            migration_id = MigrationId(f"{vm_id}-{timestamp}")
+            job = MigrationInfo(
+                vm_id=vm_id,
+                migration_id=migration_id,
+                phase=MigrationPhase.PREPARING,
+                bytes_transferred=0,
+                bytes_total=sum(disk.path.stat().st_size for disk in spec.disks),
+                error_message="",
+            )
+            self._migration_jobs[migration_id] = job
+            self._migration_tasks[vm_id] = asyncio.create_task(self._run_export(vm_id, migration_id, spec, destination))
+            return job
+
+    async def _run_export(self, vm_id: VmId, migration_id: MigrationId, spec: CreateVmSpec, destination: Path) -> None:
+        lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
+        try:
+            async with lock:
+                # The disks must be quiescent: a graceful stop (through the
+                # same path stop_vm uses) flushes the guest to disk.
+                await self.stop_vm(vm_id)
+                self._update_migration(migration_id, phase=MigrationPhase.EXPORTING)
+
+                manifest_disks: list[migrate.ManifestDisk] = []
+                transferred = 0
+                for index, disk in enumerate(spec.disks):
+                    name = migrate.disk_file_name(index, disk.format.value)
+                    dest_path = destination / name
+                    if disk.format is DiskFormat.QCOW2:
+                        # Collapses any backing chain: the export must be
+                        # self-contained on the target host.
+                        await compress_disk(disk.path, dest_path)
+                    else:
+                        await asyncio.to_thread(shutil.copy2, disk.path, dest_path)
+                    sha256 = await compute_sha256(dest_path)
+                    manifest_disks.append(
+                        migrate.ManifestDisk(name=name, sha256=sha256, size_bytes=dest_path.stat().st_size)
+                    )
+                    transferred += disk.path.stat().st_size
+                    self._update_migration(migration_id, bytes_transferred=transferred)
+
+                migrate.write_manifest(destination, spec, manifest_disks)
+                self._update_migration(migration_id, phase=MigrationPhase.COMPLETE)
+        except Exception as exc:
+            logger.exception("Export %s failed", migration_id)
+            self._update_migration(migration_id, phase=MigrationPhase.FAILED, error_message=str(exc))
+            try:
+                # The VM is not leaving after all; bring it back.
+                await self.start_vm(vm_id)
+            except Exception:
+                logger.exception("Failed to restart %s after a failed export", vm_id)
+        finally:
+            self._migration_tasks.pop(vm_id, None)
 
     async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
-        raise NotImplementedSupervisorError("import_vm")
+        """Recreate a VM from an exported directory: verify the disks
+        against the manifest, copy them into supervisor-owned storage,
+        rewrite the spec paths and boot through the regular create path."""
+        with translating_errors():
+            spec, manifest_disks = migrate.read_manifest(Path(source_dir), vm_id)
+            if str(vm_id) in self.pool.executions:
+                # Guarded before any disk copy: an import onto a live VM
+                # must not overwrite the disks it is running from.
+                raise VmAlreadyExistsError(str(vm_id))
+
+            dest_dir = settings.PERSISTENT_VOLUMES_DIR / str(vm_id)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                new_disks = []
+                for manifest_disk, disk_spec in zip(manifest_disks, spec.disks, strict=True):
+                    source_path = Path(source_dir) / manifest_disk.name
+                    if not source_path.exists():
+                        raise MigrationNotFoundError(f"exported disk {manifest_disk.name} missing in {source_dir}")
+                    sha256 = await compute_sha256(source_path)
+                    if sha256 != manifest_disk.sha256:
+                        msg = f"checksum mismatch for {manifest_disk.name}: the export is corrupt or incomplete"
+                        raise InternalSupervisorError(msg)
+                    dest_path = dest_dir / manifest_disk.name
+                    await asyncio.to_thread(shutil.copy2, source_path, dest_path)
+                    new_disks.append(dataclasses.replace(disk_spec, path=dest_path))
+                spec = dataclasses.replace(spec, vm_id=vm_id, disks=new_disks)
+                # The regular create path: conflict guards, events, boot.
+                return await self.create_vm(spec)
+            except BaseException:
+                if str(vm_id) not in self.pool.executions:
+                    shutil.rmtree(dest_dir, ignore_errors=True)
+                raise
 
     async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
-        raise NotImplementedSupervisorError("get_migration_status")
+        with translating_errors():
+            job = self._migration_jobs.get(migration_id)
+            if job is None or job.vm_id != vm_id:
+                raise MigrationNotFoundError(str(migration_id))
+            return job
 
     # Confidential
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:

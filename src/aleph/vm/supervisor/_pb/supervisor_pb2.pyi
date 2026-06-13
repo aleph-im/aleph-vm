@@ -10,6 +10,15 @@ This service is the infra-only boundary between the network-agent
 and the supervisor (controllers, hypervisors, networking, systemd,
 backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 backport-design.md.
+
+SAME-HOST INVARIANT: this is a process boundary, not a network
+boundary. Agent and supervisor share a filesystem; every path in this
+contract (kernel_path, DiskConfig.path, TeeConfig.session_dir,
+VmInfo.guest_channel_path, migration directories) is exchanged by
+reference and must resolve identically on both sides, with file
+ownership that lets the supervisor (and its jailer) read what the
+agent downloaded. A remote supervisor would need a content-transfer
+mechanism this contract deliberately does not define.
 """
 
 import builtins
@@ -28,6 +37,23 @@ else:
 
 DESCRIPTOR: google.protobuf.descriptor.FileDescriptor
 
+class _HealthStatus:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _HealthStatusEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_HealthStatus.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    HEALTH_STATUS_UNSPECIFIED: _HealthStatus.ValueType  # 0
+    HEALTH_STATUS_OK: _HealthStatus.ValueType  # 1
+    HEALTH_STATUS_DEGRADED: _HealthStatus.ValueType  # 2
+
+class HealthStatus(_HealthStatus, metaclass=_HealthStatusEnumTypeWrapper): ...
+
+HEALTH_STATUS_UNSPECIFIED: HealthStatus.ValueType  # 0
+HEALTH_STATUS_OK: HealthStatus.ValueType  # 1
+HEALTH_STATUS_DEGRADED: HealthStatus.ValueType  # 2
+global___HealthStatus = HealthStatus
+
 class _Backend:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -37,16 +63,45 @@ class _BackendEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTy
     BACKEND_UNSPECIFIED: _Backend.ValueType  # 0
     BACKEND_FIRECRACKER: _Backend.ValueType  # 1
     BACKEND_QEMU: _Backend.ValueType  # 2
-    BACKEND_QEMU_SEV: _Backend.ValueType  # 3
 
 class Backend(_Backend, metaclass=_BackendEnumTypeWrapper):
-    """── Lifecycle ────────────────────────────────────────────────────────────"""
+    """── Lifecycle ────────────────────────────────────────────────────────────
+
+    The VMM. Orthogonal to confidential computing: a confidential VM is
+    `backend: BACKEND_QEMU` plus a `tee` config (whose presence selects the
+    confidential launch path).
+    """
 
 BACKEND_UNSPECIFIED: Backend.ValueType  # 0
 BACKEND_FIRECRACKER: Backend.ValueType  # 1
 BACKEND_QEMU: Backend.ValueType  # 2
-BACKEND_QEMU_SEV: Backend.ValueType  # 3
 global___Backend = Backend
+
+class _TeeBackend:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _TeeBackendEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_TeeBackend.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    TEE_BACKEND_UNSPECIFIED: _TeeBackend.ValueType  # 0
+    """no TEE"""
+    TEE_BACKEND_SEV: _TeeBackend.ValueType  # 1
+    """AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy"""
+    TEE_BACKEND_SEV_SNP: _TeeBackend.ValueType  # 2
+    TEE_BACKEND_TDX: _TeeBackend.ValueType  # 3
+    TEE_BACKEND_NVIDIA_CC: _TeeBackend.ValueType  # 4
+
+class TeeBackend(_TeeBackend, metaclass=_TeeBackendEnumTypeWrapper):
+    """TEE attestation backend (see TeeConfig)."""
+
+TEE_BACKEND_UNSPECIFIED: TeeBackend.ValueType  # 0
+"""no TEE"""
+TEE_BACKEND_SEV: TeeBackend.ValueType  # 1
+"""AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy"""
+TEE_BACKEND_SEV_SNP: TeeBackend.ValueType  # 2
+TEE_BACKEND_TDX: TeeBackend.ValueType  # 3
+TEE_BACKEND_NVIDIA_CC: TeeBackend.ValueType  # 4
+global___TeeBackend = TeeBackend
 
 class _VmStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -96,6 +151,24 @@ CONFIDENTIAL_MODE_SEV: ConfidentialMode.ValueType  # 1
 CONFIDENTIAL_MODE_SEV_ES: ConfidentialMode.ValueType  # 2
 CONFIDENTIAL_MODE_SEV_SNP: ConfidentialMode.ValueType  # 3
 global___ConfidentialMode = ConfidentialMode
+
+class _Protocol:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _ProtocolEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_Protocol.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    PROTOCOL_UNSPECIFIED: _Protocol.ValueType  # 0
+    PROTOCOL_TCP: _Protocol.ValueType  # 1
+    PROTOCOL_UDP: _Protocol.ValueType  # 2
+
+class Protocol(_Protocol, metaclass=_ProtocolEnumTypeWrapper):
+    """── Port forwarding ──────────────────────────────────────────────────────"""
+
+PROTOCOL_UNSPECIFIED: Protocol.ValueType  # 0
+PROTOCOL_TCP: Protocol.ValueType  # 1
+PROTOCOL_UDP: Protocol.ValueType  # 2
+global___Protocol = Protocol
 
 class _BackupStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
@@ -168,6 +241,7 @@ class _ErrorCodeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._Enum
     ERROR_CODE_BACKUP_NOT_FOUND: _ErrorCode.ValueType  # 12
     """Backup / migration"""
     ERROR_CODE_MIGRATION_IN_PROGRESS: _ErrorCode.ValueType  # 13
+    ERROR_CODE_MIGRATION_NOT_FOUND: _ErrorCode.ValueType  # 14
     ERROR_CODE_INTERNAL: _ErrorCode.ValueType  # 99
     """Catch-all"""
 
@@ -201,6 +275,7 @@ ERROR_CODE_HOST_NOT_FOUND: ErrorCode.ValueType  # 11
 ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
 """Backup / migration"""
 ERROR_CODE_MIGRATION_IN_PROGRESS: ErrorCode.ValueType  # 13
+ERROR_CODE_MIGRATION_NOT_FOUND: ErrorCode.ValueType  # 14
 ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
 """Catch-all"""
 global___ErrorCode = ErrorCode
@@ -223,13 +298,12 @@ class HealthResponse(google.protobuf.message.Message):
 
     STATUS_FIELD_NUMBER: builtins.int
     VM_COUNT_FIELD_NUMBER: builtins.int
-    status: builtins.str
-    """"ok" | "degraded" """
+    status: global___HealthStatus.ValueType
     vm_count: builtins.int
     def __init__(
         self,
         *,
-        status: builtins.str = ...,
+        status: global___HealthStatus.ValueType = ...,
         vm_count: builtins.int = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["status", b"status", "vm_count", b"vm_count"]) -> None: ...
@@ -393,6 +467,8 @@ class CreateVmRequest(google.protobuf.message.Message):
     NUMA_NODE_FIELD_NUMBER: builtins.int
     PERSISTENT_FIELD_NUMBER: builtins.int
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
+    HOSTNAME_FIELD_NUMBER: builtins.int
+    GUEST_CHANNEL_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -406,11 +482,15 @@ class CreateVmRequest(google.protobuf.message.Message):
     """requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement."""
     persistent: builtins.bool
     """supervisor wraps in systemd if true"""
+    hostname: builtins.str
+    """Guest hostname for provisioning (cloud-init). Naming is the client's
+    business; empty falls back to a mechanical derivation from vm_id.
+    """
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
     def tee(self) -> global___TeeConfig:
-        """only meaningful when backend is *_SEV"""
+        """presence selects the confidential launch path"""
 
     @property
     def network(self) -> global___NetworkConfig: ...
@@ -419,6 +499,16 @@ class CreateVmRequest(google.protobuf.message.Message):
     @property
     def ssh_authorized_keys(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
         """guest cloud-init SSH keys (agent-provided)"""
+
+    @property
+    def guest_channel(self) -> global___GuestChannel:
+        """Optional host⇄guest control channel (Firecracker vsock today; a QEMU
+        backend may implement it with virtio-vsock). When present, the supervisor
+        exposes the channel and waits for the guest's ready signal on
+        `ready_port` as part of boot: the VM reports RUNNING only after the
+        signal. What is spoken over the channel is the client's business, opaque
+        to the supervisor.
+        """
 
     def __init__(
         self,
@@ -436,12 +526,40 @@ class CreateVmRequest(google.protobuf.message.Message):
         numa_node: builtins.int | None = ...,
         persistent: builtins.bool = ...,
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
+        hostname: builtins.str = ...,
+        guest_channel: global___GuestChannel | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
+    @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___CreateVmRequest = CreateVmRequest
+
+@typing.final
+class GuestChannel(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    READY_PORT_FIELD_NUMBER: builtins.int
+    READY_TIMEOUT_SECS_FIELD_NUMBER: builtins.int
+    ready_port: builtins.int
+    """the guest connects here to signal readiness"""
+    ready_timeout_secs: builtins.int
+    """How long the supervisor waits for the ready signal before failing the
+    boot. Workload policy: the client knows how long its guest image
+    legitimately takes. 0 = supervisor default.
+    """
+    def __init__(
+        self,
+        *,
+        ready_port: builtins.int = ...,
+        ready_timeout_secs: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["ready_port", b"ready_port", "ready_timeout_secs", b"ready_timeout_secs"]) -> None: ...
+
+global___GuestChannel = GuestChannel
 
 @typing.final
 class DiskConfig(google.protobuf.message.Message):
@@ -472,31 +590,28 @@ class DiskConfig(google.protobuf.message.Message):
         DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
         DISK_ROLE_UNSPECIFIED: DiskConfig._DiskRole.ValueType  # 0
         DISK_ROLE_ROOTFS: DiskConfig._DiskRole.ValueType  # 1
-        DISK_ROLE_CODE: DiskConfig._DiskRole.ValueType  # 2
-        DISK_ROLE_RUNTIME: DiskConfig._DiskRole.ValueType  # 3
-        DISK_ROLE_DATA: DiskConfig._DiskRole.ValueType  # 4
-        DISK_ROLE_EXTRA: DiskConfig._DiskRole.ValueType  # 5
+        DISK_ROLE_EXTRA: DiskConfig._DiskRole.ValueType  # 2
 
-    class DiskRole(_DiskRole, metaclass=_DiskRoleEnumTypeWrapper): ...
+    class DiskRole(_DiskRole, metaclass=_DiskRoleEnumTypeWrapper):
+        """Mechanism-only roles: the supervisor needs to know which disk is the
+        root device; everything else is attached in spec order (guest device
+        names are deterministic from that order, which is how the client maps
+        its workload semantics — code, data, caches — onto devices).
+        """
+
     DISK_ROLE_UNSPECIFIED: DiskConfig.DiskRole.ValueType  # 0
     DISK_ROLE_ROOTFS: DiskConfig.DiskRole.ValueType  # 1
-    DISK_ROLE_CODE: DiskConfig.DiskRole.ValueType  # 2
-    DISK_ROLE_RUNTIME: DiskConfig.DiskRole.ValueType  # 3
-    DISK_ROLE_DATA: DiskConfig.DiskRole.ValueType  # 4
-    DISK_ROLE_EXTRA: DiskConfig.DiskRole.ValueType  # 5
+    DISK_ROLE_EXTRA: DiskConfig.DiskRole.ValueType  # 2
 
     PATH_FIELD_NUMBER: builtins.int
     READONLY_FIELD_NUMBER: builtins.int
     FORMAT_FIELD_NUMBER: builtins.int
     ROLE_FIELD_NUMBER: builtins.int
-    MOUNT_FIELD_NUMBER: builtins.int
     path: builtins.str
     """absolute host path"""
     readonly: builtins.bool
     format: global___DiskConfig.Format.ValueType
     role: global___DiskConfig.DiskRole.ValueType
-    mount: builtins.str
-    """guest mount point (empty for rootfs); preserves the Aleph volume mount"""
     def __init__(
         self,
         *,
@@ -504,9 +619,8 @@ class DiskConfig(google.protobuf.message.Message):
         readonly: builtins.bool = ...,
         format: global___DiskConfig.Format.ValueType = ...,
         role: global___DiskConfig.DiskRole.ValueType = ...,
-        mount: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["format", b"format", "mount", b"mount", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["format", b"format", "path", b"path", "readonly", b"readonly", "role", b"role"]) -> None: ...
 
 global___DiskConfig = DiskConfig
 
@@ -517,8 +631,8 @@ class TeeConfig(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
-    backend: builtins.str
-    """TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM)."""
+    backend: global___TeeBackend.ValueType
+    """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
     """empty = default"""
     session_dir: builtins.str
@@ -526,7 +640,7 @@ class TeeConfig(google.protobuf.message.Message):
     def __init__(
         self,
         *,
-        backend: builtins.str = ...,
+        backend: global___TeeBackend.ValueType = ...,
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
     ) -> None: ...
@@ -576,6 +690,34 @@ class GpuConfig(google.protobuf.message.Message):
 global___GpuConfig = GpuConfig
 
 @typing.final
+class IpAssignment(google.protobuf.message.Message):
+    """One address family's assignment for a VM. All fields are empty until the
+    underlying tap device exists.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    ADDRESS_FIELD_NUMBER: builtins.int
+    NETWORK_CIDR_FIELD_NUMBER: builtins.int
+    GATEWAY_FIELD_NUMBER: builtins.int
+    address: builtins.str
+    """the guest's address, bare IP"""
+    network_cidr: builtins.str
+    """the tap network, e.g. "172.16.3.0/24" """
+    gateway: builtins.str
+    """host-side tap address (bare IP); the guest's default route"""
+    def __init__(
+        self,
+        *,
+        address: builtins.str = ...,
+        network_cidr: builtins.str = ...,
+        gateway: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["address", b"address", "gateway", b"gateway", "network_cidr", b"network_cidr"]) -> None: ...
+
+global___IpAssignment = IpAssignment
+
+@typing.final
 class VmInfo(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
@@ -587,8 +729,6 @@ class VmInfo(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     NUMA_NODE_FIELD_NUMBER: builtins.int
     STATUS_MESSAGE_FIELD_NUMBER: builtins.int
-    IPV4_NETWORK_FIELD_NUMBER: builtins.int
-    IPV6_NETWORK_FIELD_NUMBER: builtins.int
     DEFINED_AT_NS_FIELD_NUMBER: builtins.int
     PREPARING_AT_NS_FIELD_NUMBER: builtins.int
     PREPARED_AT_NS_FIELD_NUMBER: builtins.int
@@ -596,22 +736,18 @@ class VmInfo(google.protobuf.message.Message):
     STARTED_AT_NS_FIELD_NUMBER: builtins.int
     STOPPING_AT_NS_FIELD_NUMBER: builtins.int
     STOPPED_AT_NS_FIELD_NUMBER: builtins.int
-    IS_INSTANCE_FIELD_NUMBER: builtins.int
     CONFIDENTIAL_MODE_FIELD_NUMBER: builtins.int
     GPUS_FIELD_NUMBER: builtins.int
+    GUEST_CHANNEL_PATH_FIELD_NUMBER: builtins.int
+    GUEST_READY_PAYLOAD_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     status: global___VmStatus.ValueType
-    ipv4: builtins.str
-    ipv6: builtins.str
     uptime_secs: builtins.int
     backend: global___Backend.ValueType
     numa_node: builtins.int
     """effective placement (0-indexed). Unset until status is BOOTING/RUNNING."""
     status_message: builtins.str
     """human-readable, optional"""
-    ipv4_network: builtins.str
-    """Tap networks (CIDR strings, e.g. "172.16.3.0/24"). Empty until the tap device exists."""
-    ipv6_network: builtins.str
     defined_at_ns: builtins.int
     """Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached."""
     preparing_at_ns: builtins.int
@@ -620,13 +756,23 @@ class VmInfo(google.protobuf.message.Message):
     started_at_ns: builtins.int
     stopping_at_ns: builtins.int
     stopped_at_ns: builtins.int
-    is_instance: builtins.bool
-    """True for instances (full VMs), false for programs/microvms. Independent of
-    the hypervisor backend: an instance may run under Firecracker or QEMU, so
-    `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
-    """
     confidential_mode: global___ConfidentialMode.ValueType
     """precise TEE mode; NONE for non-confidential VMs"""
+    guest_channel_path: builtins.str
+    """Host UDS endpoint of the guest control channel (see
+    CreateVmRequest.guest_channel). The client dials it for guest-level
+    protocols and binds `<path>_<port>` listeners for guest-initiated
+    connections. Empty when the VM was created without a channel.
+    """
+    guest_ready_payload: builtins.bytes
+    """Raw bytes the guest sent with its ready signal, passed through opaquely;
+    empty until the signal arrived (or for VMs without a channel). The client
+    interprets them (the Aleph runtime sends its version handshake here).
+    """
+    @property
+    def ipv4(self) -> global___IpAssignment: ...
+    @property
+    def ipv6(self) -> global___IpAssignment: ...
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuDevice]:
         """exact PCI devices attached to this VM (mirrors HostInfo.gpus)"""
@@ -636,14 +782,12 @@ class VmInfo(google.protobuf.message.Message):
         *,
         vm_id: builtins.str = ...,
         status: global___VmStatus.ValueType = ...,
-        ipv4: builtins.str = ...,
-        ipv6: builtins.str = ...,
+        ipv4: global___IpAssignment | None = ...,
+        ipv6: global___IpAssignment | None = ...,
         uptime_secs: builtins.int = ...,
         backend: global___Backend.ValueType = ...,
         numa_node: builtins.int | None = ...,
         status_message: builtins.str = ...,
-        ipv4_network: builtins.str = ...,
-        ipv6_network: builtins.str = ...,
         defined_at_ns: builtins.int = ...,
         preparing_at_ns: builtins.int = ...,
         prepared_at_ns: builtins.int = ...,
@@ -651,12 +795,13 @@ class VmInfo(google.protobuf.message.Message):
         started_at_ns: builtins.int = ...,
         stopping_at_ns: builtins.int = ...,
         stopped_at_ns: builtins.int = ...,
-        is_instance: builtins.bool = ...,
         confidential_mode: global___ConfidentialMode.ValueType = ...,
         gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
+        guest_channel_path: builtins.str = ...,
+        guest_ready_payload: builtins.bytes = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "ipv4", b"ipv4", "ipv4_network", b"ipv4_network", "ipv6", b"ipv6", "ipv6_network", b"ipv6_network", "is_instance", b"is_instance", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "guest_channel_path", b"guest_channel_path", "guest_ready_payload", b"guest_ready_payload", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___VmInfo = VmInfo
@@ -675,6 +820,51 @@ class GetVmRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
 global___GetVmRequest = GetVmRequest
+
+@typing.final
+class GetVmSpecRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___GetVmSpecRequest = GetVmSpecRequest
+
+@typing.final
+class StopVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___StopVmRequest = StopVmRequest
+
+@typing.final
+class StartVmRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
+
+global___StartVmRequest = StartVmRequest
 
 @typing.final
 class ListVmsRequest(google.protobuf.message.Message):
@@ -737,9 +927,10 @@ class RebootVmRequest(google.protobuf.message.Message):
 
     VM_ID_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    """Note: aleph-vm performs soft reboot only today (systemd restart
-    for persistent VMs, recreate for ephemeral). Firecracker has no
-    reboot API. Add a `hard` option when a real implementation lands.
+    """Note: aleph-vm performs soft reboot only today: systemd restart for
+    persistent VMs; for ephemeral spec-created VMs the supervisor stops the
+    VM and recreates it from the spec it holds. Firecracker has no reboot
+    API. Add a `hard` option when a real implementation lands.
     """
     def __init__(
         self,
@@ -758,21 +949,58 @@ class ReinstallVmRequest(google.protobuf.message.Message):
     WIPE_VOLUMES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     wipe_volumes: builtins.bool
-    """false = reset rootfs only, keep writable data volumes"""
+    """false = reset rootfs only, keep writable data volumes."""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        wipe_volumes: builtins.bool = ...,
+        wipe_volumes: builtins.bool | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "wipe_volumes", b"wipe_volumes"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_wipe_volumes", b"_wipe_volumes"]) -> typing.Literal["wipe_volumes"] | None: ...
 
 global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
-class AddPortForwardRequest(google.protobuf.message.Message):
-    """── Port forwarding ──────────────────────────────────────────────────────"""
+class WatchEventsRequest(google.protobuf.message.Message):
+    """── Events ───────────────────────────────────────────────────────────────"""
 
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___WatchEventsRequest = WatchEventsRequest
+
+@typing.final
+class VmEvent(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    OLD_STATUS_FIELD_NUMBER: builtins.int
+    NEW_STATUS_FIELD_NUMBER: builtins.int
+    TIMESTAMP_NS_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    old_status: global___VmStatus.ValueType
+    new_status: global___VmStatus.ValueType
+    timestamp_ns: builtins.int
+    """unix ns UTC at emission"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        old_status: global___VmStatus.ValueType = ...,
+        new_status: global___VmStatus.ValueType = ...,
+        timestamp_ns: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["new_status", b"new_status", "old_status", b"old_status", "timestamp_ns", b"timestamp_ns", "vm_id", b"vm_id"]) -> None: ...
+
+global___VmEvent = VmEvent
+
+@typing.final
+class AddPortForwardRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
@@ -783,15 +1011,14 @@ class AddPortForwardRequest(google.protobuf.message.Message):
     host_port: builtins.int
     """0 = auto-allocate"""
     vm_port: builtins.int
-    protocol: builtins.str
-    """"tcp" | "udp" """
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
         vm_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
@@ -808,14 +1035,14 @@ class PortForwardInfo(google.protobuf.message.Message):
     vm_id: builtins.str
     host_port: builtins.int
     vm_port: builtins.int
-    protocol: builtins.str
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
         vm_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id", "vm_port", b"vm_port"]) -> None: ...
 
@@ -830,13 +1057,13 @@ class RemovePortForwardRequest(google.protobuf.message.Message):
     PROTOCOL_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     host_port: builtins.int
-    protocol: builtins.str
+    protocol: global___Protocol.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         host_port: builtins.int = ...,
-        protocol: builtins.str = ...,
+        protocol: global___Protocol.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["host_port", b"host_port", "protocol", b"protocol", "vm_id", b"vm_id"]) -> None: ...
 
@@ -1333,14 +1560,13 @@ class Measurement(google.protobuf.message.Message):
     vm_id: builtins.str
     measurement_bytes: builtins.bytes
     """attestation report / SEV launch measure"""
-    tee_backend: builtins.str
-    """"sev-snp" | "tdx" | ..."""
+    tee_backend: global___TeeBackend.ValueType
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         measurement_bytes: builtins.bytes = ...,
-        tee_backend: builtins.str = ...,
+        tee_backend: global___TeeBackend.ValueType = ...,
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
 

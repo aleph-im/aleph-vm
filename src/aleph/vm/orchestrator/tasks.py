@@ -246,6 +246,10 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, reg
     # spec-built and restored executions carry no message.
     # This covers both additions (new domain pointing to local instance)
     # and deletions (domain removed — need to clean up the map).
+    if pool is None:
+        # Split mode: the domains/HAProxy path still needs the in-process
+        # pool; deferred.
+        return
     has_local_instance = any(
         execution.is_instance
         and execution.vm
@@ -269,7 +273,7 @@ async def start_watch_for_messages_task(app: web.Application):
     pool: VmPool = app["vm_pool"]
     supervisor = app["supervisor"]
     registry = app["vm_registry"]
-    reactor = Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], registry)
+    reactor = Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions

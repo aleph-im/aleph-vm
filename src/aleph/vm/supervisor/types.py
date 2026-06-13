@@ -23,9 +23,12 @@ DirectoryPath = NewType("DirectoryPath", Path)
 
 
 class Backend(Enum):
+    """The VMM. Orthogonal to confidential computing: a confidential VM is
+    QEMU plus a TeeConfig (whose presence selects the confidential launch
+    path)."""
+
     FIRECRACKER = "firecracker"
     QEMU = "qemu"
-    QEMU_SEV = "qemu_sev"
 
 
 class VmStatus(Enum):
@@ -51,10 +54,10 @@ class DiskFormat(Enum):
 
 
 class DiskRole(Enum):
+    """Mechanism-only: which disk is the root device. Everything else is
+    attached in spec order; guest device names derive from that order."""
+
     ROOTFS = "rootfs"
-    CODE = "code"
-    RUNTIME = "runtime"
-    DATA = "data"
     EXTRA = "extra"
 
 
@@ -101,11 +104,13 @@ class ErrorCode(Enum):
     HOST_NOT_FOUND = "host_not_found"
     BACKUP_NOT_FOUND = "backup_not_found"
     MIGRATION_IN_PROGRESS = "migration_in_progress"
+    MIGRATION_NOT_FOUND = "migration_not_found"
     INTERNAL = "internal"
 
 
 class TeeBackend(Enum):
     NONE = ""
+    SEV = "sev"  # AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy
     SEV_SNP = "sev-snp"
     TDX = "tdx"
     NVIDIA_CC = "nvidia-cc"
@@ -118,11 +123,13 @@ class HealthStatus(Enum):
 
 @dataclass(frozen=True)
 class DiskSpec:
+    """A disk by host path. Where the guest mounts it is the client's
+    business (keyed by disk order); no mount point crosses the boundary."""
+
     path: Path
     readonly: bool
     format: DiskFormat
     role: DiskRole
-    mount: str = ""  # guest mount point; empty for rootfs. Preserves the Aleph volume mount.
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,19 @@ class GpuSpec:
 
 
 @dataclass(frozen=True)
+class GuestChannelSpec:
+    """Host⇄guest control channel request (Firecracker vsock today). The
+    supervisor exposes the channel and waits for the guest's ready signal on
+    `ready_port` as part of boot; the payloads spoken over it are the
+    client's business."""
+
+    ready_port: int
+    # How long to wait for the ready signal before failing the boot; the
+    # client knows its guest image. 0 = supervisor default.
+    ready_timeout_secs: int = 0
+
+
+@dataclass(frozen=True)
 class CreateVmSpec:
     vm_id: VmId
     backend: Backend
@@ -160,14 +180,19 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
+    # Guest hostname for provisioning (cloud-init); naming is the client's
+    # business. Empty = mechanical fallback derived from vm_id.
+    hostname: str = ""
+    # Optional host⇄guest control channel; None = no channel. See
+    # GuestChannelSpec and VmInfo.guest_channel_path.
+    guest_channel: GuestChannelSpec | None = None
 
     @property
     def rootfs(self) -> DiskSpec | None:
         """The single rootfs disk, or None for a rootfs-less spec.
 
-        Instances carry exactly one ROOTFS disk; programs carry none (their root
-        image is the runtime disk). Raises if more than one ROOTFS disk is
-        present, which is a malformed spec.
+        Raises if more than one ROOTFS disk is present, which is a malformed
+        spec.
         """
         # Local import: aleph.vm.supervisor.errors imports ErrorCode from this
         # module, so a top-level import would be circular.
@@ -189,18 +214,25 @@ class CreateVmSpec:
 
 
 @dataclass(frozen=True)
+class IpAssignment:
+    """One address family's assignment for a VM; all fields empty until the
+    tap device exists."""
+
+    address: str = ""  # the guest's address, bare IP
+    network_cidr: str = ""  # the tap network, e.g. "172.16.3.0/24"
+    gateway: str = ""  # host-side tap address (bare IP); the guest's default route
+
+
+@dataclass(frozen=True)
 class VmInfo:
     vm_id: VmId
     status: VmStatus
-    ipv4: str
-    ipv6: str
+    ipv4: IpAssignment
+    ipv6: IpAssignment
     uptime_secs: int
     backend: Backend
     numa_node: int | None
     status_message: str
-    # Tap networks (CIDR strings); empty until the tap device exists.
-    ipv4_network: str = ""
-    ipv6_network: str = ""
     # Lifecycle timestamps, unix nanoseconds UTC; 0 = stage not reached.
     defined_at_ns: int = 0
     preparing_at_ns: int = 0
@@ -209,15 +241,28 @@ class VmInfo:
     started_at_ns: int = 0
     stopping_at_ns: int = 0
     stopped_at_ns: int = 0
-    # True for instances (full VMs), false for programs/microvms. Independent of
-    # `backend`: an instance may run under Firecracker or QEMU, so the backend
-    # alone cannot recover this. Mirrors VmExecution.is_instance.
-    is_instance: bool = False
     # Precise confidential-computing mode (the agent reduces to a bool for Aleph
     # APIs). NONE for non-confidential VMs.
     confidential_mode: ConfidentialMode = ConfidentialMode.NONE
     # Exact PCI devices attached to this VM; mirrors HostInfo.gpus.
     gpus: list[GpuDevice] = field(default_factory=list)
+    # Host UDS endpoint of the guest control channel; empty when the VM was
+    # created without one. The client dials it for guest-level protocols and
+    # binds `<path>_<port>` listeners for guest-initiated connections.
+    guest_channel_path: str = ""
+    # Raw bytes the guest sent with its ready signal, passed through opaquely;
+    # empty until the signal arrived (or for VMs without a channel).
+    guest_ready_payload: bytes = b""
+
+
+@dataclass(frozen=True)
+class VmEvent:
+    """A lifecycle transition, streamed by watch_events."""
+
+    vm_id: VmId
+    old_status: VmStatus
+    new_status: VmStatus
+    timestamp_ns: int
 
 
 @dataclass(frozen=True)

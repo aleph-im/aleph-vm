@@ -78,6 +78,10 @@ class MigrationInProgressError(SupervisorError):
     code = ErrorCode.MIGRATION_IN_PROGRESS
 
 
+class MigrationNotFoundError(SupervisorError):
+    code = ErrorCode.MIGRATION_NOT_FOUND
+
+
 class NotImplementedSupervisorError(SupervisorError):
     """A boundary method that is intentionally not implemented yet."""
 
@@ -137,5 +141,5 @@ def translating_errors() -> Iterator[None]:
         yield
     except SupervisorError:
         raise
-    except Exception as exc:  # noqa: BLE001 - deliberate boundary catch-all
+    except Exception as exc:  # - deliberate boundary catch-all
         raise translate_exception(exc) from exc

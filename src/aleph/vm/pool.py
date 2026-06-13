@@ -23,7 +23,11 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError, get_gpu_devices
-from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.errors import (
+    InvalidBackendError,
+    TeeUnavailableError,
+    VmAlreadyExistsError,
+)
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_configuration,
     spec_from_controller_configuration,
@@ -406,14 +410,20 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
-        if spec.backend is not Backend.QEMU:
-            msg = f"create_vm_from_spec supports QEMU only, got {spec.backend}"
-            raise InvalidBackendError(msg)
+        if spec.tee is not None:
+            # The spec path builds a plain QemuVMConfiguration; a confidential
+            # launch (QemuConfidentialVMConfiguration) is not wired yet.
+            # Failing beats silently booting the VM unprotected.
+            msg = "Confidential (TEE) VMs are not supported by the spec path yet"
+            raise TeeUnavailableError(msg)
+        if spec.backend is Backend.FIRECRACKER:
+            return await self._create_firecracker_from_spec(spec)
 
         vm_hash = ItemHash(spec.vm_id)
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                self._require_same_spec(current_execution, spec)
                 return current_execution
 
             execution = VmExecution.from_spec(
@@ -458,6 +468,76 @@ class VmPool:
 
             self._schedule_forget_on_stop(execution)
             return execution
+
+    async def _create_firecracker_from_spec(self, spec: CreateVmSpec) -> VmExecution:
+        """Message-free Firecracker boot.
+
+        Boots the VM from the spec's resolved paths and, when the spec carries
+        a guest channel, waits for the guest's ready signal as part of boot.
+        The guest-level protocols spoken over the channel are the client's
+        business (VmInfo.guest_channel_path). Admission for spec-built VMs is
+        the agent's responsibility (see check_admission docstring).
+        """
+        if spec.guest_channel is None:
+            # Firecracker VMs without a guest channel (full instances under
+            # FC) have no spec-path boot flow yet; they keep the legacy path.
+            msg = "Firecracker spec VMs require a guest_channel"
+            raise InvalidBackendError(msg)
+        if spec.persistent:
+            msg = "Persistent Firecracker spec VMs are not supported yet; use the legacy create path"
+            raise InvalidBackendError(msg)
+
+        vm_hash = ItemHash(spec.vm_id)
+        async with self.creation_lock:
+            current_execution = self.executions.get(vm_hash)
+            if current_execution and current_execution.is_running and not current_execution.is_stopping:
+                self._require_same_spec(current_execution, spec)
+                return current_execution
+
+            execution = VmExecution.from_spec(
+                spec,
+                snapshot_manager=self.snapshot_manager,
+                systemd_manager=self.systemd_manager,
+            )
+            self.executions[vm_hash] = execution
+
+            tap_interface = None
+            vm_id = None
+            try:
+                await execution.prepare()  # resolves resources from the spec; no download
+
+                vm_id = self.get_unique_vm_id()
+
+                if self.network and spec.network.internet_access:
+                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, VmType.microvm)
+                    if self.network.interface_exists(vm_id):
+                        await tap_interface.delete()
+                    await self.network.create_tap(vm_id, tap_interface)
+
+                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                # start() boots the VMM and blocks through the init-ready
+                # handshake; configure() is a no-op for ephemeral programs.
+                await execution.start()
+            except Exception:
+                if execution.vm:
+                    await execution.vm.teardown()
+                elif tap_interface and vm_id is not None:
+                    teardown_nftables_for_vm(vm_id)
+                    await tap_interface.delete()
+                self.forget_vm(vm_hash)
+                raise
+
+            self._schedule_forget_on_stop(execution)
+            return execution
+
+    @staticmethod
+    def _require_same_spec(current_execution: VmExecution, spec: CreateVmSpec) -> None:
+        """CreateVm idempotency: a retry with the identical spec returns the
+        live VM; a different spec for a live vm_id is a conflict (also covers
+        colliding with a message-built execution, whose vm_spec is None)."""
+        if current_execution.vm_spec != spec:
+            msg = f"VM {spec.vm_id} already exists with a different spec"
+            raise VmAlreadyExistsError(msg)
 
     def get_unique_vm_id(self) -> int:
         """Get a unique identifier for the VM.
@@ -531,6 +611,11 @@ class VmPool:
                 # always re-apply them.
                 setup_nftables_for_vm(execution.vm.vm_id, interface=execution.vm.tap_interface)
         self.systemd_manager.restart(execution.controller_service)
+        # RestartUnit only queues a job: wait until the unit is confirmed
+        # active (with the crash-loop re-check) so callers get a truthful
+        # RUNNING status and a flapping controller fails the start loudly.
+        await execution.wait_for_controller_ready()
+        execution.times.started_at = datetime.now(tz=timezone.utc)
         # Reload port mappings from DB — stop() clears them in memory
         # but the DB retains them for persistent VMs.
         execution.mapped_ports = await get_port_mappings(execution.vm_hash)
@@ -549,7 +634,12 @@ class VmPool:
             # (e.g. reinstall/restore), this old task should not remove it.
             if execution.stop_event is not stop_event:
                 return
-            self.forget_vm(execution.vm_hash)
+            # Forget by identity, not by hash: the same vm_id may already be
+            # a new execution (reboot and delete+create recreate it while
+            # this task races the old stop); only this task's own execution
+            # may be removed.
+            if self.executions.get(execution.vm_hash) is execution:
+                self.forget_vm(execution.vm_hash)
 
         execution._forget_task = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 

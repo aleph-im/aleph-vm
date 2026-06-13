@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.inprocess import InProcessSupervisor
-from aleph.vm.supervisor.types import Backend, VmId, VmStatus
+from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
 
 
 def make_execution(
@@ -39,8 +40,10 @@ def make_execution(
         is_instance=True,
         is_confidential=confidential,
         hypervisor=hypervisor,
+        vm_spec=None,
         vm=vm,
         gpus=[],
+        wait_for_controller_ready=AsyncMock(),
     )
 
 
@@ -73,26 +76,22 @@ async def test_get_vm_maps_a_running_qemu_instance():
     assert info.vm_id == "itemhash123"
     assert info.status is VmStatus.RUNNING
     assert info.backend is Backend.QEMU
-    assert info.ipv4 == "10.0.0.2"
-    assert info.ipv6 == "fd00::2"
+    assert info.ipv4.address == "10.0.0.2"
+    assert info.ipv6.address == "fd00::2"
     assert info.uptime_secs >= 100
 
 
 @pytest.mark.asyncio
-async def test_get_vm_reports_is_instance():
-    """is_instance is carried from the execution, independent of the backend."""
-    instance = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
-    instance.is_instance = True
-    program = make_execution(vm_hash="p", hypervisor=HypervisorType.firecracker)
-    program.is_instance = False
-    pool = FakePool(executions={"i": instance, "p": program})
-    sup = InProcessSupervisor(pool=pool)
-
-    assert (await sup.get_vm(VmId("i"))).is_instance is True
-    # A firecracker instance still reports FIRECRACKER for backend, so the flag
-    # is the only way to recover instance-ness.
-    assert (await sup.get_vm(VmId("i"))).backend is Backend.FIRECRACKER
-    assert (await sup.get_vm(VmId("p"))).is_instance is False
+async def test_vm_info_has_no_is_instance_field():
+    """The instance/program distinction is agent vocabulary: the wire must not
+    carry it. The agent derives it from its registry (or from the guest
+    channel's presence as a registry-miss fallback)."""
+    execution = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
+    sup = InProcessSupervisor(pool=FakePool(executions={"i": execution}))
+    info = await sup.get_vm(VmId("i"))
+    assert not hasattr(info, "is_instance")
+    # An instance under Firecracker still reports the FIRECRACKER backend.
+    assert info.backend is Backend.FIRECRACKER
 
 
 @pytest.mark.asyncio
@@ -103,7 +102,8 @@ async def test_get_vm_unknown_raises_vm_not_found():
 
 
 @pytest.mark.asyncio
-async def test_confidential_instance_reports_qemu_sev_backend():
+async def test_confidential_instance_reports_qemu_backend_and_tee_mode():
+    """Backend is the VMM only; the TEE is carried by confidential_mode."""
     execution = make_execution(confidential=True)
     pool = FakePool(
         executions={"itemhash123": execution},
@@ -111,7 +111,8 @@ async def test_confidential_instance_reports_qemu_sev_backend():
     )
     sup = InProcessSupervisor(pool=pool)
     info = await sup.get_vm(VmId("itemhash123"))
-    assert info.backend is Backend.QEMU_SEV
+    assert info.backend is Backend.QEMU
+    assert info.confidential_mode is not ConfidentialMode.NONE
 
 
 @pytest.mark.asyncio
@@ -151,8 +152,8 @@ async def test_get_vm_reports_networks_and_lifecycle_timestamps():
 
     info = await sup.get_vm(VmId("itemhash123"))
 
-    assert info.ipv4_network == "172.16.3.0/24"
-    assert info.ipv6_network == "fc00:1:2:3::/64"
+    assert info.ipv4.network_cidr == "172.16.3.0/24"
+    assert info.ipv6.network_cidr == "fc00:1:2:3::/64"
     started = execution.times.started_at
     assert info.started_at_ns == int(started.timestamp()) * 1_000_000_000 + started.microsecond * 1_000
     assert info.preparing_at_ns == 0
@@ -167,8 +168,8 @@ async def test_get_vm_without_tap_reports_empty_networks():
 
     info = await sup.get_vm(VmId("itemhash123"))
 
-    assert info.ipv4_network == ""
-    assert info.ipv6_network == ""
+    assert info.ipv4.network_cidr == ""
+    assert info.ipv6.network_cidr == ""
 
 
 @pytest.mark.asyncio

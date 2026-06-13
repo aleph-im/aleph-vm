@@ -6,7 +6,6 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from aleph_message.models import (
     ExecutableContent,
@@ -29,6 +28,10 @@ from aleph.vm.controllers.firecracker.program import (
     AlephProgramResources,
 )
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.controllers.firecracker.spec_program import (
+    SpecFirecrackerProgram,
+    SpecProgramResources,
+)
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.controllers.qemu_confidential.instance import (
@@ -125,7 +128,12 @@ class VmExecution:
     # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
     spec: MessageSpec | CreateVmSpec
     resources: (
-        AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance | None
+        AlephProgramResources
+        | AlephInstanceResources
+        | AlephQemuResources
+        | AlephQemuConfidentialInstance
+        | SpecProgramResources
+        | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: list[HostGPU]
@@ -368,13 +376,13 @@ class VmExecution:
     @property
     def is_instance(self) -> bool:
         if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend in {Backend.QEMU, Backend.QEMU_SEV}
+            return self.spec.backend is Backend.QEMU
         return isinstance(self.spec.message, InstanceContent)
 
     @property
     def is_confidential(self) -> bool:
         if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend is Backend.QEMU_SEV
+            return self.spec.tee is not None
         # FunctionEnvironment has no trusted_execution
         return True if getattr(self.spec.message.environment, "trusted_execution", None) else False
 
@@ -511,7 +519,10 @@ class VmExecution:
 
             if isinstance(self.spec, CreateVmSpec):
                 # Spec path: every path is already resolved on disk; no download.
-                self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
+                if self.spec.backend is Backend.FIRECRACKER:
+                    self.resources = SpecProgramResources.from_spec(self.spec)
+                else:
+                    self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 self.times.prepared_at = datetime.now(tz=timezone.utc)
                 return
 
@@ -584,6 +595,17 @@ class VmExecution:
 
         vm: AlephVmControllerInterface
         if isinstance(self.spec, CreateVmSpec):
+            if self.spec.backend is Backend.FIRECRACKER:
+                assert isinstance(self.resources, SpecProgramResources)
+                self.vm = vm = SpecFirecrackerProgram(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    spec=self.spec,
+                    resources=self.resources,
+                    tap_interface=tap_interface,
+                    prepare_jailer=prepare,
+                )
+                return vm
             assert isinstance(self.resources, AlephQemuResources)
             hardware_resources = MachineResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
             self.vm = vm = AlephQemuInstance(
@@ -678,13 +700,9 @@ class VmExecution:
                     await self.wait_for_init()
                     await self.vm.load_configuration()
                     self.times.started_at = datetime.now(tz=timezone.utc)
-                else:
-                    # Wait for the controller to become active before
-                    # marking ready — avoids a race where ready_event
-                    # is set but the VM never actually started.
-                    if not await self.non_blocking_wait_for_boot():
-                        msg = f"{self} controller failed to start"
-                        raise RuntimeError(msg)
+                elif not await self.non_blocking_wait_for_boot():
+                    msg = f"{self} controller failed to start"
+                    raise RuntimeError(msg)
 
                 if self.vm and self.vm.support_snapshot and self.snapshot_manager:
                     await self.snapshot_manager.start_for(vm=self.vm)
@@ -719,7 +737,18 @@ class VmExecution:
                 self.controller_service,
             )
             if state == "active":
-                return
+                # A unit whose process dies right after start (e.g. qemu
+                # refusing its arguments, with Restart=on-failure) samples
+                # as "active" in the windows between crashes. Confirm the
+                # unit stayed active before declaring the VM started.
+                await asyncio.sleep(2)
+                state = self.systemd_manager.get_service_active_state(
+                    self.controller_service,
+                )
+                if state == "active":
+                    return
+                msg = f"{self} controller service went '{state}' right after starting (crash loop?)"
+                raise RuntimeError(msg)
             if state == "failed":
                 msg = f"{self} controller service entered 'failed' state"
                 raise RuntimeError(msg)
@@ -741,6 +770,38 @@ class VmExecution:
 
         msg = f"{self} controller service did not become active after {max_attempt} attempts"
         raise RuntimeError(msg)
+
+    async def wait_for_controller_stopped(self) -> None:
+        """Block until the controller unit has actually stopped.
+
+        StopUnit only queues a job: the controller then shuts the guest
+        down gracefully (ACPI powerdown, then QMP quit), which can take
+        up to systemd's TimeoutStopSec (60s). Tearing down the TAP
+        interface while qemu is still running makes its tap file
+        descriptor go bad; qemu then aborts without flushing the disk,
+        corrupting the rootfs.
+        """
+        if not self.systemd_manager:
+            return
+        # TimeoutStopSec is 60s, after which systemd SIGKILLs the
+        # controller; poll a little past that before giving up.
+        max_attempt = 75
+        for attempt in range(1, max_attempt + 1):
+            state = self.systemd_manager.get_service_active_state(self.controller_service)
+            # "not-loaded" counts as stopped: systemd garbage-collects a
+            # unit once it reaches a clean inactive state, so a 1s poll
+            # can miss the brief "inactive" window entirely.
+            if state in ("inactive", "failed", "not-loaded"):
+                return
+            logger.debug(
+                "%s controller still '%s' while stopping (attempt %d/%d)",
+                self,
+                state,
+                attempt,
+                max_attempt,
+            )
+            await asyncio.sleep(1)
+        logger.warning("%s controller did not stop after %ds, tearing down anyway", self, max_attempt)
 
     async def non_blocking_wait_for_boot(self):
         """Wait for the controller process and mark the instance as started.
@@ -782,6 +843,7 @@ class VmExecution:
                 return
             if self.persistent and self.systemd_manager:
                 self.systemd_manager.stop_and_disable(self.controller_service)
+                await self.wait_for_controller_stopped()
             self.times.stopping_at = datetime.now(tz=timezone.utc)
             await self.all_runs_complete()
             await self.record_usage()

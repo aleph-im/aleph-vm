@@ -7,6 +7,15 @@
 // and the supervisor (controllers, hypervisors, networking, systemd,
 // backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 // backport-design.md.
+//
+// SAME-HOST INVARIANT: this is a process boundary, not a network
+// boundary. Agent and supervisor share a filesystem; every path in this
+// contract (kernel_path, DiskConfig.path, TeeConfig.session_dir,
+// VmInfo.guest_channel_path, migration directories) is exchanged by
+// reference and must resolve identically on both sides, with file
+// ownership that lets the supervisor (and its jailer) read what the
+// agent downloaded. A remote supervisor would need a content-transfer
+// mechanism this contract deliberately does not define.
 
 syntax = "proto3";
 
@@ -18,10 +27,22 @@ service Supervisor {
   rpc GetHostInfo(GetHostInfoRequest) returns (HostInfo);
 
   // ── VM lifecycle ──
+  // Idempotent on vm_id: re-sending the same spec for a live VM returns its
+  // current VmInfo (safe retry after UNAVAILABLE / DEADLINE_EXCEEDED); a
+  // different spec for a live vm_id fails ALREADY_EXISTS.
   rpc CreateVm(CreateVmRequest) returns (VmInfo);
   rpc GetVm(GetVmRequest) returns (VmInfo);
+  // The spec a live VM was created from, as the supervisor holds it. Lets
+  // the client rebuild its own records after a restart. UNIMPLEMENTED for
+  // VMs created outside the spec path (legacy in-process executions).
+  rpc GetVmSpec(GetVmSpecRequest) returns (CreateVmRequest);
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
   rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
+  // Stop a VM without releasing its definition: it stays listed (STOPPED)
+  // and StartVm brings it back. Persistent VMs only today; for ephemeral
+  // VMs the cycle is DeleteVm + CreateVm (UNIMPLEMENTED here).
+  rpc StopVm(StopVmRequest) returns (VmInfo);
+  rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
 
@@ -29,6 +50,15 @@ service Supervisor {
   rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
   rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
+
+  // ── Events ──
+  // Lifecycle transitions as a server stream, no replay: snapshot with
+  // ListVms first, then watch. This is the client's replacement for
+  // in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
+  // goes down). Today events reflect transitions the supervisor itself
+  // performs (create/stop/start/reboot/reinstall/delete); spontaneous
+  // guest-death detection is a future extension.
+  rpc WatchEvents(WatchEventsRequest) returns (stream VmEvent);
 
   // ── Logs ──
   rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
@@ -57,8 +87,14 @@ service Supervisor {
 
 message HealthRequest {}
 
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_OK = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+}
+
 message HealthResponse {
-  string status = 1;       // "ok" | "degraded"
+  HealthStatus status = 1;
   uint32 vm_count = 2;
 }
 
@@ -110,11 +146,25 @@ message GpuDevice {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
 
+// The VMM. Orthogonal to confidential computing: a confidential VM is
+// `backend: BACKEND_QEMU` plus a `tee` config (whose presence selects the
+// confidential launch path).
 enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_FIRECRACKER = 1;
   BACKEND_QEMU = 2;
-  BACKEND_QEMU_SEV = 3;
+  // Was BACKEND_QEMU_SEV: it conflated the VMM with the TEE.
+  reserved 3;
+  reserved "BACKEND_QEMU_SEV";
+}
+
+// TEE attestation backend (see TeeConfig).
+enum TeeBackend {
+  TEE_BACKEND_UNSPECIFIED = 0;   // no TEE
+  TEE_BACKEND_SEV = 1;           // AMD SEV / SEV-ES; the mode is refined by TeeConfig.policy
+  TEE_BACKEND_SEV_SNP = 2;
+  TEE_BACKEND_TDX = 3;
+  TEE_BACKEND_NVIDIA_CC = 4;
 }
 
 enum VmStatus {
@@ -135,12 +185,30 @@ message CreateVmRequest {
   repeated DiskConfig disks = 5;
   uint32 vcpus = 6;
   uint64 memory_mib = 7;
-  TeeConfig tee = 8;                 // only meaningful when backend is *_SEV
+  TeeConfig tee = 8;                 // presence selects the confidential launch path
   NetworkConfig network = 9;
   repeated GpuConfig gpus = 10;
   optional uint32 numa_node = 11;    // requested placement (0-indexed). Unset = auto. See VmInfo.numa_node for the effective placement.
   bool persistent = 12;              // supervisor wraps in systemd if true
   repeated string ssh_authorized_keys = 13; // guest cloud-init SSH keys (agent-provided)
+  // Guest hostname for provisioning (cloud-init). Naming is the client's
+  // business; empty falls back to a mechanical derivation from vm_id.
+  string hostname = 15;
+  // Optional host⇄guest control channel (Firecracker vsock today; a QEMU
+  // backend may implement it with virtio-vsock). When present, the supervisor
+  // exposes the channel and waits for the guest's ready signal on
+  // `ready_port` as part of boot: the VM reports RUNNING only after the
+  // signal. What is spoken over the channel is the client's business, opaque
+  // to the supervisor.
+  optional GuestChannel guest_channel = 14;
+}
+
+message GuestChannel {
+  uint32 ready_port = 1;             // the guest connects here to signal readiness
+  // How long the supervisor waits for the ready signal before failing the
+  // boot. Workload policy: the client knows how long its guest image
+  // legitimately takes. 0 = supervisor default.
+  uint32 ready_timeout_secs = 2;
 }
 
 message DiskConfig {
@@ -148,7 +216,12 @@ message DiskConfig {
   bool readonly = 2;
   Format format = 3;
   DiskRole role = 4;
-  string mount = 5;                  // guest mount point (empty for rootfs); preserves the Aleph volume mount
+  // Was `mount` (guest mount point): where the guest mounts a disk is
+  // workload semantics no hypervisor mechanism consumes — the client owns
+  // it (Firecracker: pushed over the guest channel; QEMU: the guest's own
+  // configuration), keyed by disk order.
+  reserved 5;
+  reserved "mount";
 
   enum Format {
     FORMAT_UNSPECIFIED = 0;
@@ -157,18 +230,19 @@ message DiskConfig {
     FORMAT_SQUASHFS = 3;
   }
 
+  // Mechanism-only roles: the supervisor needs to know which disk is the
+  // root device; everything else is attached in spec order (guest device
+  // names are deterministic from that order, which is how the client maps
+  // its workload semantics — code, data, caches — onto devices).
   enum DiskRole {
     DISK_ROLE_UNSPECIFIED = 0;
     DISK_ROLE_ROOTFS = 1;
-    DISK_ROLE_CODE = 2;
-    DISK_ROLE_RUNTIME = 3;
-    DISK_ROLE_DATA = 4;
-    DISK_ROLE_EXTRA = 5;
+    DISK_ROLE_EXTRA = 2;
   }
 }
 
 message TeeConfig {
-  string backend = 1;                // TEE attestation backend: "sev-snp", "tdx", "nvidia-cc", or "" (orthogonal to the top-level Backend enum, which selects the VMM).
+  TeeBackend backend = 1;            // attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
 }
@@ -195,19 +269,27 @@ enum ConfidentialMode {
   CONFIDENTIAL_MODE_SEV_SNP = 3;
 }
 
+// One address family's assignment for a VM. All fields are empty until the
+// underlying tap device exists.
+message IpAssignment {
+  string address = 1;                // the guest's address, bare IP
+  string network_cidr = 2;           // the tap network, e.g. "172.16.3.0/24"
+  string gateway = 3;                // host-side tap address (bare IP); the guest's default route
+}
+
 message VmInfo {
   string vm_id = 1;
   VmStatus status = 2;
-  string ipv4 = 3;
-  string ipv6 = 4;
+  IpAssignment ipv4 = 3;
+  IpAssignment ipv6 = 4;
   uint64 uptime_secs = 5;
   Backend backend = 6;
   optional uint32 numa_node = 7;     // effective placement (0-indexed). Unset until status is BOOTING/RUNNING.
   string status_message = 8;         // human-readable, optional
 
-  // Tap networks (CIDR strings, e.g. "172.16.3.0/24"). Empty until the tap device exists.
-  string ipv4_network = 9;
-  string ipv6_network = 10;
+  // Was the flat ipv4_network/ipv6_network pair; folded into IpAssignment.
+  reserved 9, 10;
+  reserved "ipv4_network", "ipv6_network";
 
   // Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached.
   uint64 defined_at_ns = 11;
@@ -218,16 +300,33 @@ message VmInfo {
   uint64 stopping_at_ns = 16;
   uint64 stopped_at_ns = 17;
 
-  // True for instances (full VMs), false for programs/microvms. Independent of
-  // the hypervisor backend: an instance may run under Firecracker or QEMU, so
-  // `backend` alone cannot recover this. Mirrors VmExecution.is_instance.
-  bool is_instance = 18;
+  // Was `is_instance`: the instance/program distinction is client vocabulary,
+  // derived client-side from its own records (or from the guest channel's
+  // presence as a last resort).
+  reserved 18;
+  reserved "is_instance";
 
   ConfidentialMode confidential_mode = 19;   // precise TEE mode; NONE for non-confidential VMs
   repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
+
+  // Host UDS endpoint of the guest control channel (see
+  // CreateVmRequest.guest_channel). The client dials it for guest-level
+  // protocols and binds `<path>_<port>` listeners for guest-initiated
+  // connections. Empty when the VM was created without a channel.
+  string guest_channel_path = 21;
+  // Raw bytes the guest sent with its ready signal, passed through opaquely;
+  // empty until the signal arrived (or for VMs without a channel). The client
+  // interprets them (the Aleph runtime sends its version handshake here).
+  bytes guest_ready_payload = 22;
+  // Was the flat ipv4_gateway/ipv6_gateway pair; folded into IpAssignment.
+  reserved 23, 24;
+  reserved "ipv4_gateway", "ipv6_gateway";
 }
 
 message GetVmRequest      { string vm_id = 1; }
+message GetVmSpecRequest  { string vm_id = 1; }
+message StopVmRequest     { string vm_id = 1; }
+message StartVmRequest    { string vm_id = 1; }
 message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
@@ -237,38 +336,56 @@ message DeleteVmRequest {
 message DeleteVmResponse  {}
 message RebootVmRequest {
   string vm_id = 1;
-  // Note: aleph-vm performs soft reboot only today (systemd restart
-  // for persistent VMs, recreate for ephemeral). Firecracker has no
-  // reboot API. Add a `hard` option when a real implementation lands.
+  // Note: aleph-vm performs soft reboot only today: systemd restart for
+  // persistent VMs; for ephemeral spec-created VMs the supervisor stops the
+  // VM and recreates it from the spec it holds. Firecracker has no reboot
+  // API. Add a `hard` option when a real implementation lands.
 }
 message ReinstallVmRequest {
   string vm_id = 1;
-  bool wipe_volumes = 2;             // false = reset rootfs only, keep writable data volumes
-                                     // NOTE: the Python ABC defaults wipe_volumes to true; proto3
-                                     // bools default to false. The gRPC server must treat an unset
-                                     // field as true (callers should always set it explicitly).
+  optional bool wipe_volumes = 2;    // false = reset rootfs only, keep writable data volumes.
+                                     // `optional` so the server can distinguish unset from false:
+                                     // the Python ABC defaults wipe_volumes to true, so an unset
+                                     // field is treated as true.
+}
+
+// ── Events ───────────────────────────────────────────────────────────────
+
+message WatchEventsRequest {}
+
+message VmEvent {
+  string vm_id = 1;
+  VmStatus old_status = 2;
+  VmStatus new_status = 3;
+  uint64 timestamp_ns = 4;           // unix ns UTC at emission
 }
 
 // ── Port forwarding ──────────────────────────────────────────────────────
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_TCP = 1;
+  PROTOCOL_UDP = 2;
+}
 
 message AddPortForwardRequest {
   string vm_id = 1;
   uint32 host_port = 2;              // 0 = auto-allocate
   uint32 vm_port = 3;
-  string protocol = 4;               // "tcp" | "udp"
+  Protocol protocol = 4;
 }
 
 message PortForwardInfo {
   string vm_id = 1;
   uint32 host_port = 2;
   uint32 vm_port = 3;
-  string protocol = 4;
+  Protocol protocol = 4;
 }
 
 message RemovePortForwardRequest {
   string vm_id = 1;
   uint32 host_port = 2;
-  string protocol = 3;
+  Protocol protocol = 3;
 }
 
 message RemovePortForwardResponse {}
@@ -408,7 +525,7 @@ message GetMeasurementRequest { string vm_id = 1; }
 message Measurement {
   string vm_id = 1;
   bytes measurement_bytes = 2;       // attestation report / SEV launch measure
-  string tee_backend = 3;            // "sev-snp" | "tdx" | ...
+  TeeBackend tee_backend = 3;
 }
 
 message InjectSecretRequest {
@@ -453,6 +570,7 @@ enum ErrorCode {
   // Backup / migration
   ERROR_CODE_BACKUP_NOT_FOUND = 12;
   ERROR_CODE_MIGRATION_IN_PROGRESS = 13;
+  ERROR_CODE_MIGRATION_NOT_FOUND = 14;
 
   // Catch-all
   ERROR_CODE_INTERNAL = 99;

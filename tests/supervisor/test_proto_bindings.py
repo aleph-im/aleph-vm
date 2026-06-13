@@ -71,14 +71,57 @@ def test_lifecycle_rpcs_defined():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
-    assert {"CreateVm", "GetVm", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
+    assert {"CreateVm", "GetVm", "GetVmSpec", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
 
 
 def test_backend_enum_complete():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
+    # The VMM only: confidential computing is selected by TeeConfig presence,
+    # not a backend variant (BACKEND_QEMU_SEV is reserved).
     values = {v.name for v in supervisor_pb2.Backend.DESCRIPTOR.values}
-    assert values == {"BACKEND_UNSPECIFIED", "BACKEND_FIRECRACKER", "BACKEND_QEMU", "BACKEND_QEMU_SEV"}
+    assert values == {"BACKEND_UNSPECIFIED", "BACKEND_FIRECRACKER", "BACKEND_QEMU"}
+
+
+def test_tee_backend_enum_complete():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.TeeBackend.DESCRIPTOR.values}
+    assert values == {
+        "TEE_BACKEND_UNSPECIFIED",
+        "TEE_BACKEND_SEV",
+        "TEE_BACKEND_SEV_SNP",
+        "TEE_BACKEND_TDX",
+        "TEE_BACKEND_NVIDIA_CC",
+    }
+    # Enum-typed on the wire, not stringly-typed.
+    tee_field = supervisor_pb2.TeeConfig.DESCRIPTOR.fields_by_name["backend"]
+    assert tee_field.enum_type is supervisor_pb2.TeeBackend.DESCRIPTOR
+    meas_field = supervisor_pb2.Measurement.DESCRIPTOR.fields_by_name["tee_backend"]
+    assert meas_field.enum_type is supervisor_pb2.TeeBackend.DESCRIPTOR
+
+
+def test_health_status_enum_typed():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.HealthStatus.DESCRIPTOR.values}
+    assert values == {"HEALTH_STATUS_UNSPECIFIED", "HEALTH_STATUS_OK", "HEALTH_STATUS_DEGRADED"}
+    field = supervisor_pb2.HealthResponse.DESCRIPTOR.fields_by_name["status"]
+    assert field.enum_type is supervisor_pb2.HealthStatus.DESCRIPTOR
+
+
+def test_protocol_enum_typed():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    values = {v.name for v in supervisor_pb2.Protocol.DESCRIPTOR.values}
+    assert values == {"PROTOCOL_UNSPECIFIED", "PROTOCOL_TCP", "PROTOCOL_UDP"}
+    for message in (
+        supervisor_pb2.AddPortForwardRequest,
+        supervisor_pb2.PortForwardInfo,
+        supervisor_pb2.RemovePortForwardRequest,
+    ):
+        field = message.DESCRIPTOR.fields_by_name["protocol"]
+        assert field.enum_type is supervisor_pb2.Protocol.DESCRIPTOR
 
 
 def test_create_vm_request_shape():
@@ -108,17 +151,18 @@ def test_disk_config_has_role_and_format_enums():
 
     disk_fields = {f.name for f in supervisor_pb2.DiskConfig.DESCRIPTOR.fields}
     assert {"path", "readonly", "format", "role"} <= disk_fields
+    # Guest mount points are client vocabulary; the wire does not carry them.
+    assert "mount" not in disk_fields
     formats = {v.name for v in supervisor_pb2.DiskConfig.Format.DESCRIPTOR.values}
     assert {"FORMAT_UNSPECIFIED", "FORMAT_RAW", "FORMAT_QCOW2", "FORMAT_SQUASHFS"} <= formats
     roles = {v.name for v in supervisor_pb2.DiskConfig.DiskRole.DESCRIPTOR.values}
-    assert {
+    # Mechanism-only: root device or not. Workload roles (code/runtime/data)
+    # are client vocabulary, mapped onto devices via disk order.
+    assert roles == {
         "DISK_ROLE_UNSPECIFIED",
         "DISK_ROLE_ROOTFS",
-        "DISK_ROLE_CODE",
-        "DISK_ROLE_RUNTIME",
-        "DISK_ROLE_DATA",
         "DISK_ROLE_EXTRA",
-    } <= roles
+    }
 
 
 def test_vm_info_has_status_enum_and_core_fields():
@@ -288,7 +332,7 @@ def test_log_source_has_stderr():
 
     assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
 
-    from aleph.vm.supervisor.types import LogSource
+    from aleph.vm.supervisor.types import IpAssignment, LogSource
 
     assert LogSource.STDERR.value == "stderr"
 
@@ -305,14 +349,19 @@ def test_full_service_surface_pinned():
         # Lifecycle
         "CreateVm",
         "GetVm",
+        "GetVmSpec",
         "ListVms",
         "DeleteVm",
+        "StopVm",
+        "StartVm",
         "RebootVm",
         "ReinstallVm",
         # Port forwarding
         "AddPortForward",
         "RemovePortForward",
         "ListPortForwards",
+        # Events
+        "WatchEvents",
         # Logs
         "GetLogs",
         "StreamLogs",
@@ -338,8 +387,8 @@ def test_full_service_surface_pinned():
 
 def test_vm_info_network_and_lifecycle_fields_default():
     info = supervisor_pb2.VmInfo()
-    assert info.ipv4_network == ""
-    assert info.ipv6_network == ""
+    assert info.ipv4.network_cidr == ""
+    assert info.ipv6.network_cidr == ""
     for field in (
         "defined_at_ns",
         "preparing_at_ns",
@@ -350,7 +399,9 @@ def test_vm_info_network_and_lifecycle_fields_default():
         "stopped_at_ns",
     ):
         assert getattr(info, field) == 0
-    assert info.is_instance is False
+    # The instance/program distinction is client vocabulary; the wire does
+    # not carry it (field 18 is reserved).
+    assert not hasattr(info, "is_instance")
 
 
 def test_host_info_host_ipv4_defaults_empty():
@@ -359,22 +410,24 @@ def test_host_info_host_ipv4_defaults_empty():
 
 
 def test_vm_info_dataclass_new_fields_default():
-    from aleph.vm.supervisor.types import Backend, VmId, VmInfo, VmStatus
+    from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
 
     info = VmInfo(
         vm_id=VmId("x"),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
         status_message="",
     )
-    assert info.ipv4_network == ""
+    assert info.ipv4.network_cidr == ""
     assert info.defined_at_ns == 0
     assert info.stopped_at_ns == 0
-    assert info.is_instance is False
+    assert not hasattr(info, "is_instance")
+    assert info.guest_channel_path == ""
+    assert info.guest_ready_payload == b""
 
 
 def test_host_info_dataclass_host_ipv4_defaults_empty():

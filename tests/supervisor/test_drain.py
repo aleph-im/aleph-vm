@@ -8,7 +8,6 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from aiohttp import web
 from aleph_message.models import InstanceContent, ItemHash
 
 from aleph.vm.conf import settings

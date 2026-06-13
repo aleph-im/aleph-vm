@@ -5,8 +5,6 @@ os.environ["ALEPH_VM_ALLOW_VM_NETWORKING"] = "False"
 
 from unittest import mock
 
-import pytest
-
 from aleph.vm.conf import Settings
 
 

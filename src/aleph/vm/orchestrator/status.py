@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from aiohttp import ClientResponseError, ClientSession
-from aiohttp.web_exceptions import HTTPBadGateway, HTTPInternalServerError, HTTPOk
+from aiohttp.web_exceptions import HTTPBadGateway, HTTPInternalServerError
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings

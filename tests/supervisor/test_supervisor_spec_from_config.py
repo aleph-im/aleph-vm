@@ -56,7 +56,6 @@ def test_spec_from_config_roundtrips_core_fields():
     extra = [d for d in spec.disks if d.role is DiskRole.EXTRA]
     assert rootfs[0].path == Path("/data/rootfs.qcow2")
     assert extra[0].path == Path("/data/extra.img")
-    assert extra[0].mount == "/mnt/data"
     assert extra[0].readonly is True
     assert len(spec.gpus) == 1
     assert spec.gpus[0].pci_host == "0000:01:00.0"

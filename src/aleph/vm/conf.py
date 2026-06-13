@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     SUPERVISOR_HOST: str = "127.0.0.1"
     SUPERVISOR_PORT: int = 4020
 
+    SUPERVISOR_GRPC_SOCKET: Path | None = Field(
+        None,
+        description="Unix socket of the supervisor gRPC daemon. When set, the agent talks to a separate "
+        "supervisor process over gRPC instead of running the in-process supervisor; the daemon "
+        "(python -m aleph.vm.supervisor) serves on this socket. Default to EXECUTION_ROOT/supervisor.sock "
+        "for the daemon; unset means in-process mode for the agent.",
+    )
+
     # Public domain name
     DOMAIN_NAME: str = Field(
         default="localhost",
@@ -464,6 +472,18 @@ class Settings(BaseSettings):
     def check(self):
         """Check that the settings are valid. Call this method after self.setup()."""
         assert Path("/dev/kvm").exists(), "KVM not found on `/dev/kvm`."
+        # QEMU control sockets live at EXECUTION_ROOT/<vm-hash>-monitor.socket
+        # and sun_path caps UNIX socket paths at 108 bytes. QEMU accepts a
+        # path that exactly fills those 108 bytes (no NUL needed) and exits
+        # at startup on 109+ ("UNIX socket path is too long"). Python-side
+        # clients need a NUL (107 max) but only ever connect to the
+        # -qmp.socket, whose suffix is 4 bytes shorter, so the longest
+        # bound path stays the binding constraint.
+        longest_socket_path = len(str(self.EXECUTION_ROOT)) + 1 + 64 + len("-monitor.socket")
+        assert longest_socket_path <= 108, (
+            f"EXECUTION_ROOT '{self.EXECUTION_ROOT}' is too long for QEMU control sockets "
+            "(UNIX socket paths are limited to 108 bytes)"
+        )
         assert isfile(self.FIRECRACKER_PATH), f"File not found {self.FIRECRACKER_PATH}"
         assert isfile(self.JAILER_PATH), f"File not found {self.JAILER_PATH}"
         assert isfile(self.LINUX_PATH), f"File not found {self.LINUX_PATH}"
