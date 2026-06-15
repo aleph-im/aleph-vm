@@ -394,7 +394,12 @@ class InProcessSupervisor(Supervisor):
 
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
-            running = _running_states(self.pool)
+            # Off the event loop: _running_states issues a single batched D-Bus
+            # ListUnits() call. Keeping it on the loop would stall every caller
+            # (the payment sweep and every /about/executions/list request) for
+            # the duration of that call. Mirrors main's monitor_payments fix
+            # (aleph-vm#963), and applies it to the list endpoints too.
+            running = await asyncio.to_thread(_running_states, self.pool)
             return [
                 _to_vm_info(execution, running[str(vm_hash)]) for vm_hash, execution in self.pool.executions.items()
             ]
