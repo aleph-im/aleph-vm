@@ -305,6 +305,43 @@ async def test_start_persistent_waits_gone_then_recreates_when_stopping(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_persistent_keeps_confidential_awaiting_init(monkeypatch):
+    # A confidential VM waiting for its owner's session must not be waited-on or
+    # recreated: it can only start once the owner uploads the session
+    # certificates, so any wait/recreate would loop forever.
+    awaiting = VmInfo(
+        vm_id=VmId(str(_HASH)),
+        status=VmStatus.BOOTING,
+        ipv4="",
+        ipv6="",
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="",
+        awaiting_confidential_init=True,
+    )
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=awaiting)
+    created = AsyncMock()
+    waited = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", waited)
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    created.assert_not_awaited()  # not recreated
+    sup.delete_vm.assert_not_awaited()  # not deleted
+    waited.assert_not_awaited()  # not waited-on (would block forever)
+
+
+@pytest.mark.asyncio
 async def test_start_persistent_arms_update_watch(monkeypatch):
     sup = _fake_supervisor(get_status=VmStatus.RUNNING)
     monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())

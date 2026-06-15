@@ -216,6 +216,10 @@ class VmInfo:
     # Precise confidential-computing mode (the agent reduces to a bool for Aleph
     # APIs). NONE for non-confidential VMs.
     confidential_mode: ConfidentialMode = ConfidentialMode.NONE
+    # True while a confidential VM is started but waiting for its owner to upload
+    # the session certificates: not running, but not dead either. The agent lists
+    # such VMs so the scheduler does not re-allocate them forever.
+    awaiting_confidential_init: bool = False
     # Exact PCI devices attached to this VM; mirrors HostInfo.gpus.
     gpus: list[GpuDevice] = field(default_factory=list)
 

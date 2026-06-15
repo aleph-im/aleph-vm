@@ -175,6 +175,7 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         stopped_at_ns=_ns(times.stopped_at),
         is_instance=bool(execution.is_instance),
         confidential_mode=_confidential_mode(execution),
+        awaiting_confidential_init=bool(execution.is_awaiting_confidential_init),
         gpus=[
             GpuDevice(
                 pci_host=PciAddress(g.pci_host),

@@ -95,25 +95,3 @@ def test_non_confidential_instance_never_awaits_init(instance_content, mocker):
     mark_started(execution)
 
     assert execution.is_awaiting_confidential_init is False
-
-
-@pytest.mark.asyncio
-async def test_start_persistent_vm_keeps_confidential_instance_awaiting_init(confidential_instance_content, mocker):
-    """An allocation for a confidential VM waiting for its owner's session must not
-    stop and recreate it (it would loop forever: the VM can only start once the
-    owner uploads the session certificates via /confidential/initialize)."""
-    execution = make_execution(confidential_instance_content, mocker)
-    mark_started(execution)
-    execution.vm = mocker.Mock()
-
-    stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
-    create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
-
-    pool = mocker.Mock(executions={VM_HASH: execution})
-
-    result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool)
-
-    assert result is execution
-    stop_mock.assert_not_called()
-    create_mock.assert_not_called()
-    pool.forget_vm.assert_not_called()

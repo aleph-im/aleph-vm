@@ -251,16 +251,14 @@ def _group_port_forwards(forwards: list[PortForwardInfo]) -> dict[str, dict[int,
     return grouped
 
 
-def _is_listable_awaiting_confidential_init(execution: VmExecution) -> bool:
-    """Whether a confidential VM waiting for its owner belongs in the executions list.
+def _is_listable_awaiting_confidential_init(info: VmInfo) -> bool:
+    """Whether a confidential VM waiting for its owner belongs in the v1 list.
 
     The scheduler re-allocates any planned VM absent from the list, so a waiting
-    confidential VM must be listed or it gets re-allocated forever. Consumers
-    require the networking fields, so only list it once its tap interface exists.
+    confidential VM must be listed or it gets re-allocated forever. The v1 schema
+    requires the networking fields, so only list it once its tap network exists.
     """
-    return (
-        execution.is_awaiting_confidential_init and execution.vm is not None and execution.vm.tap_interface is not None
-    )
+    return info.awaiting_confidential_init and bool(info.ipv4_network)
 
 
 @cors_allow_all
@@ -292,9 +290,12 @@ async def list_executions(request: web.Request) -> web.Response:
                 # agent knows its own VMs are keyed by item hash. See the
                 # ownership note at the top of list_executions.
                 "vm_type": _vm_type_name(registry.get(cast(ItemHash, info.vm_id)), info),
+                # Confidential VMs awaiting owner initialization are listed but
+                # not running, so the scheduler can tell them apart from dead VMs.
+                "awaiting_confidential_init": info.awaiting_confidential_init,
             }
             for info in infos
-            if info.status is VmStatus.RUNNING
+            if info.status is VmStatus.RUNNING or _is_listable_awaiting_confidential_init(info)
         },
         dumps=dumps_for_json,
     )
@@ -328,6 +329,9 @@ async def list_executions_v2(request: web.Request) -> web.Response:
                 ),
                 "status": _times_dict(info),
                 "running": info.status is VmStatus.RUNNING,
+                # Confidential VMs are only started once their owner uploads the
+                # session certificates: not running, but not dead either.
+                "awaiting_confidential_init": info.awaiting_confidential_init,
                 # cast: info.vm_id is a VmId (opaque str at the boundary); the
                 # agent knows its own VMs are keyed by item hash. See the
                 # ownership note at the top of list_executions.

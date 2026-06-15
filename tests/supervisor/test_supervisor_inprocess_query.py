@@ -38,6 +38,7 @@ def make_execution(
         is_program=False,
         is_instance=True,
         is_confidential=confidential,
+        is_awaiting_confidential_init=False,
         hypervisor=hypervisor,
         vm=vm,
         gpus=[],

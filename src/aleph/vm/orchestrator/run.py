@@ -524,7 +524,12 @@ async def start_persistent_vm(
         info = None
 
     if info is not None:
-        if info.status == VmStatus.RUNNING:
+        if info.awaiting_confidential_init:
+            # Only the owner can start it, by uploading the session certificates
+            # via /confidential/initialize. Waiting for RUNNING or recreating it
+            # would loop forever, so leave it untouched.
+            logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+        elif info.status == VmStatus.RUNNING:
             logger.info(f"{vm_hash} is already running")
         elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
             logger.info(f"{vm_hash} is already starting")
