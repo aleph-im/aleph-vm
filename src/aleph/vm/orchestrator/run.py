@@ -798,7 +798,14 @@ async def start_persistent_vm(
             logger.info(f"{vm_hash} is stopping, waiting before restart")
             await _wait_until_gone(supervisor, vm_id)
             info = None
-        else:  # STOPPED / FAILED
+        elif info.status == VmStatus.STOPPED:
+            # A cleanly stopped VM is resumed in place: stop/start is a
+            # pause/resume that preserves the definition and disks, not a
+            # delete + recreate.
+            logger.info(f"{vm_hash} is stopped, starting it")
+            await supervisor.start_vm(vm_id)
+            await _wait_until_running(supervisor, vm_id)
+        else:  # FAILED
             logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
             await supervisor.delete_vm(vm_id)
             info = None

@@ -476,7 +476,15 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
             info = await supervisor.get_vm(vm_id)
             if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
                 logger.info(f"Stopping {vm_hash}")
-                await supervisor.delete_vm(vm_id)
+                # Stop means stop: the VM stays defined and listed (STOPPED),
+                # and start brings it back in place. Deleting it is a separate
+                # action, triggered by forgetting the instance message
+                # (operate_erase). Ephemeral VMs have no stop state, so for
+                # them the stop cycle is delete + recreate.
+                if record.persistent:
+                    await supervisor.stop_vm(vm_id)
+                else:
+                    await supervisor.delete_vm(vm_id)
                 request.app["expiry"].cancel(vm_id)
                 request.app["update_watcher"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
