@@ -491,10 +491,11 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(
     execution.times.starting_at = execution.times.defined_at
     execution.times.started_at = execution.times.defined_at
     execution.vm = mocker.Mock(
+        confidential_policy=1,
         tap_interface=mocker.Mock(
             ip_network=IPv4Network("172.16.3.0/24"),
             ipv6_network=IPv6Network("fc00:1:2:3::/64"),
-        )
+        ),
     )
 
     pool.executions = {vm_hash: execution}
@@ -551,7 +552,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
     )
     execution.times.starting_at = execution.times.defined_at
     execution.times.started_at = execution.times.defined_at
-    execution.vm = mocker.Mock(tap_interface=None)
+    execution.vm = mocker.Mock(confidential_policy=1, tap_interface=None)
 
     pool.executions = {vm_hash: execution}
     pool.systemd_manager = systemd_manager
@@ -1450,6 +1451,7 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
         running_hash: {
             "networking": {"ipv4": "172.16.3.0/24", "ipv6": "fc00:1:2:3::/64"},
             "vm_type": "instance",
+            "awaiting_confidential_init": False,
         }
     }
 

@@ -25,6 +25,7 @@ def _execution(*, confidential=False, policy=0, gpus=()):
         is_instance=True,
         is_program=False,
         is_confidential=confidential,
+        is_awaiting_confidential_init=False,
         hypervisor=None,
         gpus=list(gpus),
         persistent=True,
