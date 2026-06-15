@@ -261,7 +261,7 @@ def _is_listable_awaiting_confidential_init(info: VmInfo) -> bool:
     confidential VM must be listed or it gets re-allocated forever. The v1 schema
     requires the networking fields, so only list it once its tap network exists.
     """
-    return info.awaiting_confidential_init and bool(info.ipv4_network)
+    return info.awaiting_confidential_init and bool(info.ipv4.network_cidr)
 
 
 @cors_allow_all

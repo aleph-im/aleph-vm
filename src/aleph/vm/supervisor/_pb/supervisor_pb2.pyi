@@ -740,6 +740,7 @@ class VmInfo(google.protobuf.message.Message):
     GPUS_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_PATH_FIELD_NUMBER: builtins.int
     GUEST_READY_PAYLOAD_FIELD_NUMBER: builtins.int
+    AWAITING_CONFIDENTIAL_INIT_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     status: global___VmStatus.ValueType
     uptime_secs: builtins.int
@@ -768,6 +769,11 @@ class VmInfo(google.protobuf.message.Message):
     """Raw bytes the guest sent with its ready signal, passed through opaquely;
     empty until the signal arrived (or for VMs without a channel). The client
     interprets them (the Aleph runtime sends its version handshake here).
+    """
+    awaiting_confidential_init: builtins.bool
+    """True while a confidential VM is started but waiting for its owner to upload
+    the session certificates: not running, but not dead either. The client
+    lists such VMs so the scheduler does not re-allocate them forever.
     """
     @property
     def ipv4(self) -> global___IpAssignment: ...
@@ -799,9 +805,10 @@ class VmInfo(google.protobuf.message.Message):
         gpus: collections.abc.Iterable[global___GpuDevice] | None = ...,
         guest_channel_path: builtins.str = ...,
         guest_ready_payload: builtins.bytes = ...,
+        awaiting_confidential_init: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "guest_channel_path", b"guest_channel_path", "guest_ready_payload", b"guest_ready_payload", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_numa_node", b"_numa_node", "awaiting_confidential_init", b"awaiting_confidential_init", "backend", b"backend", "confidential_mode", b"confidential_mode", "defined_at_ns", b"defined_at_ns", "gpus", b"gpus", "guest_channel_path", b"guest_channel_path", "guest_ready_payload", b"guest_ready_payload", "ipv4", b"ipv4", "ipv6", b"ipv6", "numa_node", b"numa_node", "prepared_at_ns", b"prepared_at_ns", "preparing_at_ns", b"preparing_at_ns", "started_at_ns", b"started_at_ns", "starting_at_ns", b"starting_at_ns", "status", b"status", "status_message", b"status_message", "stopped_at_ns", b"stopped_at_ns", "stopping_at_ns", b"stopping_at_ns", "uptime_secs", b"uptime_secs", "vm_id", b"vm_id"]) -> None: ...
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
 global___VmInfo = VmInfo

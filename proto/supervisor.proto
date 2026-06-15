@@ -321,6 +321,11 @@ message VmInfo {
   // Was the flat ipv4_gateway/ipv6_gateway pair; folded into IpAssignment.
   reserved 23, 24;
   reserved "ipv4_gateway", "ipv6_gateway";
+
+  // True while a confidential VM is started but waiting for its owner to upload
+  // the session certificates: not running, but not dead either. The client
+  // lists such VMs so the scheduler does not re-allocate them forever.
+  bool awaiting_confidential_init = 25;
 }
 
 message GetVmRequest      { string vm_id = 1; }
