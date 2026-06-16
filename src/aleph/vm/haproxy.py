@@ -134,6 +134,51 @@ def sync_runtime_map(socket_path, map_file_path: str, entries: dict[str, str]):
         send_socket_command(socket_path, f"add map {map_file_path} {domain} {ip}")
 
 
+def build_map_entries_from_vm_ips(domain_records: list[dict], vm_ip_by_hash: dict[str, str]) -> dict[str, str]:
+    """Build a domain->IP mapping from DNS domain records and local VM IPs.
+
+    Each domain record carries a `name` and the `item_hash` of the instance it
+    points to. Only records whose item_hash matches a locally running VM (present
+    in `vm_ip_by_hash`) are kept; the rest are dropped. The IP comes from the
+    supervisor's view of the VM, not from the DNS record.
+    """
+    entries: dict[str, str] = {}
+    for record in domain_records:
+        ip = vm_ip_by_hash.get(record["item_hash"])
+        if ip:
+            entries[record["name"]] = ip
+    return entries
+
+
+def write_entries_to_backend(
+    map_file_path: str,
+    socket_path,
+    entries: dict[str, str],
+    force_update: bool = False,
+):
+    """Write domain->IP entries to one HAProxy backend's map file and runtime map.
+
+    Updates the on-disk map file, then syncs HAProxy's in-memory map when the file
+    changed, the runtime is out of sync, or `force_update` is set.
+    """
+    file_updated = update_mapfile(entries, map_file_path)
+
+    # Check if runtime map matches: after HAProxy restart the in-memory map is
+    # reloaded from the file, but we sync anyway to handle edge cases (file
+    # written but HAProxy not reloaded).
+    current_mappings = get_current_mappings(socket_path, map_file_path)
+    runtime_matches = all(current_mappings.get(domain) == ip for domain, ip in entries.items()) and len(
+        current_mappings
+    ) == len(entries)
+
+    if force_update or file_updated or not runtime_matches:
+        reason = "force" if force_update else "file changed" if file_updated else "runtime map out of sync"
+        logger.info("Updating map (%s): %s", reason, map_file_path)
+        sync_runtime_map(socket_path, map_file_path, entries)
+    else:
+        logger.debug("Map file and runtime in sync: %s", map_file_path)
+
+
 def update_backends(
     map_file_path: str,
     socket_path,
