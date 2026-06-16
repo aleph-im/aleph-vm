@@ -33,6 +33,7 @@ from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.translate import build_create_vm_spec
 
 if TYPE_CHECKING:
     from aleph.vm.supervisor.abc import Supervisor
@@ -140,8 +141,10 @@ async def run_export(
                     logger.warning("Failed to delete partial export %s: %s", path, e)
 
             try:
-                # The VM is not leaving after all; bring it back.
-                await supervisor.restart_after_failed_export(job.vm_hash)
+                # The VM is not leaving after all; bring it back through the
+                # standard lifecycle RPC. Best-effort: if the VM is already
+                # gone, start_vm raises and we log it.
+                await supervisor.start_vm(job.vm_hash)
                 logger.info("Restarted VM %s after failed export", job.vm_hash)
             except Exception as restart_error:
                 logger.error("Failed to restart VM %s after export failure: %s", job.vm_hash, restart_error)
@@ -181,8 +184,9 @@ async def run_import(
     Mutates the job in place. Never raises; failures are recorded on the job.
 
     This runner owns the network transport (message fetch, parent download,
-    disk download, overlay rebase) and staging; the supervisor owns the
-    create-and-boot step and answers whether the VM already exists.
+    disk download, overlay rebase) and staging, then drives the standard
+    create_vm RPC with a spec built from the fetched message; the supervisor
+    owns the create-and-boot step and answers whether the VM already exists.
 
     prior_task: when this run replaces a FAILED slot, the previous task — wait
     for its dest-dir rmtree to finish before recreating the same path.
@@ -199,7 +203,7 @@ async def run_import(
     async with sem:
         try:
             job.current_step = "fetching_message"
-            message, original_message = await load_updated_message(job.vm_hash)
+            message, _original_message = await load_updated_message(job.vm_hash)
 
             if message.type != MessageType.instance:
                 msg = "Message is not an instance"
@@ -258,11 +262,15 @@ async def run_import(
                 await rebase_overlay(overlay_path, parent_path, parent_format)
 
             job.current_step = "creating_vm"
-            await supervisor.create_migrated_vm(
-                job.vm_hash,
-                message.content,
-                original_message.content,
-            )
+            # The standard instance-create path: build the same spec a normal
+            # persistent-instance create uses (run.create_vm_execution ->
+            # build_create_vm_spec). The spec's rootfs path is
+            # PERSISTENT_VOLUMES_DIR/<vm_hash>/rootfs.qcow2, exactly where the
+            # download+rebase staged the overlay, and build_create_vm_spec adopts
+            # an already-present host-persistence overlay rather than recreating
+            # it, so create_vm reuses the staged disk (no re-download).
+            spec = await build_create_vm_spec(job.vm_hash, message.content)
+            await supervisor.create_vm(spec)
 
             job.transfer_time_ms = int((time.monotonic() - start) * 1000)
             job.finished_at = datetime.now(timezone.utc)

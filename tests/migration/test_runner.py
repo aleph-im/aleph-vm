@@ -26,20 +26,24 @@ def _reset_semaphore():
 
 def _export_supervisor(volumes_dir: Path, *, missing: bool = False):
     """A fake supervisor for the export runner: stop_vm_for_export returns the
-    given volumes dir, restart_after_failed_export records the call."""
+    given volumes dir, start_vm records the restart call on the failure path."""
     sup = MagicMock()
     if missing:
         sup.stop_vm_for_export = AsyncMock(side_effect=VmNotFoundError("nope"))
     else:
         sup.stop_vm_for_export = AsyncMock(return_value=volumes_dir)
-    sup.restart_after_failed_export = AsyncMock()
+    sup.start_vm = AsyncMock()
     return sup
 
 
 def _import_supervisor(*, has_vm: bool = False, create_side_effect=None):
-    """A fake supervisor for the import runner."""
+    """A fake supervisor for the import runner.
+
+    Import builds a spec from the fetched message and creates the VM through
+    the standard create_vm RPC.
+    """
     sup = MagicMock()
-    sup.create_migrated_vm = AsyncMock(side_effect=create_side_effect, return_value=MagicMock())
+    sup.create_vm = AsyncMock(side_effect=create_side_effect, return_value=MagicMock())
     if has_vm:
         sup.get_vm = AsyncMock(return_value=MagicMock())
     else:
@@ -118,8 +122,8 @@ async def testrun_export_compression_failure(tmp_path, monkeypatch):
     assert "boom" in job.error
     # No partial export files should remain.
     assert list(volumes_dir.glob("*.export.qcow2")) == []
-    # VM restart attempted through the supervisor.
-    supervisor.restart_after_failed_export.assert_awaited_once_with(vm_hash)
+    # VM restart attempted through the standard start_vm RPC.
+    supervisor.start_vm.assert_awaited_once_with(vm_hash)
 
 
 from aleph.vm.migration.jobs import ImportJob
@@ -161,11 +165,15 @@ async def testrun_import_success(tmp_path, monkeypatch):
 
     supervisor = _import_supervisor()
 
+    async def fake_build_spec(vm_hash, content, *, gpus=()):
+        return MagicMock(vm_id=vm_hash)
+
     monkeypatch.setattr("aleph.vm.migration.runner.load_updated_message", fake_load_message)
     monkeypatch.setattr("aleph.vm.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
     monkeypatch.setattr("aleph.vm.migration.runner.detect_parent_format", fake_detect_format)
     monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
     monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", fake_rebase)
+    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
 
     from aleph.vm.migration.jobs import DiskFileInfo
     from aleph.vm.migration.runner import run_import
@@ -192,7 +200,11 @@ async def testrun_import_success(tmp_path, monkeypatch):
     assert job.error is None
     assert job.bytes_downloaded == 10
     assert job.transfer_time_ms is not None
-    supervisor.create_migrated_vm.assert_awaited_once()
+    # Import creates the VM through the standard create_vm RPC, passing the
+    # spec built from the fetched message.
+    supervisor.create_vm.assert_awaited_once()
+    (created_spec,), _ = supervisor.create_vm.await_args
+    assert created_spec.vm_id == vm_hash
 
 
 @pytest.mark.asyncio
@@ -288,8 +300,8 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkeypatch):
-    """If pool.create_a_vm raises, dest_dir is rmtree'd."""
+async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypatch):
+    """If create_vm raises, dest_dir is rmtree'd."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
     from aleph.vm.migration.runner import run_import
 
@@ -308,6 +320,9 @@ async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkey
         dest_path.write_bytes(b"x")
         return 1
 
+    async def fake_build_spec(vm_hash, content, *, gpus=()):
+        return MagicMock(vm_id=vm_hash)
+
     monkeypatch.setattr(
         "aleph.vm.migration.runner.load_updated_message",
         AsyncMock(return_value=(fake_message, fake_message)),
@@ -322,6 +337,7 @@ async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkey
     )
     monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
     monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
 
     supervisor = _import_supervisor(has_vm=False, create_side_effect=RuntimeError("pool kaboom"))
 
@@ -534,3 +550,59 @@ async def test_export_ttl_removes_files_and_forgets_job(tmp_path, monkeypatch):
     assert not export_paths[0].exists()
 
     export_jobs.clear()
+
+
+@pytest.mark.asyncio
+async def test_import_spec_build_reuses_staged_overlay(tmp_path, monkeypatch):
+    """The staged migration overlay is adopted by the create spec, not
+    re-created.
+
+    build_create_vm_spec runs download_runtime -> make_writable_volume; for a
+    host-persistence rootfs whose overlay is already on disk (the migration
+    runner staged it under PERSISTENT_VOLUMES_DIR/<vm_hash>/rootfs.qcow2),
+    make_writable_volume returns that path without running `qemu-img create`.
+    This is what lets import reuse the downloaded disk instead of starting from
+    a blank overlay.
+    """
+    from aleph_message.models.execution.volume import VolumePersistence
+
+    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+
+    namespace = str(ItemHash(settings.FAKE_INSTANCE_ID))
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+
+    parent_path = tmp_path / "parent.qcow2"
+    parent_path.write_bytes(b"parent")
+
+    # The runner already staged (downloaded + rebased) the overlay here.
+    staged = tmp_path / namespace / "rootfs.qcow2"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"staged-overlay")
+
+    create_calls = []
+
+    async def fake_run_in_subprocess(cmd, *args, **kwargs):
+        if "create" in cmd:
+            create_calls.append(cmd)
+            return b""
+        # The format probe (`qemu-img info ... --output=json`).
+        return b'{"format": "qcow2"}'
+
+    monkeypatch.setattr(
+        "aleph.vm.controllers.qemu.instance.run_in_subprocess",
+        fake_run_in_subprocess,
+    )
+    monkeypatch.setattr("aleph.vm.controllers.qemu.instance.shutil.which", lambda _: "/usr/bin/qemu-img")
+
+    # RootfsVolume is not a PersistentVolume, so volume_name resolves to "rootfs".
+    from aleph_message.models.execution.instance import RootfsVolume
+
+    resources = AlephQemuResources(message_content=None, namespace=namespace)
+    rootfs_volume = MagicMock(spec=RootfsVolume)
+    rootfs_volume.persistence = VolumePersistence.host
+
+    result = await resources.make_writable_volume(parent_path, rootfs_volume)
+
+    assert result == staged
+    assert result.read_bytes() == b"staged-overlay"  # untouched
+    assert create_calls == []  # no qemu-img create: the staged overlay was adopted
