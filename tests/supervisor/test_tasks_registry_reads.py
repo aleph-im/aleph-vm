@@ -14,7 +14,14 @@ from aleph.vm.orchestrator.tasks import (
     _handle_domains_aggregate,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor.types import (
+    Backend,
+    ConfidentialMode,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 _HASH = ItemHash("deadbeef" * 8)
 
@@ -23,8 +30,8 @@ def _info(vm_hash: ItemHash, *, running: bool = True, confidential=False) -> VmI
     return VmInfo(
         vm_id=VmId(str(vm_hash)),
         status=VmStatus.RUNNING if running else VmStatus.STOPPED,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,

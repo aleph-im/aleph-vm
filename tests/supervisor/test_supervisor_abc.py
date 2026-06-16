@@ -5,6 +5,7 @@ import pytest
 from aleph.vm.supervisor.abc import (
     BackupOps,
     ConfidentialOps,
+    EventsOps,
     HostOps,
     LifecycleOps,
     LogsOps,
@@ -18,10 +19,14 @@ EXPECTED_METHODS = {
     "get_host_info",
     "create_vm",
     "get_vm",
+    "get_vm_spec",
     "list_vms",
     "delete_vm",
+    "stop_vm",
+    "start_vm",
     "reboot_vm",
     "reinstall_vm",
+    "watch_events",
     "add_port_forward",
     "remove_port_forward",
     "list_port_forwards",
@@ -41,13 +46,13 @@ EXPECTED_METHODS = {
     "inject_secret",
 }
 
-STREAMING_METHODS = {"stream_logs", "download_backup"}
+STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
 
 
-def test_supervisor_aggregates_all_25_methods():
+def test_supervisor_aggregates_all_29_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 25
+    assert len(EXPECTED_METHODS) == 29
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -67,8 +72,19 @@ def test_all_boundary_methods_are_coroutines():
 def test_capability_abcs_partition_the_surface():
     by_abc = {
         HostOps: {"health", "get_host_info"},
-        LifecycleOps: {"create_vm", "get_vm", "list_vms", "delete_vm", "reboot_vm", "reinstall_vm"},
+        LifecycleOps: {
+            "create_vm",
+            "get_vm",
+            "get_vm_spec",
+            "list_vms",
+            "delete_vm",
+            "stop_vm",
+            "start_vm",
+            "reboot_vm",
+            "reinstall_vm",
+        },
         PortForwardingOps: {"add_port_forward", "remove_port_forward", "list_port_forwards"},
+        EventsOps: {"watch_events"},
         LogsOps: {"get_logs", "stream_logs"},
         BackupOps: {
             "start_backup",

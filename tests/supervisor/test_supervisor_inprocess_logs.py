@@ -162,15 +162,19 @@ async def test_stream_logs_with_history_then_live(monkeypatch):
     )
 
     received = []
+    timestamps = []
     gen = supervisor.stream_logs(VM_ID, include_history=True)
     async for chunk in gen:
         received.append(chunk.line)
+        timestamps.append(chunk.timestamp_ns)
         if len(received) == 3:
             break
     await gen.aclose()
 
     assert received == ["boot ok", "warné", "live line"]
     assert unregistered["called"] is True
+    # Live lines are stamped at capture: no magic-0 sentinel on the wire.
+    assert timestamps[2] > 0
 
 
 @pytest.mark.asyncio

@@ -54,4 +54,4 @@ def get_interface_ipv4(interface_name: str) -> str:
     except ValueError:
         raise
     except Exception as e:
-        raise ValueError(f"Error getting IPv4 address: {str(e)}")
+        raise ValueError(f"Error getting IPv4 address: {e!s}")

@@ -26,6 +26,7 @@ from aleph.vm.supervisor.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    IpAssignment,
     NetworkConfig,
     VmId,
     VmInfo,
@@ -63,8 +64,8 @@ def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
     return VmInfo(
         vm_id=VmId(str(_HASH)),
         status=status,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
@@ -78,6 +79,7 @@ def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: 
         get_vm=AsyncMock(return_value=_info(get_status)),
         add_port_forward=AsyncMock(),
         delete_vm=AsyncMock(),
+        start_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
     )
 
 
@@ -263,7 +265,9 @@ async def test_start_persistent_creates_when_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_persistent_recreates_after_terminal(monkeypatch):
+async def test_start_persistent_resumes_stopped(monkeypatch):
+    # A cleanly stopped VM is resumed in place (start_vm), not deleted and
+    # recreated: stop/start is a pause/resume.
     sup = _fake_supervisor(get_status=VmStatus.STOPPED)
     created = AsyncMock()
     monkeypatch.setattr(run_module, "create_vm_execution", created)
@@ -278,8 +282,30 @@ async def test_start_persistent_recreates_after_terminal(monkeypatch):
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
-    sup.delete_vm.assert_awaited_once()  # terminal -> delete then recreate
+    sup.start_vm.assert_awaited_once()  # STOPPED -> resume in place
+    sup.delete_vm.assert_not_awaited()  # not deleted
+    created.assert_not_awaited()  # not recreated
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_recreates_after_failed(monkeypatch):
+    sup = _fake_supervisor(get_status=VmStatus.FAILED)
+    created = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        MagicMock(),
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    sup.delete_vm.assert_awaited_once()  # FAILED -> delete then recreate
     created.assert_awaited_once()
+    sup.start_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from aleph.vm.storage import get_message
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
+    IpAssignment,
     LogChunk,
     LogSource,
     VmId,
@@ -35,8 +36,8 @@ def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> Vm
     return VmInfo(
         vm_id=VmId(vm_id),
         status=status,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,
@@ -48,6 +49,8 @@ def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
     return MagicMock(
         get_vm=AsyncMock(return_value=_vm_info(status)),
         delete_vm=AsyncMock(),
+        stop_vm=AsyncMock(return_value=_vm_info(VmStatus.STOPPED)),
+        start_vm=AsyncMock(return_value=_vm_info(VmStatus.RUNNING)),
         reboot_vm=AsyncMock(),
         reinstall_vm=AsyncMock(),
         get_logs=AsyncMock(return_value=[]),
@@ -199,7 +202,8 @@ async def test_operator_stop(aiohttp_client, mocker):
         f"/control/machine/{vm_hash}/stop",
     )
     assert response.status == 200, await response.text()
-    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -602,7 +606,8 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
     )
 
     assert response.status == 200, await response.text()
-    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1125,7 +1130,8 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
     )
 
     assert response.status == 200
-    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1225,7 +1231,8 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
     )
 
     assert response.status == 200
-    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1416,7 +1423,8 @@ async def test_operator_stop_booting_vm_is_stopped(aiohttp_client, mocker):
 
     assert response.status == 200
     assert await response.text() == f"Stopped VM with ref {vm_hash}"
-    fake_sup.delete_vm.assert_awaited_once()
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

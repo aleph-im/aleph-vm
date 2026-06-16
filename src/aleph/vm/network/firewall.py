@@ -5,8 +5,7 @@ Add NAT to the VM in IPv4, IPv6 forwarding, and port forwarding for direct acces
 
 import json
 import logging
-import subprocess
-from typing import Literal, Optional
+from typing import Literal
 
 from nftables import Nftables
 
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 class NoBaseChainFound(Exception):
     hook: str
 
-    def __init__(self, hook, message: Optional[str] = None):
+    def __init__(self, hook, message: str | None = None):
         self.hook = hook
         self.message = message or f"Could not find any base chain for hook '{hook}'"
         super().__init__(message)
@@ -134,7 +133,7 @@ def get_table_for_hook(hook: str, family: str = "ip", nft_ruleset: list[dict] | 
         nat_chains = [c for c in chains if c["chain"].get("type") == "nat"]
         if not nat_chains:
             # Fallback: maybe only the 'raw' chain exists. This will fail, but it's what the log shows.
-            logger.warning(f"No 'nat' type prerouting chain found. Falling back to highest prio chain.")
+            logger.warning("No 'nat' type prerouting chain found. Falling back to highest prio chain.")
             table = chains[-1]["chain"]["table"]
         else:
             table = nat_chains[-1]["chain"]["table"]  # Pick highest prio 'nat' chain
@@ -173,7 +172,7 @@ def _is_superset(a, b):
     elif isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False
-        return all(_is_superset(x, y) for x, y in zip(a, b))
+        return all(_is_superset(x, y) for x, y in zip(a, b, strict=False))
     else:
         return a == b
 
