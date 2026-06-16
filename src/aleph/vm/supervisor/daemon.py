@@ -37,7 +37,7 @@ async def run_daemon(socket_path: Path) -> None:
     from aleph.vm.orchestrator import metrics
     from aleph.vm.pool import VmPool
     from aleph.vm.supervisor.grpc_server import serve_unix
-    from aleph.vm.supervisor.inprocess import InProcessSupervisor
+    from aleph.vm.supervisor.local import LocalSupervisor
 
     engine = metrics.setup_engine()
     await metrics.create_tables(engine)
@@ -59,7 +59,7 @@ async def run_daemon(socket_path: Path) -> None:
         # A previous daemon left its socket behind; a fresh bind needs it gone.
         socket_path.unlink()
 
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     server = await serve_unix(supervisor, socket_path)
 
     stop_event = asyncio.Event()

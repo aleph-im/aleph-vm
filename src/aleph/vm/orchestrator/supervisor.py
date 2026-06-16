@@ -25,7 +25,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registr
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -210,7 +210,7 @@ def setup_webapp(pool: VmPool | None):
         app["supervisor"] = GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
         logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
     else:
-        app["supervisor"] = InProcessSupervisor(pool)
+        app["supervisor"] = LocalSupervisor(pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])

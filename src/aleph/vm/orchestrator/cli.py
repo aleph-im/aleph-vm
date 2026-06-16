@@ -23,7 +23,7 @@ from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
@@ -195,7 +195,7 @@ async def benchmark(runs: int):
     loop = asyncio.get_event_loop()
     pool = VmPool()
     await pool.setup()
-    bench_supervisor = InProcessSupervisor(pool)
+    bench_supervisor = LocalSupervisor(pool)
     bench_registry = AgentVmRegistry()
     bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
     bench_expiry = ExpiryManager(bench_supervisor)
@@ -269,7 +269,7 @@ async def benchmark(runs: int):
 
 async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> None:
     """Run an instance from an InstanceMessage."""
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
     update_watcher = UpdateWatcher(supervisor, registry)

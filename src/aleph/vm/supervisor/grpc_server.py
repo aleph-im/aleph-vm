@@ -1,6 +1,6 @@
 """gRPC server exposing a Supervisor over the wire contract.
 
-Wraps any `Supervisor` implementation (the `InProcessSupervisor` in the
+Wraps any `Supervisor` implementation (the `LocalSupervisor` in the
 daemon) behind `proto/supervisor.proto`. Errors cross the boundary as the
 closed `ErrorCode` vocabulary: every `SupervisorError` aborts the RPC with a
 mapped `grpc.StatusCode` and a serialized `ErrorDetail` in the
