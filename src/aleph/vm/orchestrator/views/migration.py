@@ -380,7 +380,11 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     try:
         if job.ttl_task is not None and not job.ttl_task.done():
             job.ttl_task.cancel()
-        await supervisor.release_migrated_vm(VmId(str(vm_hash)))
+        # The source VM has migrated away: drop it from the pool through the
+        # standard lifecycle RPC. wipe=False leaves the disks alone (the
+        # destination owns the data now); delete_vm stops it, forgets the
+        # definition and removes the controller config.
+        await supervisor.delete_vm(VmId(str(vm_hash)), wipe=False)
         for path in job.export_paths:
             try:
                 Path(path).unlink(missing_ok=True)

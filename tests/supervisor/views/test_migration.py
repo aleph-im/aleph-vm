@@ -50,9 +50,9 @@ def _migration_supervisor(get_vm=None, **overrides):
     sup = MagicMock()
     sup.get_vm = get_vm if get_vm is not None else AsyncMock(side_effect=VmNotFoundError("absent"))
     sup.stop_vm_for_export = AsyncMock()
-    sup.restart_after_failed_export = AsyncMock()
-    sup.create_migrated_vm = AsyncMock(return_value=MagicMock())
-    sup.release_migrated_vm = AsyncMock()
+    sup.start_vm = AsyncMock()
+    sup.create_vm = AsyncMock(return_value=MagicMock())
+    sup.delete_vm = AsyncMock()
     for name, value in overrides.items():
         setattr(sup, name, value)
     return sup
@@ -455,6 +455,10 @@ class TestMigrationImportEndpoint:
         )
         mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
         mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch(
+            "aleph.vm.migration.runner.build_create_vm_spec",
+            AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
+        )
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,7 +472,8 @@ class TestMigrationImportEndpoint:
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
         app = setup_webapp(pool=mocker.Mock(executions={}))
-        app["supervisor"] = _migration_supervisor()
+        supervisor = _migration_supervisor()
+        app["supervisor"] = supervisor
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -490,6 +495,8 @@ class TestMigrationImportEndpoint:
 
         data = await wait_for_import_state(client, mock_vm_hash, "imported")
         assert data["transfer_time_ms"] is not None
+        # Import creates the VM through the standard create_vm RPC.
+        supervisor.create_vm.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_second_post_returns_existing_import_job(
@@ -649,8 +656,9 @@ class TestMigrationCleanupEndpoint:
         assert response.status == HTTPStatus.OK
         data = await response.json()
         assert data["status"] == "completed"
-        # Cleanup releases the migrated VM through the supervisor (stop + forget).
-        supervisor.release_migrated_vm.assert_awaited_once_with(VmId(str(mock_vm_hash)))
+        # Cleanup drops the migrated-away source through the standard delete_vm
+        # RPC (wipe=False: the destination owns the disks now).
+        supervisor.delete_vm.assert_awaited_once_with(VmId(str(mock_vm_hash)), wipe=False)
 
 
 class TestMigrationState:
@@ -812,6 +820,10 @@ class TestMigrationFailedReset:
         )
         mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
         mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch(
+            "aleph.vm.migration.runner.build_create_vm_spec",
+            AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
+        )
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
