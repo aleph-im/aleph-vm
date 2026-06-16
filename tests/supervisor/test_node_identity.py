@@ -392,6 +392,47 @@ async def test_notify_rejects_when_hash_unknown(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
+async def test_notify_over_capacity_returns_503(aiohttp_client, mocker):
+    """When the create path raises the boundary InsufficientResourcesError
+    (the engine's atomic admission), notify_allocation returns 503."""
+    from aleph_message.models import PaymentType
+
+    from aleph.vm.supervisor.errors import InsufficientResourcesError
+
+    app = _make_notify_app(node_hash="my_node_hash_123")
+    # notify_allocation reads these out of the app before reaching the create
+    # block; the create call itself is mocked to raise the over-capacity error.
+    app["pubsub"] = mocker.Mock()
+    app["vm_registry"] = mocker.Mock()
+    app["expiry"] = mocker.Mock()
+    app["update_watcher"] = mocker.Mock()
+    client = await aiohttp_client(app)
+
+    # A hold-payment confidential instance (so the payment branch is taken and
+    # passes); untargeted, no GPU. The create call is mocked to raise.
+    mock_message = mocker.Mock()
+    mock_message.type = MessageType.instance
+    mock_message.content.requirements.node = None
+    mock_message.content.requirements.gpu = None
+    mock_message.content.environment.trusted_execution = mocker.Mock()
+    mock_message.content.payment.type = PaymentType.hold
+    mocker.patch("aleph.vm.orchestrator.views.try_get_message", return_value=mock_message)
+    mocker.patch("aleph.vm.orchestrator.views.update_aggregate_settings")
+    mocker.patch("aleph.vm.orchestrator.views.payment.fetch_balance_of_address", return_value=10_000)
+    mocker.patch("aleph.vm.orchestrator.views.payment.fetch_execution_price", return_value=1)
+    mocker.patch(
+        "aleph.vm.orchestrator.views.start_persistent_vm",
+        side_effect=InsufficientResourcesError("over capacity"),
+    )
+
+    response = await client.post(
+        "/control/allocation/notify",
+        json={"instance": "a" * 64, "persistent": True},
+    )
+    assert response.status == 503, await response.text()
+
+
+@pytest.mark.asyncio
 async def test_status_config_includes_node_hash(aiohttp_client):
     app = _make_notify_app(node_hash="my_node_hash_123")
     client = await aiohttp_client(app)

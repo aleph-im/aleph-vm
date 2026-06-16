@@ -76,7 +76,13 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import InternalSupervisorError, VmNotFoundError
+from aleph.vm.supervisor.errors import (
+    InternalSupervisorError,
+    VmNotFoundError,
+)
+from aleph.vm.supervisor.errors import (
+    InsufficientResourcesError as BoundaryInsufficientResourcesError,
+)
 from aleph.vm.supervisor.types import (
     ConfidentialMode,
     PortForwardInfo,
@@ -624,6 +630,9 @@ async def update_allocations(request: web.Request):
             HostNotFoundError,
             HTTPNotFound,
             InsufficientResourcesError,
+            # The spec create path surfaces the boundary error (the engine's
+            # atomic admission, translated by LocalSupervisor.create_vm).
+            BoundaryInsufficientResourcesError,
         )
 
         scheduling_errors: dict[ItemHash, Exception] = {}
@@ -831,22 +840,11 @@ async def notify_allocation(request: web.Request):
     expiry = request.app["expiry"]
     update_watcher = request.app["update_watcher"]
 
-    # Capacity admission control: refuse the allocation early (before payment
-    # validation) if accepting it would push the host above its memory, vCPU,
-    # or disk caps. This is the advisory gate; the authoritative gate runs
-    # inside create_a_vm under the creation lock.
-    try:
-        if pool is not None:
-            # Split mode: the advisory admission gate needs the in-process
-            # pool; admission for spec-built VMs is enforced by the agent
-            # before create (deferred in split mode).
-            pool.check_admission(message.content, current_vm_hash=item_hash)
-    except InsufficientResourcesError as error:
-        logger.warning("Refusing allocation %s: %s", item_hash, error)
-        return web.HTTPServiceUnavailable(
-            reason="Insufficient capacity",
-            text="This CRN cannot host the requested instance at this time.",
-        )
+    # Capacity admission is no longer checked here: the engine enforces it
+    # atomically inside the create path (pool.check_admission for the message
+    # path, pool.check_spec_admission for the spec path), raising the typed
+    # InsufficientResourcesError. The vm_creation_exceptions / 503 path below
+    # surfaces that error to the caller.
 
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
@@ -962,6 +960,9 @@ async def notify_allocation(request: web.Request):
         MicroVMFailedInitError,
         HostNotFoundError,
         InsufficientResourcesError,
+        # The spec create path surfaces the boundary error (the engine's
+        # atomic admission, translated by LocalSupervisor.create_vm).
+        BoundaryInsufficientResourcesError,
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}

@@ -297,7 +297,10 @@ async def create_vm_execution_or_raise_http_error(
         logger.exception(error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
-    except InsufficientResourcesError as error:
+    except (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError) as error:
+        # Two vocabularies meet here: the legacy pool path raises the
+        # resources-module error; the spec path's atomic admission surfaces the
+        # boundary error through LocalSupervisor.create_vm (translating_errors).
         logger.warning("Refusing %s: %s", vm_hash, error)
         pool.forget_vm(vm_hash=vm_hash)
         raise HTTPServiceUnavailable(
