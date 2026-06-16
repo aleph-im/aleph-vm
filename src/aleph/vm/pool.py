@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shutil
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -21,7 +22,7 @@ from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
-from aleph.vm.resources import GpuDevice, InsufficientResourcesError, get_gpu_devices
+from aleph.vm.resources import GpuDevice, HostGPU, InsufficientResourcesError, get_gpu_devices
 from aleph.vm.supervisor.errors import (
     InvalidBackendError,
     TeeUnavailableError,
@@ -31,7 +32,7 @@ from aleph.vm.supervisor.qemu_build import (
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
-from aleph.vm.supervisor.types import Backend, CreateVmSpec
+from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -513,18 +514,49 @@ class VmPool:
 
             # Authoritative capacity admission, folded into the create path so
             # the check and the registration below are atomic under the lock.
-            # GPU reservation is intentionally NOT done here: GPU instances
-            # never reach the spec path (run._is_spec_eligible filters them out
-            # and the only build_create_vm_spec caller passes no gpus), so the
-            # message path (create_a_vm) still owns GPU reservation. Folding it
-            # in here would be a speculative, untested pci_host mapping.
             self.check_spec_admission(spec)
+
+            # GPU reservation, atomic with the registration below. The spec
+            # carries GPU REQUESTS (device_id, empty pci_host); resolve each to
+            # a concrete available host card and rewrite the spec with the
+            # resolved pci_host so build_qemu_configuration / from_spec see it.
+            # Mirrors the message path (create_a_vm + prepare_gpus), but the
+            # spec has no owner address: the agent clears its OWN reservation
+            # before calling create_vm (it holds message.address), so any
+            # reservation still standing belongs to another user and is skipped.
+            resolved_host_gpus: list[HostGPU] = []
+            if spec.gpus:
+                resolved_devices = self._resolve_spec_gpus(spec.gpus)
+                spec = replace(
+                    spec,
+                    gpus=[
+                        GpuSpec(
+                            pci_host=PciAddress(device.pci_host),
+                            supports_x_vga=device.has_x_vga_support,
+                            device_id=device.device_id,
+                            model=device.model or "",
+                        )
+                        for device in resolved_devices
+                    ],
+                )
+                resolved_host_gpus = [
+                    HostGPU(
+                        pci_host=device.pci_host,
+                        supports_x_vga=device.has_x_vga_support,
+                        device_id=device.device_id,
+                        model=device.model,
+                    )
+                    for device in resolved_devices
+                ]
 
             execution = VmExecution.from_spec(
                 spec,
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
             )
+            # Attach the resolved GPUs so uses_gpu() holds them against other
+            # creates and _to_vm_info reports them, exactly like the message path.
+            execution.gpus = resolved_host_gpus
             self.executions[vm_hash] = execution
 
             tap_interface = None
@@ -1131,6 +1163,48 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
+
+    def _resolve_spec_gpus(self, requested: list[GpuSpec]) -> list[GpuDevice]:
+        """Resolve message-free GPU REQUESTS to concrete available host cards.
+
+        The spec-path counterpart of find_resources_available_for_user, matching
+        each request by device_id against get_available_gpus() (cards not used by
+        any current execution). It differs in one way: the spec carries no owner
+        address, so it cannot honour a reservation held by *this* user. Instead
+        the agent clears its own pre-reservation before calling create_vm (it
+        holds message.address from the reserve_resources endpoint), so any
+        reservation still valid here belongs to ANOTHER user and is skipped.
+        get_valid_reservation drops expired reservations as a side effect, so a
+        stale hold never blocks a request.
+
+        Called inside create_vm_from_spec under creation_lock so resolution and
+        the subsequent registration are atomic (no card is double-assigned).
+
+        Raises:
+            InsufficientResourcesError: a requested device_id has no available,
+                unreserved-by-others host card.
+        """
+        available_gpus = self.get_available_gpus()
+        resolved: list[GpuDevice] = []
+        for request in requested:
+            for available_gpu in available_gpus:
+                if available_gpu.device_id != request.device_id:
+                    continue
+                if self.get_valid_reservation(available_gpu) is not None:
+                    # Reserved by another user (the agent cleared its own).
+                    continue
+                available_gpus.remove(available_gpu)
+                resolved.append(available_gpu)
+                break
+            else:  # for-else: no match for this request
+                detail = f"No available GPU matching device_id {request.device_id!r}"
+                logger.warning(detail)
+                raise InsufficientResourcesError(
+                    detail,
+                    required={"gpu_device_id": request.device_id},
+                    available={"gpus": [gpu.device_id for gpu in self.get_available_gpus()]},
+                )
+        return resolved
 
 
 class Reservation:
