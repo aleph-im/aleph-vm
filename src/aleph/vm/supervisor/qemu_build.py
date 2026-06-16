@@ -18,6 +18,7 @@ from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
     Configuration,
     HypervisorType,
+    QemuConfidentialVMConfiguration,
     QemuGPU,
     QemuVMConfiguration,
     QemuVMHostVolume,
@@ -49,6 +50,7 @@ async def build_cloud_init_drive(
     hostname: str,
     is_confidential: bool,
     has_gpu: bool,
+    install_guest_agent: bool = True,
 ) -> Path:
     """Create the cloud-init ISO image for a VM identified by *vm_hash*.
 
@@ -91,6 +93,7 @@ async def build_cloud_init_drive(
         keys,
         has_gpu=has_gpu,
         is_confidential=is_confidential,
+        install_guest_agent=install_guest_agent,
     )
 
     return disk_image_path
@@ -159,6 +162,110 @@ async def build_qemu_configuration(
         vcpu_count=vcpu_count,
         mem_size_mb=mem_size_mb,
         interface_name=interface_name,
+        host_volumes=host_volumes,
+        gpus=gpus,
+    )
+
+    return Configuration(
+        vm_id=vm_id,
+        vm_hash=spec.vm_id,
+        settings=settings,
+        vm_configuration=vm_configuration,
+        hypervisor=HypervisorType.qemu,
+    )
+
+
+async def build_qemu_confidential_configuration(
+    spec: CreateVmSpec,
+    vm_id: int,
+    tap_interface: TapInterface | None,
+) -> Configuration:
+    """Build a confidential controller Configuration from a CreateVmSpec.
+
+    Mirrors AlephQemuConfidentialInstance.configure() exactly (SAFETY-CRITICAL:
+    a confidential VM must never boot under a weaker configuration than the
+    message path produces). The only inputs are the spec's resolved on-disk
+    paths and its TeeConfig.
+
+    Requires spec.tee with a resolved firmware_path; raises InvalidBackendError
+    otherwise. The caller (pool.create_vm_from_spec) must let that propagate and
+    NEVER fall back to a plain QemuVMConfiguration: failing to build the
+    confidential config is a hard stop, not a downgrade to an unprotected boot.
+    """
+    tee = spec.tee
+    if tee is None:
+        raise InvalidBackendError("build_qemu_confidential_configuration requires spec.tee")
+    if tee.firmware_path is None:
+        # No firmware = no confidential launch. Refuse rather than risk a boot
+        # without the measured OVMF the owner attests against.
+        raise InvalidBackendError("Confidential spec has no resolved firmware_path; refusing to build configuration")
+
+    # The session certificates the owner uploads later land here; the paths must
+    # match initialize_confidential, which writes vm_session.b64 / vm_godh.b64
+    # under settings.CONFIDENTIAL_SESSION_DIRECTORY/<vm_hash>.
+    vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / spec.vm_id
+    session_file_path = vm_session_path / "vm_session.b64"
+    godh_file_path = vm_session_path / "vm_godh.b64"
+
+    # SEV policy crosses the boundary as a string; the engine converts to the
+    # AMDSEVPolicy int. int(.., 0) accepts hex ("0x1") and decimal forms.
+    sev_policy = int(tee.policy, 0)
+
+    image_path = str(spec.require_rootfs().path)
+
+    host_volumes = [
+        QemuVMHostVolume(
+            mount="",
+            path_on_host=disk.path,
+            read_only=disk.readonly,
+        )
+        for disk in spec.disks
+        if disk.role is DiskRole.EXTRA
+    ]
+
+    # The message confidential path builds QemuGPU(pci_host=...) only (default
+    # supports_x_vga=True); reproduce that exactly.
+    gpus = [QemuGPU(pci_host=g.pci_host) for g in spec.gpus]
+
+    vcpu_count = spec.vcpus
+    mem_size_mb = MiB(spec.memory_mib)
+
+    interface_name: str | None = tap_interface.device_name if tap_interface else None
+
+    monitor_socket_path = settings.EXECUTION_ROOT / (spec.vm_id + "-monitor.socket")
+    qmp_socket_path = settings.EXECUTION_ROOT / f"{spec.vm_id}-qmp.socket"
+    qga_socket_path = settings.EXECUTION_ROOT / f"{spec.vm_id}-qga.socket"
+
+    qemu_bin_path: str | None = shutil.which("qemu-system-x86_64")
+
+    # Confidential VMs install no guest agent (the message path passes
+    # install_guest_agent=False in configure()).
+    cloud_init_path = await build_cloud_init_drive(
+        vm_hash=spec.vm_id,
+        vm_id=vm_id,
+        tap_interface=tap_interface,
+        ssh_authorized_keys=spec.ssh_authorized_keys,
+        hostname=spec.hostname,
+        is_confidential=True,
+        has_gpu=bool(spec.gpus),
+        install_guest_agent=False,
+    )
+    cloud_init_drive_path = str(cloud_init_path)
+
+    vm_configuration = QemuConfidentialVMConfiguration(
+        qemu_bin_path=qemu_bin_path,
+        cloud_init_drive_path=cloud_init_drive_path,
+        image_path=image_path,
+        monitor_socket_path=monitor_socket_path,
+        qmp_socket_path=qmp_socket_path,
+        qga_socket_path=qga_socket_path,
+        vcpu_count=vcpu_count,
+        mem_size_mb=mem_size_mb,
+        interface_name=interface_name,
+        ovmf_path=Path(tee.firmware_path),
+        sev_session_file=session_file_path,
+        sev_dh_cert_file=godh_file_path,
+        sev_policy=sev_policy,
         host_volumes=host_volumes,
         gpus=gpus,
     )

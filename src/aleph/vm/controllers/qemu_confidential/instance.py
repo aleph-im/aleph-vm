@@ -4,6 +4,7 @@ import shutil
 from asyncio.subprocess import Process
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import AMDSEVPolicy, MachineResources
@@ -23,6 +24,9 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_existing_file
 
+if TYPE_CHECKING:
+    from aleph.vm.supervisor.types import CreateVmSpec
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +34,8 @@ class AlephQemuConfidentialResources(AlephQemuResources):
     firmware_path: Path
 
     async def download_firmware(self):
-        # Confidential VMs are always message-driven; there is no spec path for them.
+        # Message path only: the spec path resolves the firmware before create
+        # and uses from_spec (no download).
         assert self.message_content is not None
         firmware = self.message_content.environment.trusted_execution.firmware
         self.firmware_path = await get_existing_file(firmware)
@@ -41,6 +46,27 @@ class AlephQemuConfidentialResources(AlephQemuResources):
             self.download_firmware(),
             self.download_volumes(),
         )
+
+    @classmethod
+    def from_spec(cls, spec: "CreateVmSpec", namespace: str) -> "AlephQemuConfidentialResources":
+        """Build a message-free confidential resources holder from a CreateVmSpec.
+
+        No download is performed: every path (rootfs, volumes, gpus, firmware)
+        is already resolved on the spec. The firmware host path comes from the
+        spec's TeeConfig (resolved agent-side, like every other resource).
+        """
+        # Local import keeps the supervisor.* dependency out of module load order.
+        from aleph.vm.supervisor.errors import InvalidBackendError
+
+        resources = super().from_spec(spec, namespace)
+        if spec.tee is None or spec.tee.firmware_path is None:
+            # SAFETY-CRITICAL: no firmware means no measured OVMF to attest
+            # against. Refuse rather than risk an unprotected confidential boot.
+            raise InvalidBackendError(
+                "AlephQemuConfidentialResources.from_spec requires a resolved spec.tee.firmware_path"
+            )
+        resources.firmware_path = Path(spec.tee.firmware_path)
+        return resources
 
 
 class AlephQemuConfidentialInstance(AlephQemuInstance):

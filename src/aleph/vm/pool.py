@@ -25,10 +25,10 @@ from aleph.vm.orchestrator.utils import update_aggregate_settings
 from aleph.vm.resources import GpuDevice, HostGPU, InsufficientResourcesError, get_gpu_devices
 from aleph.vm.supervisor.errors import (
     InvalidBackendError,
-    TeeUnavailableError,
     VmAlreadyExistsError,
 )
 from aleph.vm.supervisor.qemu_build import (
+    build_qemu_confidential_configuration,
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
@@ -496,12 +496,6 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
-        if spec.tee is not None:
-            # The spec path builds a plain QemuVMConfiguration; a confidential
-            # launch (QemuConfidentialVMConfiguration) is not wired yet.
-            # Failing beats silently booting the VM unprotected.
-            msg = "Confidential (TEE) VMs are not supported by the spec path yet"
-            raise TeeUnavailableError(msg)
         if spec.backend is Backend.FIRECRACKER:
             return await self._create_firecracker_from_spec(spec)
 
@@ -572,10 +566,25 @@ class VmPool:
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
 
-                config = await build_qemu_configuration(spec, vm_id, tap_interface)
+                # Confidential VMs get a QemuConfidentialVMConfiguration; the
+                # GPU resolution above already rewrote spec.gpus with concrete
+                # pci_hosts, so the confidential config carries the resolved
+                # GPUs too. SAFETY-CRITICAL: a build failure (e.g. missing
+                # firmware) propagates and aborts the create; we never fall back
+                # to the plain QemuVMConfiguration, which would boot the VM
+                # unprotected.
+                if spec.tee is not None:
+                    config = await build_qemu_confidential_configuration(spec, vm_id, tap_interface)
+                else:
+                    config = await build_qemu_configuration(spec, vm_id, tap_interface)
                 save_controller_configuration(spec.vm_id, config)
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                # start(write_config=False): the controller config was just
+                # written above. For a confidential VM, VmExecution.start leaves
+                # it in awaiting_confidential_init (is_confidential is True, so
+                # it does NOT enable_and_start the controller); the owner starts
+                # it later via initialize_confidential.
                 await execution.start(write_config=False)
                 # Reuse persisted host ports across restarts. The agent then
                 # reconciles the aggregate settings through add_port_forward,

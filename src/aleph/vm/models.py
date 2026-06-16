@@ -536,6 +536,13 @@ class VmExecution:
                 # Spec path: every path is already resolved on disk; no download.
                 if self.spec.backend is Backend.FIRECRACKER:
                     self.resources = SpecProgramResources.from_spec(self.spec)
+                elif self.spec.tee is not None:
+                    # Confidential: a dedicated resources holder carrying the
+                    # resolved firmware path (mirrors the message path's
+                    # AlephQemuConfidentialResources).
+                    self.resources = AlephQemuConfidentialResources.from_spec(
+                        self.spec, namespace=str(self.vm_hash)
+                    )
                 else:
                     self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 self.times.prepared_at = datetime.now(tz=timezone.utc)
@@ -621,8 +628,23 @@ class VmExecution:
                     prepare_jailer=prepare,
                 )
                 return vm
-            assert isinstance(self.resources, AlephQemuResources)
             hardware_resources = MachineResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
+            if self.spec.tee is not None:
+                # Confidential spec launch: same controller object as the
+                # message path, with the SEV policy converted from the spec.
+                # SAFETY-CRITICAL: never fall through to the plain AlephQemuInstance.
+                assert isinstance(self.resources, AlephQemuConfidentialResources)
+                self.vm = vm = AlephQemuConfidentialInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.spec.network.internet_access,
+                    confidential_policy=int(self.spec.tee.policy, 0),
+                    hardware_resources=hardware_resources,
+                    tap_interface=tap_interface,
+                )
+                return vm
+            assert isinstance(self.resources, AlephQemuResources)
             self.vm = vm = AlephQemuInstance(
                 vm_id=vm_id,
                 vm_hash=self.vm_hash,
