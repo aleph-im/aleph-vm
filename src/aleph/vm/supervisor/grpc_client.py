@@ -342,6 +342,18 @@ class GrpcSupervisor(Supervisor):
         )
         return conv.migration_info_from_pb(reply)
 
+    async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
+        raise NotImplementedError("wired in Phase 2")
+
+    async def restart_after_failed_export(self, vm_id: VmId) -> None:
+        raise NotImplementedError("wired in Phase 2")
+
+    async def create_migrated_vm(self, vm_id: VmId, message, original) -> VmInfo:
+        raise NotImplementedError("wired in Phase 2")
+
+    async def release_migrated_vm(self, vm_id: VmId) -> None:
+        raise NotImplementedError("wired in Phase 2")
+
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
         await self._unary(

@@ -39,7 +39,7 @@ from aleph.vm.controllers.qemu.backup import (
     restore_rootfs,
     verify_qemu_disk,
 )
-from aleph.vm.migration.helpers import compress_disk, compute_sha256
+from aleph.vm.migration.helpers import compress_disk, compute_sha256, graceful_shutdown
 from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
     initialize_nftables,
@@ -1062,6 +1062,50 @@ class LocalSupervisor(Supervisor):
             if job is None or job.vm_id != vm_id:
                 raise MigrationNotFoundError(str(migration_id))
             return job
+
+    # ── Migration: the disk/VM half of the agent's P2P pull protocol ──
+    #
+    # The agent owns the network transport (compress, hash, serve over HTTP,
+    # download, overlay rebase); these methods own the parts that touch the
+    # VmExecution and the pool, which the agent must not reach into directly.
+    async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
+        """Gracefully stop the VM and return its persistent-volumes directory.
+
+        The agent then compresses and serves the disk files it finds there.
+        """
+        with translating_errors():
+            execution = self._require(vm_id)
+            await graceful_shutdown(execution)
+            return DirectoryPath(settings.PERSISTENT_VOLUMES_DIR / str(vm_id))
+
+    async def restart_after_failed_export(self, vm_id: VmId) -> None:
+        """Bring the VM back up after a failed export. Best-effort: the VM may
+        already be gone (forgotten), in which case there is nothing to do."""
+        with translating_errors():
+            execution = self.pool.executions.get(vm_id)
+            if execution is None or not getattr(execution, "systemd_manager", None):
+                return
+            await execution.systemd_manager.enable_and_start(execution.controller_service)
+
+    async def create_migrated_vm(self, vm_id: VmId, message, original) -> VmInfo:
+        """Create a persistent VM from an instance message whose disks the
+        agent has already staged under PERSISTENT_VOLUMES_DIR / vm_id."""
+        with translating_errors():
+            execution = await self.pool.create_a_vm(
+                vm_hash=vm_id,
+                message=message,
+                original=original,
+                persistent=True,
+            )
+            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            self._emit_event(vm_id, VmStatus.DEFINED, info.status)
+            return info
+
+    async def release_migrated_vm(self, vm_id: VmId) -> None:
+        """Release a VM that has migrated away: stop it and forget it."""
+        with translating_errors():
+            await self.pool.stop_vm(vm_id)
+            self.pool.forget_vm(vm_id)
 
     # Confidential
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:

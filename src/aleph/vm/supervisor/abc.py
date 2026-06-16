@@ -146,6 +146,38 @@ class MigrationOps(ABC):
     @abstractmethod
     async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo: ...
 
+    @abstractmethod
+    async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
+        """Gracefully stop a VM so its disks are quiescent, then return the
+        host directory holding its persistent volumes.
+
+        The disk/VM half of the P2P export: the agent owns the network
+        transport (compress, hash, serve the files in this directory over
+        HTTP), the supervisor owns stopping the VM and locating its disks."""
+
+    @abstractmethod
+    async def restart_after_failed_export(self, vm_id: VmId) -> None:
+        """Bring a VM back up after its export failed: it is not leaving this
+        host after all. Best-effort; the agent calls this from the runner's
+        failure path."""
+
+    @abstractmethod
+    async def create_migrated_vm(self, vm_id: VmId, message: Any, original: Any) -> VmInfo:
+        """Create a persistent VM from an Aleph instance message whose disks
+        the agent has already staged under the supervisor's persistent volumes
+        directory.
+
+        The disk/VM half of the P2P import: the agent owns the network
+        transport (message fetch, disk download, overlay rebase), the
+        supervisor owns the create-and-boot step. ``message`` and ``original``
+        are the Aleph ExecutableContent, kept untyped at the boundary in
+        Phase 1 (same convention as reserve_resources)."""
+
+    @abstractmethod
+    async def release_migrated_vm(self, vm_id: VmId) -> None:
+        """Release a VM that has migrated away: stop it and forget its
+        definition. Drives migration cleanup on the source host."""
+
 
 class ConfidentialOps(ABC):
     @abstractmethod
