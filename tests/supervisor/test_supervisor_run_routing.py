@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -26,14 +27,20 @@ from aleph.vm.supervisor.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    GpuSpec,
     IpAssignment,
     NetworkConfig,
+    PciAddress,
     VmId,
     VmInfo,
     VmStatus,
 )
 
 _HASH = ItemHash("deadbeef" * 8)
+
+
+def _gpu_request() -> GpuSpec:
+    return GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:1234", model="")
 
 
 def _spec() -> CreateVmSpec:
@@ -238,8 +245,8 @@ async def test_confidential_instance_falls_back_to_legacy(monkeypatch):
     await _assert_routed_to_legacy(monkeypatch, content)
 
 
-@pytest.mark.asyncio
-async def test_gpu_instance_falls_back_to_legacy(monkeypatch):
+def test_gpu_instance_is_spec_eligible():
+    """The GPU exclusion is gone: a GPU QEMU instance reaches the spec path."""
     content = _make_qemu_instance_message().model_copy(
         update={
             "requirements": HostRequirements(
@@ -254,7 +261,50 @@ async def test_gpu_instance_falls_back_to_legacy(monkeypatch):
             )
         }
     )
-    await _assert_routed_to_legacy(monkeypatch, content)
+    assert run_module._is_spec_eligible(content) is True
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_routed_through_supervisor(monkeypatch):
+    """GPU instances now reach the spec path; the agent clears its own GPU
+    pre-reservation (it holds content.address) before driving create_vm so the
+    engine's owner-less resolution sees a clean slate for this owner."""
+    content = _make_qemu_instance_message().model_copy(
+        update={
+            "requirements": HostRequirements(
+                gpu=[
+                    GpuProperties(
+                        vendor="NVIDIA",
+                        device_name="RTX",
+                        device_class="0300",
+                        device_id="10de:1234",
+                    )
+                ]
+            )
+        }
+    )
+    message = MagicMock(content=content)
+    original_message = MagicMock(content=content)
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
+    # A spec carrying a GPU request triggers the reservation release.
+    spec = replace(_spec(), gpus=[_gpu_request()])
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock(), release_user_reservations=MagicMock())
+    supervisor = _fake_supervisor(pool=pool)
+    registry = AgentVmRegistry()
+
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, persistent=True
+    )
+
+    supervisor.create_vm.assert_awaited_once_with(spec)
+    pool.create_a_vm.assert_not_awaited()
+    pool.release_user_reservations.assert_called_once_with(content.address)
+    assert execution is None
 
 
 @pytest.mark.asyncio

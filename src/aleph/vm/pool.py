@@ -1113,6 +1113,19 @@ class VmPool:
                 available_gpus.append(gpu)
         return available_gpus
 
+    def release_user_reservations(self, user) -> None:
+        """Drop every resource reservation held by *user*.
+
+        The spec create path has no owner address, so its GPU resolution
+        (_resolve_spec_gpus) skips any reservation still standing, treating it
+        as belonging to another user. For that to be correct the owner must
+        first release its OWN pre-reservation (made via reserve_resources): the
+        agent calls this with message.address before driving create_vm, so the
+        engine sees only other users' holds when it picks a card.
+        """
+        for resource in [res for res, reservation in self.reservations.items() if reservation.user == user]:
+            del self.reservations[resource]
+
     def get_valid_reservation(self, resource) -> Reservation | None:
         if resource in self.reservations and self.reservations[resource].is_expired():
             del self.reservations[resource]

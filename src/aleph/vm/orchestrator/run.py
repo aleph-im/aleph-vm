@@ -85,10 +85,11 @@ def _is_spec_eligible(content) -> bool:
     """True when the supervisor's message-free create path can handle this message.
 
     Gates which messages reach build_create_vm_spec, mirroring its validation:
-    a non-confidential QEMU instance. The GPU exclusion below is an extra
-    conservatism of this gate — build_create_vm_spec itself accepts GPUs (via
-    its ``gpus`` argument), so GPU instances are filtered here, not there. Keep
-    the two in sync. Everything else keeps the legacy path.
+    a non-confidential QEMU instance. GPU instances now reach the spec path: the
+    spec carries the GPU request and the engine resolves and reserves a concrete
+    host card in pool.create_vm_from_spec. Confidential instances stay on the
+    legacy path for now (Slice 2). Keep this gate in sync with
+    build_create_vm_spec's validation.
     """
     if not isinstance(content, InstanceContent):
         return False
@@ -96,8 +97,6 @@ def _is_spec_eligible(content) -> bool:
     if hypervisor != HypervisorType.qemu:
         return False
     if getattr(content.environment, "trusted_execution", None) is not None:
-        return False
-    if content.requirements and content.requirements.gpu:
         return False
     return True
 
@@ -271,6 +270,18 @@ async def create_vm_execution(
 
     if _is_spec_eligible(content):
         spec = await build_create_vm_spec(vm_hash, content)
+        if spec.gpus:
+            # The engine resolves GPU requests against reservations held by
+            # OTHER users, skipping any that are still valid. This owner's own
+            # pre-reservation (made via the reserve_resources endpoint) would
+            # otherwise look like someone else's and block the create, because
+            # the spec path carries no owner address. Release it here, where the
+            # agent still has content.address, so the engine sees a clean slate
+            # for this owner. In-process only: split mode has no local pool and
+            # owner-aware reservation over the wire is a later slice.
+            pool = _engine_pool(supervisor)
+            if pool is not None:
+                pool.release_user_reservations(content.address)
         info = await supervisor.create_vm(spec)
         # Agent territory: record the message in the agent's own cache. This is
         # what the message-free agent will read once owner-auth and billing move
