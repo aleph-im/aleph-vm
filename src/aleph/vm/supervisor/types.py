@@ -137,6 +137,12 @@ class TeeConfig:
     backend: TeeBackend
     policy: str
     session_dir: DirectoryPath
+    # Host path to the resolved OVMF firmware blob (the message path's
+    # trusted_execution.firmware ref, downloaded to disk by the agent before
+    # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
+    # Not carried over the Phase 1 proto yet (proto_convert drops it; defaulted
+    # so the round-trip keeps building); Phase 2 adds it to the wire.
+    firmware_path: Path | None = None
 
 
 @dataclass(frozen=True)

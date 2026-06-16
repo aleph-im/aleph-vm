@@ -13,17 +13,19 @@ from pathlib import Path
 
 from aleph_message.models import ExecutableContent, ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
-from aleph_message.models.execution.environment import HypervisorType
+from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.qemu.instance import AlephQemuResources
+from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
+    DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
@@ -31,6 +33,8 @@ from aleph.vm.supervisor.types import (
     GuestChannelSpec,
     NetworkConfig,
     PciAddress,
+    TeeBackend,
+    TeeConfig,
     VmId,
 )
 from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
@@ -47,7 +51,12 @@ async def build_create_vm_spec(
     Validation is performed before any I/O. Raises InvalidBackendError for:
     - non-instance messages
     - non-QEMU hypervisor
-    - confidential (trusted_execution set) instances
+
+    Confidential (trusted_execution set) instances ARE supported: the firmware
+    ref is resolved to a host path and ``spec.tee`` is populated so the engine
+    takes the confidential launch path. The launched SEV policy is NO_DBG,
+    matching the message path (which never reads message.policy); see the tee
+    block below.
 
     The routing gate ``run._is_spec_eligible`` mirrors these checks to decide
     which messages reach this path; keep the two in sync.
@@ -67,9 +76,6 @@ async def build_create_vm_spec(
     effective_hypervisor = message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
     if effective_hypervisor != HypervisorType.qemu:
         raise InvalidBackendError(f"Expected qemu hypervisor, got {effective_hypervisor!r}")
-
-    if getattr(message.environment, "trusted_execution", None) is not None:
-        raise InvalidBackendError("Confidential instances (trusted_execution set) are not supported by this path")
 
     # --- GPU request ---
     # Each requested GPU becomes an unresolved GpuSpec (device_id/model set,
@@ -92,6 +98,28 @@ async def build_create_vm_spec(
 
     resources = AlephQemuResources(message, namespace=str(vm_hash))
     await resources.download_all()
+
+    # --- Confidential (TEE) ---
+    # A confidential instance carries trusted_execution. Resolve the firmware
+    # ref to a host path here (agent territory, like every other resource) and
+    # hand the engine a TeeConfig so it takes the confidential launch path.
+    #
+    # SAFETY-CRITICAL: the launched SEV policy is NO_DBG, reproducing the
+    # message path exactly. The message path never reads
+    # trusted_execution.policy: AlephQemuConfidentialInstance defaults
+    # confidential_policy to AMDSEVPolicy.NO_DBG and VmExecution.create() does
+    # not override it. We mirror that here (NOT message.policy) so the spec path
+    # cannot launch a confidential VM under a weaker policy than today.
+    tee: TeeConfig | None = None
+    trusted_execution = getattr(message.environment, "trusted_execution", None)
+    if trusted_execution is not None:
+        firmware_path = await get_existing_file(trusted_execution.firmware)
+        tee = TeeConfig(
+            backend=TeeBackend.SEV,
+            policy=hex(AMDSEVPolicy.NO_DBG),
+            session_dir=DirectoryPath(settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash),
+            firmware_path=firmware_path,
+        )
 
     # --- Build disk list ---
 
@@ -120,7 +148,7 @@ async def build_create_vm_spec(
         disks=disks,
         vcpus=message.resources.vcpus,
         memory_mib=message.resources.memory,
-        tee=None,
+        tee=tee,
         network=NetworkConfig(
             internet_access=message.environment.internet,
             requested_ipv6="",

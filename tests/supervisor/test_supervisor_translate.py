@@ -245,24 +245,44 @@ async def test_firecracker_hypervisor_raises(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
-async def test_confidential_instance_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An InstanceContent with trusted_execution set raises InvalidBackendError."""
-    download_called = False
+async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A confidential InstanceContent yields a CreateVmSpec carrying spec.tee:
+    backend SEV, the launched policy (NO_DBG, matching the message path which
+    ignores message.policy), the per-VM session dir, and the resolved firmware
+    host path."""
+    from aleph_message.models.execution.environment import AMDSEVPolicy
 
-    async def should_not_be_called(self: Any) -> None:
-        nonlocal download_called
-        download_called = True
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.types import TeeBackend
+
+    firmware_path = Path("/data/firmware.fd")
+
+    async def fake_download_all(self: Any) -> None:
+        self.rootfs_path = Path("/data/rootfs.qcow2")
+        self.volumes = []
+
+    async def fake_get_existing_file(ref: Any) -> Path:
+        return firmware_path
 
     from aleph.vm.controllers.qemu.instance import AlephQemuResources
 
-    monkeypatch.setattr(AlephQemuResources, "download_all", should_not_be_called)
+    monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
+    monkeypatch.setattr("aleph.vm.supervisor.translate.get_existing_file", fake_get_existing_file)
 
-    message = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=0))
+    # The message policy is deliberately a non-default value: the spec path must
+    # still launch with NO_DBG, exactly like the message path (which never reads
+    # message.policy). Preserving that behavior is safety-critical.
+    message = _make_qemu_instance_message(
+        trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=int(AMDSEVPolicy.SEV_ES))
+    )
 
-    with pytest.raises(InvalidBackendError, match="(?i)confidential"):
-        await build_create_vm_spec(_VM_HASH, message)
+    spec = await build_create_vm_spec(_VM_HASH, message)
 
-    assert not download_called
+    assert spec.tee is not None
+    assert spec.tee.backend is TeeBackend.SEV
+    assert int(spec.tee.policy, 0) == int(AMDSEVPolicy.NO_DBG)
+    assert spec.tee.session_dir == settings.CONFIDENTIAL_SESSION_DIRECTORY / _VM_HASH
+    assert spec.tee.firmware_path == firmware_path
 
 
 # ---------------------------------------------------------------------------
