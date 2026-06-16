@@ -205,6 +205,13 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
+    # The VM owner's Aleph address. The engine uses it to consume this owner's
+    # own GPU reservation (made via the reserve_resources endpoint) inside the
+    # create path, while skipping reservations held by OTHER users. Empty = no
+    # owner-scoped reservation handling (e.g. programs, migration). Not carried
+    # over the Phase 1 proto yet (proto_convert drops it; defaulted so the
+    # round-trip keeps building); Phase 2 adds it to the wire.
+    owner_address: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.
     hostname: str = ""

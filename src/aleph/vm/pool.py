@@ -514,13 +514,13 @@ class VmPool:
             # carries GPU REQUESTS (device_id, empty pci_host); resolve each to
             # a concrete available host card and rewrite the spec with the
             # resolved pci_host so build_qemu_configuration / from_spec see it.
-            # Mirrors the message path (create_a_vm + prepare_gpus), but the
-            # spec has no owner address: the agent clears its OWN reservation
-            # before calling create_vm (it holds message.address), so any
-            # reservation still standing belongs to another user and is skipped.
+            # Mirrors the message path (create_a_vm + prepare_gpus). The engine
+            # owns reservation handling end to end: it consumes this OWNER's own
+            # reservation (spec.owner_address, made via reserve_resources) and
+            # skips reservations still held by OTHER users.
             resolved_host_gpus: list[HostGPU] = []
             if spec.gpus:
-                resolved_devices = self._resolve_spec_gpus(spec.gpus)
+                resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_address)
                 spec = replace(
                     spec,
                     gpus=[
@@ -1122,19 +1122,6 @@ class VmPool:
                 available_gpus.append(gpu)
         return available_gpus
 
-    def release_user_reservations(self, user) -> None:
-        """Drop every resource reservation held by *user*.
-
-        The spec create path has no owner address, so its GPU resolution
-        (_resolve_spec_gpus) skips any reservation still standing, treating it
-        as belonging to another user. For that to be correct the owner must
-        first release its OWN pre-reservation (made via reserve_resources): the
-        agent calls this with message.address before driving create_vm, so the
-        engine sees only other users' holds when it picks a card.
-        """
-        for resource in [res for res, reservation in self.reservations.items() if reservation.user == user]:
-            del self.reservations[resource]
-
     def get_valid_reservation(self, resource) -> Reservation | None:
         if resource in self.reservations and self.reservations[resource].is_expired():
             del self.reservations[resource]
@@ -1186,25 +1173,24 @@ class VmPool:
                 raise Exception(err)
         return resources
 
-    def _resolve_spec_gpus(self, requested: list[GpuSpec]) -> list[GpuDevice]:
+    def _resolve_spec_gpus(self, requested: list[GpuSpec], *, owner: str = "") -> list[GpuDevice]:
         """Resolve message-free GPU REQUESTS to concrete available host cards.
 
         The spec-path counterpart of find_resources_available_for_user, matching
         each request by device_id against get_available_gpus() (cards not used by
-        any current execution). It differs in one way: the spec carries no owner
-        address, so it cannot honour a reservation held by *this* user. Instead
-        the agent clears its own pre-reservation before calling create_vm (it
-        holds message.address from the reserve_resources endpoint), so any
-        reservation still valid here belongs to ANOTHER user and is skipped.
-        get_valid_reservation drops expired reservations as a side effect, so a
-        stale hold never blocks a request.
+        any current execution). The engine owns reservation handling end to end:
+        a reservation held by THIS owner (``owner`` == spec.owner_address, made
+        via the reserve_resources endpoint) is consumed - the card is taken and
+        its reservation dropped - while a reservation held by ANOTHER user blocks
+        the card. get_valid_reservation drops expired reservations as a side
+        effect, so a stale hold never blocks a request.
 
         Called inside create_vm_from_spec under creation_lock so resolution and
         the subsequent registration are atomic (no card is double-assigned).
 
         Raises:
-            InsufficientResourcesError: a requested device_id has no available,
-                unreserved-by-others host card.
+            InsufficientResourcesError: a requested device_id has no available
+                host card free of another user's reservation.
         """
         available_gpus = self.get_available_gpus()
         resolved: list[GpuDevice] = []
@@ -1212,9 +1198,13 @@ class VmPool:
             for available_gpu in available_gpus:
                 if available_gpu.device_id != request.device_id:
                     continue
-                if self.get_valid_reservation(available_gpu) is not None:
-                    # Reserved by another user (the agent cleared its own).
+                reservation = self.get_valid_reservation(available_gpu)
+                if reservation is not None and reservation.user != owner:
+                    # Reserved by another user: not available to this owner.
                     continue
+                if reservation is not None:
+                    # This owner's own reservation: consume it.
+                    del self.reservations[available_gpu]
                 available_gpus.remove(available_gpu)
                 resolved.append(available_gpu)
                 break

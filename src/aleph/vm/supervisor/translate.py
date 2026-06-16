@@ -160,6 +160,10 @@ async def build_create_vm_spec(
         numa_node=None,
         persistent=True,
         ssh_authorized_keys=list(message.authorized_keys or []),
+        # The engine consumes this owner's own GPU reservation and skips other
+        # users' valid reservations during create_vm_from_spec. This replaces the
+        # agent-side release_user_reservations call.
+        owner_address=message.address,
         # Aleph's hostname convention (base32 of the item hash) is agent
         # vocabulary; the supervisor applies whatever name it is given.
         hostname=get_hostname_from_hash(vm_hash),
