@@ -50,7 +50,7 @@ async def build_create_vm_spec(
 
     Validation is performed before any I/O. Raises InvalidBackendError for:
     - non-instance messages
-    - non-QEMU hypervisor
+    - non-QEMU hypervisor (instances are QEMU-only)
 
     Confidential (trusted_execution set) instances ARE supported: the firmware
     ref is resolved to a host path and ``spec.tee`` is populated so the engine
@@ -75,7 +75,9 @@ async def build_create_vm_spec(
 
     effective_hypervisor = message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
     if effective_hypervisor != HypervisorType.qemu:
-        raise InvalidBackendError(f"Expected qemu hypervisor, got {effective_hypervisor!r}")
+        raise InvalidBackendError(
+            f"instances are QEMU-only, got hypervisor {effective_hypervisor!r}"
+        )
 
     # --- GPU request ---
     # Each requested GPU becomes an unresolved GpuSpec (device_id/model set,

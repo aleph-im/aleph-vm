@@ -13,7 +13,6 @@ from aiohttp.web_exceptions import (
     HTTPServiceUnavailable,
 )
 from aleph_message.models import InstanceContent, ItemHash, ProgramContent
-from aleph_message.models.execution.environment import HypervisorType
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
@@ -84,19 +83,15 @@ async def build_event_scope(event) -> dict[str, Any]:
 def _is_spec_eligible(content) -> bool:
     """True when the supervisor's message-free create path can handle this message.
 
-    Gates which messages reach build_create_vm_spec, mirroring its validation:
-    a QEMU instance. GPU instances reach the spec path (the engine resolves and
-    reserves a concrete host card in pool.create_vm_from_spec) and confidential
-    instances do too: the spec carries spec.tee and the engine takes the
-    confidential launch path, leaving the VM awaiting its owner's session.
-    Keep this gate in sync with build_create_vm_spec's validation.
+    Instances are QEMU-only, so every instance reaches build_create_vm_spec.
+    That includes GPU instances (the engine resolves and reserves a concrete
+    host card in pool.create_vm_from_spec) and confidential instances (the spec
+    carries spec.tee and the engine takes the confidential launch path, leaving
+    the VM awaiting its owner's session). An InstanceContent that explicitly
+    requests a Firecracker hypervisor is rejected by build_create_vm_spec with
+    InvalidBackendError: instances do not run on Firecracker.
     """
-    if not isinstance(content, InstanceContent):
-        return False
-    hypervisor = content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
-    if hypervisor != HypervisorType.qemu:
-        return False
-    return True
+    return isinstance(content, InstanceContent)
 
 
 async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
@@ -231,12 +226,12 @@ async def create_vm_execution(
 ) -> VmExecution | None:
     """Create a VM for the given message.
 
-    Spec-eligible messages (QEMU instances) and programs are created through the
-    Supervisor abstraction: the agent records and persists its own knowledge of
-    the VM and returns None — the hypervisor object lives behind the supervisor,
-    not in the pool. The remaining legacy messages (confidential / GPU /
-    firecracker instances) take the supervisor's embedded pool create path and
-    return the pool-managed VmExecution; in split mode that path 501s.
+    Instances (QEMU-only, including confidential and GPU instances) and programs
+    are created through the Supervisor abstraction: the agent records and
+    persists its own knowledge of the VM and returns None, the hypervisor object
+    lives behind the supervisor, not in the pool. The remaining legacy create
+    path (supervisor's embedded pool) is kept for now but no current message type
+    routes to it; in split mode that path 501s.
     """
     message, original_message = await load_updated_message(vm_hash)
 

@@ -20,7 +20,7 @@ from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.errors import InvalidBackendError, VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -182,29 +182,33 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_firecracker_instance_falls_back_to_legacy(monkeypatch):
-    """An ineligible (Firecracker) instance takes create_a_vm, never touches the
-    spec path, and is still recorded."""
+async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
+    """Instances are QEMU-only: a Firecracker instance is spec-eligible (it
+    reaches build_create_vm_spec, never the legacy create_a_vm path) and is
+    rejected there with InvalidBackendError. The actual rejection is unit-tested
+    in test_supervisor_translate.py; here we assert routing reaches the spec path
+    and surfaces the error without touching the pool."""
     content = _make_qemu_instance_message(hypervisor=HypervisorType.firecracker)
     message = MagicMock(content=content)
     original_message = MagicMock(content=_make_qemu_instance_message())
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
-    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
+    monkeypatch.setattr(
+        run_module,
+        "build_create_vm_spec",
+        AsyncMock(side_effect=InvalidBackendError("instances are QEMU-only")),
+    )
 
-    legacy = SimpleNamespace()
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock(return_value=legacy))
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
     supervisor = _fake_supervisor(pool=pool)
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, persistent=False
-    )
+    with pytest.raises(InvalidBackendError, match="QEMU-only"):
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=False)
 
-    pool.create_a_vm.assert_awaited_once()
+    run_module.build_create_vm_spec.assert_awaited_once()
+    pool.create_a_vm.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
-    run_module.build_create_vm_spec.assert_not_awaited()
-    assert execution is legacy
-    assert registry.get(_HASH) is not None  # legacy path records the message too
+    assert registry.get(_HASH) is None  # nothing recorded for a rejected create
 
 
 @pytest.mark.asyncio
