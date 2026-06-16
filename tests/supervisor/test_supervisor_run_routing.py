@@ -181,8 +181,11 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     assert registry.get(_HASH) is None  # forgotten on failure
 
 
-async def _assert_routed_to_legacy(monkeypatch, content) -> None:
-    """An ineligible message takes create_a_vm, never touches the spec path, and is still recorded."""
+@pytest.mark.asyncio
+async def test_firecracker_instance_falls_back_to_legacy(monkeypatch):
+    """An ineligible (Firecracker) instance takes create_a_vm, never touches the
+    spec path, and is still recorded."""
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.firecracker)
     message = MagicMock(content=content)
     original_message = MagicMock(content=_make_qemu_instance_message())
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
@@ -239,10 +242,45 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     assert record is not None and record.persistent is True
 
 
-@pytest.mark.asyncio
-async def test_confidential_instance_falls_back_to_legacy(monkeypatch):
+def test_confidential_instance_is_spec_eligible():
+    """The confidential exclusion is gone: a confidential QEMU instance reaches
+    the spec path (the engine takes the confidential launch)."""
     content = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
-    await _assert_routed_to_legacy(monkeypatch, content)
+    assert run_module._is_spec_eligible(content) is True
+
+
+@pytest.mark.asyncio
+async def test_confidential_instance_routed_through_spec_awaiting_init(monkeypatch):
+    """A confidential instance is created through the spec path and left
+    awaiting its owner's session: no wait-for-running, no port forwards (the VM
+    is not up), and the agent record is persisted."""
+    content = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
+    message = MagicMock(content=content)
+    original_message = MagicMock(content=_make_qemu_instance_message())
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
+    spec = replace(_spec(), tee=MagicMock())
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
+    persist = AsyncMock()
+    monkeypatch.setattr(run_module, "persist_record", persist)
+    waited = AsyncMock()
+    monkeypatch.setattr(run_module, "_wait_until_running", waited)
+
+    awaiting = replace(_info(VmStatus.BOOTING), awaiting_confidential_init=True)
+    supervisor = _fake_supervisor()
+    supervisor.create_vm = AsyncMock(return_value=awaiting)
+    registry = AgentVmRegistry()
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())  # noqa: F841
+
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, persistent=True
+    )
+
+    supervisor.create_vm.assert_awaited_once_with(spec)
+    waited.assert_not_awaited()  # never wait on an awaiting-init VM
+    supervisor.add_port_forward.assert_not_awaited()  # no forwards on a VM that is not up
+    persist.assert_awaited_once()
+    assert execution is None
+    assert registry.get(_HASH) is not None
 
 
 def test_gpu_instance_is_spec_eligible():
@@ -343,6 +381,32 @@ async def test_start_persistent_creates_when_absent(monkeypatch):
         update_watcher=MagicMock(),
     )
     created.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_first_create_confidential_skips_wait(monkeypatch):
+    """First-time creation of a confidential VM leaves it awaiting init: after
+    create_vm_execution the VM reports awaiting_confidential_init, so the
+    readiness barrier must be skipped (waiting would block forever)."""
+    sup = _fake_supervisor()
+    # Absent on the first poll, then awaiting-init after create.
+    awaiting = replace(_info(VmStatus.BOOTING), awaiting_confidential_init=True)
+    sup.get_vm = AsyncMock(side_effect=[VmNotFoundError(_HASH), awaiting])
+    created = AsyncMock()
+    waited = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "_wait_until_running", waited)
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+    created.assert_awaited_once()
+    waited.assert_not_awaited()  # never wait on an awaiting-init confidential VM
 
 
 @pytest.mark.asyncio

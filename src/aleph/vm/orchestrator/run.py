@@ -85,18 +85,16 @@ def _is_spec_eligible(content) -> bool:
     """True when the supervisor's message-free create path can handle this message.
 
     Gates which messages reach build_create_vm_spec, mirroring its validation:
-    a non-confidential QEMU instance. GPU instances now reach the spec path: the
-    spec carries the GPU request and the engine resolves and reserves a concrete
-    host card in pool.create_vm_from_spec. Confidential instances stay on the
-    legacy path for now (Slice 2). Keep this gate in sync with
-    build_create_vm_spec's validation.
+    a QEMU instance. GPU instances reach the spec path (the engine resolves and
+    reserves a concrete host card in pool.create_vm_from_spec) and confidential
+    instances do too: the spec carries spec.tee and the engine takes the
+    confidential launch path, leaving the VM awaiting its owner's session.
+    Keep this gate in sync with build_create_vm_spec's validation.
     """
     if not isinstance(content, InstanceContent):
         return False
     hypervisor = content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
     if hypervisor != HypervisorType.qemu:
-        return False
-    if getattr(content.environment, "trusted_execution", None) is not None:
         return False
     return True
 
@@ -289,6 +287,15 @@ async def create_vm_execution(
         # that created the VM never reads it.
         # Spec-eligible VMs are QEMU instances, which are always persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        if info.awaiting_confidential_init:
+            # A confidential VM is created but not started: only the owner can
+            # start it, by uploading the session certificates via
+            # /confidential/initialize. Waiting for RUNNING would block forever,
+            # and there are no port forwards to apply on a VM that is not up.
+            # This mirrors the message path, which never waits on a confidential
+            # VM either.
+            await persist_record(vm_hash, record)
+            return None
         try:
             await _wait_until_running(supervisor, info.vm_id)
             for forward in await resolve_port_forwards(info.vm_id, content):
@@ -730,10 +737,21 @@ async def start_persistent_vm(
     if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
         await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=True)
-        # create_vm_execution blocks until RUNNING in-process today; this re-poll
-        # is the explicit readiness barrier (and stays correct if a future
-        # out-of-process create returns before the VM is RUNNING).
-        await _wait_until_running(supervisor, vm_id)
+        # A confidential VM is created but left awaiting its owner's session
+        # (only the owner can start it via /confidential/initialize). Waiting
+        # for RUNNING would block forever, so re-read the status and skip the
+        # readiness barrier when it is awaiting init.
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            info = None
+        if info is not None and info.awaiting_confidential_init:
+            logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+        else:
+            # create_vm_execution blocks until RUNNING in-process today; this
+            # re-poll is the explicit readiness barrier (and stays correct if a
+            # future out-of-process create returns before the VM is RUNNING).
+            await _wait_until_running(supervisor, vm_id)
 
     # Scheduled long-running: it must not idle-expire.
     expiry.cancel(vm_id)
