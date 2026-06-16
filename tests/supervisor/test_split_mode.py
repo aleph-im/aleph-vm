@@ -22,6 +22,18 @@ def test_split_mode_wires_grpc_supervisor(mocker):
     assert app["vm_pool"] is None
 
 
+def test_build_supervisor_factory_selects_path(mocker):
+    from aleph.vm.orchestrator.supervisor import build_supervisor
+
+    mocker.patch.object(settings, "SUPERVISOR_GRPC_SOCKET", None)
+    pool = SimpleNamespace(executions={})
+    assert isinstance(build_supervisor(settings, pool), LocalSupervisor)
+
+    mocker.patch.object(settings, "SUPERVISOR_GRPC_SOCKET", Path("/run/aleph/supervisor.sock"))
+    grpc = build_supervisor(settings, pool=None)
+    assert isinstance(grpc, GrpcSupervisor)
+
+
 def test_inprocess_mode_wires_inprocess_supervisor(mocker):
     mocker.patch.object(settings, "SUPERVISOR_GRPC_SOCKET", None)
     pool = SimpleNamespace(executions={})

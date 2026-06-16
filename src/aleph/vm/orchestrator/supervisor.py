@@ -193,6 +193,20 @@ async def watch_supervisor_events(app: web.Application) -> None:
         await asyncio.sleep(5)
 
 
+def build_supervisor(settings, pool: VmPool | None) -> GrpcSupervisor | LocalSupervisor:
+    """Select the Supervisor the agent talks to.
+
+    Production split mode (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set): the supervisor
+    daemon owns the pool and the agent reaches it over gRPC (`GrpcSupervisor`).
+    Otherwise (dev/test, and Phase 1 single-process production): the embedded
+    pool-backed engine `LocalSupervisor(pool)` runs in the agent process.
+    """
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
+        return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+    return LocalSupervisor(pool)
+
+
 def setup_webapp(pool: VmPool | None):
     """Create the webapp and set the VmPool.
 
@@ -206,11 +220,7 @@ def setup_webapp(pool: VmPool | None):
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     app["vm_pool"] = pool
-    if settings.SUPERVISOR_GRPC_SOCKET:
-        app["supervisor"] = GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
-        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
-    else:
-        app["supervisor"] = LocalSupervisor(pool)
+    app["supervisor"] = build_supervisor(settings, pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
