@@ -74,7 +74,7 @@ through it. Each gets an ABC method, a gRPC RPC (Phase 2), and a
 | Capability | Current state | Work |
 | --- | --- | --- |
 | Backup / restore | ABC + proto methods exist; agent endpoints still use the pool | Rewire endpoints to call the interface; drop pool access |
-| Migration export/import/cleanup | export/import on the wire; agent uses the pool; `cleanup` may lack a method | Rewire; add `cleanup` method if missing |
+| Migration export/import/cleanup | agent uses the pool; a provisional directory-based `export_vm`/`import_vm` exists but is unused | Delete the directory-based flow; drive standard lifecycle RPCs from the P2P runner (import builds a spec and calls `create_vm`, restart via `start_vm`, cleanup via `delete_vm(wipe=False)`); keep one `stop_vm_for_export` for the graceful guest powerdown |
 | Confidential init/measurement/inject | `LocalSupervisor` raises `NotImplementedSupervisorError`; logic lives in agent endpoints via `QemuVmClient` | Implement in the engine; rewire endpoints |
 | Admission + GPU reservation | Agent calls `pool.check_admission()` then `create_vm`; GPU `reserve_resources` is a separate pool call | Fold capacity check and GPU reservation into `create_vm`, atomic, returning typed `InsufficientResources`. Resolve whether the scheduler still needs a standalone pre-create `reserve_resources` RPC |
 | `recreate_network` | Agent uses `pool.executions` to re-apply firewall | New supervisor method. Marked for later removal (artifact of a prior design); kept for now because it exists and uses the pool |
