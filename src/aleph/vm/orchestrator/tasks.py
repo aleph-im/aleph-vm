@@ -537,6 +537,18 @@ async def periodic_domain_resync(app: web.Application):
     """
     supervisor = app["supervisor"]
     interval = settings.DOMAIN_RESYNC_INTERVAL
+
+    # Seed the map once at startup (force), replacing the pool's old load-time
+    # sync. Restored/running VMs may already serve domains before the first
+    # jittered resync fires.
+    try:
+        await sync_domain_mappings(supervisor, force_update=True)
+    except Exception as e:
+        if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
+            logger.debug("periodic_domain_resync exiting: event loop closed")
+            return
+        logger.warning("initial domain sync failed: %s", e, exc_info=True)
+
     await asyncio.sleep(random.uniform(0, interval))
     while True:
         try:

@@ -66,6 +66,15 @@ async def test_sync_domain_mappings_only_keeps_local_domains(mocker, tmp_path):
     assert entries == {"api-dev.thronetools.com": vm_ip}
 
 
+def test_pool_no_longer_owns_domain_mapping():
+    """The HAProxy coupling moved out of the pool to the agent side."""
+    import aleph.vm.haproxy as haproxy
+    from aleph.vm.pool import VmPool
+
+    assert not hasattr(VmPool, "update_domain_mapping")
+    assert not hasattr(haproxy, "fetch_list_and_update")
+
+
 @pytest.mark.asyncio
 async def test_sync_domain_mappings_skips_without_socket(mocker):
     fake_supervisor = MagicMock(list_vms=AsyncMock(return_value=[]))

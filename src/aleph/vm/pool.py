@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -36,7 +35,6 @@ from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
-from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
 from .network.firewall import (
     get_existing_nftables_ruleset,
@@ -703,8 +701,6 @@ class VmPool:
 
         self._cleanup_orphan_resources()
 
-        if self.executions:
-            await self.update_domain_mapping(force_update=True)
         logger.info("Loaded %d executions", len(self.executions))
 
     async def _restore_network(self, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
@@ -1034,21 +1030,6 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
-
-    async def update_domain_mapping(self, force_update=False):
-        socket = settings.HAPROXY_SOCKET
-        if not pathlib.Path(socket).exists():
-            logger.info("HAProxy not running? socket not found, skip domain mapping update")
-            return False
-
-        local_vms = list(self.executions.keys())
-
-        await fetch_list_and_update(
-            socket,
-            local_vms,
-            force_update=force_update,
-        )
-
 
 class Reservation:
     def __init__(self, user, resource, expiration):

@@ -85,30 +85,6 @@ def get_current_mappings(socket_path, map_file: str) -> dict[str, str]:
     return mappings
 
 
-def _resolve_vm_ip(local_ip: str | None) -> str | None:
-    """Convert a network address from the API to the VM's IP.
-
-    The API returns the gateway address (ending in .1) or a CIDR range.
-    The VM is always at .2 in the same subnet.
-    """
-    if not local_ip:
-        return None
-    addr = local_ip.split("/")[0]
-    if addr.endswith(".1"):
-        addr = addr.removesuffix(".1") + ".2"
-    return addr
-
-
-def _build_map_entries(instances: list[dict]) -> dict[str, str]:
-    """Build domain->IP mapping from instance list."""
-    entries = {}
-    for instance in instances:
-        ip = _resolve_vm_ip(instance["ipv4"]["local"])
-        if ip:
-            entries[instance["name"]] = ip
-    return entries
-
-
 def update_mapfile(entries: dict[str, str], map_file_path: str) -> bool:
     """Write domain->IP entries to the on-disk map file.
 
@@ -179,32 +155,6 @@ def write_entries_to_backend(
         logger.debug("Map file and runtime in sync: %s", map_file_path)
 
 
-def update_backends(
-    map_file_path: str,
-    socket_path,
-    instances: list[dict],
-    force_update: bool = False,
-):
-    """Update map file and sync HAProxy's in-memory map."""
-    entries = _build_map_entries(instances)
-    file_updated = update_mapfile(entries, map_file_path)
-
-    # Check if runtime map matches — after HAProxy restart the
-    # in-memory map is reloaded from the file, but we sync anyway
-    # to handle edge cases (file written but HAProxy not reloaded).
-    current_mappings = get_current_mappings(socket_path, map_file_path)
-    runtime_matches = all(current_mappings.get(domain) == ip for domain, ip in entries.items()) and len(
-        current_mappings
-    ) == len(entries)
-
-    if force_update or file_updated or not runtime_matches:
-        reason = "force" if force_update else "file changed" if file_updated else "runtime map out of sync"
-        logger.info("Updating map (%s): %s", reason, map_file_path)
-        sync_runtime_map(socket_path, map_file_path, entries)
-    else:
-        logger.debug("Map file and runtime in sync: %s", map_file_path)
-
-
 async def fetch_list(domain: str | None = None) -> list[dict]:
     """Fetch domain mappings from the aleph DNS API."""
     async with aiohttp.ClientSession() as client:
@@ -217,21 +167,3 @@ async def fetch_list(domain: str | None = None) -> list[dict]:
         if len(instances) == 0:
             return []
         return instances
-
-
-async def fetch_list_and_update(socket_path, local_vms: list[str], force_update):
-    """Fetch domain mappings and update all HAProxy backends."""
-    if settings.DOMAIN_NAME in ("localhost", "vm.example.org"):
-        logger.info("Skipping domain update because DOMAIN_NAME is not set")
-        return
-
-    instances = await fetch_list(settings.DOMAIN_NAME)
-    instances = [i for i in instances if i["item_hash"] in local_vms]
-
-    for backend in HAPROXY_BACKENDS:
-        update_backends(
-            map_file_path=str(backend["map_file"]),
-            socket_path=socket_path,
-            instances=instances,
-            force_update=force_update,
-        )
