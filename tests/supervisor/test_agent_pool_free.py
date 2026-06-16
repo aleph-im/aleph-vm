@@ -1,11 +1,14 @@
 """Capstone guard: the agent never touches the VmPool.
 
-After P1.7, every agent endpoint reaches VMs through the Supervisor interface
-only. This reads the source of the agent's view/run modules and asserts none of
-them reference the raw pool (require_vm_pool, the app["vm_pool"] key, or the
-pool's .executions attribute). The supervisor's embedded engine and the
-process-lifecycle wiring (daemon, CLI, startup/shutdown hooks) legitimately keep
-the pool and are out of scope here.
+Every agent endpoint reaches VMs through the Supervisor interface only. The
+legacy create_a_vm pool bridge is gone, so the agent is provably pool-free: this
+reads the source of the agent's view/run/resources modules and asserts none of
+them reference the raw pool in any form - the require_vm_pool helper, the
+app["vm_pool"] / request.app["vm_pool"] keys, the pool's .executions attribute,
+the create_a_vm create path, the run-side _engine_pool helper, the embedded
+supervisor.pool, or a direct `from aleph.vm.pool import`. The supervisor's
+embedded engine and the process-lifecycle wiring (daemon, CLI, startup/shutdown
+hooks) legitimately keep the pool and are out of scope here.
 """
 
 from __future__ import annotations
@@ -18,7 +21,16 @@ import aleph.vm.orchestrator.views as views_init
 from aleph.vm.orchestrator import resources, run
 from aleph.vm.orchestrator.views import migration, operator
 
-_FORBIDDEN = ('require_vm_pool', 'request.app["vm_pool"]', 'app["vm_pool"]', ".executions")
+_FORBIDDEN = (
+    "require_vm_pool",
+    'app["vm_pool"]',
+    'request.app["vm_pool"]',
+    ".executions",
+    "create_a_vm",
+    "_engine_pool",
+    "supervisor.pool",
+    "from aleph.vm.pool import",
+)
 
 _MODULES = [views_init, operator, migration, resources, run]
 

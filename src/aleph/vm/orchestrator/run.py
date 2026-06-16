@@ -217,8 +217,8 @@ async def create_vm_execution(
     confidential and GPU instances) through the spec path. The agent records and
     persists its own knowledge of the VM and returns None; the hypervisor object
     lives behind the supervisor. The agent never touches a VmPool: there is no
-    legacy create_a_vm fallback anymore. An unsupported content type is rejected
-    with a clear error.
+    legacy pool fallback anymore. An unsupported content type is rejected with a
+    clear error.
     """
     message, original_message = await load_updated_message(vm_hash)
 
