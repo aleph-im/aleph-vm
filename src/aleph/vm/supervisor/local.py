@@ -198,6 +198,36 @@ def _guest_ready_payload(execution) -> bytes:
     return getattr(fvm, "init_payload", b"") if fvm is not None else b""
 
 
+async def _run_code_over_channel(channel_path: str, scope: dict, *, timeout: float) -> bytes:
+    """Run one request over a program VM's guest channel and return the raw reply.
+
+    The engine half of program serving: the same CONNECT <RUNTIME_CONTROL_PORT>
+    wire exchange the agent's ProgramGuestClient.run_code performs, but driven
+    from the supervisor process which owns the VM's guest channel UDS. Used by
+    persistent programs (the agent cannot reach the channel across the boundary).
+    """
+    from aleph.vm.controllers.firecracker.executable import VmInitNotConnectedError
+    from aleph.vm.controllers.firecracker.program import RunCodePayload
+    from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
+
+    async def communicate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
+        payload = RunCodePayload(scope=scope)
+        writer.write(f"CONNECT {RUNTIME_CONTROL_PORT}\n".encode() + payload.as_msgpack())
+        await writer.drain()
+        await reader.readline()  # ack
+        return await reader.read()
+
+    try:
+        reader, writer = await asyncio.open_unix_connection(path=channel_path)
+    except (ConnectionRefusedError, FileNotFoundError) as error:
+        raise VmInitNotConnectedError("MicroVM may have crashed") from error
+    try:
+        return await asyncio.wait_for(communicate(reader, writer), timeout=timeout)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 def _to_vm_info(execution, running: bool) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
@@ -542,6 +572,26 @@ class LocalSupervisor(Supervisor):
             if info.status is not VmStatus.STOPPED:
                 self._emit_event(vm_id, VmStatus.STOPPED, info.status)
             return info
+
+    async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
+        """Serve one request inside a persistent program VM over its guest channel.
+
+        Blocks until the execution reports ready, then runs the code over the
+        VM's guest channel UDS. The pool-backed VmExecution for a spec program is
+        a SpecFirecrackerProgram (no message-coupled run_code of its own), so the
+        engine drives the runtime channel directly here.
+        """
+        with translating_errors():
+            execution = self._require(vm_id)
+            if not execution.is_program:
+                msg = f"VM {vm_id} is not a program; code can only be run on programs"
+                raise InvalidBackendError(msg)
+            await execution.becomes_ready()
+            channel_path = _guest_channel_path(execution)
+            if not channel_path:
+                msg = f"VM {vm_id} exposes no guest channel; cannot run program code"
+                raise InternalSupervisorError(msg)
+            return await _run_code_over_channel(channel_path, scope, timeout=timeout)
 
     # Port forwarding
     def _mapped_to_infos(self, execution) -> list[PortForwardInfo]:

@@ -203,6 +203,9 @@ class GrpcSupervisor(Supervisor):
         )
         return conv.vm_info_from_pb(reply)
 
+    async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
+        raise NotImplementedError("wired in Phase 2")
+
     # ── Port forwarding ──
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
         reply = await self._unary("AddPortForward", conv.port_forward_spec_to_pb(spec), QUERY_TIMEOUT_SECS)

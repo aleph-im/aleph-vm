@@ -72,6 +72,17 @@ class LifecycleOps(ABC):
     @abstractmethod
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo: ...
 
+    @abstractmethod
+    async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
+        """Run one request inside a long-lived (persistent) program VM and return
+        the raw runtime reply.
+
+        Persistent programs are served through the supervisor: the agent does not
+        reach the guest channel of a supervisor-owned VM. Ephemeral programs are
+        recreated per request and keep the agent-side channel call. ``scope`` is
+        the ASGI scope the runtime expects; the supervisor blocks until the VM is
+        ready, then runs the code over its guest channel."""
+
 
 class PortForwardingOps(ABC):
     @abstractmethod
