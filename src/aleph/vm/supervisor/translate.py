@@ -125,12 +125,11 @@ async def build_program_create_vm_spec(
     the guest configuration push (code bytes, entrypoint, volume mounts),
     which never crosses the supervisor boundary.
 
-    Ephemeral programs only: persistent programs keep the legacy path.
+    Persistence is threaded from the message: a persistent program boots under
+    systemd (engine side); an on-demand one is a per-request ephemeral VM.
     """
     if not isinstance(message, ProgramContent):
         raise InvalidBackendError(f"Expected ProgramContent, got {type(message).__name__}")
-    if message.on.persistent:
-        raise InvalidBackendError("Persistent programs are not supported by the spec path yet")
 
     resources = AlephProgramResources(message, namespace=str(vm_hash))
     await resources.download_all()
@@ -182,7 +181,7 @@ async def build_program_create_vm_spec(
         ),
         gpus=[],
         numa_node=None,
-        persistent=False,
+        persistent=message.on.persistent,
         guest_channel=GuestChannelSpec(
             ready_port=RUNTIME_CONTROL_PORT,
             # The agent owns the boot-time policy for its runtime images.
