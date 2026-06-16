@@ -47,6 +47,7 @@ from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.http import get_session
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
+from aleph.vm.orchestrator.utils import require_vm_pool
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -55,7 +56,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import LogChunk, LogSource, VmId, VmStatus
+from aleph.vm.supervisor.types import VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
@@ -410,7 +411,7 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -475,7 +476,15 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
             info = await supervisor.get_vm(vm_id)
             if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
                 logger.info(f"Stopping {vm_hash}")
-                await supervisor.delete_vm(vm_id)
+                # Stop means stop: the VM stays defined and listed (STOPPED),
+                # and start brings it back in place. Deleting it is a separate
+                # action, triggered by forgetting the instance message
+                # (operate_erase). Ephemeral VMs have no stop state, so for
+                # them the stop cycle is delete + recreate.
+                if record.persistent:
+                    await supervisor.stop_vm(vm_id)
+                else:
+                    await supervisor.delete_vm(vm_id)
                 request.app["expiry"].cancel(vm_id)
                 request.app["update_watcher"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
@@ -510,7 +519,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                     request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
                         vm_hash=vm_hash,
-                        pool=request.app["vm_pool"],
+                        pool=require_vm_pool(request),
                         supervisor=supervisor,
                         registry=request.app["vm_registry"],
                     )
@@ -528,7 +537,7 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -574,7 +583,7 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
 
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = request.app["vm_pool"]
+        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
@@ -650,7 +659,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         if not record.persistent:
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
-                pool=request.app["vm_pool"],
+                pool=require_vm_pool(request),
                 supervisor=supervisor,
                 registry=request.app["vm_registry"],
             )
@@ -842,7 +851,7 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            pool: VmPool = request.app["vm_pool"]
+            pool: VmPool = require_vm_pool(request)
             record = get_agent_record_or_404(request, vm_hash)
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
@@ -1180,7 +1189,7 @@ async def _do_restore(
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            pool: VmPool = request.app["vm_pool"]
+            pool: VmPool = require_vm_pool(request)
             record = get_agent_record_or_404(request, vm_hash)
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")

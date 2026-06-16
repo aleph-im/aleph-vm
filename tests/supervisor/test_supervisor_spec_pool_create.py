@@ -8,21 +8,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.supervisor.errors import TeeUnavailableError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
+    DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
     NetworkConfig,
+    TeeBackend,
+    TeeConfig,
     VmId,
 )
 
 _HASH = "deadbeef" * 8
 
 
-def _spec(backend: Backend = Backend.QEMU) -> CreateVmSpec:
+def _spec(backend: Backend = Backend.QEMU, tee: TeeConfig | None = None) -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=VmId(_HASH),
         backend=backend,
@@ -38,7 +41,7 @@ def _spec(backend: Backend = Backend.QEMU) -> CreateVmSpec:
         ],
         vcpus=2,
         memory_mib=1024,
-        tee=None,
+        tee=tee,
         network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
         gpus=[],
         numa_node=None,
@@ -111,8 +114,63 @@ async def test_create_vm_from_spec_preloads_persisted_port_mappings(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_create_vm_from_spec_rejects_non_qemu():
+async def test_create_vm_from_spec_rejects_tee():
+    """A confidential spec must fail loudly: the spec path would otherwise
+    boot the VM without memory encryption."""
     pool = _bare_pool()
-    with pytest.raises(InvalidBackendError):
-        await pool.create_vm_from_spec(_spec(backend=Backend.QEMU_SEV))
+    tee = TeeConfig(backend=TeeBackend.SEV, policy="", session_dir=DirectoryPath(Path("/tmp/session")))
+    with pytest.raises(TeeUnavailableError):
+        await pool.create_vm_from_spec(_spec(tee=tee))
     assert pool.executions == {}
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_same_spec_returns_live_vm():
+    """CreateVm idempotency: a retry with the identical spec is a no-op read."""
+    from types import SimpleNamespace
+
+    pool = _bare_pool()
+    spec = _spec()
+    live = SimpleNamespace(is_running=True, is_stopping=False, vm_spec=spec)
+    from aleph_message.models import ItemHash
+
+    pool.executions[ItemHash(_HASH)] = live
+
+    assert await pool.create_vm_from_spec(spec) is live
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_conflicting_spec_raises_already_exists():
+    """A different spec for a live vm_id is a conflict, not a silent reuse."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from aleph_message.models import ItemHash
+
+    from aleph.vm.supervisor.errors import VmAlreadyExistsError
+
+    pool = _bare_pool()
+    spec = _spec()
+    live = SimpleNamespace(is_running=True, is_stopping=False, vm_spec=spec)
+    pool.executions[ItemHash(_HASH)] = live
+
+    with pytest.raises(VmAlreadyExistsError):
+        await pool.create_vm_from_spec(replace(spec, memory_mib=4096))
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_collision_with_message_built_vm_raises():
+    """A live message-built execution (vm_spec=None) for the same hash is a
+    conflict too: the pool cannot prove the spec matches."""
+    from types import SimpleNamespace
+
+    from aleph_message.models import ItemHash
+
+    from aleph.vm.supervisor.errors import VmAlreadyExistsError
+
+    pool = _bare_pool()
+    live = SimpleNamespace(is_running=True, is_stopping=False, vm_spec=None)
+    pool.executions[ItemHash(_HASH)] = live
+
+    with pytest.raises(VmAlreadyExistsError):
+        await pool.create_vm_from_spec(_spec())

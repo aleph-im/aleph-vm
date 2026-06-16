@@ -22,10 +22,7 @@ from aleph.vm.controllers.configuration import (
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
-from aleph.vm.controllers.qemu.cloudinit import (
-    create_cloud_init_drive_image,
-    get_hostname_from_hash,
-)
+from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
 from aleph.vm.sizes import MiB
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
@@ -49,6 +46,7 @@ async def build_cloud_init_drive(
     vm_id: int,
     tap_interface: TapInterface | None,
     ssh_authorized_keys: list[str],
+    hostname: str,
     is_confidential: bool,
     has_gpu: bool,
 ) -> Path:
@@ -56,9 +54,13 @@ async def build_cloud_init_drive(
 
     Network parameters are derived from *tap_interface* using the same
     expressions as AlephVmControllerInterface.get_ip / get_ipv6 etc.
+    The hostname is the client's (see CreateVmSpec.hostname); an empty one
+    falls back to a mechanical truncation of the VM id.
     """
     disk_image_path = settings.EXECUTION_ROOT / f"cloud-init-{vm_hash}.img"
-    hostname = get_hostname_from_hash(vm_hash)  # type: ignore[arg-type]
+    # Hostnames are capped at 63 characters per label; the 64-hex-char vm_id
+    # is truncated to fit.
+    hostname = hostname or vm_hash[:63]
 
     if tap_interface is not None:
         ip: str = tap_interface.guest_ip.with_prefixlen
@@ -106,16 +108,17 @@ async def build_qemu_configuration(
     """
     image_path = str(spec.require_rootfs().path)
 
-    # Extra / data volumes become host volumes.
-    # The real mount point is carried from the DiskSpec.
+    # Extra / data volumes become host volumes. The guest mount point is the
+    # client's business and no longer crosses the boundary; QemuVM never
+    # consumed the controller-config `mount` field, so it is written empty.
     host_volumes = [
         QemuVMHostVolume(
-            mount=disk.mount,
+            mount="",
             path_on_host=disk.path,
             read_only=disk.readonly,
         )
         for disk in spec.disks
-        if disk.role in {DiskRole.EXTRA, DiskRole.DATA}
+        if disk.role is DiskRole.EXTRA
     ]
 
     vcpu_count = spec.vcpus
@@ -140,7 +143,8 @@ async def build_qemu_configuration(
         vm_id=vm_id,
         tap_interface=tap_interface,
         ssh_authorized_keys=spec.ssh_authorized_keys,
-        is_confidential=(spec.backend is Backend.QEMU_SEV),
+        hostname=spec.hostname,
+        is_confidential=(spec.tee is not None),
         has_gpu=bool(spec.gpus),
     )
     cloud_init_drive_path = str(cloud_init_path)
@@ -186,7 +190,6 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
             readonly=False,
             format=DiskFormat.QCOW2,
             role=DiskRole.ROOTFS,
-            mount="",
         )
     ] + [
         DiskSpec(
@@ -194,7 +197,6 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
             readonly=v.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
-            mount=v.mount,
         )
         for v in vm_cfg.host_volumes
     ]

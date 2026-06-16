@@ -31,7 +31,6 @@ def _spec() -> CreateVmSpec:
                 readonly=True,
                 format=DiskFormat.RAW,
                 role=DiskRole.EXTRA,
-                mount="/mnt/data",
             ),
         ],
         vcpus=4,
@@ -52,7 +51,8 @@ def test_from_spec_populates_paths_without_download():
     assert resources.rootfs_path == Path("/data/rootfs.qcow2")
     assert len(resources.volumes) == 1
     assert resources.volumes[0].path_on_host == Path("/data/extra.img")
-    assert resources.volumes[0].mount == "/mnt/data"
+    # Mount points are client vocabulary; the spec no longer carries them.
+    assert resources.volumes[0].mount == ""
     assert resources.volumes[0].read_only is True
     assert len(resources.gpus) == 1
     assert resources.gpus[0].pci_host == "0000:01:00.0"

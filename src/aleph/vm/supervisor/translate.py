@@ -11,11 +11,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ExecutableContent, ItemHash, ProgramContent
+from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import HypervisorType
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.conf import settings
+from aleph.vm.controllers.firecracker.program import AlephProgramResources
+from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.qemu.instance import AlephQemuResources
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
@@ -25,9 +28,11 @@ from aleph.vm.supervisor.types import (
     DiskRole,
     DiskSpec,
     GpuSpec,
+    GuestChannelSpec,
     NetworkConfig,
     VmId,
 )
+from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 
 
 async def build_create_vm_spec(
@@ -73,7 +78,6 @@ async def build_create_vm_spec(
             readonly=False,
             format=DiskFormat.QCOW2,
             role=DiskRole.ROOTFS,
-            mount="",
         )
     ] + [
         DiskSpec(
@@ -81,7 +85,6 @@ async def build_create_vm_spec(
             readonly=v.read_only,
             format=DiskFormat.RAW,
             role=DiskRole.EXTRA,
-            mount=v.mount,
         )
         for v in resources.volumes
     ]
@@ -104,4 +107,86 @@ async def build_create_vm_spec(
         numa_node=None,
         persistent=True,
         ssh_authorized_keys=list(message.authorized_keys or []),
+        # Aleph's hostname convention (base32 of the item hash) is agent
+        # vocabulary; the supervisor applies whatever name it is given.
+        hostname=get_hostname_from_hash(vm_hash),
     )
+
+
+async def build_program_create_vm_spec(
+    vm_hash: ItemHash,
+    message: ExecutableContent,
+) -> tuple[CreateVmSpec, AlephProgramResources]:
+    """Translate a program message into a CreateVmSpec, downloading resources.
+
+    The agent half of the program create: code/runtime/data/volumes are
+    downloaded here (Aleph storage is agent territory) and the spec carries
+    resolved paths only. Returns the resources too — the agent needs them for
+    the guest configuration push (code bytes, entrypoint, volume mounts),
+    which never crosses the supervisor boundary.
+
+    Ephemeral programs only: persistent programs keep the legacy path.
+    """
+    if not isinstance(message, ProgramContent):
+        raise InvalidBackendError(f"Expected ProgramContent, got {type(message).__name__}")
+    if message.on.persistent:
+        raise InvalidBackendError("Persistent programs are not supported by the spec path yet")
+
+    resources = AlephProgramResources(message, namespace=str(vm_hash))
+    await resources.download_all()
+
+    # The runtime image is the program's root filesystem: plain ROOTFS on the
+    # wire. The code disk (squashfs encoding only) and the volumes are EXTRA
+    # disks; their ORDER is the contract — the agent derives guest device
+    # names (vdb, vdc, ...) from it for its configuration push.
+    disks: list[DiskSpec] = [
+        DiskSpec(
+            path=resources.rootfs_path,
+            readonly=True,
+            format=DiskFormat.SQUASHFS,
+            role=DiskRole.ROOTFS,
+        )
+    ]
+    if resources.code_encoding == Encoding.squashfs:
+        disks.append(
+            DiskSpec(
+                path=resources.code_path,
+                readonly=True,
+                format=DiskFormat.SQUASHFS,
+                role=DiskRole.EXTRA,
+            )
+        )
+    disks += [
+        DiskSpec(
+            path=volume.path_on_host,
+            readonly=volume.read_only,
+            format=DiskFormat.RAW,
+            role=DiskRole.EXTRA,
+        )
+        for volume in resources.volumes
+    ]
+
+    spec = CreateVmSpec(
+        vm_id=VmId(str(vm_hash)),
+        backend=Backend.FIRECRACKER,
+        kernel_path=resources.kernel_image_path,
+        initrd_path=Path(""),
+        disks=disks,
+        vcpus=message.resources.vcpus,
+        memory_mib=message.resources.memory,
+        tee=None,
+        network=NetworkConfig(
+            internet_access=bool(message.environment.internet),
+            requested_ipv6="",
+            ipv6_prefix_len=0,
+        ),
+        gpus=[],
+        numa_node=None,
+        persistent=False,
+        guest_channel=GuestChannelSpec(
+            ready_port=RUNTIME_CONTROL_PORT,
+            # The agent owns the boot-time policy for its runtime images.
+            ready_timeout_secs=int(settings.INIT_TIMEOUT),
+        ),
+    )
+    return spec, resources

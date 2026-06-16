@@ -19,6 +19,7 @@ from aleph.vm.supervisor.types import (
     HealthInfo,
     HealthStatus,
     HostInfo,
+    IpAssignment,
     LogChunk,
     LogSource,
     NetworkConfig,
@@ -33,7 +34,7 @@ from aleph.vm.supervisor.types import (
 
 
 def test_enums_have_expected_members():
-    assert {b.name for b in Backend} == {"FIRECRACKER", "QEMU", "QEMU_SEV"}
+    assert {b.name for b in Backend} == {"FIRECRACKER", "QEMU"}
     assert {s.name for s in VmStatus} == {
         "DEFINED",
         "BOOTING",
@@ -43,7 +44,7 @@ def test_enums_have_expected_members():
         "FAILED",
     }
     assert {f.name for f in DiskFormat} == {"RAW", "QCOW2", "SQUASHFS"}
-    assert {r.name for r in DiskRole} == {"ROOTFS", "CODE", "RUNTIME", "DATA", "EXTRA"}
+    assert {r.name for r in DiskRole} == {"ROOTFS", "EXTRA"}
     assert {p.name for p in Protocol} == {"TCP", "UDP"}
     assert {s.name for s in LogSource} == {"SERIAL", "STDOUT", "STDERR", "SYSTEMD"}
     assert "INTERNAL" in {c.name for c in ErrorCode}
@@ -54,8 +55,8 @@ def test_vm_info_is_frozen_dataclass():
     info = VmInfo(
         vm_id=VmId("abc"),
         status=VmStatus.RUNNING,
-        ipv4="10.0.0.2",
-        ipv6="",
+        ipv4=IpAssignment(address="10.0.0.2"),
+        ipv6=IpAssignment(),
         uptime_secs=42,
         backend=Backend.QEMU,
         numa_node=None,
@@ -100,8 +101,8 @@ def _minimal_vm_info(**overrides) -> VmInfo:
     base = dict(
         vm_id=VmId("vm-a"),
         status=VmStatus.RUNNING,
-        ipv4="",
-        ipv6="",
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
         uptime_secs=0,
         backend=Backend.QEMU,
         numa_node=None,

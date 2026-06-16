@@ -18,6 +18,7 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
+from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.resources import HostVolume
 from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.translate import build_create_vm_spec
@@ -109,6 +110,9 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
     # ssh keys
     assert spec.ssh_authorized_keys == ["ssh-rsa AAAA key1", "ssh-ed25519 BBBB key2"]
 
+    # the Aleph hostname convention is applied agent-side
+    assert spec.hostname == get_hostname_from_hash(_VM_HASH)
+
     # disks
     assert len(spec.disks) == 2
 
@@ -116,13 +120,11 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
     assert len(rootfs_disks) == 1
     assert rootfs_disks[0].path == rootfs
     assert rootfs_disks[0].readonly is False
-    assert rootfs_disks[0].mount == ""
 
     extra_disks = [d for d in spec.disks if d.role is DiskRole.EXTRA]
     assert len(extra_disks) == 1
     assert extra_disks[0].path == Path("/data/vol.img")
     assert extra_disks[0].readonly is True
-    assert extra_disks[0].mount == "/mnt/x"
 
     # gpus default to empty
     assert spec.gpus == []
