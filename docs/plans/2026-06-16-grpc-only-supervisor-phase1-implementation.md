@@ -12,9 +12,17 @@
 
 ---
 
-## Decisions required before P1.2, P1.3, P1.4
+## Decisions (resolved 2026-06-16)
 
-These three capabilities involve user-facing contract changes. They are blocked until decided. The rest of Phase 1 can proceed.
+1. **Backup/restore:** enrich the engine, no feature drop. Move the full backup/restore behavior (upload-restore, `volume_ref`, `include_volumes`) into `LocalSupervisor`, growing the `BackupOps` ABC as needed; keep HTTP-only concerns (presigned URLs, multipart parsing, sidecar headers) in the agent.
+2. **Migration:** use both layers. The P2P pull protocol stays the agent-side network transport (token-auth disk download between hosts); it drives the supervisor's directory-based `export_vm`/`import_vm` for the disk/VM work. `run_export` asks the supervisor for an export directory then serves it; `run_import` downloads peer disks into a staging dir then calls `supervisor.import_vm(vm_id, staging_dir)`. Add `release_migrated_vm` for cleanup.
+3. **Confidential measurement:** preserve the response. Extend the `Measurement` type with the SEV info fields (`enabled, api_major, api_minor, build_id, policy, state, handle`) plus `launch_measure`, so the endpoint returns `{"sev_info": {...}, "launch_measure": ...}` unchanged. `sev_info` is required by the client to verify the launch measurement before injecting the secret. The proto carries these fields in Phase 2; until then `GrpcSupervisor.get_measurement` may return partial data (gRPC is not the prod path in Phase 1).
+
+The original decision write-ups are kept below for context.
+
+## Decisions detail (original write-ups)
+
+These three capabilities involve user-facing contract changes.
 
 1. **Backup/restore contract.** The HTTP endpoints (`operator.py`) implement a richer protocol than the engine's `BackupOps`: client-uploaded QCOW2 restore, `{"volume_ref": ...}` restore, `include_volumes`, presigned download URLs, `BackupState` background tracking, `X-Backup-Checksum`/`X-Source-Size`/`Content-Length` sidecar headers. The engine's methods are rootfs-only, restore-by-backup-id, raw chunk stream.
    - **Recommendation:** enrich the engine to own the VM/disk work (so no feature regresses), keep HTTP-only concerns (signed URLs, multipart parsing) in the agent. This needs the ABC to grow (e.g. an upload-restore method that accepts a staged image path). Confirm "no feature drop" is the goal, or approve dropping upload-restore/`include_volumes` for the narrow contract.
