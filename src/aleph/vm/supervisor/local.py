@@ -25,6 +25,7 @@ from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorT
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import remove_controller_configuration
+from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
     check_disk_space_for_multiple,
@@ -85,6 +86,8 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    SevInfo,
+    TeeBackend,
     VmEvent,
     VmId,
     VmInfo,
@@ -973,13 +976,60 @@ class LocalSupervisor(Supervisor):
 
     # Confidential
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
-        raise NotImplementedSupervisorError("initialize_confidential")
+        """Persist the owner's SEV session certificates and start the VM.
+
+        Writes vm_session.b64 / vm_godh.b64 under the per-VM confidential
+        session directory, then enables and starts the controller service so
+        the guest reaches the launch-secret state (same steps the old
+        operate_confidential_initialize endpoint performed)."""
+        with translating_errors():
+            execution = self._require(vm_id)
+            session_dir = settings.CONFIDENTIAL_SESSION_DIRECTORY / str(vm_id)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "vm_session.b64").write_bytes(session_bytes)
+            (session_dir / "vm_godh.b64").write_bytes(godh_bytes)
+            await self.pool.systemd_manager.enable_and_start(execution.controller_service)
 
     async def get_measurement(self, vm_id: VmId) -> Measurement:
-        raise NotImplementedSupervisorError("get_measurement")
+        """The SEV launch measurement plus the platform state the owner needs
+        to verify it before injecting the secret."""
+        with translating_errors():
+            execution = self._require(vm_id)
+            client = QemuVmClient(execution.vm)
+            try:
+                sev_info = client.query_sev_info()
+                launch_measure = client.query_launch_measure()
+            finally:
+                client.close()
+            return Measurement(
+                vm_id=vm_id,
+                measurement_bytes=b"",
+                tee_backend=TeeBackend.SEV,
+                sev_info=SevInfo(
+                    enabled=sev_info.enabled,
+                    api_major=sev_info.api_major,
+                    api_minor=sev_info.api_minor,
+                    build_id=sev_info.build_id,
+                    policy=sev_info.policy,
+                    state=sev_info.state,
+                    handle=sev_info.handle,
+                ),
+                launch_measure=launch_measure,
+            )
 
     async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None:
-        raise NotImplementedSupervisorError("inject_secret")
+        """Inject the encrypted secret into the SEV secret area and resume the
+        guest. The header and secret cross the boundary as bytes; QEMU's
+        QMP command takes the base64 strings."""
+        with translating_errors():
+            execution = self._require(vm_id)
+            client = QemuVmClient(execution.vm)
+            try:
+                client.inject_secret(secret_header_bytes.decode(), secret_bytes.decode())
+                client.continue_execution()
+                client.query_status()
+            finally:
+                client.close()
 
     # Network
     async def recreate_network(self) -> dict:
