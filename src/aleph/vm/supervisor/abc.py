@@ -141,6 +141,14 @@ class ConfidentialOps(ABC):
     async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None: ...
 
 
+class NetworkOps(ABC):
+    @abstractmethod
+    async def recreate_network(self) -> dict:
+        """Flush and rebuild the host firewall/nftables for the local VMs.
+
+        Returns a JSON-serialisable summary of the work done."""
+
+
 class Supervisor(
     HostOps,
     LifecycleOps,
@@ -150,6 +158,7 @@ class Supervisor(
     BackupOps,
     MigrationOps,
     ConfidentialOps,
+    NetworkOps,
     ABC,
 ):
     """The single agent-to-VM-management interface."""
