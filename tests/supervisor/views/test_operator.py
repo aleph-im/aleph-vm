@@ -17,9 +17,13 @@ from aleph.vm.storage import get_message
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
+    ConfidentialMode,
     IpAssignment,
     LogChunk,
     LogSource,
+    Measurement,
+    SevInfo,
+    TeeBackend,
     VmId,
     VmInfo,
     VmStatus,
@@ -32,7 +36,11 @@ from aleph.vm.utils.test_helpers import (
 _FAKE_HASH = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
 
-def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> VmInfo:
+def _vm_info(
+    status: VmStatus = VmStatus.RUNNING,
+    vm_id: str = _FAKE_HASH,
+    confidential_mode: ConfidentialMode = ConfidentialMode.NONE,
+) -> VmInfo:
     return VmInfo(
         vm_id=VmId(vm_id),
         status=status,
@@ -42,6 +50,7 @@ def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> Vm
         backend=Backend.QEMU,
         numa_node=None,
         status_message="",
+        confidential_mode=confidential_mode,
     )
 
 
@@ -56,6 +65,24 @@ _RECREATE_NETWORK_SUMMARY = {
 }
 
 
+def _measurement(vm_id: str = _FAKE_HASH) -> Measurement:
+    return Measurement(
+        vm_id=VmId(vm_id),
+        measurement_bytes=b"",
+        tee_backend=TeeBackend.SEV,
+        sev_info=SevInfo(
+            enabled=True,
+            api_major=1,
+            api_minor=55,
+            build_id=21,
+            policy=3,
+            state="launch-update",
+            handle=7,
+        ),
+        launch_measure="bWVhc3VyZQ==",
+    )
+
+
 def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
     return MagicMock(
         get_vm=AsyncMock(return_value=_vm_info(status)),
@@ -67,6 +94,9 @@ def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
         get_logs=AsyncMock(return_value=[]),
         stream_logs=_fake_stream([]),
         recreate_network=AsyncMock(return_value=dict(_RECREATE_NETWORK_SUMMARY)),
+        initialize_confidential=AsyncMock(),
+        get_measurement=AsyncMock(return_value=_measurement()),
+        inject_secret=AsyncMock(),
     )
 
 
@@ -137,7 +167,8 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
 
 @pytest.mark.asyncio
 async def test_operator_confidential_initialize_already_running(aiohttp_client, mocker):
-    """Test that the confidential initialize endpoint rejects if the VM is already running. Auth needed"""
+    """The endpoint rejects a running VM, deriving the guard from
+    supervisor.get_vm (not the pool). Auth needed."""
 
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
@@ -146,16 +177,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.Mock(
-        executions={
-            vm_hash: mocker.Mock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_confidential=False,
-                is_running=True,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     # Disable auth
     mocker.patch(
@@ -169,6 +191,11 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         original=instance_message.content,
         persistent=True,
     )
+    fake_sup = _fake_supervisor()
+    fake_sup.get_vm = AsyncMock(
+        return_value=_vm_info(VmStatus.RUNNING, vm_id=str(vm_hash), confidential_mode=ConfidentialMode.SEV)
+    )
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -180,6 +207,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         "code": "vm_running",
         "description": "Operation not allowed, instance already running",
     }
+    fake_sup.initialize_confidential.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -220,7 +248,8 @@ async def test_operator_stop(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_confidential_initialize_not_confidential(aiohttp_client, mocker):
-    """Test that the confidential initialize endpoint rejects if the VM is not confidential"""
+    """The endpoint rejects a non-confidential VM, deriving the guard from
+    supervisor.get_vm's confidential_mode."""
 
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
@@ -229,16 +258,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    fake_vm_pool = mocker.Mock(
-        executions={
-            vm_hash: mocker.Mock(
-                vm_hash=vm_hash,
-                message=instance_message.content,
-                is_confidential=False,
-                is_running=False,
-            ),
-        },
-    )
+    fake_vm_pool = mocker.AsyncMock(executions={})
 
     # Disable auth
     mocker.patch(
@@ -252,6 +272,11 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
         original=instance_message.content,
         persistent=True,
     )
+    fake_sup = _fake_supervisor()
+    fake_sup.get_vm = AsyncMock(
+        return_value=_vm_info(VmStatus.STOPPED, vm_id=str(vm_hash), confidential_mode=ConfidentialMode.NONE)
+    )
+    app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/confidential/initialize",
@@ -263,11 +288,13 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
         "code": "not_confidential",
         "description": "Instance is not a confidential instance",
     }
+    fake_sup.initialize_confidential.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_operator_confidential_initialize(aiohttp_client, mocker):
-    """Test that the certificates system endpoint responds. No auth needed"""
+    """The endpoint delegates the session/godh upload to the supervisor and
+    preserves the 200 body. The engine owns the file writes and service start."""
 
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
@@ -276,23 +303,9 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
-    class FakeExecution:
-        message = instance_message.content
-        is_running: bool = False
-        is_confidential: bool = True
-        controller_service: str = ""
-
-    class MockSystemDManager:
-        enable_and_start = mocker.AsyncMock(return_value=True)
-
-    class FakeVmPool:
-        executions: dict[ItemHash, FakeExecution] = {}
-
-        def __init__(self):
-            self.executions[vm_hash] = FakeExecution()
-            self.systemd_manager = MockSystemDManager()
-
     with tempfile.NamedTemporaryFile() as temp_file:
+        temp_file.write(b"cert-bytes")
+        temp_file.flush()
         form_data = aiohttp.FormData()
         form_data.add_field("session", open(temp_file.name, "rb"), filename="session.b64")
         form_data.add_field("godh", open(temp_file.name, "rb"), filename="godh.b64")
@@ -301,13 +314,18 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
             "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
-            app = setup_webapp(pool=FakeVmPool())
+            app = setup_webapp(pool=mocker.AsyncMock(executions={}))
             app["vm_registry"].record(
                 vm_hash,
                 message=instance_message.content,
                 original=instance_message.content,
                 persistent=True,
             )
+            fake_sup = _fake_supervisor()
+            fake_sup.get_vm = AsyncMock(
+                return_value=_vm_info(VmStatus.STOPPED, vm_id=str(vm_hash), confidential_mode=ConfidentialMode.SEV)
+            )
+            app["supervisor"] = fake_sup
             client = await aiohttp_client(app)
             response = await client.post(
                 f"/control/machine/{vm_hash}/confidential/initialize",
@@ -315,7 +333,9 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
             )
             assert response.status == 200
             assert await response.text() == f"Started VM with ref {vm_hash}"
-            app["vm_pool"].systemd_manager.enable_and_start.assert_called_once()
+            fake_sup.initialize_confidential.assert_awaited_once_with(
+                VmId(str(vm_hash)), b"cert-bytes", b"cert-bytes"
+            )
 
 
 @pytest.mark.asyncio
@@ -1993,6 +2013,93 @@ async def test_operator_confidential_inject_secret_unauthorized_reads_registry(a
         json={"packet_header": "aGVhZGVy", "secret": "c2VjcmV0"},
     )
     assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_measurement_delegates_and_preserves_response(aiohttp_client, mocker):
+    """The endpoint delegates to supervisor.get_measurement and emits the
+    legacy {"sev_info": {7 fields}, "launch_measure": ...} body."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=True,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor()
+    fake_sup.get_measurement = AsyncMock(return_value=_measurement(vm_id=str(vm_hash)))
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+    response = await client.get(f"/control/machine/{vm_hash}/confidential/measurement")
+    assert response.status == 200, await response.text()
+    fake_sup.get_measurement.assert_awaited_once_with(VmId(str(vm_hash)))
+    assert await response.json() == {
+        "sev_info": {
+            "enabled": True,
+            "api_major": 1,
+            "api_minor": 55,
+            "build_id": 21,
+            "policy": 3,
+            "state": "launch-update",
+            "handle": 7,
+        },
+        "launch_measure": "bWVhc3VyZQ==",
+    }
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_inject_secret_delegates(aiohttp_client, mocker):
+    """The endpoint delegates to supervisor.inject_secret (header/secret as
+    bytes) and returns {"status": "ok"}."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    fake_vm_pool = mocker.AsyncMock(executions={})
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=True,
+    )
+    app = setup_webapp(pool=fake_vm_pool)
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(
+        f"/control/machine/{vm_hash}/confidential/inject_secret",
+        json={"packet_header": "aGVhZGVy", "secret": "c2VjcmV0"},
+    )
+    assert response.status == 200, await response.text()
+    assert await response.json() == {"status": "ok"}
+    fake_sup.inject_secret.assert_awaited_once_with(VmId(str(vm_hash)), b"aGVhZGVy", b"c2VjcmV0")
 
 
 @pytest.mark.asyncio

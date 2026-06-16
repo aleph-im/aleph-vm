@@ -56,7 +56,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import VmId, VmStatus
+from aleph.vm.supervisor.types import ConfidentialMode, VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
@@ -411,29 +411,29 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        logger.debug(f"Iterating through running executions... {pool.executions}")
-        execution = get_execution_or_404(vm_hash, pool=pool)
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
 
-        if execution.is_running:
+        if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
             return web.json_response(
                 {"code": "vm_running", "description": "Operation not allowed, instance already running"},
                 status=HTTPStatus.BAD_REQUEST,
             )
-        if not execution.is_confidential:
+        if info.confidential_mode is ConfidentialMode.NONE:
             return web.json_response(
                 {"code": "not_confidential", "description": "Instance is not a confidential instance"},
                 status=HTTPStatus.BAD_REQUEST,
             )
 
         post = await request.post()
-
-        vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash
-        vm_session_path.mkdir(exist_ok=True)
 
         session_file_content = post.get("session")
         if not session_file_content:
@@ -442,9 +442,6 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
                 status=HTTPStatus.BAD_REQUEST,
             )
 
-        session_file_path = vm_session_path / "vm_session.b64"
-        session_file_path.write_bytes(session_file_content.file.read())
-
         godh_file_content = post.get("godh")
         if not godh_file_content:
             return web.json_response(
@@ -452,10 +449,11 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
                 status=HTTPStatus.BAD_REQUEST,
             )
 
-        godh_file_path = vm_session_path / "vm_godh.b64"
-        godh_file_path.write_bytes(godh_file_content.file.read())
-
-        await pool.systemd_manager.enable_and_start(execution.controller_service)
+        await supervisor.initialize_confidential(
+            vm_id,
+            session_file_content.file.read(),
+            godh_file_content.file.read(),
+        )
 
         return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
 
@@ -537,21 +535,27 @@ async def operate_confidential_measurement(request: web.Request, authenticated_s
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        execution = get_execution_or_404(vm_hash, pool=pool)
-
-        if not execution.is_running:
-            raise web.HTTPForbidden(body="Operation not running")
-        vm_client = QemuVmClient(execution.vm)
-        vm_sev_info = vm_client.query_sev_info()
-        launch_measure = vm_client.query_launch_measure()
+        supervisor: Supervisor = request.app["supervisor"]
+        measurement = await supervisor.get_measurement(VmId(str(vm_hash)))
+        sev_info = measurement.sev_info
 
         return web.json_response(
-            data={"sev_info": vm_sev_info, "launch_measure": launch_measure},
+            data={
+                "sev_info": {
+                    "enabled": sev_info.enabled,
+                    "api_major": sev_info.api_major,
+                    "api_minor": sev_info.api_minor,
+                    "build_id": sev_info.build_id,
+                    "policy": sev_info.policy,
+                    "state": sev_info.state,
+                    "handle": sev_info.handle,
+                },
+                "launch_measure": measurement.launch_measure,
+            },
             status=200,
             dumps=dumps_for_json,
         )
@@ -583,24 +587,22 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
 
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        pool: VmPool = require_vm_pool(request)
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        execution = get_execution_or_404(vm_hash, pool=pool)
+        supervisor: Supervisor = request.app["supervisor"]
+        await supervisor.inject_secret(
+            VmId(str(vm_hash)),
+            params.packet_header.encode(),
+            params.secret.encode(),
+        )
 
-        # if not execution.is_running:
-        #     raise web.HTTPForbidden(body="Operation not running")
-        vm_client = QemuVmClient(execution.vm)
-        vm_client.inject_secret(params.packet_header, params.secret)
-        vm_client.continue_execution()
-
-        status = vm_client.query_status()
-        logger.debug("VM status after secret injection: %s", status)
-
+        # The supervisor interface does not return the post-injection QMP
+        # status (the void method cannot carry it); a fixed ok keeps the
+        # endpoint's success body well-formed.
         return web.json_response(
-            data={"status": status},
+            data={"status": "ok"},
             status=200,
             dumps=dumps_for_json,
         )
