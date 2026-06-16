@@ -279,6 +279,92 @@ class VmPool:
                 },
             )
 
+    def check_spec_admission(self, spec: CreateVmSpec) -> None:
+        """Refuse a message-free CreateVmSpec when it would exceed host capacity.
+
+        The spec-path counterpart of :meth:`check_admission`. It reuses the
+        same instance-bucket memory accounting and vCPU overcommit ceiling, but
+        reads its requirements from the spec (``spec.memory_mib`` /
+        ``spec.vcpus``) instead of an Aleph message. Spec VMs are QEMU
+        instances, so they are always accounted against the instance bucket.
+
+        Disk admission is deferred: ``DiskSpec`` carries no ``size_mib`` today,
+        so there is nothing to sum against ``calculate_available_disk``. Revisit
+        when the spec carries disk sizes (mirrors the disk branch of
+        :meth:`check_admission`).
+
+        Called inside :meth:`create_vm_from_spec` under ``creation_lock`` so the
+        check and the subsequent registration are atomic. Reading
+        ``self.executions`` here is safe without locking because this method
+        does not ``await``.
+
+        Raises:
+            InsufficientResourcesError: The memory or vCPU bucket would be
+                exceeded; carries structured ``required`` / ``available`` dicts.
+        """
+        required_memory_mib = spec.memory_mib
+        required_vcpus = spec.vcpus
+
+        committed_instance_memory_mib = 0
+        committed_vcpus = 0
+        for execution in tuple(self.executions.values()):
+            memory = execution.allocated_memory_mib
+            vcpus = execution.allocated_vcpus
+            if not memory and not vcpus:
+                continue
+            if execution.is_instance:
+                committed_instance_memory_mib += memory
+            committed_vcpus += vcpus
+
+        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
+        physical_cores = psutil.cpu_count() or 1
+        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
+        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+
+        # Spec VMs are QEMU instances: account against the instance bucket only.
+        memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
+
+        errors: list[str] = []
+
+        if committed_instance_memory_mib + required_memory_mib > memory_cap_mib:
+            errors.append(
+                f"Memory (instance bucket): "
+                f"required {required_memory_mib} MiB, "
+                f"committed {committed_instance_memory_mib} MiB, "
+                f"cap {memory_cap_mib} MiB "
+                f"(physical {physical_memory_mib} MiB, "
+                f"host_reserved {host_reserved_mib} MiB, "
+                f"program_reserved {program_reserved_mib} MiB)"
+            )
+
+        if committed_vcpus + required_vcpus > vcpu_cap:
+            errors.append(
+                f"vCPUs: required {required_vcpus}, "
+                f"committed {committed_vcpus}, "
+                f"cap {vcpu_cap} "
+                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
+            )
+
+        if errors:
+            detail = "Insufficient capacity to create VM. " + "; ".join(errors)
+            available_memory_mib = max(memory_cap_mib - committed_instance_memory_mib, 0)
+            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
+            raise InsufficientResourcesError(
+                detail,
+                required={
+                    "vcpus": required_vcpus,
+                    "memory_mib": required_memory_mib,
+                    # Disk admission is deferred (DiskSpec has no size_mib).
+                    "disk_mib": 0,
+                },
+                available={
+                    "vcpus": available_vcpus,
+                    "memory_mib": available_memory_mib,
+                    "disk_mib": 0,
+                },
+            )
+
     def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
 
