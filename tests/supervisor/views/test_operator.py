@@ -2415,10 +2415,10 @@ async def test_operator_backup_delete_unknown_returns_404(aiohttp_client, mocker
 
 
 @pytest.mark.asyncio
-async def test_operator_restore_volume_ref_stages_and_restores(aiohttp_client, mocker):
+async def test_operator_restore_volume_ref_stages_and_restores(aiohttp_client, mocker, tmp_path):
     """A {"volume_ref": ...} body downloads the volume to a temp path, then the
     engine restore_from_image runs; success returns {"status": "restored"}."""
-    staged = mocker.AsyncMock(return_value=__import__("pathlib").Path("/tmp/restore-staged.qcow2"))
+    staged = mocker.AsyncMock(return_value=tmp_path / "restore-staged.qcow2")
     mocker.patch("aleph.vm.orchestrator.views.operator.download_volume_by_ref", staged)
     client, vm_hash, fake_sup = await _seed_authorized_backup_app(aiohttp_client, mocker)
 
