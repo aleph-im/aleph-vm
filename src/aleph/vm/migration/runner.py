@@ -19,7 +19,6 @@ from aleph.vm.migration.helpers import (
     compute_sha256,
     detect_parent_format,
     download_disk_from_source,
-    graceful_shutdown,
     rebase_overlay,
 )
 from aleph.vm.migration.jobs import (
@@ -30,12 +29,13 @@ from aleph.vm.migration.jobs import (
     get_migration_semaphore,
     import_jobs,
 )
-from aleph.vm.models import MigrationState, VmExecution
+from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.storage import get_rootfs_base_path
+from aleph.vm.supervisor.errors import VmNotFoundError
 
 if TYPE_CHECKING:
-    from aleph.vm.pool import VmPool
+    from aleph.vm.supervisor.abc import Supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +70,17 @@ def schedule_export_ttl(job: ExportJob, timeout: int) -> None:
 
 async def run_export(
     job: ExportJob,
-    execution: VmExecution,
+    supervisor: "Supervisor",
     *,
     prior_task: asyncio.Task | None = None,
 ) -> None:
     """Drive an ExportJob from EXPORTING to a terminal state.
 
     Mutates the job in place. Never raises; failures are recorded on the job.
+
+    The supervisor owns the disk/VM work: it stops the VM and reports its
+    persistent-volumes directory; this runner owns the network transport,
+    compressing and serving the disk files it finds there.
 
     prior_task: when this run replaces a FAILED slot, the previous task — wait
     for its cleanup (file unlink, VM restart) to finish before touching the VM.
@@ -92,10 +96,7 @@ async def run_export(
     export_paths: list[Path] = []
     async with sem:
         try:
-            await graceful_shutdown(execution)
-
-            namespace = execution.vm_hash
-            volumes_dir = settings.PERSISTENT_VOLUMES_DIR / namespace
+            volumes_dir = Path(await supervisor.stop_vm_for_export(job.vm_hash))
             job.volumes_dir = volumes_dir
 
             disk_files: list[DiskFileInfo] = []
@@ -139,9 +140,9 @@ async def run_export(
                     logger.warning("Failed to delete partial export %s: %s", path, e)
 
             try:
-                if execution.systemd_manager:
-                    await execution.systemd_manager.enable_and_start(execution.controller_service)
-                    logger.info("Restarted VM %s after failed export", job.vm_hash)
+                # The VM is not leaving after all; bring it back.
+                await supervisor.restart_after_failed_export(job.vm_hash)
+                logger.info("Restarted VM %s after failed export", job.vm_hash)
             except Exception as restart_error:
                 logger.error("Failed to restart VM %s after export failure: %s", job.vm_hash, restart_error)
 
@@ -169,7 +170,7 @@ def schedule_import_ttl(job: ImportJob, timeout: int) -> None:
 
 async def run_import(
     job: ImportJob,
-    pool: "VmPool",
+    supervisor: "Supervisor",
     *,
     disk_files: list[DiskFileInfo],
     export_token: str,
@@ -178,6 +179,10 @@ async def run_import(
     """Drive an ImportJob from IMPORTING to a terminal state.
 
     Mutates the job in place. Never raises; failures are recorded on the job.
+
+    This runner owns the network transport (message fetch, parent download,
+    disk download, overlay rebase) and staging; the supervisor owns the
+    create-and-boot step and answers whether the VM already exists.
 
     prior_task: when this run replaces a FAILED slot, the previous task — wait
     for its dest-dir rmtree to finish before recreating the same path.
@@ -253,11 +258,10 @@ async def run_import(
                 await rebase_overlay(overlay_path, parent_path, parent_format)
 
             job.current_step = "creating_vm"
-            await pool.create_a_vm(
-                vm_hash=job.vm_hash,
-                message=message.content,
-                original=original_message.content,
-                persistent=True,
+            await supervisor.create_migrated_vm(
+                job.vm_hash,
+                message.content,
+                original_message.content,
             )
 
             job.transfer_time_ms = int((time.monotonic() - start) * 1000)
@@ -271,6 +275,17 @@ async def run_import(
             job.finished_at = datetime.now(timezone.utc)
             job.state = MigrationState.IMPORT_FAILED
 
-            if job.dest_dir is not None and pool.executions.get(job.vm_hash) is None:
+            if job.dest_dir is not None and not await _vm_exists(supervisor, job.vm_hash):
                 shutil.rmtree(job.dest_dir, ignore_errors=True)
             schedule_import_ttl(job, IMPORT_TTL_SECONDS)
+
+
+async def _vm_exists(supervisor: "Supervisor", vm_hash) -> bool:
+    """Whether the supervisor holds a VM for this hash. Absence (the create
+    step never ran, or never registered the VM) means the dest dir is safe to
+    rmtree; presence means the import created it and the disks are in use."""
+    try:
+        await supervisor.get_vm(vm_hash)
+        return True
+    except VmNotFoundError:
+        return False

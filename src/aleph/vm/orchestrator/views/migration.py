@@ -20,7 +20,6 @@ from pathlib import Path
 import pydantic
 from aiohttp import web
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import HypervisorType
 from pydantic import BaseModel, Field
 
 from aleph.vm.migration.jobs import (
@@ -31,13 +30,14 @@ from aleph.vm.migration.jobs import (
     import_jobs,
 )
 from aleph.vm.migration.runner import run_export, run_import
-from aleph.vm.models import MigrationState, VmExecution
-from aleph.vm.orchestrator.utils import require_vm_pool
-from aleph.vm.pool import VmPool
+from aleph.vm.models import MigrationState
+from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
 from aleph.vm.utils import cors_allow_all, create_task_log_exceptions, dumps_for_json
 
 from .allocation_auth import requires_allocation_auth
-from .operator import get_execution_or_404, get_itemhash_or_400
+from .operator import get_itemhash_or_400
 
 logger = logging.getLogger(__name__)
 
@@ -85,17 +85,21 @@ async def migration_export(request: web.Request) -> web.Response:
     Returns 202 immediately. Caller polls GET /export/status for progress.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    pool: VmPool = require_vm_pool(request)
-    execution: VmExecution = get_execution_or_404(vm_hash, pool)
+    supervisor: Supervisor = request.app["supervisor"]
 
-    if not execution.is_running:
+    try:
+        info = await supervisor.get_vm(VmId(str(vm_hash)))
+    except VmNotFoundError:
+        return web.json_response({"error": "VM not found"}, status=HTTPStatus.NOT_FOUND)
+
+    if info.status is not VmStatus.RUNNING:
         return web.json_response({"error": "VM is not running"}, status=HTTPStatus.BAD_REQUEST)
-    if execution.hypervisor != HypervisorType.qemu:
+    if info.backend is not Backend.QEMU:
         return web.json_response(
             {"error": "Migration only supported for QEMU instances"},
             status=HTTPStatus.BAD_REQUEST,
         )
-    if execution.is_confidential:
+    if info.confidential_mode is not ConfidentialMode.NONE:
         return web.json_response(
             {"error": "Migration is not supported for confidential VMs"},
             status=HTTPStatus.BAD_REQUEST,
@@ -121,7 +125,9 @@ async def migration_export(request: web.Request) -> web.Response:
         started_at=datetime.now(timezone.utc),
     )
     export_jobs[vm_hash] = job
-    job.task = create_task_log_exceptions(run_export(job, execution, prior_task=prior_task), name=f"export-{vm_hash}")
+    job.task = create_task_log_exceptions(
+        run_export(job, supervisor, prior_task=prior_task), name=f"export-{vm_hash}"
+    )
 
     return _export_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
@@ -239,11 +245,14 @@ async def migration_import(request: web.Request) -> web.Response:
     except pydantic.ValidationError as error:
         return web.json_response(data=error.json(), status=HTTPStatus.BAD_REQUEST)
 
-    pool: VmPool = require_vm_pool(request)
+    supervisor: Supervisor = request.app["supervisor"]
     vm_hash = ItemHash(params.vm_hash)
 
-    existing_exec = pool.executions.get(vm_hash)
-    if existing_exec is not None and existing_exec.is_running:
+    try:
+        existing_info = await supervisor.get_vm(VmId(str(vm_hash)))
+    except VmNotFoundError:
+        existing_info = None
+    if existing_info is not None and existing_info.status is VmStatus.RUNNING:
         return web.json_response(
             {"error": "VM already running on this host"},
             status=HTTPStatus.CONFLICT,
@@ -251,7 +260,8 @@ async def migration_import(request: web.Request) -> web.Response:
 
     # Read-modify-write of the registry below MUST stay await-free so two simultaneous
     # POSTs for the same vm_hash can't both pass the existence check. The prior task
-    # (if any) is captured here and awaited inside run_import, not here.
+    # (if any) is captured here and awaited inside run_import, not here. The dest-dir
+    # rmtree decision in the reset path is made against this single existence probe.
     prior_task: asyncio.Task | None = None
     existing = import_jobs.get(vm_hash)
     if existing is not None:
@@ -259,7 +269,7 @@ async def migration_import(request: web.Request) -> web.Response:
             return _import_job_descriptor_response(existing, status=HTTPStatus.ACCEPTED)
         if existing.state == MigrationState.IMPORT_FAILED:
             prior_task = existing.task
-            _reset_failed_import(existing, pool)
+            _reset_failed_import(existing, vm_present=existing_info is not None)
         else:
             return _import_job_descriptor_response(existing, status=HTTPStatus.CONFLICT)
 
@@ -274,7 +284,7 @@ async def migration_import(request: web.Request) -> web.Response:
     job.task = create_task_log_exceptions(
         run_import(
             job,
-            pool,
+            supervisor,
             disk_files=params.disk_files,
             export_token=params.export_token,
             prior_task=prior_task,
@@ -285,19 +295,20 @@ async def migration_import(request: web.Request) -> web.Response:
     return _import_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 
 
-def _reset_failed_import(job: ImportJob, pool: VmPool) -> None:
+def _reset_failed_import(job: ImportJob, vm_present: bool) -> None:
     """Clear an IMPORT_FAILED slot so the caller's retry can start fresh.
 
     Synchronous on purpose: the caller relies on this returning before yielding
     to the event loop so concurrent retry POSTs see the slot freed. The prior
     runner task is awaited later, inside the new run_import. Mirrors the
-    safety check in run_import's failure path: only rmtree if the pool has no
-    execution.
+    safety check in run_import's failure path: only rmtree if the supervisor
+    holds no VM for this hash (vm_present is the result of that probe, taken by
+    the caller before yielding).
     """
     logger.info("Resetting failed import for %s (previous error: %s)", job.vm_hash, job.error)
     if job.ttl_task is not None and not job.ttl_task.done():
         job.ttl_task.cancel()
-    if job.dest_dir is not None and pool.executions.get(job.vm_hash) is None:
+    if job.dest_dir is not None and not vm_present:
         shutil.rmtree(job.dest_dir, ignore_errors=True)
     import_jobs.pop(job.vm_hash, None)
 
@@ -351,7 +362,7 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     Refuses if no EXPORTED job exists (catches scheduler bugs that call cleanup too early).
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-    pool: VmPool = require_vm_pool(request)
+    supervisor: Supervisor = request.app["supervisor"]
 
     job = export_jobs.get(vm_hash)
     if job is None or job.state != MigrationState.EXPORTED:
@@ -369,8 +380,7 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     try:
         if job.ttl_task is not None and not job.ttl_task.done():
             job.ttl_task.cancel()
-        await pool.stop_vm(vm_hash)
-        pool.forget_vm(vm_hash)
+        await supervisor.release_migrated_vm(VmId(str(vm_hash)))
         for path in job.export_paths:
             try:
                 Path(path).unlink(missing_ok=True)

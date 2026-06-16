@@ -14,6 +14,7 @@ from aleph.vm.conf import settings
 from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
 from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
+from aleph.vm.supervisor.errors import VmNotFoundError
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +22,29 @@ def _reset_semaphore():
     _reset_migration_semaphore_for_tests()
     yield
     _reset_migration_semaphore_for_tests()
+
+
+def _export_supervisor(volumes_dir: Path, *, missing: bool = False):
+    """A fake supervisor for the export runner: stop_vm_for_export returns the
+    given volumes dir, restart_after_failed_export records the call."""
+    sup = MagicMock()
+    if missing:
+        sup.stop_vm_for_export = AsyncMock(side_effect=VmNotFoundError("nope"))
+    else:
+        sup.stop_vm_for_export = AsyncMock(return_value=volumes_dir)
+    sup.restart_after_failed_export = AsyncMock()
+    return sup
+
+
+def _import_supervisor(*, has_vm: bool = False, create_side_effect=None):
+    """A fake supervisor for the import runner."""
+    sup = MagicMock()
+    sup.create_migrated_vm = AsyncMock(side_effect=create_side_effect, return_value=MagicMock())
+    if has_vm:
+        sup.get_vm = AsyncMock(return_value=MagicMock())
+    else:
+        sup.get_vm = AsyncMock(side_effect=VmNotFoundError("absent"))
+    return sup
 
 
 @pytest.mark.asyncio
@@ -34,26 +58,20 @@ async def testrun_export_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
-    execution = MagicMock()
-    execution.vm_hash = vm_hash
-    execution.is_running = True
-
     async def fake_compress(src: Path, dst: Path):
         dst.write_bytes(b"compressed")
 
-    async def fake_shutdown(_exec):
-        return None
-
-    monkeypatch.setattr("aleph.vm.migration.runner.graceful_shutdown", fake_shutdown)
     monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", fake_compress)
 
+    supervisor = _export_supervisor(volumes_dir)
     job = ExportJob(
         vm_hash=vm_hash,
         state=MigrationState.EXPORTING,
         started_at=datetime.now(timezone.utc),
     )
-    await run_export(job, execution)
+    await run_export(job, supervisor)
 
+    supervisor.stop_vm_for_export.assert_awaited_once_with(vm_hash)
     assert job.state == MigrationState.EXPORTED
     assert job.finished_at is not None
     assert job.error is None
@@ -86,28 +104,22 @@ async def testrun_export_compression_failure(tmp_path, monkeypatch):
         else:
             raise RuntimeError("boom")
 
-    execution = MagicMock()
-    execution.vm_hash = vm_hash
-    execution.systemd_manager = MagicMock()
-    execution.systemd_manager.enable_and_start = AsyncMock()
-    execution.controller_service = "fake.service"
-
-    monkeypatch.setattr("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
     monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", flaky_compress)
 
+    supervisor = _export_supervisor(volumes_dir)
     job = ExportJob(
         vm_hash=vm_hash,
         state=MigrationState.EXPORTING,
         started_at=datetime.now(timezone.utc),
     )
-    await run_export(job, execution)
+    await run_export(job, supervisor)
 
     assert job.state == MigrationState.EXPORT_FAILED
     assert "boom" in job.error
     # No partial export files should remain.
     assert list(volumes_dir.glob("*.export.qcow2")) == []
-    # VM restart attempted.
-    execution.systemd_manager.enable_and_start.assert_awaited_once_with("fake.service")
+    # VM restart attempted through the supervisor.
+    supervisor.restart_after_failed_export.assert_awaited_once_with(vm_hash)
 
 
 from aleph.vm.migration.jobs import ImportJob
@@ -147,9 +159,7 @@ async def testrun_import_success(tmp_path, monkeypatch):
     async def fake_rebase(overlay, parent, fmt):
         return None
 
-    pool = MagicMock()
-    pool.executions = {}
-    pool.create_a_vm = AsyncMock(return_value=MagicMock())
+    supervisor = _import_supervisor()
 
     monkeypatch.setattr("aleph.vm.migration.runner.load_updated_message", fake_load_message)
     monkeypatch.setattr("aleph.vm.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
@@ -176,13 +186,13 @@ async def testrun_import_success(tmp_path, monkeypatch):
         )
     ]
 
-    await run_import(job, pool, disk_files=disk_files, export_token="t0k3n")
+    await run_import(job, supervisor, disk_files=disk_files, export_token="t0k3n")
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
     assert job.bytes_downloaded == 10
     assert job.transfer_time_ms is not None
-    pool.create_a_vm.assert_awaited_once()
+    supervisor.create_migrated_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -203,7 +213,7 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
         AsyncMock(return_value=(fake_message, fake_message)),
     )
 
-    pool = MagicMock(executions={})
+    supervisor = _import_supervisor()
     job = ImportJob(
         vm_hash=ItemHash(settings.FAKE_INSTANCE_ID),
         state=MigrationState.IMPORTING,
@@ -213,7 +223,7 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
     )
     await run_import(
         job,
-        pool,
+        supervisor,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -255,7 +265,7 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
     )
     monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", boom_download)
 
-    pool = MagicMock(executions={})
+    supervisor = _import_supervisor(has_vm=False)
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     job = ImportJob(
         vm_hash=vm_hash,
@@ -266,7 +276,7 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
     )
     await run_import(
         job,
-        pool,
+        supervisor,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -313,8 +323,7 @@ async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkey
     monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
     monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
 
-    pool = MagicMock(executions={})
-    pool.create_a_vm = AsyncMock(side_effect=RuntimeError("pool kaboom"))
+    supervisor = _import_supervisor(has_vm=False, create_side_effect=RuntimeError("pool kaboom"))
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     job = ImportJob(
@@ -326,7 +335,7 @@ async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkey
     )
     await run_import(
         job,
-        pool,
+        supervisor,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -337,8 +346,8 @@ async def testrun_import_cleans_dest_dir_on_create_a_vm_failure(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def testrun_import_keeps_dest_dir_when_pool_already_has_execution(tmp_path, monkeypatch):
-    """Defence-in-depth: if pool somehow already has a VmExecution for this hash,
+async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path, monkeypatch):
+    """Defence-in-depth: if the supervisor already reports a VM for this hash,
     do NOT rmtree the dest dir on failure."""
     from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
     from aleph.vm.migration.runner import run_import
@@ -377,7 +386,7 @@ async def testrun_import_keeps_dest_dir_when_pool_already_has_execution(tmp_path
     )
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
-    pool = MagicMock(executions={vm_hash: MagicMock()})  # pool ALREADY has it
+    supervisor = _import_supervisor(has_vm=True)  # supervisor ALREADY reports it
 
     job = ImportJob(
         vm_hash=vm_hash,
@@ -388,13 +397,13 @@ async def testrun_import_keeps_dest_dir_when_pool_already_has_execution(tmp_path
     )
     await run_import(
         job,
-        pool,
+        supervisor,
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
 
     assert job.state == MigrationState.IMPORT_FAILED
-    # Dest dir survives because pool already has an execution for this vm_hash
+    # Dest dir survives because the supervisor already reports a VM for this hash
     assert (tmp_path / str(vm_hash)).exists()
 
 
@@ -431,18 +440,15 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
         dst.write_bytes(b"c")
         in_flight -= 1
 
-    monkeypatch.setattr("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
     monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", slow_compress)
 
-    exec_a = MagicMock()
-    exec_a.vm_hash = hash_a
-    exec_b = MagicMock()
-    exec_b.vm_hash = hash_b
+    sup_a = _export_supervisor(tmp_path / str(hash_a))
+    sup_b = _export_supervisor(tmp_path / str(hash_b))
 
     job_a = ExportJob(vm_hash=hash_a, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
     job_b = ExportJob(vm_hash=hash_b, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
 
-    await asyncio.gather(run_export(job_a, exec_a), run_export(job_b, exec_b))
+    await asyncio.gather(run_export(job_a, sup_a), run_export(job_b, sup_b))
 
     assert max_in_flight == 1, f"Expected serial execution, but {max_in_flight} ran in parallel"
     assert job_a.state == MigrationState.EXPORTED

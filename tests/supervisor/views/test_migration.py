@@ -2,16 +2,60 @@
 
 import asyncio
 from http import HTTPStatus
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.types import (
+    Backend,
+    ConfidentialMode,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
+
+
+def _vm_info(
+    vm_id,
+    status: VmStatus = VmStatus.RUNNING,
+    backend: Backend = Backend.QEMU,
+    confidential_mode: ConfidentialMode = ConfidentialMode.NONE,
+) -> VmInfo:
+    return VmInfo(
+        vm_id=VmId(str(vm_id)),
+        status=status,
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
+        uptime_secs=0,
+        backend=backend,
+        numa_node=None,
+        status_message="",
+        confidential_mode=confidential_mode,
+    )
+
+
+def _migration_supervisor(get_vm=None, **overrides):
+    """A MagicMock supervisor wired with the migration-relevant methods.
+
+    get_vm defaults to raising VmNotFoundError (no VM present); pass an
+    AsyncMock to model a present VM. Override any method via keyword.
+    """
+    sup = MagicMock()
+    sup.get_vm = get_vm if get_vm is not None else AsyncMock(side_effect=VmNotFoundError("absent"))
+    sup.stop_vm_for_export = AsyncMock()
+    sup.restart_after_failed_export = AsyncMock()
+    sup.create_migrated_vm = AsyncMock(return_value=MagicMock())
+    sup.release_migrated_vm = AsyncMock()
+    for name, value in overrides.items():
+        setattr(sup, name, value)
+    return sup
 
 
 @pytest.fixture(autouse=True)
@@ -44,22 +88,6 @@ def mock_scheduler_auth(mocker):
         new_callable=AsyncMock,
         return_value=True,
     )
-
-
-def _make_running_qemu_execution(mocker, vm_hash):
-    """Helper to create a mock running QEMU execution."""
-    execution = mocker.Mock()
-    execution.vm_hash = vm_hash
-    execution.is_running = True
-    execution.is_stopping = False
-    execution.hypervisor = HypervisorType.qemu
-    execution.is_confidential = False
-    execution.systemd_manager = mocker.Mock()
-    execution.controller_service = f"aleph-vm-controller@{vm_hash}.service"
-    execution.vm = mocker.Mock()
-    execution.vm.qmp_socket_path = mocker.Mock()
-    execution.vm.qmp_socket_path.exists.return_value = True
-    return execution
 
 
 async def wait_for_export_state(client: TestClient, vm_hash, target_state: str, timeout: float = 5.0):
@@ -119,9 +147,10 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_vm_not_running(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export fails if VM is not running."""
-        execution = mocker.Mock(is_running=False, is_stopping=False)
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, status=VmStatus.STOPPED))
+        )
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -132,13 +161,10 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_not_qemu(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export fails for non-QEMU VMs."""
-        execution = mocker.Mock(
-            is_running=True,
-            is_stopping=False,
-            hypervisor=HypervisorType.firecracker,
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, backend=Backend.FIRECRACKER))
         )
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -149,14 +175,10 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_confidential_rejected(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export rejects confidential VMs."""
-        execution = mocker.Mock(
-            is_running=True,
-            is_stopping=False,
-            hypervisor=HypervisorType.qemu,
-            is_confidential=True,
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, confidential_mode=ConfidentialMode.SEV))
         )
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -179,9 +201,8 @@ class TestMigrationExportEndpoint:
             started_at=datetime.now(timezone.utc),
         )
 
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -192,7 +213,6 @@ class TestMigrationExportEndpoint:
         self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash, tmp_path
     ):
         """Test successful export: POST returns 202, polling reaches EXPORTED."""
-        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
 
         async def fake_compress(src, dst):
             dst.write_bytes(b"compressed")
@@ -204,9 +224,11 @@ class TestMigrationExportEndpoint:
         volumes.mkdir(parents=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
+            stop_vm_for_export=AsyncMock(return_value=volumes),
+        )
         client: TestClient = await aiohttp_client(app)
 
         r = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -349,8 +371,8 @@ class TestMigrationImportEndpoint:
     @pytest.mark.asyncio
     async def test_import_vm_already_running(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that import fails if VM already running on host."""
-        pool = mocker.Mock(executions={mock_vm_hash: mocker.Mock(is_running=True)})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(
@@ -445,9 +467,8 @@ class TestMigrationImportEndpoint:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        pool = mocker.Mock(executions={})
-        pool.create_a_vm = AsyncMock()
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor()
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -507,9 +528,8 @@ class TestMigrationImportEndpoint:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        pool = mocker.Mock(executions={})
-        pool.create_a_vm = AsyncMock()
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor()
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -619,12 +639,9 @@ class TestMigrationCleanupEndpoint:
             started_at=datetime.now(timezone.utc),
         )
 
-        pool = mocker.AsyncMock()
-        pool.executions = {}
-        # forget_vm is sync in production (not awaited); use a regular Mock
-        # so we don't emit a RuntimeWarning about an unawaited coroutine.
-        pool.forget_vm = mocker.Mock()
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        supervisor = _migration_supervisor()
+        app["supervisor"] = supervisor
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
@@ -632,8 +649,8 @@ class TestMigrationCleanupEndpoint:
         assert response.status == HTTPStatus.OK
         data = await response.json()
         assert data["status"] == "completed"
-        pool.stop_vm.assert_called_once_with(mock_vm_hash)
-        pool.forget_vm.assert_called_once_with(mock_vm_hash)
+        # Cleanup releases the migrated VM through the supervisor (stop + forget).
+        supervisor.release_migrated_vm.assert_awaited_once_with(VmId(str(mock_vm_hash)))
 
 
 class TestMigrationState:
@@ -676,7 +693,6 @@ class TestMigrationExportIdempotency:
             dst.write_bytes(b"x")
 
         mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
-        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
         # Pre-create the volumes dir so the runner finds disk files to compress.
@@ -684,9 +700,11 @@ class TestMigrationExportIdempotency:
         volumes.mkdir(parents=True, exist_ok=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
+            stop_vm_for_export=AsyncMock(return_value=volumes),
+        )
         client: TestClient = await aiohttp_client(app)
 
         r1 = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -725,8 +743,6 @@ class TestMigrationFailedReset:
             export_paths=[partial],
         )
 
-        mocker.patch("aleph.vm.migration.runner.graceful_shutdown", AsyncMock())
-
         async def fake_compress(src, dst):
             dst.write_bytes(b"compressed")
 
@@ -736,9 +752,11 @@ class TestMigrationFailedReset:
         volumes.mkdir(parents=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        execution = _make_running_qemu_execution(mocker, mock_vm_hash)
-        pool = mocker.Mock(executions={mock_vm_hash: execution})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor(
+            get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
+            stop_vm_for_export=AsyncMock(return_value=volumes),
+        )
         client: TestClient = await aiohttp_client(app)
 
         r = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -806,9 +824,8 @@ class TestMigrationFailedReset:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        pool = mocker.Mock(executions={})
-        pool.create_a_vm = AsyncMock()
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app["supervisor"] = _migration_supervisor()
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -932,3 +949,24 @@ class TestMigrationCleanupActiveDownload:
         assert r.status == HTTPStatus.CONFLICT
         body = await r.json()
         assert "download" in body["error"].lower()
+
+
+class TestMigrationEndpointsDoNotTouchThePool:
+    """Guard: the three migration endpoints reach VMs only through the
+    supervisor. No raw pool access (require_vm_pool, vm_pool, pool.create_a_vm,
+    pool.executions) survives anywhere in their source."""
+
+    def test_endpoints_have_no_pool_references(self):
+        import inspect
+
+        from aleph.vm.orchestrator.views import migration as migration_views
+
+        forbidden = ("require_vm_pool", "vm_pool", "pool.create_a_vm", "pool.executions")
+        for endpoint in (
+            migration_views.migration_export,
+            migration_views.migration_import,
+            migration_views.migration_cleanup,
+        ):
+            source = inspect.getsource(endpoint)
+            for token in forbidden:
+                assert token not in source, f"{endpoint.__name__} still references {token!r}"
