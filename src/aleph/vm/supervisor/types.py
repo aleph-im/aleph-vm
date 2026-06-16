@@ -148,8 +148,27 @@ class NetworkConfig:
 
 @dataclass(frozen=True)
 class GpuSpec:
+    """A GPU on a CreateVmSpec.
+
+    Two roles in one type: the REQUEST and the RESOLVED assignment.
+
+    - ``device_id`` (vendor:device, e.g. "10de:2504") and ``model`` carry the
+      REQUEST. They are what the client (the agent's build_create_vm_spec) sets;
+      they say *which kind* of GPU the VM wants, not which physical card.
+    - ``pci_host`` is the RESOLVED concrete host address. The engine fills it in
+      atomically inside the create path (pool.create_vm_from_spec) by matching
+      ``device_id`` against the host's available GPUs. A request leaves it empty.
+
+    ``device_id`` / ``model`` are not carried over the Phase 1 proto yet
+    (proto_convert only round-trips ``pci_host`` / ``supports_x_vga`` and gives
+    these the defaults below). Phase 2 adds them to the proto so a remote
+    supervisor can resolve the request itself.
+    """
+
     pci_host: PciAddress
     supports_x_vga: bool
+    device_id: str = ""
+    model: str = ""
 
 
 @dataclass(frozen=True)

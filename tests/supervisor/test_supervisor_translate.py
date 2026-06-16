@@ -134,6 +134,46 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_build_create_vm_spec_maps_gpu_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each message.requirements.gpu becomes an unresolved GpuSpec request:
+    device_id is carried, pci_host is left empty for the engine to resolve."""
+    from aleph_message.models.execution.environment import (
+        GpuProperties,
+        HostRequirements,
+    )
+
+    async def fake_download_all(self: Any) -> None:
+        self.rootfs_path = Path("/data/rootfs.qcow2")
+        self.volumes = []
+
+    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+
+    monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
+
+    message = _make_qemu_instance_message()
+    message = message.model_copy(
+        update={
+            "requirements": HostRequirements(
+                gpu=[
+                    GpuProperties(
+                        vendor="NVIDIA",
+                        device_name="GH100",
+                        device_class="0300",
+                        device_id="10de:2504",
+                    )
+                ]
+            )
+        }
+    )
+
+    spec = await build_create_vm_spec(_VM_HASH, message)
+
+    assert len(spec.gpus) == 1
+    assert spec.gpus[0].device_id == "10de:2504"
+    assert str(spec.gpus[0].pci_host) == ""
+
+
+@pytest.mark.asyncio
 async def test_authorized_keys_none_becomes_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     """authorized_keys=None in the message yields an empty list in the spec."""
 

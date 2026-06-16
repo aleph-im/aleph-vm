@@ -30,6 +30,7 @@ from aleph.vm.supervisor.types import (
     GpuSpec,
     GuestChannelSpec,
     NetworkConfig,
+    PciAddress,
     VmId,
 )
 from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
@@ -39,7 +40,7 @@ async def build_create_vm_spec(
     vm_hash: ItemHash,
     message: ExecutableContent,
     *,
-    gpus: Sequence[GpuSpec] = (),
+    gpus: Sequence[GpuSpec] | None = None,
 ) -> CreateVmSpec:
     """Translate *message* into a CreateVmSpec, downloading resources as needed.
 
@@ -49,9 +50,14 @@ async def build_create_vm_spec(
     - confidential (trusted_execution set) instances
 
     The routing gate ``run._is_spec_eligible`` mirrors these checks to decide
-    which messages reach this path; keep the two in sync. That gate is
-    additionally conservative about GPUs, which this function accepts (via
-    ``gpus``), so GPU instances are filtered upstream, not here.
+    which messages reach this path; keep the two in sync.
+
+    GPUs cross as a REQUEST: each ``message.requirements.gpu`` entry becomes a
+    ``GpuSpec`` carrying ``device_id`` / ``model`` with an empty ``pci_host``.
+    The engine resolves the concrete host card atomically inside
+    ``pool.create_vm_from_spec`` (see GpuSpec). Callers may pass an explicit
+    ``gpus`` list to override the derivation (the message-free migration path
+    does not, so it derives from the message like the normal create).
     """
     # --- Validate before any I/O ---
 
@@ -64,6 +70,23 @@ async def build_create_vm_spec(
 
     if getattr(message.environment, "trusted_execution", None) is not None:
         raise InvalidBackendError("Confidential instances (trusted_execution set) are not supported by this path")
+
+    # --- GPU request ---
+    # Each requested GPU becomes an unresolved GpuSpec (device_id/model set,
+    # pci_host left empty). The engine binds device_id -> concrete host card
+    # atomically in pool.create_vm_from_spec. The message GPU carries no model
+    # field (it is a network-derived name), so model is left empty here.
+    if gpus is None:
+        requested_gpus = message.requirements.gpu if message.requirements and message.requirements.gpu else []
+        gpus = [
+            GpuSpec(
+                pci_host=PciAddress(""),
+                supports_x_vga=False,
+                device_id=gpu.device_id,
+                model="",
+            )
+            for gpu in requested_gpus
+        ]
 
     # --- Materialise resources ---
 
