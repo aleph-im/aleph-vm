@@ -1,7 +1,7 @@
 import pytest
 from conformance import SupervisorContractTests
 
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 class FakePool:
@@ -9,7 +9,7 @@ class FakePool:
         self.executions = {}
 
 
-class TestInProcessSupervisorConformance(SupervisorContractTests):
+class TestLocalSupervisorConformance(SupervisorContractTests):
     @pytest.fixture
     def supervisor(self):
-        return InProcessSupervisor(pool=FakePool())
+        return LocalSupervisor(pool=FakePool())

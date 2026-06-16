@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from aleph.vm.supervisor.errors import NotImplementedSupervisorError, VmNotFoundError
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import DirectoryPath, VmId
 
 
@@ -14,11 +14,11 @@ class FakePool:
 
 @pytest.fixture
 def supervisor():
-    return InProcessSupervisor(pool=FakePool())
+    return LocalSupervisor(pool=FakePool())
 
 
 def test_can_instantiate(supervisor):
-    assert isinstance(supervisor, InProcessSupervisor)
+    assert isinstance(supervisor, LocalSupervisor)
 
 
 @pytest.mark.asyncio

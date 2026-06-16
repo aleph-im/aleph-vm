@@ -10,7 +10,7 @@ from aleph.vm.conf import settings
 from aleph.vm.orchestrator.supervisor import setup_webapp, stop_all_vms
 from aleph.vm.orchestrator.utils import require_vm_pool
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 def test_split_mode_wires_grpc_supervisor(mocker):
@@ -26,7 +26,7 @@ def test_inprocess_mode_wires_inprocess_supervisor(mocker):
     mocker.patch.object(settings, "SUPERVISOR_GRPC_SOCKET", None)
     pool = SimpleNamespace(executions={})
     app = setup_webapp(pool=pool)
-    assert isinstance(app["supervisor"], InProcessSupervisor)
+    assert isinstance(app["supervisor"], LocalSupervisor)
 
 
 def test_require_vm_pool_501_in_split_mode():

@@ -1,4 +1,4 @@
-"""InProcessSupervisor.create_vm delegates to pool.create_vm_from_spec."""
+"""LocalSupervisor.create_vm delegates to pool.create_vm_from_spec."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -55,7 +55,7 @@ async def test_create_vm_delegates_and_returns_info():
         systemd=FakeSystemd({f"aleph-vm-controller@{_HASH}.service": True}),
     )
     pool.create_vm_from_spec = AsyncMock(return_value=execution)
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     spec = _spec()
     info = await sup.create_vm(spec)

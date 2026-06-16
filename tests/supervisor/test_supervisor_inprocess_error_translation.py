@@ -9,7 +9,7 @@ from aleph.vm.resources import (
 from aleph.vm.supervisor.errors import (
     InsufficientResourcesError as SupInsufficientResources,
 )
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import ErrorCode, VmId
 
 
@@ -19,7 +19,7 @@ async def test_internal_exception_in_delete_is_translated():
     pool = FakePool(executions={"itemhash123": execution})
     pool.stop_vm = AsyncMock(side_effect=InternalInsufficientResources("no", required={"a": 1}, available={"a": 0}))
     pool.forget_vm = MagicMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     with pytest.raises(SupInsufficientResources) as excinfo:
         await sup.delete_vm(VmId("itemhash123"))

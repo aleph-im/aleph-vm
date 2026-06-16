@@ -22,7 +22,7 @@ from aleph.vm.supervisor.errors import (
     VmAlreadyExistsError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -86,16 +86,16 @@ class FakePool:
         self.executions = executions or {}
 
 
-def make_supervisor(execution=None) -> InProcessSupervisor:
+def make_supervisor(execution=None) -> LocalSupervisor:
     executions = {str(VM_ID): execution} if execution is not None else {}
-    sup = InProcessSupervisor(pool=FakePool(executions))
+    sup = LocalSupervisor(pool=FakePool(executions))
     sup.stop_vm = AsyncMock()
     sup.start_vm = AsyncMock()
     sup.create_vm = AsyncMock(return_value="vm-info-sentinel")
     return sup
 
 
-async def wait_for_export(sup: InProcessSupervisor, vm_id: VmId) -> None:
+async def wait_for_export(sup: LocalSupervisor, vm_id: VmId) -> None:
     task = sup._migration_tasks.get(vm_id)
     if task is not None:
         await task
