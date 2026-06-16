@@ -577,9 +577,6 @@ class VmPool:
             # FC) have no spec-path boot flow yet; they keep the legacy path.
             msg = "Firecracker spec VMs require a guest_channel"
             raise InvalidBackendError(msg)
-        if spec.persistent:
-            msg = "Persistent Firecracker spec VMs are not supported yet; use the legacy create path"
-            raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)
         async with self.creation_lock:
@@ -614,8 +611,11 @@ class VmPool:
                     await self.network.create_tap(vm_id, tap_interface)
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
-                # start() boots the VMM and blocks through the init-ready
-                # handshake; configure() is a no-op for ephemeral programs.
+                # start() boots the program: ephemeral programs run the VMM
+                # directly and block through the init-ready handshake;
+                # persistent programs save the controller config and boot under
+                # systemd, then wait for init (VmExecution.start branches on
+                # self.persistent).
                 await execution.start()
             except Exception:
                 if execution.vm:
