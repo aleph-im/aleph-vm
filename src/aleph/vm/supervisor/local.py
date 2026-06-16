@@ -37,7 +37,13 @@ from aleph.vm.controllers.qemu.backup import (
     verify_qemu_disk,
 )
 from aleph.vm.migration.helpers import compress_disk, compute_sha256
-from aleph.vm.orchestrator.metrics import delete_port_mappings
+from aleph.vm.models import MessageSpec
+from aleph.vm.network.firewall import (
+    initialize_nftables,
+    recreate_network_for_vms,
+    remove_all_aleph_chains,
+)
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.supervisor import migrate
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
@@ -974,3 +980,87 @@ class LocalSupervisor(Supervisor):
 
     async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None:
         raise NotImplementedSupervisorError("inject_secret")
+
+    # Network
+    async def recreate_network(self) -> dict:
+        """Flush and rebuild the host firewall for the running local VMs.
+
+        Removes every aleph-related nftables chain, re-initializes the base
+        ruleset, recreates the per-VM chains for the currently running VMs and
+        reapplies their persisted port-redirect rules. Returns a summary dict.
+        """
+        logger.info("Starting network recreation process")
+
+        # Step 1: Collect all running VMs and their network configuration
+        running_vms = []
+        for vm_hash, execution in self.pool.executions.items():
+            if execution.is_running and execution.vm and execution.vm.tap_interface:
+                running_vms.append(
+                    {
+                        "vm_hash": vm_hash,
+                        "vm_id": execution.vm.vm_id,
+                        "tap_interface": execution.vm.tap_interface,
+                        "execution": execution,
+                    }
+                )
+                logger.debug(f"Found running VM {vm_hash} with vm_id={execution.vm.vm_id}")
+
+        logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
+
+        # Step 2: Remove all aleph-related chains (VM-specific and supervisor chains)
+        try:
+            removed_chains, failed_removals = remove_all_aleph_chains()
+            if failed_removals:
+                logger.warning(f"Failed to remove {len(failed_removals)} chains")
+                for chain_name, error in failed_removals:
+                    logger.warning(f"  - {chain_name}: {error}")
+        except Exception as e:
+            raise InternalSupervisorError(f"Failed to remove existing chains: {e!s}") from e
+
+        # Step 3: Re-initialize the base network setup
+        logger.info("Re-initializing nftables")
+        try:
+            initialize_nftables()
+        except Exception as e:
+            raise InternalSupervisorError(f"Failed to initialize network: {e!s}") from e
+
+        # Step 4: Recreate VM-specific chains and rules
+        try:
+            recreated_vms, failed_vms = recreate_network_for_vms(running_vms)
+        except Exception as e:
+            raise InternalSupervisorError(f"Failed to recreate VM networks: {e!s}") from e
+
+        # Step 5: Recreate port forwarding rules for instances
+        logger.info("Recreating port forwarding rules for instances")
+        for vm_info in running_vms:
+            execution = vm_info["execution"]
+            if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
+                try:
+                    # All rules were flushed: reapply from the persisted
+                    # mappings, then re-sync message-driven VMs against the
+                    # aggregate. Spec-built (reattached) executions have no
+                    # message; their persisted mappings are authoritative.
+                    execution.mapped_ports = await get_port_mappings(str(vm_info["vm_hash"]))
+                    if execution.mapped_ports:
+                        await execution.recreate_port_redirect_rules()
+                    if isinstance(execution.spec, MessageSpec):
+                        await execution.fetch_port_redirect_config_and_setup()
+                    logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
+                except Exception as e:
+                    logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")
+                    # Don't add to failed_vms as the VM network itself was created successfully
+
+        logger.info(
+            f"Network recreation complete. Removed chains: {len(removed_chains)}, "
+            f"Recreated VMs: {len(recreated_vms)}, Failed: {len(failed_vms)}"
+        )
+
+        return {
+            "success": len(failed_vms) == 0,
+            "removed_chains_count": len(removed_chains),
+            "removed_chains": removed_chains,
+            "recreated_count": len(recreated_vms),
+            "failed_count": len(failed_vms),
+            "recreated_vms": recreated_vms,
+            "failed_vms": failed_vms,
+        }
