@@ -125,9 +125,7 @@ async def migration_export(request: web.Request) -> web.Response:
         started_at=datetime.now(timezone.utc),
     )
     export_jobs[vm_hash] = job
-    job.task = create_task_log_exceptions(
-        run_export(job, supervisor, prior_task=prior_task), name=f"export-{vm_hash}"
-    )
+    job.task = create_task_log_exceptions(run_export(job, supervisor, prior_task=prior_task), name=f"export-{vm_hash}")
 
     return _export_job_descriptor_response(job, status=HTTPStatus.ACCEPTED)
 

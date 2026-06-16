@@ -75,9 +75,7 @@ async def build_create_vm_spec(
 
     effective_hypervisor = message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
     if effective_hypervisor != HypervisorType.qemu:
-        raise InvalidBackendError(
-            f"instances are QEMU-only, got hypervisor {effective_hypervisor!r}"
-        )
+        raise InvalidBackendError(f"instances are QEMU-only, got hypervisor {effective_hypervisor!r}")
 
     # --- GPU request ---
     # Each requested GPU becomes an unresolved GpuSpec (device_id/model set,

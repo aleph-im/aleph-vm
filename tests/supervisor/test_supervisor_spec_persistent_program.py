@@ -29,7 +29,11 @@ def _program_spec(*, persistent: bool) -> CreateVmSpec:
         backend=Backend.FIRECRACKER,
         kernel_path=Path("/opt/vmlinux.bin"),
         initrd_path=Path(""),
-        disks=[DiskSpec(path=Path("/data/rootfs.squashfs"), readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.ROOTFS)],
+        disks=[
+            DiskSpec(
+                path=Path("/data/rootfs.squashfs"), readonly=True, format=DiskFormat.SQUASHFS, role=DiskRole.ROOTFS
+            )
+        ],
         vcpus=1,
         memory_mib=128,
         tee=None,

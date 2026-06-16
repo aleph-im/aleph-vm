@@ -26,12 +26,7 @@ from aleph.vm.supervisor.errors import (
     SupervisorError,
     translate_exception,
 )
-from aleph.vm.supervisor.types import (
-    BackupId,
-    ErrorCode,
-    HostPort,
-    VmId,
-)
+from aleph.vm.supervisor.types import BackupId, ErrorCode, HostPort, VmId
 
 logger = logging.getLogger(__name__)
 

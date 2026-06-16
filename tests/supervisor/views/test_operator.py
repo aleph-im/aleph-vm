@@ -364,9 +364,7 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
             )
             assert response.status == 200
             assert await response.text() == f"Started VM with ref {vm_hash}"
-            fake_sup.initialize_confidential.assert_awaited_once_with(
-                VmId(str(vm_hash)), b"cert-bytes", b"cert-bytes"
-            )
+            fake_sup.initialize_confidential.assert_awaited_once_with(VmId(str(vm_hash)), b"cert-bytes", b"cert-bytes")
 
 
 @pytest.mark.asyncio
@@ -2250,9 +2248,7 @@ async def test_operator_backup_running_returns_202(aiohttp_client, mocker):
     response = await client.post(f"/control/machine/{vm_hash}/backup?include_volumes=true&skip_fsfreeze=true")
     assert response.status == 202, await response.text()
     assert (await response.json())["status"] == "in_progress"
-    fake_sup.start_backup.assert_awaited_once_with(
-        VmId(str(vm_hash)), quiesce_guest=False, include_volumes=True
-    )
+    fake_sup.start_backup.assert_awaited_once_with(VmId(str(vm_hash)), quiesce_guest=False, include_volumes=True)
 
 
 @pytest.mark.asyncio
@@ -2281,9 +2277,7 @@ async def test_operator_backup_quiesce_default(aiohttp_client, mocker):
         aiohttp_client, mocker, start_backup=AsyncMock(return_value=_backup_info(BackupStatus.RUNNING))
     )
     await client.post(f"/control/machine/{vm_hash}/backup")
-    fake_sup.start_backup.assert_awaited_once_with(
-        VmId(str(vm_hash)), quiesce_guest=True, include_volumes=False
-    )
+    fake_sup.start_backup.assert_awaited_once_with(VmId(str(vm_hash)), quiesce_guest=True, include_volumes=False)
 
 
 @pytest.mark.asyncio
@@ -2383,9 +2377,7 @@ async def test_operator_backup_download_bad_signature_403(aiohttp_client, mocker
         aiohttp_client, mocker, get_backup_status=AsyncMock(return_value=info)
     )
     backup_id = str(info.backup_id)
-    response = await client.get(
-        f"/control/machine/{vm_hash}/backup/{backup_id}?signature=bad&expires=9999999999"
-    )
+    response = await client.get(f"/control/machine/{vm_hash}/backup/{backup_id}?signature=bad&expires=9999999999")
     assert response.status == 403, await response.text()
 
 

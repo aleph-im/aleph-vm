@@ -112,9 +112,7 @@ class LogsOps(ABC):
 
 class BackupOps(ABC):
     @abstractmethod
-    async def start_backup(
-        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
-    ) -> BackupInfo:
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
         """Start (or return) a backup of the VM's rootfs. quiesce_guest freezes
         the guest filesystems through the QEMU agent during the copy;
         include_volumes also archives the VM's non-read-only persistent volumes."""

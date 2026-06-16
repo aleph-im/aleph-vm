@@ -110,9 +110,7 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, persistent=True
-    )
+    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.create_vm.assert_awaited_once_with(spec)
     # The message is recorded in the agent registry, not on the execution.
@@ -224,9 +222,7 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     supervisor.create_vm = AsyncMock(return_value=_info(VmStatus.RUNNING))
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, persistent=True
-    )
+    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     build.assert_awaited_once()
     supervisor.create_vm.assert_awaited_once_with(program_spec)
@@ -264,9 +260,7 @@ async def test_confidential_instance_routed_through_spec_awaiting_init(monkeypat
     supervisor.create_vm = AsyncMock(return_value=awaiting)
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, persistent=True
-    )
+    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.create_vm.assert_awaited_once_with(spec)
     waited.assert_not_awaited()  # never wait on an awaiting-init VM
@@ -328,9 +322,7 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, persistent=True
-    )
+    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     # The spec the agent built carries the owner address for engine-side
     # reservation handling.

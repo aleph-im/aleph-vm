@@ -155,7 +155,9 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
     execution, and leaves it awaiting_confidential_init: the controller service
     is NOT enabled/started (only the owner starts it via initialize)."""
     from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
-    from aleph.vm.controllers.qemu_confidential.instance import AlephQemuConfidentialInstance
+    from aleph.vm.controllers.qemu_confidential.instance import (
+        AlephQemuConfidentialInstance,
+    )
 
     pool = _bare_pool()
     # An awaiting-init confidential VM has no active controller service.

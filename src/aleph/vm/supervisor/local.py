@@ -24,7 +24,6 @@ from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorT
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import remove_controller_configuration
-from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
     backup_metadata,
@@ -38,6 +37,7 @@ from aleph.vm.controllers.qemu.backup import (
     restore_rootfs,
     verify_qemu_disk,
 )
+from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.migration.helpers import graceful_shutdown
 from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
@@ -721,9 +721,7 @@ class LocalSupervisor(Supervisor):
             disk_paths[vol_path.stem + ".qcow2"] = vol_path
         return disk_paths
 
-    async def start_backup(
-        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
-    ) -> BackupInfo:
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
         with translating_errors():
             execution = self._require(vm_id)
             disk_paths = self._backup_disk_paths(execution, include_volumes)

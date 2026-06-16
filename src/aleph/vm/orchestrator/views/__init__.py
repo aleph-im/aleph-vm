@@ -30,11 +30,9 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
+from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import (
-    delete_port_mappings,
-    get_execution_records,
-)
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
 from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
@@ -50,7 +48,6 @@ from aleph.vm.orchestrator.run import (
     run_code_on_request,
     start_persistent_vm,
 )
-from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
@@ -75,12 +72,12 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
+    InsufficientResourcesError as BoundaryInsufficientResourcesError,
+)
+from aleph.vm.supervisor.errors import (
     InternalSupervisorError,
     SupervisorError,
     VmNotFoundError,
-)
-from aleph.vm.supervisor.errors import (
-    InsufficientResourcesError as BoundaryInsufficientResourcesError,
 )
 from aleph.vm.supervisor.types import (
     ConfidentialMode,

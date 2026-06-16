@@ -126,11 +126,7 @@ class VmExecution:
     # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
     spec: MessageSpec | CreateVmSpec
     resources: (
-        AlephProgramResources
-        | AlephQemuResources
-        | AlephQemuConfidentialInstance
-        | SpecProgramResources
-        | None
+        AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance | SpecProgramResources | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: list[HostGPU]
@@ -537,9 +533,7 @@ class VmExecution:
                     # Confidential: a dedicated resources holder carrying the
                     # resolved firmware path (mirrors the message path's
                     # AlephQemuConfidentialResources).
-                    self.resources = AlephQemuConfidentialResources.from_spec(
-                        self.spec, namespace=str(self.vm_hash)
-                    )
+                    self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 else:
                     self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 self.times.prepared_at = datetime.now(tz=timezone.utc)

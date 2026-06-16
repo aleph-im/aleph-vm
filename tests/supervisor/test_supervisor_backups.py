@@ -420,9 +420,7 @@ async def test_restore_backup_requires_persistent_vm(backup_dir, tmp_path, monke
 @pytest.mark.asyncio
 async def test_restore_from_image_swaps_rootfs_and_restarts(backup_dir, tmp_path, monkeypatch):
     sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=10)
-    )
+    monkeypatch.setattr("aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=10))
     rootfs = Path(execution.vm.resources.rootfs_path)
     staged = tmp_path / "staged-upload.qcow2"
     staged.write_bytes(b"UPLOADED-ROOTFS")
@@ -438,9 +436,7 @@ async def test_restore_from_image_swaps_rootfs_and_restarts(backup_dir, tmp_path
 @pytest.mark.asyncio
 async def test_restore_from_image_rejects_oversized_disk(backup_dir, tmp_path, monkeypatch):
     sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=1000)
-    )
+    monkeypatch.setattr("aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=1000))
     rootfs = Path(execution.vm.resources.rootfs_path)
     original = rootfs.read_bytes()
     staged = tmp_path / "staged-upload.qcow2"

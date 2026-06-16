@@ -22,11 +22,13 @@ from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
-from aleph.vm.resources import GpuDevice, HostGPU, InsufficientResourcesError, get_gpu_devices
-from aleph.vm.supervisor.errors import (
-    InvalidBackendError,
-    VmAlreadyExistsError,
+from aleph.vm.resources import (
+    GpuDevice,
+    HostGPU,
+    InsufficientResourcesError,
+    get_gpu_devices,
 )
+from aleph.vm.supervisor.errors import InvalidBackendError, VmAlreadyExistsError
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_confidential_configuration,
     build_qemu_configuration,

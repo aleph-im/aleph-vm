@@ -1,5 +1,3 @@
-from aleph.vm.controllers.firecracker import (
-    AlephFirecrackerProgram,
-)
+from aleph.vm.controllers.firecracker import AlephFirecrackerProgram
 
 __all__ = ("AlephFirecrackerProgram",)

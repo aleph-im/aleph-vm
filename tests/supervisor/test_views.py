@@ -1112,9 +1112,7 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     web_app = await mock_app_with_pool
 
     # Mock the agent-side HAProxy sync to avoid actual HAProxy operations.
-    sync = mocker.patch(
-        "aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True)
-    )
+    sync = mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
