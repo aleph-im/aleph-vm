@@ -1001,10 +1001,16 @@ class LocalSupervisor(Supervisor):
                 launch_measure = client.query_launch_measure()
             finally:
                 client.close()
+            # The TEE generation comes from the VM's confidential config (an
+            # input the supervisor holds), not a hardcoded value. TeeBackend.SEV
+            # covers SEV and SEV-ES (the client refines via sev_info.policy);
+            # SEV-SNP is a distinct launch path.
+            mode = _confidential_mode(execution)
+            tee_backend = TeeBackend.SEV_SNP if mode is ConfidentialMode.SEV_SNP else TeeBackend.SEV
             return Measurement(
                 vm_id=vm_id,
                 measurement_bytes=b"",
-                tee_backend=TeeBackend.SEV,
+                tee_backend=tee_backend,
                 sev_info=SevInfo(
                     enabled=sev_info.enabled,
                     api_major=sev_info.api_major,

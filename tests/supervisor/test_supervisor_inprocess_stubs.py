@@ -7,7 +7,7 @@ import pytest
 from aleph.vm.conf import settings
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import DirectoryPath, TeeBackend, VmId
+from aleph.vm.supervisor.types import ConfidentialMode, DirectoryPath, TeeBackend, VmId
 
 
 class FakePool:
@@ -49,7 +49,8 @@ def _confidential_execution(vm_id):
     return SimpleNamespace(
         vm_hash=vm_id,
         controller_service=f"aleph-vm-controller@{vm_id}.service",
-        vm=SimpleNamespace(),
+        is_confidential=True,
+        vm=SimpleNamespace(confidential_policy=0),
     )
 
 
@@ -112,6 +113,29 @@ async def test_get_measurement_returns_sev_info_and_launch_measure(monkeypatch):
     assert measurement.vm_id == vm_id
     assert measurement.tee_backend is TeeBackend.SEV
     assert measurement.launch_measure == "bWVhc3VyZQ=="
+
+
+async def test_get_measurement_tee_backend_is_derived_not_hardcoded(monkeypatch):
+    """tee_backend comes from the VM's confidential config, not a literal SEV."""
+    vm_id = VmId("hash-conf")
+    execution = _confidential_execution(vm_id)
+    pool = ConfidentialPool(vm_id, execution)
+    sup = LocalSupervisor(pool=pool)
+
+    client = MagicMock()
+    client.query_sev_info.return_value = SimpleNamespace(
+        enabled=True, api_major=1, api_minor=55, build_id=21, policy=3, state="launch-update", handle=7
+    )
+    client.query_launch_measure.return_value = "bWVhc3VyZQ=="
+    monkeypatch.setattr("aleph.vm.supervisor.local.QemuVmClient", MagicMock(return_value=client))
+    monkeypatch.setattr(
+        "aleph.vm.supervisor.local._confidential_mode",
+        lambda execution: ConfidentialMode.SEV_SNP,
+    )
+
+    measurement = await sup.get_measurement(vm_id)
+
+    assert measurement.tee_backend is TeeBackend.SEV_SNP
     assert measurement.sev_info.enabled is True
     assert measurement.sev_info.api_major == 1
     assert measurement.sev_info.api_minor == 55
