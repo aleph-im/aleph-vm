@@ -153,11 +153,12 @@ class VmPool:
         locking because this method does not ``await``.
 
         The message-free spec path (:meth:`create_vm_from_spec`) does not
-        call this method: admission for spec-built VMs is the agent's
-        responsibility, enforced before it asks the supervisor to create.
-        Spec-built executions still contribute to the committed tally here
-        (via ``allocated_memory_mib`` / ``allocated_vcpus``), so they are
-        counted against any later message-driven admission check.
+        call this method; it enforces its own capacity admission via
+        :meth:`check_spec_admission`, which the engine runs atomically inside
+        the create path under ``creation_lock``. Spec-built executions still
+        contribute to the committed tally here (via ``allocated_memory_mib`` /
+        ``allocated_vcpus``), so they are counted against any later
+        message-driven admission check.
 
         Args:
             message: The executable content being evaluated for admission.
@@ -510,6 +511,15 @@ class VmPool:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
 
+            # Authoritative capacity admission, folded into the create path so
+            # the check and the registration below are atomic under the lock.
+            # GPU reservation is intentionally NOT done here: GPU instances
+            # never reach the spec path (run._is_spec_eligible filters them out
+            # and the only build_create_vm_spec caller passes no gpus), so the
+            # message path (create_a_vm) still owns GPU reservation. Folding it
+            # in here would be a speculative, untested pci_host mapping.
+            self.check_spec_admission(spec)
+
             execution = VmExecution.from_spec(
                 spec,
                 snapshot_manager=self.snapshot_manager,
@@ -559,8 +569,8 @@ class VmPool:
         Boots the VM from the spec's resolved paths and, when the spec carries
         a guest channel, waits for the guest's ready signal as part of boot.
         The guest-level protocols spoken over the channel are the client's
-        business (VmInfo.guest_channel_path). Admission for spec-built VMs is
-        the agent's responsibility (see check_admission docstring).
+        business (VmInfo.guest_channel_path). Capacity admission is enforced by
+        the engine via check_spec_admission, atomically inside this create path.
         """
         if spec.guest_channel is None:
             # Firecracker VMs without a guest channel (full instances under
@@ -577,6 +587,11 @@ class VmPool:
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
+
+            # Authoritative capacity admission, atomic with the registration
+            # below. GPU reservation stays on the message path (see the note in
+            # create_vm_from_spec); spec programs carry no GPUs.
+            self.check_spec_admission(spec)
 
             execution = VmExecution.from_spec(
                 spec,
