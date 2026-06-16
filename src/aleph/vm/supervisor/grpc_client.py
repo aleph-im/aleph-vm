@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 
 import grpc
@@ -354,4 +355,8 @@ class GrpcSupervisor(Supervisor):
 
     # ── Network ──
     async def recreate_network(self) -> dict:
+        raise NotImplementedError("wired in Phase 2")
+
+    # ── Reservation ──
+    async def reserve_resources(self, content, user) -> datetime:
         raise NotImplementedError("wired in Phase 2")

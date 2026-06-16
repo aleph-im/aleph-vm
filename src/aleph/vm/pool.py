@@ -1132,6 +1132,7 @@ class VmPool:
                 raise Exception(err)
         return resources
 
+
 class Reservation:
     def __init__(self, user, resource, expiration):
         self.user = user

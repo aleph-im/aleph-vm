@@ -1114,3 +1114,16 @@ class LocalSupervisor(Supervisor):
             "recreated_vms": recreated_vms,
             "failed_vms": failed_vms,
         }
+
+    # ── Reservation ──
+    async def reserve_resources(self, content, user) -> datetime:
+        """Run capacity admission, then hold the requested resources for the user.
+
+        Mirrors the legacy operate_reserve_resources endpoint: check_admission
+        keeps the dry-run honest (refuse here rather than let the client pay and
+        be rejected by notify_allocation), then reserve_resources holds the GPUs
+        and returns the reservation expiry.
+        """
+        with translating_errors():
+            self.pool.check_admission(content)
+            return await self.pool.reserve_resources(content, user)

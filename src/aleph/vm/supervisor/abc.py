@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from datetime import datetime
+from typing import Any
 
 from aleph.vm.supervisor.types import (
     BackupChunk,
@@ -149,6 +151,18 @@ class NetworkOps(ABC):
         Returns a JSON-serialisable summary of the work done."""
 
 
+class ReservationOps(ABC):
+    @abstractmethod
+    async def reserve_resources(self, content: Any, user: Any) -> datetime:
+        """Hold the resources (GPUs today) an instance message requests for a
+        user, returning the reservation expiry.
+
+        ``content`` is the Aleph ExecutableContent and ``user`` the
+        authenticated address; both are agent vocabulary kept untyped at the
+        boundary in Phase 1. The implementation runs the same capacity
+        admission as the create path before holding anything."""
+
+
 class Supervisor(
     HostOps,
     LifecycleOps,
@@ -159,6 +173,7 @@ class Supervisor(
     MigrationOps,
     ConfidentialOps,
     NetworkOps,
+    ReservationOps,
     ABC,
 ):
     """The single agent-to-VM-management interface."""

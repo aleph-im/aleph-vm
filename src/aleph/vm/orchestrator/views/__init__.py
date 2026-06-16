@@ -56,7 +56,6 @@ from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
-    require_vm_pool,
     update_aggregate_settings,
 )
 from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
@@ -78,6 +77,7 @@ from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
     InternalSupervisorError,
+    SupervisorError,
     VmNotFoundError,
 )
 from aleph.vm.supervisor.errors import (
@@ -1009,7 +1009,7 @@ async def notify_allocation(request: web.Request):
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
     """Reserve a GPU"""
-    pool: VmPool = require_vm_pool(request)
+    supervisor: Supervisor = request.app["supervisor"]
     try:
         data = await request.json()
         message = InstanceContent.model_validate(data)
@@ -1018,22 +1018,17 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
-    # Capacity admission check before holding any resource. Keeps the
-    # dry-run honest: refusing here prevents a client from paying and then
-    # being rejected by notify_allocation for memory/CPU/disk reasons.
+    # The supervisor runs capacity admission (keeping the dry-run honest) then
+    # holds the requested resources, returning the reservation expiry.
     try:
-        pool.check_admission(message)
-    except InsufficientResourcesError as error:
+        expiration_date = await supervisor.reserve_resources(message, authenticated_sender)
+    except BoundaryInsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(
             reason="Insufficient capacity",
             text="This CRN cannot reserve the requested resources at this time.",
         )
-
-    # TODO When creating a new VM check if all reservation are for user
-    try:
-        expiration_date = await pool.reserve_resources(message, authenticated_sender)
-    except Exception as error:
+    except SupervisorError as error:
         return web.json_response(
             {"status": "error", "error": "Failed to reserves all resources", "reason": str(error)},
             status=http.HTTPStatus.BAD_REQUEST,
