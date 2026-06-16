@@ -135,7 +135,7 @@ def _on_demand_fakes():
 async def test_request_rearms_idle_timer_for_on_demand_vm(reuse_settings):
     _content, expiry, _supervisor, _program_client, app = _on_demand_fakes()
 
-    response = await run_code_on_request(VM_HASH, "/", SimpleNamespace(), FakeRequest(app=app))
+    response = await run_code_on_request(VM_HASH, "/", FakeRequest(app=app))
 
     assert response.status == 200
     assert expiry.cancelled == [str(VM_HASH)]
@@ -162,7 +162,7 @@ async def test_request_never_schedules_expiry_for_persistent_vm(reuse_settings):
         "program_client": FakeProgramClient(OK_RESULT),
     }
 
-    response = await run_code_on_request(VM_HASH, "/", None, FakeRequest(app=app))
+    response = await run_code_on_request(VM_HASH, "/", FakeRequest(app=app))
 
     assert response.status == 200
     supervisor.run_program_code.assert_awaited_once()
@@ -180,7 +180,6 @@ async def test_event_rearms_idle_timer_for_on_demand_vm(reuse_settings):
         VM_HASH,
         None,
         None,
-        SimpleNamespace(),
         supervisor=supervisor,
         expiry=expiry,
         update_watcher=None,
@@ -204,7 +203,6 @@ async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
 
     result = await run_code_on_event(
         VM_HASH,
-        None,
         None,
         None,
         supervisor=supervisor,

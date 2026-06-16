@@ -274,7 +274,10 @@ async def _handle_domains_aggregate(
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
-    pool: VmPool = app["vm_pool"]
+    # Process-lifecycle wiring (not an agent request handler): the message
+    # listener and reactor are built once at startup and legitimately hold the
+    # embedded pool, like the daemon and CLI. None in split mode.
+    pool: VmPool | None = app.get("_engine_pool")
     supervisor = app["supervisor"]
     registry = app["vm_registry"]
     reactor = Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])

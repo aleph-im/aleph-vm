@@ -72,7 +72,6 @@ from aleph.vm.orchestrator.views.host_status import (
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
-from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
@@ -119,9 +118,8 @@ async def run_code_from_path(request: web.Request) -> web.Response:
             reason="Invalid message reference", text=f"Invalid message reference: {request.match_info['ref']}"
         ) from e
 
-    pool: VmPool = request.app["vm_pool"]
     with set_vm_for_logging(vm_hash=message_ref):
-        return await run_code_on_request(message_ref, path, pool, request)
+        return await run_code_on_request(message_ref, path, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -157,9 +155,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             except UnknownHashError:
                 return HTTPNotFound(reason="Invalid message reference")
 
-    pool = request.app["vm_pool"]
     with set_vm_for_logging(vm_hash=message_ref):
-        return await run_code_on_request(message_ref, path, pool, request)
+        return await run_code_on_request(message_ref, path, request)
 
 
 def authenticate_request(request: web.Request) -> None:
@@ -577,7 +574,6 @@ async def update_allocations(request: web.Request):
         return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
-    pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
@@ -647,7 +643,6 @@ async def update_allocations(request: web.Request):
                 await start_persistent_vm(
                     vm_hash,
                     pubsub,
-                    pool,
                     supervisor=supervisor,
                     registry=registry,
                     expiry=expiry,
@@ -668,7 +663,6 @@ async def update_allocations(request: web.Request):
                 await start_persistent_vm(
                     instance_item_hash,
                     pubsub,
-                    pool,
                     supervisor=supervisor,
                     registry=registry,
                     expiry=expiry,
@@ -834,7 +828,6 @@ async def notify_allocation(request: web.Request):
             return web.HTTPBadRequest(reason="Instance is allocated to a different node")
 
     pubsub: PubSub = request.app["pubsub"]
-    pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
@@ -971,7 +964,6 @@ async def notify_allocation(request: web.Request):
         await start_persistent_vm(
             item_hash,
             pubsub,
-            pool,
             supervisor=supervisor,
             registry=registry,
             expiry=expiry,

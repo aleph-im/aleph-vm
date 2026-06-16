@@ -212,9 +212,21 @@ async def _wait_until_gone(
         await asyncio.sleep(interval)
 
 
+def _engine_pool(supervisor: Supervisor) -> VmPool | None:
+    """The supervisor's embedded VmPool, when it is the in-process engine.
+
+    The agent never holds the pool directly. The one create path that has not
+    moved behind a Supervisor method (legacy confidential / GPU / Firecracker
+    instances) reaches it through the embedded LocalSupervisor in single-process
+    mode; across the gRPC boundary there is no pool and those creates 501. This
+    is the only pool reference in run.py and it is read off the supervisor, not
+    the app, so the agent's views stay pool-free.
+    """
+    return getattr(supervisor, "pool", None)
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
-    pool: VmPool,
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
@@ -226,8 +238,8 @@ async def create_vm_execution(
     Supervisor abstraction: the agent records and persists its own knowledge of
     the VM and returns None — the hypervisor object lives behind the supervisor,
     not in the pool. The remaining legacy messages (confidential / GPU /
-    firecracker instances) take the pool create path and return the pool-managed
-    VmExecution.
+    firecracker instances) take the supervisor's embedded pool create path and
+    return the pool-managed VmExecution; in split mode that path 501s.
     """
     message, original_message = await load_updated_message(vm_hash)
 
@@ -285,9 +297,10 @@ async def create_vm_execution(
         await persist_record(vm_hash, record)
         return None
 
+    pool = _engine_pool(supervisor)
     if pool is None:
         # Split mode: the legacy create path (confidential / GPU / firecracker
-        # instances, persistent programs) has not crossed the gRPC boundary.
+        # instances) has not crossed the gRPC boundary.
         raise web.HTTPNotImplemented(
             reason="Unavailable in split mode",
             text=f"VM {vm_hash} requires the legacy create path, which is not available "
@@ -306,26 +319,33 @@ async def create_vm_execution(
 
 async def create_vm_execution_or_raise_http_error(
     vm_hash: ItemHash,
-    pool: VmPool,
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     persistent: bool = False,
 ) -> VmExecution | None:
+    def _forget() -> None:
+        # Clean up the half-registered legacy execution. The spec path forgets
+        # via the registry/supervisor inside create_vm_execution; this only
+        # matters for the embedded-pool legacy create.
+        pool = _engine_pool(supervisor)
+        if pool is not None:
+            pool.forget_vm(vm_hash=vm_hash)
+
     try:
         return await create_vm_execution(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=persistent
+            vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=persistent
         )
     except ResourceDownloadError as error:
         logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     except (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError) as error:
         # Two vocabularies meet here: the legacy pool path raises the
         # resources-module error; the spec path's atomic admission surfaces the
         # boundary error through LocalSupervisor.create_vm (translating_errors).
         logger.warning("Refusing %s: %s", vm_hash, error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPServiceUnavailable(
             reason="Insufficient capacity",
             text="This CRN cannot host the requested workload at this time.",
@@ -334,15 +354,15 @@ async def create_vm_execution_or_raise_http_error(
         raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:
         logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
     except MicroVMFailedInitError as error:
         logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     except HostNotFoundError as error:
         logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPInternalServerError(reason="Host did not respond to ping") from error
     except ClientResponseError as error:
         logger.exception(error)
@@ -352,7 +372,7 @@ async def create_vm_execution_or_raise_http_error(
             raise HTTPInternalServerError(reason=f"Error downloading {vm_hash}") from error
     except Exception as error:
         logger.exception(error)
-        pool.forget_vm(vm_hash=vm_hash)
+        _forget()
         raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
 
 
@@ -516,7 +536,7 @@ def _program_result_response(result_raw: bytes, *, vm_hash: ItemHash, code_ref: 
     )
 
 
-async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
+async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request) -> web.Response:
     """
     Execute the code corresponding to the 'code id' in the path.
     """
@@ -588,7 +608,6 @@ async def run_code_on_event(
     vm_hash: ItemHash,
     event,
     pubsub: PubSub,
-    pool: VmPool,
     *,
     supervisor: Supervisor,
     expiry: ExpiryManager,
@@ -658,7 +677,6 @@ async def run_code_on_event(
 async def start_persistent_vm(
     vm_hash: ItemHash,
     pubsub: PubSub | None,
-    pool: VmPool,
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
@@ -700,7 +718,7 @@ async def start_persistent_vm(
 
     if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        await create_vm_execution(vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True)
+        await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=True)
         # create_vm_execution blocks until RUNNING in-process today; this re-poll
         # is the explicit readiness barrier (and stays correct if a future
         # out-of-process create returns before the VM is RUNNING).

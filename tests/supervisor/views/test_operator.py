@@ -1369,7 +1369,6 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
     fake_sup.reboot_vm.assert_not_awaited()
     mock_create_vm.assert_awaited_once_with(
         vm_hash=vm_hash,
-        pool=fake_vm_pool,
         supervisor=fake_sup,
         registry=app["vm_registry"],
     )
@@ -1560,7 +1559,6 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
     fake_sup.reinstall_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe_volumes=True)
     mock_create_vm.assert_awaited_once_with(
         vm_hash=vm_hash,
-        pool=fake_vm_pool,
         supervisor=fake_sup,
         registry=app["vm_registry"],
     )

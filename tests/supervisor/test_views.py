@@ -370,7 +370,7 @@ async def test_allocation_valid_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, mock_instance_content):
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -415,7 +415,7 @@ async def test_v2_executions_list_confidential_awaiting_init(
     """A confidential VM waiting for its owner to initialize it must be distinguishable
     from a dead VM in the executions list, so the scheduler and console can report it."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -464,7 +464,7 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(
     from ipaddress import IPv4Network, IPv6Network
 
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -526,7 +526,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
     (the scheduler requires networking.ipv4/ipv6), so an awaiting-init VM whose
     tap interface is not set up must stay out of the list."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -568,7 +568,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
 async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     "Test locally but do not create"
     web_app = await mock_app_with_pool
-    pool: VmPool = web_app["vm_pool"]
+    pool: VmPool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -888,7 +888,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     resp = await response.json()
     assert "expires" in resp
     assert resp["status"] == "reserved"
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # make a second reservation
     response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
@@ -897,7 +897,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert "expires" in resp2
     assert resp2["status"] == "reserved"
     assert resp2["expires"] > resp["expires"]
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # another user try to reserve, should return an error
     other_user = "other_user"
@@ -914,7 +914,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
         "reason": "Failed to find available GPU matching spec vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada "
         "Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
     }
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # Try to reserve a GPU that the CRN doesn't have
 
@@ -1001,7 +1001,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     assert response.status == 400, await response.text()
     resp = await response.json()
     assert resp["status"] == "error", await response.text()
-    assert len(app["vm_pool"].reservations) == 0
+    assert len(app["_engine_pool"].reservations) == 0
 
 
 @pytest.mark.asyncio
@@ -1396,7 +1396,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
 async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     """/about/executions/list keeps its shape: running VMs only, networks + vm_type."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     registry = web_app["vm_registry"]
     message = InstanceContent.model_validate(mock_instance_content)
 
@@ -1447,7 +1447,7 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     """v2 rebuilds the legacy mapped_ports shape from list_port_forwards."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -1483,7 +1483,7 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(
     """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
     divergence from the legacy pool dump, which emitted it verbatim)."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 

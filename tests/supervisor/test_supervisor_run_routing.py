@@ -73,13 +73,16 @@ def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
     )
 
 
-def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING):
+def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING, pool=None):
+    # ``pool`` is the supervisor's embedded engine pool: run.py reaches the
+    # legacy create path through supervisor.pool (None across the gRPC boundary).
     return SimpleNamespace(
         create_vm=AsyncMock(return_value=_info(create_status)),
         get_vm=AsyncMock(return_value=_info(get_status)),
         add_port_forward=AsyncMock(),
         delete_vm=AsyncMock(),
         start_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
+        pool=pool,
     )
 
 
@@ -104,7 +107,7 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
-        _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
+        _HASH, supervisor=supervisor, registry=registry, persistent=True
     )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
@@ -140,7 +143,7 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(asyncio.TimeoutError):
-        await run_module.create_vm_execution(_HASH, pool, supervisor=supervisor, registry=registry, persistent=True)
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure
@@ -165,7 +168,7 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(_HASH, pool, supervisor=supervisor, registry=registry, persistent=True)
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure
@@ -178,13 +181,13 @@ async def _assert_routed_to_legacy(monkeypatch, content) -> None:
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
 
-    supervisor = _fake_supervisor()
-    registry = AgentVmRegistry()
     legacy = SimpleNamespace()
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock(return_value=legacy))
+    supervisor = _fake_supervisor(pool=pool)
+    registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        _HASH, pool, supervisor=supervisor, registry=registry, persistent=False
+        _HASH, supervisor=supervisor, registry=registry, persistent=False
     )
 
     pool.create_a_vm.assert_awaited_once()
@@ -217,7 +220,7 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
-        _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
+        _HASH, supervisor=supervisor, registry=registry, persistent=True
     )
 
     build.assert_awaited_once()
@@ -264,7 +267,6 @@ async def test_start_persistent_reuses_running(monkeypatch):
     result = await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -285,7 +287,6 @@ async def test_start_persistent_creates_when_absent(monkeypatch):
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -306,7 +307,6 @@ async def test_start_persistent_resumes_stopped(monkeypatch):
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -327,7 +327,6 @@ async def test_start_persistent_recreates_after_failed(monkeypatch):
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -350,7 +349,6 @@ async def test_start_persistent_waits_gone_then_recreates_when_stopping(monkeypa
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -386,7 +384,6 @@ async def test_start_persistent_keeps_confidential_awaiting_init(monkeypatch):
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         None,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),
@@ -407,7 +404,6 @@ async def test_start_persistent_arms_update_watch(monkeypatch):
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
         pubsub,
-        MagicMock(),
         supervisor=sup,
         registry=AgentVmRegistry(),
         expiry=MagicMock(),

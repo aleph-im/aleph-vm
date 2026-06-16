@@ -13,7 +13,6 @@ from aleph.vm.orchestrator.machine import (
     get_hardware_info,
     get_memory_info,
 )
-from aleph.vm.pool import VmPool
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (
@@ -117,18 +116,16 @@ class MachineCapability(BaseModel):
     memory: MemoryProperties
 
 
-def get_machine_gpus(request: web.Request) -> GpuProperties:
-    pool: VmPool | None = request.app["vm_pool"]
-    if pool is None:
-        # Split mode: GPU inventory still lives on the in-process pool;
-        # report none until GetHostInfo carries it.
-        return GpuProperties(devices=[], available_devices=[])
-    gpus = pool.gpus
-    available_gpus = pool.get_available_gpus()
+def _gpus_from_host_info(host_info) -> GpuProperties:
+    """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
+    GetHostInfo carries the agent GpuDevice fields as plain dicts
+    (gpu_inventory / available_gpus); reconstruct the model so the public
+    usage endpoint keeps its full shape.
+    """
     return GpuProperties(
-        devices=gpus,
-        available_devices=available_gpus,
+        devices=[GpuDevice.model_validate(gpu) for gpu in host_info.gpu_inventory],
+        available_devices=[GpuDevice.model_validate(gpu) for gpu in host_info.available_gpus],
     )
 
 
@@ -199,7 +196,7 @@ async def get_machine_capability() -> MachineCapability:
 async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    pool = request.app["vm_pool"]
+    host_info = await request.app["supervisor"].get_host_info()
 
     machine_properties = await get_machine_properties()
     usage: MachineUsage = MachineUsage(
@@ -214,11 +211,12 @@ async def about_system_usage(request: web.Request):
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            # Split mode: reservation-aware accounting lives on the in-process
-            # pool; fall back to the raw free space.
+            # Reservation-aware available disk comes from the supervisor's
+            # HostInfo; the embedded engine fills it from the pool. A gRPC
+            # supervisor that has not implemented it yet reports 0.
             available_kB=(
-                pool.calculate_available_disk() // 1000
-                if pool is not None
+                host_info.available_disk_bytes // 1000
+                if host_info.available_disk_bytes
                 else psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000
             ),
         ),
@@ -227,7 +225,7 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        gpu=get_machine_gpus(request),
+        gpu=_gpus_from_host_info(host_info),
     )
 
     return web.json_response(text=usage.model_dump_json(exclude_none=True))

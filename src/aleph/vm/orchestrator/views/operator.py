@@ -22,20 +22,17 @@ from aleph.vm.controllers.qemu.backup import (
     download_volume_by_ref,
     get_backup_directory,
 )
-from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.cache import AsyncTTLCache
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.http import get_session
 from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
-from aleph.vm.orchestrator.utils import require_vm_pool
 from aleph.vm.orchestrator.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord
-from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
     BackupNotFoundError,
@@ -137,15 +134,6 @@ def get_itemhash_or_400(match_info: UrlMappingMatchInfo) -> ItemHash:
         return ItemHash(ref)
     except UnknownHashError as error:
         raise aiohttp.web_exceptions.HTTPBadRequest(body=f"Invalid ref: '{ref}'") from error
-
-
-def get_execution_or_404(ref: ItemHash, pool: VmPool) -> VmExecution:
-    """Return the execution corresponding to the ref or raise an HTTP 404 error."""
-    execution = pool.executions.get(ref)
-    if execution:
-        return execution
-    else:
-        raise web.HTTPNotFound(body=f"No virtual machine with ref {ref}")
 
 
 def get_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmRecord:
@@ -489,7 +477,6 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                     request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
                         vm_hash=vm_hash,
-                        pool=require_vm_pool(request),
                         supervisor=supervisor,
                         registry=request.app["vm_registry"],
                     )
@@ -633,7 +620,6 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         if not record.persistent:
             await create_vm_execution_or_raise_http_error(
                 vm_hash=vm_hash,
-                pool=require_vm_pool(request),
                 supervisor=supervisor,
                 registry=request.app["vm_registry"],
             )
