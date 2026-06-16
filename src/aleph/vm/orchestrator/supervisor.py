@@ -73,7 +73,6 @@ from .views.migration import (
     migration_import_status,
 )
 from .views.operator import (
-    BackupState,
     operate_backup,
     operate_backup_delete,
     operate_backup_download,
@@ -262,7 +261,6 @@ def setup_webapp(pool: VmPool | None):
         app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
         app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
 
-    app["backup_state"] = BackupState()
     cors = setup(
         app,
         defaults={

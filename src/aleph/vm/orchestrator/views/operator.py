@@ -1,11 +1,8 @@
-import asyncio
 import hashlib
 import hmac
 import json
 import logging
-import subprocess
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -22,23 +19,8 @@ from pydantic import BaseModel
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.qemu.backup import (
-    InsufficientDiskSpaceError,
-    backup_metadata,
-    check_disk_space_for_multiple,
-    cleanup_expired_backups,
-    create_backup_archive,
-    create_qemu_disk_backup,
     download_volume_by_ref,
-    find_existing_backup,
     get_backup_directory,
-    get_qemu_disk_virtual_size,
-    restore_rootfs,
-    verify_qemu_disk,
-)
-from aleph.vm.controllers.qemu.client import QemuVmClient
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance
-from aleph.vm.controllers.qemu_confidential.instance import (
-    AlephQemuConfidentialInstance,
 )
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator import metrics
@@ -55,8 +37,20 @@ from aleph.vm.orchestrator.views.authentication import (
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import ConfidentialMode, VmId, VmStatus
+from aleph.vm.supervisor.errors import (
+    BackupNotFoundError,
+    InsufficientResourcesError,
+    InvalidBackendError,
+    VmNotFoundError,
+)
+from aleph.vm.supervisor.types import (
+    BackupId,
+    BackupInfo,
+    BackupStatus,
+    ConfidentialMode,
+    VmId,
+    VmStatus,
+)
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
@@ -64,28 +58,6 @@ from aleph.vm.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-_BACKUP_RESULT_TTL = 3600  # Keep results for 1 hour max
-
-
-class BackupState:
-    """Per-app container for backup-related mutable state.
-
-    Stored on ``app["backup_state"]`` so lifecycle is tied to the app
-    and tests get a fresh instance automatically.
-    """
-
-    def __init__(self) -> None:
-        self.locks: dict[str, asyncio.Lock] = {}
-        self.tasks: dict[str, asyncio.Task] = {}
-        self.results: dict[str, tuple[float, dict | Exception]] = {}
-
-    def evict_stale_results(self) -> None:
-        """Remove results older than the TTL."""
-        now = time.time()
-        stale = [k for k, (ts, _) in self.results.items() if now - ts > _BACKUP_RESULT_TTL]
-        for k in stale:
-            self.results.pop(k, None)
 
 
 _security_aggregate_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_SECURITY_AGGREGATE)
@@ -668,152 +640,28 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 
-@dataclass(frozen=True, slots=True)
-class _BackupParams:
-    vm_hash: str
-    execution: VmExecution
-    disk_paths: dict[str, Path]
-    destination_dir: Path
-    skip_fsfreeze: bool
-    secret_token: str
-    domain: str
-    state: BackupState
+def _backup_metadata_response(info: BackupInfo, request: web.Request, vm_hash_str: str) -> dict:
+    """Build the JSON metadata body for a completed backup.
 
-
-async def _run_backup_work(params: _BackupParams) -> dict:
-    """Execute the backup work and return metadata dict.
-
-    Called both synchronously (inline) and as a background task.
+    Sourced entirely from the BackupInfo the supervisor returns plus the
+    presigned download URL the agent signs (an HTTP-only concern).
     """
-    vm_hash = params.vm_hash
-    execution = params.execution
-    disk_paths = params.disk_paths
-    state = params.state
-    qemu_client: QemuVmClient | None = None
-    fs_frozen = False
-    individual_backups: list[Path] = []
-    lock = state.locks.setdefault(vm_hash, asyncio.Lock())
-
-    await lock.acquire()
-    try:
-        # Re-check for existing backup inside the lock to avoid
-        # two requests both passing the pre-lock check and creating
-        # duplicate backups.
-        existing = find_existing_backup(params.destination_dir, vm_hash)
-        if existing:
-            meta = backup_metadata(existing)
-            expires = int(time.time()) + _BACKUP_SIGNATURE_TTL
-            signature = _sign_backup_url(
-                params.secret_token,
-                meta["backup_id"],
-                vm_hash,
-                expires,
-            )
-            path = f"/control/machine/{vm_hash}/backup/{meta['backup_id']}"
-            meta["download_url"] = f"https://{params.domain}{path}?signature={signature}&expires={expires}"
-            return meta
-
-        qemu_client = QemuVmClient(execution.vm)
-
-        if not params.skip_fsfreeze:
-            try:
-                frozen = await asyncio.wait_for(
-                    qemu_client.guest_fsfreeze_freeze(),
-                    timeout=30,
-                )
-                fs_frozen = True
-                logger.info("Froze %d filesystem(s) for %s", frozen, vm_hash)
-            except Exception as exc:
-                logger.warning(
-                    "fsfreeze unavailable for %s, proceeding without: %s",
-                    vm_hash,
-                    exc,
-                )
-
-        backup_files: dict[str, Path] = {}
-        try:
-            for member_name, src in disk_paths.items():
-                bak = await create_qemu_disk_backup(
-                    vm_hash=vm_hash,
-                    source_disk_path=src,
-                    destination_dir=params.destination_dir,
-                )
-                individual_backups.append(bak)
-                backup_files[member_name] = bak
-        finally:
-            if fs_frozen and qemu_client:
-                try:
-                    thawed = await qemu_client.guest_fsfreeze_thaw()
-                    logger.info("Thawed %d filesystem(s) for %s", thawed, vm_hash)
-                    fs_frozen = False
-                except Exception as exc:
-                    logger.error(
-                        "Failed to thaw filesystems for %s: %s",
-                        vm_hash,
-                        exc,
-                    )
-
-        for bak_path in individual_backups:
-            await verify_qemu_disk(bak_path)
-
-        source_sizes = {name: src.stat().st_size for name, src in disk_paths.items()}
-
-        tar_path = await create_backup_archive(
-            vm_hash=vm_hash,
-            backup_files=backup_files,
-            destination_dir=params.destination_dir,
-            source_sizes=source_sizes,
-        )
-
-        for bak_path in individual_backups:
-            bak_path.unlink(missing_ok=True)
-        individual_backups.clear()
-
-        meta = backup_metadata(tar_path)
-        expires = int(time.time()) + _BACKUP_SIGNATURE_TTL
-        signature = _sign_backup_url(
-            params.secret_token,
-            meta["backup_id"],
-            vm_hash,
-            expires,
-        )
-        path = f"/control/machine/{vm_hash}/backup/{meta['backup_id']}"
-        meta["download_url"] = f"https://{params.domain}{path}?signature={signature}&expires={expires}"
-        return meta
-
-    finally:
-        lock.release()
-        state.locks.pop(vm_hash, None)
-        if fs_frozen and qemu_client:
-            try:
-                await qemu_client.guest_fsfreeze_thaw()
-                logger.info("Thawed filesystems for %s (cleanup)", vm_hash)
-            except Exception as exc:
-                logger.error(
-                    "Failed to thaw filesystems for %s (cleanup): %s",
-                    vm_hash,
-                    exc,
-                )
-        if qemu_client:
-            try:
-                qemu_client.close()
-            except Exception:
-                logger.debug("Failed to close QMP client for %s", vm_hash)
-        for bak_path in individual_backups:
-            bak_path.unlink(missing_ok=True)
-
-
-async def _background_backup_wrapper(params: _BackupParams) -> None:
-    """Wrapper that stores result or exception in backup state."""
-    state = params.state
-    try:
-        meta = await _run_backup_work(params)
-        state.results[params.vm_hash] = (time.time(), meta)
-    except Exception as exc:
-        logger.exception("Background backup failed for %s", params.vm_hash)
-        state.results[params.vm_hash] = (time.time(), exc)
-    finally:
-        state.tasks.pop(params.vm_hash, None)
+    expires_at = datetime.fromtimestamp(
+        info.created_at_unix_secs + _BACKUP_SIGNATURE_TTL,
+        tz=timezone.utc,
+    ).isoformat()
+    meta: dict = {
+        "backup_id": str(info.backup_id),
+        "size": info.size_bytes,
+        "volumes": list(info.volumes),
+        "expires_at": expires_at,
+        "download_url": _build_signed_download_url(request, vm_hash_str, str(info.backup_id)),
+    }
+    if info.checksum:
+        meta["checksum"] = info.checksum
+    if info.source_sizes:
+        meta["source_sizes"] = dict(info.source_sizes)
+    return meta
 
 
 @cors_allow_all
@@ -824,27 +672,21 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     By default backs up only the rootfs.  Add ``?include_volumes=true``
     to also include non-read-only persistent volumes in the archive.
 
-    Uses the QEMU guest agent to freeze filesystems during the copy,
-    then thaws immediately before running integrity verification.
-
-    If a non-expired backup already exists for the VM it is returned
-    without re-freezing.
-
-    Backups always run asynchronously. Returns 202 immediately; poll
-    ``GET /control/machine/{ref}/backup`` for progress or result.
+    The supervisor freezes the guest filesystems during the copy (unless
+    ``?skip_fsfreeze=true``), verifies the archive, and tracks progress: a
+    backup still running returns 202; a completed one returns its metadata.
 
     Query Parameters:
         include_volumes: Set to 'true' to include persistent volumes.
         skip_fsfreeze: Set to 'true' to skip filesystem freeze.
 
     Returns:
-        JSON with backup_id, size, checksum, volumes, expires_at.
-        202 when backup is in progress.
+        JSON with backup_id, size, checksum, volumes, expires_at, download_url.
+        202 while a backup is in progress.
 
     Raises:
-        400: VM not running or not a QEMU VM.
+        400: VM not running or not a QEMU VM (invalid backend).
         403: Unauthorized sender.
-        409: Concurrent backup in progress.
         507: Insufficient disk space.
         500: Backup creation failed.
     """
@@ -852,165 +694,65 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     vm_hash_str = str(vm_hash)
 
     with set_vm_for_logging(vm_hash=vm_hash):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        supervisor: Supervisor = request.app["supervisor"]
+        include_volumes = request.query.get("include_volumes") == "true"
+        quiesce_guest = request.query.get("skip_fsfreeze") != "true"
         try:
-            pool: VmPool = require_vm_pool(request)
-            record = get_agent_record_or_404(request, vm_hash)
-            if not await is_sender_authorized(authenticated_sender, record.message):
-                return web.Response(status=403, body="Unauthorized sender")
-
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not execution.is_running:
-                return web.HTTPBadRequest(body="VM must be running to create backup")
-
-            if not isinstance(execution.vm, AlephQemuInstance | AlephQemuConfidentialInstance):
-                return web.HTTPBadRequest(body="Backup only supported for QEMU VMs")
-
-            if not execution.vm.resources or not execution.vm.resources.rootfs_path:
-                return web.HTTPBadRequest(body="VM has no disk image")
-
-            destination_dir = get_backup_directory()
-            cleanup_expired_backups(destination_dir)
-
-            state: BackupState = request.app["backup_state"]
-            state.evict_stale_results()
-
-            # Check for completed background backup result
-            if vm_hash_str in state.results:
-                _, result = state.results.pop(vm_hash_str)
-                if isinstance(result, Exception):
-                    return web.Response(
-                        status=500,
-                        body=f"Backup failed: {result}",
-                    )
-                return web.json_response(result, dumps=dumps_for_json)
-
-            # Check for in-progress background task
-            if vm_hash_str in state.tasks:
-                return web.json_response(
-                    {"status": "in_progress"},
-                    status=202,
-                    dumps=dumps_for_json,
-                )
-
-            lock = state.locks.setdefault(vm_hash_str, asyncio.Lock())
-            if lock.locked():
-                return web.json_response(
-                    {"status": "in_progress"},
-                    status=202,
-                    dumps=dumps_for_json,
-                )
-
-            # Check for existing backup
-            existing = find_existing_backup(destination_dir, vm_hash_str)
-            if existing:
-                meta = backup_metadata(existing)
-                meta["download_url"] = _build_signed_download_url(
-                    request,
-                    vm_hash_str,
-                    meta["backup_id"],
-                )
-                return web.json_response(meta, dumps=dumps_for_json)
-
-            disk_paths: dict[str, Path] = {
-                "rootfs.qcow2": Path(execution.vm.resources.rootfs_path),
-            }
-            include_volumes = request.query.get("include_volumes") == "true"
-            if include_volumes and execution.resources and execution.resources.volumes:
-                for vol in execution.resources.volumes:
-                    if not vol.read_only:
-                        vol_path = Path(vol.path_on_host)
-                        name = vol_path.stem + ".qcow2"
-                        disk_paths[name] = vol_path
-
-            try:
-                await check_disk_space_for_multiple(
-                    list(disk_paths.values()),
-                    destination_dir,
-                )
-            except InsufficientDiskSpaceError as exc:
-                return web.Response(status=507, body=str(exc))
-
-            params = _BackupParams(
-                vm_hash=vm_hash_str,
-                execution=execution,
-                disk_paths=disk_paths,
-                destination_dir=destination_dir,
-                skip_fsfreeze=request.query.get("skip_fsfreeze") == "true",
-                secret_token=request.app["secret_token"],
-                domain=settings.DOMAIN_NAME,
-                state=state,
+            info = await supervisor.start_backup(
+                VmId(vm_hash_str),
+                quiesce_guest=quiesce_guest,
+                include_volumes=include_volumes,
             )
+        except VmNotFoundError:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+        except InvalidBackendError as error:
+            return web.HTTPBadRequest(body=str(error) or "Backup only supported for QEMU VMs")
+        except InsufficientResourcesError as error:
+            return web.Response(status=507, body=str(error))
 
-            task = asyncio.create_task(
-                _background_backup_wrapper(params),
-            )
-            state.tasks[vm_hash_str] = task
-            return web.json_response(
-                {"status": "in_progress"},
-                status=202,
-                dumps=dumps_for_json,
-            )
-
-        except web.HTTPException:
-            raise
-        except Exception:
-            logger.exception("Failed to create backup for %s", vm_hash)
-            raise web.HTTPInternalServerError(
-                body="Backup creation failed",
-            ) from None
+        if info.status is BackupStatus.RUNNING:
+            return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
+        if info.status is BackupStatus.FAILED:
+            return web.Response(status=500, body=f"Backup failed: {info.error_message}")
+        return web.json_response(
+            _backup_metadata_response(info, request, vm_hash_str),
+            dumps=dumps_for_json,
+        )
 
 
 @cors_allow_all
 @require_jwk_authentication
 async def operate_backup_status(request: web.Request, authenticated_sender: str) -> web.Response:
-    """Check whether a non-expired backup exists for a VM."""
+    """Report the latest backup for a VM: 202 while one is running, the
+    metadata (with a presigned URL) for a completed one, 404 when none."""
     vm_hash = get_itemhash_or_400(request.match_info)
+    vm_hash_str = str(vm_hash)
 
     with set_vm_for_logging(vm_hash=vm_hash):
         record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        vm_hash_str = str(vm_hash)
-        state: BackupState = request.app["backup_state"]
+        supervisor: Supervisor = request.app["supervisor"]
+        backups = await supervisor.list_backups(VmId(vm_hash_str))
 
-        # Check for in-progress background task or lock
-        if vm_hash_str in state.tasks:
-            return web.json_response(
-                {"status": "in_progress"},
-                status=202,
-                dumps=dumps_for_json,
-            )
-        lock = state.locks.get(vm_hash_str)
-        if lock and lock.locked():
-            return web.json_response(
-                {"status": "in_progress"},
-                status=202,
-                dumps=dumps_for_json,
-            )
+        if any(b.status is BackupStatus.RUNNING for b in backups):
+            return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
 
-        # Check for completed background result
-        if vm_hash_str in state.results:
-            _, result = state.results.pop(vm_hash_str)
-            if isinstance(result, Exception):
-                return web.Response(status=500, body=f"Backup failed: {result}")
-            return web.json_response(result, dumps=dumps_for_json)
-
-        destination_dir = get_backup_directory()
-        cleanup_expired_backups(destination_dir)
-
-        existing = find_existing_backup(destination_dir, vm_hash_str)
-        if not existing:
+        completed = [b for b in backups if b.status is BackupStatus.COMPLETE]
+        if not completed:
             raise web.HTTPNotFound(body="No backup found for this VM")
 
-        meta = backup_metadata(existing)
-        meta["download_url"] = _build_signed_download_url(
-            request,
-            str(vm_hash),
-            meta["backup_id"],
+        # The freshest completed archive.
+        latest = max(completed, key=lambda b: b.created_at_unix_secs)
+        return web.json_response(
+            _backup_metadata_response(latest, request, vm_hash_str),
+            dumps=dumps_for_json,
         )
-        return web.json_response(meta, dumps=dumps_for_json)
 
 
 @cors_allow_all
@@ -1019,53 +761,35 @@ async def operate_backup_download(request: web.Request) -> web.StreamResponse:
 
     Requires ``?signature=...&expires=...`` query parameters generated
     by the backup creation endpoint.  No JWK authentication needed.
+
+    The archive bytes stream from the supervisor; the sidecar headers
+    (Content-Length, X-Backup-Checksum, X-Source-Size) come from the backup
+    metadata the supervisor reports.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     backup_id = _validate_backup_id(request.match_info.get("backup_id", ""), vm_hash)
     _verify_backup_download(request, str(vm_hash), backup_id)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        destination_dir = get_backup_directory()
-        cleanup_expired_backups(destination_dir)
-
-        tar_path = destination_dir / f"{backup_id}.tar"
-        if not tar_path.exists():
-            raise web.HTTPNotFound(body=f"Backup {backup_id} not found")
-
-        sidecar = tar_path.with_suffix(".tar.sha256")
-        checksum = ""
-        if sidecar.exists():
-            checksum = sidecar.read_text().split()[0]
-
-        meta_file = tar_path.with_suffix(".tar.meta.json")
-        total_source_size = 0
-        if meta_file.exists():
-            stored = json.loads(meta_file.read_text())
-            total_source_size = sum(stored.get("source_sizes", {}).values())
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            info = await supervisor.get_backup_status(VmId(str(vm_hash)), BackupId(backup_id))
+        except BackupNotFoundError:
+            raise web.HTTPNotFound(body=f"Backup {backup_id} not found") from None
 
         response = web.StreamResponse()
         response.headers["Content-Type"] = "application/x-tar"
         response.headers["Content-Disposition"] = f'attachment; filename="{backup_id}.tar"'
-        response.headers["Content-Length"] = str(tar_path.stat().st_size)
-        if checksum:
-            response.headers["X-Backup-Checksum"] = f"sha256:{checksum}"
+        response.headers["Content-Length"] = str(info.size_bytes)
+        if info.checksum:
+            response.headers["X-Backup-Checksum"] = info.checksum
+        total_source_size = sum(info.source_sizes.values())
         if total_source_size:
             response.headers["X-Source-Size"] = str(total_source_size)
 
         await response.prepare(request)
-
-        chunk_size = 65536
-
-        def _read_chunk(fh, size):
-            return fh.read(size)
-
-        with open(tar_path, "rb") as f:
-            while True:
-                chunk = await asyncio.to_thread(_read_chunk, f, chunk_size)
-                if not chunk:
-                    break
-                await response.write(chunk)
-
+        async for chunk in supervisor.download_backup(VmId(str(vm_hash)), BackupId(backup_id)):
+            await response.write(chunk.data)
         await response.write_eof()
         return response
 
@@ -1076,7 +800,7 @@ async def operate_backup_delete(
     request: web.Request,
     authenticated_sender: str,
 ) -> web.Response:
-    """Delete a backup archive and its checksum sidecar."""
+    """Delete a backup archive and its sidecars."""
     vm_hash = get_itemhash_or_400(request.match_info)
     backup_id = _validate_backup_id(request.match_info.get("backup_id", ""), vm_hash)
 
@@ -1085,27 +809,23 @@ async def operate_backup_delete(
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        destination_dir = get_backup_directory()
-        tar_path = destination_dir / f"{backup_id}.tar"
-
-        if not tar_path.exists():
-            raise web.HTTPNotFound(body=f"Backup {backup_id} not found")
-
-        tar_path.unlink()
-        tar_path.with_suffix(".tar.sha256").unlink(missing_ok=True)
-        tar_path.with_suffix(".tar.meta.json").unlink(missing_ok=True)
+        supervisor: Supervisor = request.app["supervisor"]
+        try:
+            await supervisor.delete_backup(VmId(str(vm_hash)), BackupId(backup_id))
+        except BackupNotFoundError:
+            raise web.HTTPNotFound(body=f"Backup {backup_id} not found") from None
 
         logger.info("Deleted backup %s for %s", backup_id, vm_hash)
         return web.Response(status=200, body=f"Deleted backup {backup_id}")
 
 
-async def _parse_restore_upload(
+async def _stage_restore_upload(
     request: web.Request,
-    backup_dir: Path,
+    staging_dir: Path,
     vm_hash: str,
-    max_bytes: int = 0,
+    max_bytes: int,
 ) -> Path:
-    """Stream a multipart rootfs upload to disk."""
+    """Stream a multipart rootfs upload to a host path the engine can read."""
     limit = max_bytes or settings.MAX_RESTORE_UPLOAD_BYTES
     reader = await request.multipart()
     field = await reader.next()
@@ -1115,7 +835,7 @@ async def _parse_restore_upload(
         field = await reader.next()
     if field is None:
         raise web.HTTPBadRequest(body="Missing 'rootfs' field in multipart upload")
-    upload_path = backup_dir / f"restore-{vm_hash}.qcow2"
+    upload_path = staging_dir / f"restore-{vm_hash}.qcow2"
     bytes_written = 0
     with open(upload_path, "wb") as f:
         while True:
@@ -1125,19 +845,13 @@ async def _parse_restore_upload(
             bytes_written += len(chunk)
             if bytes_written > limit:
                 upload_path.unlink(missing_ok=True)
-                raise web.HTTPRequestEntityTooLarge(
-                    max_size=limit,
-                    actual_size=bytes_written,
-                )
+                raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=bytes_written)
             f.write(chunk)
     return upload_path
 
 
-async def _parse_restore_json(
-    request: web.Request,
-    backup_dir: Path,
-) -> Path:
-    """Download a volume by item hash from a JSON request body."""
+async def _stage_restore_volume_ref(request: web.Request, staging_dir: Path) -> Path:
+    """Download a volume by item hash from a JSON request body to a host path."""
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -1147,7 +861,7 @@ async def _parse_restore_json(
         raise web.HTTPBadRequest(body="Missing volume_ref in JSON body")
     if not all(c in "0123456789abcdef" for c in volume_ref):
         raise web.HTTPBadRequest(body="Invalid volume_ref format")
-    return await download_volume_by_ref(volume_ref, backup_dir)
+    return await download_volume_by_ref(volume_ref, staging_dir)
 
 
 @cors_allow_all
@@ -1162,50 +876,21 @@ async def operate_restore(
     - Multipart upload with a ``rootfs`` file field (QCOW2).
     - JSON body with ``{"volume_ref": "<item_hash>"}``.
 
-    Stops the VM, validates the new image, replaces rootfs, restarts.
+    The agent stages the bytes to a host path and hands the disk/VM work
+    (validate, size-check, swap rootfs, restart) to the supervisor.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
-
-    # Serialize restore requests per VM — prevents concurrent
-    # restores from racing on the staging file and stop/restart.
-    # Shares locks with backup so they don't run concurrently either.
-    state: BackupState = request.app["backup_state"]
-    lock = state.locks.setdefault(str(vm_hash), asyncio.Lock())
-    if lock.locked():
-        return web.HTTPConflict(body="A backup or restore is already in progress for this VM")
-
-    try:
-        async with lock:
-            return await _do_restore(request, vm_hash, authenticated_sender)
-    finally:
-        state.locks.pop(str(vm_hash), None)
-
-
-async def _do_restore(
-    request: web.Request,
-    vm_hash: ItemHash,
-    authenticated_sender: str,
-) -> web.Response:
     temp_file: Path | None = None
     restore_succeeded = False
 
     with set_vm_for_logging(vm_hash=vm_hash):
         try:
-            pool: VmPool = require_vm_pool(request)
             record = get_agent_record_or_404(request, vm_hash)
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
 
-            execution = get_execution_or_404(vm_hash, pool=pool)
-
-            if not isinstance(execution.vm, AlephQemuInstance | AlephQemuConfidentialInstance):
-                return web.HTTPBadRequest(body="Restore only supported for QEMU VMs")
-
-            if not execution.vm.resources or not execution.vm.resources.rootfs_path:
-                return web.HTTPBadRequest(body="VM has no rootfs")
-
-            current_rootfs = Path(execution.vm.resources.rootfs_path)
-            backup_dir = get_backup_directory()
+            supervisor: Supervisor = request.app["supervisor"]
+            staging_dir = get_backup_directory()
 
             max_upload = record.message.rootfs.size_mib * 1024 * 1024
             if request.content_length and request.content_length > max_upload:
@@ -1216,63 +901,27 @@ async def _do_restore(
 
             content_type = request.content_type or ""
             if content_type.startswith("multipart/"):
-                temp_file = await _parse_restore_upload(
-                    request,
-                    backup_dir,
-                    str(vm_hash),
-                    max_upload,
-                )
+                temp_file = await _stage_restore_upload(request, staging_dir, str(vm_hash), max_upload)
             else:
-                temp_file = await _parse_restore_json(request, backup_dir)
+                temp_file = await _stage_restore_volume_ref(request, staging_dir)
 
-            # qemu-img rejects anything that isn't a valid QCOW2 image (e.g. a
-            # tar archive uploaded by mistake) with a non-zero exit code. That's
-            # a client error — surface it as a 400 rather than a generic 500.
             try:
-                await verify_qemu_disk(temp_file)
-                new_size = await get_qemu_disk_virtual_size(temp_file)
-            except subprocess.CalledProcessError:
-                logger.info("Rejected restore upload for VM %s: not a valid QCOW2 image", vm_hash)
-                return web.HTTPBadRequest(
-                    body="Uploaded file is not a valid QCOW2 disk image",
+                await supervisor.restore_from_image(
+                    VmId(str(vm_hash)),
+                    temp_file,
+                    max_virtual_size_bytes=max_upload,
                 )
-
-            max_size = record.message.rootfs.size_mib * 1024 * 1024
-            if new_size > max_size:
-                return web.HTTPBadRequest(
-                    body=f"New rootfs virtual size ({new_size} bytes) exceeds "
-                    f"declared rootfs size ({max_size} bytes). "
-                    f"Restore cannot increase disk size.",
-                )
-
-            if execution.is_running:
-                logger.info("Stopping VM %s for restore", vm_hash)
-                await pool.stop_vm(execution.vm_hash)
-                # Invalidate old forget_on_stop and keep in pool
-                execution.stop_event = asyncio.Event()
-                pool.executions[execution.vm_hash] = execution
-
-            await restore_rootfs(temp_file, current_rootfs)
+            except VmNotFoundError:
+                raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+            except InvalidBackendError as error:
+                # qemu-img rejecting the image, an oversized disk, or a
+                # non-QEMU VM are all client errors.
+                logger.info("Rejected restore for VM %s: %s", vm_hash, error)
+                return web.HTTPBadRequest(body=str(error) or "Invalid restore image")
             restore_succeeded = True
 
-            logger.info("Restarting VM %s after restore", vm_hash)
-            if execution.persistent:
-                await pool.restart_persistent_vm(execution)
-            else:
-                if execution.vm_hash in pool.executions:
-                    pool.forget_vm(execution.vm_hash)
-                await create_vm_execution_or_raise_http_error(
-                    vm_hash=vm_hash,
-                    pool=pool,
-                    supervisor=request.app["supervisor"],
-                    registry=request.app["vm_registry"],
-                )
-
             return web.json_response(
-                {
-                    "status": "restored",
-                    "vm_hash": str(vm_hash),
-                },
+                {"status": "restored", "vm_hash": str(vm_hash)},
                 dumps=dumps_for_json,
             )
 
@@ -1282,7 +931,7 @@ async def _do_restore(
             logger.exception("Failed to restore VM %s", vm_hash)
             raise web.HTTPInternalServerError(body="Restore failed") from None
         finally:
-            # Only delete the uploaded temp file after a successful restore.
-            # On failure, keep it so the user doesn't have to re-upload.
+            # Only delete the staged file after a successful restore. On
+            # failure, keep it so the user doesn't have to re-upload.
             if restore_succeeded and temp_file and temp_file.exists():
                 temp_file.unlink(missing_ok=True)

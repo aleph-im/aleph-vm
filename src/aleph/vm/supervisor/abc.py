@@ -126,7 +126,9 @@ class BackupOps(ABC):
     async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo: ...
 
     @abstractmethod
-    async def restore_from_image(self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0) -> VmInfo:
+    async def restore_from_image(
+        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
+    ) -> VmInfo:
         """Restore a VM's rootfs from a QCOW2 image already staged on a host
         path (an uploaded image or a downloaded volume). Validates the image,
         rejects one whose virtual size exceeds max_virtual_size_bytes (0 = no

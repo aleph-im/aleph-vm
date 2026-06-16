@@ -17,6 +17,9 @@ from aleph.vm.storage import get_message
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.types import (
     Backend,
+    BackupId,
+    BackupInfo,
+    BackupStatus,
     ConfidentialMode,
     IpAssignment,
     LogChunk,
@@ -83,6 +86,27 @@ def _measurement(vm_id: str = _FAKE_HASH) -> Measurement:
     )
 
 
+_BACKUP_TS = 1_700_000_000
+
+
+def _backup_info(
+    status: BackupStatus = BackupStatus.COMPLETE,
+    vm_id: str = _FAKE_HASH,
+    backup_id: str | None = None,
+) -> BackupInfo:
+    return BackupInfo(
+        vm_id=VmId(vm_id),
+        backup_id=BackupId(backup_id or f"{vm_id}-20260616T000000Z"),
+        status=status,
+        size_bytes=4096,
+        created_at_unix_secs=_BACKUP_TS,
+        error_message="" if status is not BackupStatus.FAILED else "boom",
+        checksum="sha256:abc123" if status is BackupStatus.COMPLETE else "",
+        volumes=["rootfs.qcow2"] if status is BackupStatus.COMPLETE else [],
+        source_sizes={"rootfs.qcow2": 8192} if status is BackupStatus.COMPLETE else {},
+    )
+
+
 def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
     return MagicMock(
         get_vm=AsyncMock(return_value=_vm_info(status)),
@@ -97,6 +121,13 @@ def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
         initialize_confidential=AsyncMock(),
         get_measurement=AsyncMock(return_value=_measurement()),
         inject_secret=AsyncMock(),
+        start_backup=AsyncMock(return_value=_backup_info(BackupStatus.RUNNING)),
+        get_backup_status=AsyncMock(return_value=_backup_info()),
+        list_backups=AsyncMock(return_value=[]),
+        delete_backup=AsyncMock(),
+        download_backup=_fake_stream([]),
+        restore_backup=AsyncMock(return_value=_vm_info(VmStatus.RUNNING)),
+        restore_from_image=AsyncMock(return_value=_vm_info(VmStatus.RUNNING)),
     )
 
 
@@ -2164,6 +2195,295 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
         json={},
     )
     assert response.status == 403, await response.text()
+
+
+def _backup_stream(chunks):
+    """download_backup is a callable returning an async iterator of BackupChunk."""
+    from aleph.vm.supervisor.types import BackupChunk
+
+    async def _gen(vm_id, backup_id):
+        offset = 0
+        for data in chunks:
+            yield BackupChunk(data=data, offset=offset)
+            offset += len(data)
+
+    return _gen
+
+
+async def _seed_authorized_backup_app(aiohttp_client, mocker, **supervisor_overrides):
+    """An app whose registry is seeded and whose sender is authorized, with a
+    fake supervisor; returns (client, vm_hash, fake_sup)."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mocker.patch(
+        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        return_value=True,
+    )
+    app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+    # secret_token is set by the startup hook (setup), not setup_webapp; the
+    # presigned download URL signing needs it.
+    app["secret_token"] = "test-secret-token"
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor()
+    for key, value in supervisor_overrides.items():
+        setattr(fake_sup, key, value)
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+    return client, vm_hash, fake_sup
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_running_returns_202(aiohttp_client, mocker):
+    """A RUNNING backup returns 202 in_progress; quiesce/include flags flow through."""
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, start_backup=AsyncMock(return_value=_backup_info(BackupStatus.RUNNING))
+    )
+    response = await client.post(f"/control/machine/{vm_hash}/backup?include_volumes=true&skip_fsfreeze=true")
+    assert response.status == 202, await response.text()
+    assert (await response.json())["status"] == "in_progress"
+    fake_sup.start_backup.assert_awaited_once_with(
+        VmId(str(vm_hash)), quiesce_guest=False, include_volumes=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_complete_returns_metadata_and_url(aiohttp_client, mocker):
+    """A COMPLETE backup returns the metadata body sourced from BackupInfo plus a presigned URL."""
+    info = _backup_info(BackupStatus.COMPLETE)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, start_backup=AsyncMock(return_value=info)
+    )
+    response = await client.post(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["backup_id"] == str(info.backup_id)
+    assert body["size"] == info.size_bytes
+    assert body["checksum"] == "sha256:abc123"
+    assert body["volumes"] == ["rootfs.qcow2"]
+    assert body["source_sizes"] == {"rootfs.qcow2": 8192}
+    assert "signature=" in body["download_url"]
+    assert f"/backup/{info.backup_id}" in body["download_url"]
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_quiesce_default(aiohttp_client, mocker):
+    """Without skip_fsfreeze the engine is asked to quiesce the guest."""
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, start_backup=AsyncMock(return_value=_backup_info(BackupStatus.RUNNING))
+    )
+    await client.post(f"/control/machine/{vm_hash}/backup")
+    fake_sup.start_backup.assert_awaited_once_with(
+        VmId(str(vm_hash)), quiesce_guest=True, include_volumes=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_insufficient_space_returns_507(aiohttp_client, mocker):
+    from aleph.vm.supervisor.errors import InsufficientResourcesError
+
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, start_backup=AsyncMock(side_effect=InsufficientResourcesError("no space"))
+    )
+    response = await client.post(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 507, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_invalid_backend_returns_400(aiohttp_client, mocker):
+    from aleph.vm.supervisor.errors import InvalidBackendError
+
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, start_backup=AsyncMock(side_effect=InvalidBackendError("not qemu"))
+    )
+    response = await client.post(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 400, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_status_running_returns_202(aiohttp_client, mocker):
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, list_backups=AsyncMock(return_value=[_backup_info(BackupStatus.RUNNING)])
+    )
+    response = await client.get(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 202, await response.text()
+    assert (await response.json())["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_status_complete_returns_metadata(aiohttp_client, mocker):
+    info = _backup_info(BackupStatus.COMPLETE)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, list_backups=AsyncMock(return_value=[info])
+    )
+    response = await client.get(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["backup_id"] == str(info.backup_id)
+    assert body["checksum"] == "sha256:abc123"
+    assert "download_url" in body
+    fake_sup.list_backups.assert_awaited_once_with(VmId(str(vm_hash)))
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_status_none_returns_404(aiohttp_client, mocker):
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, list_backups=AsyncMock(return_value=[])
+    )
+    response = await client.get(f"/control/machine/{vm_hash}/backup")
+    assert response.status == 404, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_download_streams_with_sidecar_headers(aiohttp_client, mocker):
+    """download verifies the presigned URL, streams from the engine, and sets
+    Content-Length, X-Backup-Checksum and X-Source-Size from BackupInfo."""
+    import dataclasses
+
+    from aleph.vm.orchestrator.views.operator import _sign_backup_url
+
+    chunks = [b"AAAA", b"BBBB"]
+    # Content-Length is sourced from BackupInfo.size_bytes, which is the tar
+    # size: it must match the streamed total or the client waits forever.
+    info = dataclasses.replace(_backup_info(BackupStatus.COMPLETE), size_bytes=sum(len(c) for c in chunks))
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client,
+        mocker,
+        get_backup_status=AsyncMock(return_value=info),
+        download_backup=_backup_stream(chunks),
+    )
+    secret = client.app["secret_token"]
+    import time as _time
+
+    expires = int(_time.time()) + 3600
+    backup_id = str(info.backup_id)
+    signature = _sign_backup_url(secret, backup_id, str(vm_hash), expires)
+    response = await client.get(
+        f"/control/machine/{vm_hash}/backup/{backup_id}?signature={signature}&expires={expires}"
+    )
+    assert response.status == 200, await response.text()
+    assert response.headers["X-Backup-Checksum"] == "sha256:abc123"
+    assert response.headers["X-Source-Size"] == "8192"
+    assert response.headers["Content-Length"] == str(info.size_bytes)
+    assert await response.read() == b"AAAABBBB"
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_download_bad_signature_403(aiohttp_client, mocker):
+    info = _backup_info(BackupStatus.COMPLETE)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, get_backup_status=AsyncMock(return_value=info)
+    )
+    backup_id = str(info.backup_id)
+    response = await client.get(
+        f"/control/machine/{vm_hash}/backup/{backup_id}?signature=bad&expires=9999999999"
+    )
+    assert response.status == 403, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_delete_delegates(aiohttp_client, mocker):
+    info = _backup_info(BackupStatus.COMPLETE)
+    backup_id = str(info.backup_id)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(aiohttp_client, mocker)
+    response = await client.delete(f"/control/machine/{vm_hash}/backup/{backup_id}")
+    assert response.status == 200, await response.text()
+    fake_sup.delete_backup.assert_awaited_once_with(VmId(str(vm_hash)), BackupId(backup_id))
+
+
+@pytest.mark.asyncio
+async def test_operator_backup_delete_unknown_returns_404(aiohttp_client, mocker):
+    from aleph.vm.supervisor.errors import BackupNotFoundError
+
+    info = _backup_info(BackupStatus.COMPLETE)
+    backup_id = str(info.backup_id)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, delete_backup=AsyncMock(side_effect=BackupNotFoundError(backup_id))
+    )
+    response = await client.delete(f"/control/machine/{vm_hash}/backup/{backup_id}")
+    assert response.status == 404, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_operator_restore_volume_ref_stages_and_restores(aiohttp_client, mocker):
+    """A {"volume_ref": ...} body downloads the volume to a temp path, then the
+    engine restore_from_image runs; success returns {"status": "restored"}."""
+    staged = mocker.AsyncMock(return_value=__import__("pathlib").Path("/tmp/restore-staged.qcow2"))
+    mocker.patch("aleph.vm.orchestrator.views.operator.download_volume_by_ref", staged)
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(aiohttp_client, mocker)
+
+    response = await client.post(
+        f"/control/machine/{vm_hash}/restore",
+        json={"volume_ref": "0123456789abcdef"},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body == {"status": "restored", "vm_hash": str(vm_hash)}
+    staged.assert_awaited_once()
+    fake_sup.restore_from_image.assert_awaited_once()
+    call = fake_sup.restore_from_image.await_args
+    assert call.args[0] == VmId(str(vm_hash))
+
+
+@pytest.mark.asyncio
+async def test_operator_restore_upload_stages_and_restores(aiohttp_client, mocker):
+    """A multipart 'rootfs' upload is staged to a temp path then restored via the engine."""
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(aiohttp_client, mocker)
+
+    form = aiohttp.FormData()
+    form.add_field("rootfs", b"QCOW2-UPLOAD-BYTES", filename="rootfs.qcow2")
+    response = await client.post(f"/control/machine/{vm_hash}/restore", data=form)
+    assert response.status == 200, await response.text()
+    assert (await response.json())["status"] == "restored"
+    fake_sup.restore_from_image.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_operator_restore_invalid_image_returns_400(aiohttp_client, mocker):
+    """qemu-img rejecting the staged image (InvalidBackendError) maps to 400."""
+    from aleph.vm.supervisor.errors import InvalidBackendError
+
+    client, vm_hash, fake_sup = await _seed_authorized_backup_app(
+        aiohttp_client, mocker, restore_from_image=AsyncMock(side_effect=InvalidBackendError("not qcow2"))
+    )
+    form = aiohttp.FormData()
+    form.add_field("rootfs", b"NOT-A-QCOW2", filename="rootfs.qcow2")
+    response = await client.post(f"/control/machine/{vm_hash}/restore", data=form)
+    assert response.status == 400, await response.text()
+
+
+def test_operator_backup_endpoints_have_no_pool_references():
+    """Guard: the five backup/restore endpoints (and their restore helper) must
+    not read the pool. No require_vm_pool / vm_pool / .executions /
+    get_execution_or_404 anywhere in their source."""
+    import inspect
+
+    from aleph.vm.orchestrator.views import operator
+
+    targets = [
+        operator.operate_backup,
+        operator.operate_backup_status,
+        operator.operate_backup_download,
+        operator.operate_backup_delete,
+        operator.operate_restore,
+    ]
+    if hasattr(operator, "_do_restore"):
+        targets.append(operator._do_restore)
+    forbidden = ["require_vm_pool", "vm_pool", ".executions", "get_execution_or_404"]
+    for func in targets:
+        source = inspect.getsource(func)
+        for token in forbidden:
+            assert token not in source, f"{func.__name__} must not reference {token!r}"
 
 
 def test_operator_module_does_not_read_execution_message():

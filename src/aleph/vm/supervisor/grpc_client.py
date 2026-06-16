@@ -259,10 +259,11 @@ class GrpcSupervisor(Supervisor):
 
     # ── Backups ──
     async def start_backup(
-        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
+        self,
+        vm_id: VmId,
+        quiesce_guest: bool = False,
+        include_volumes: bool = False,  # noqa: ARG002  not yet carried by the proto (Phase 2)
     ) -> BackupInfo:
-        # include_volumes is not yet carried by the proto (Phase 2); the gRPC
-        # path is not the prod path in Phase 1.
         reply = await self._unary(
             "StartBackup",
             pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
