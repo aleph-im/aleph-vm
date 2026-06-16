@@ -27,12 +27,6 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import MessageSpec
-from aleph.vm.network.firewall import (
-    initialize_nftables,
-    recreate_network_for_vms,
-    remove_all_aleph_chains,
-)
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
@@ -40,7 +34,6 @@ from aleph.vm.orchestrator.messages import try_get_message
 from aleph.vm.orchestrator.metrics import (
     delete_port_mappings,
     get_execution_records,
-    get_port_mappings,
 )
 from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
@@ -82,7 +75,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.errors import InternalSupervisorError, VmNotFoundError
 from aleph.vm.supervisor.types import (
     ConfidentialMode,
     PortForwardInfo,
@@ -745,100 +738,14 @@ async def recreate_network(request: web.Request):
     if network_recreation_lock is None:
         network_recreation_lock = asyncio.Lock()
 
-    pool: VmPool = require_vm_pool(request)
-
     async with network_recreation_lock:
-        logger.info("Starting network recreation process")
-
-        # Step 1: Collect all running VMs and their network configuration
-        running_vms = []
-        for vm_hash, execution in pool.executions.items():
-            if execution.is_running and execution.vm and execution.vm.tap_interface:
-                running_vms.append(
-                    {
-                        "vm_hash": vm_hash,
-                        "vm_id": execution.vm.vm_id,
-                        "tap_interface": execution.vm.tap_interface,
-                        "execution": execution,
-                    }
-                )
-                logger.debug(f"Found running VM {vm_hash} with vm_id={execution.vm.vm_id}")
-
-        logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
-
-        # Step 2: Remove all aleph-related chains (VM-specific and supervisor chains)
         try:
-            removed_chains, failed_removals = remove_all_aleph_chains()
-            if failed_removals:
-                logger.warning(f"Failed to remove {len(failed_removals)} chains")
-                for chain_name, error in failed_removals:
-                    logger.warning(f"  - {chain_name}: {error}")
-        except Exception as e:
-            logger.error(f"Error removing aleph chains: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to remove existing chains: {e!s}"},
-                status=500,
-            )
+            result = await request.app["supervisor"].recreate_network()
+        except InternalSupervisorError as error:
+            logger.error(f"Network recreation failed: {error}")
+            return web.json_response({"success": False, "error": str(error)}, status=500)
 
-        # Step 3: Re-initialize the base network setup
-        logger.info("Re-initializing nftables")
-        try:
-            initialize_nftables()
-        except Exception as e:
-            logger.error(f"Error initializing nftables: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to initialize network: {e!s}"},
-                status=500,
-            )
-
-        # Step 4: Recreate VM-specific chains and rules
-        try:
-            recreated_vms, failed_vms = recreate_network_for_vms(running_vms)
-        except Exception as e:
-            logger.error(f"Error recreating VM networks: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to recreate VM networks: {e!s}"},
-                status=500,
-            )
-
-        # Step 5: Recreate port forwarding rules for instances
-        # TODO: recreate_network still drives executions directly (design §2 residual); operate_update uses the supervisor path.
-        logger.info("Recreating port forwarding rules for instances")
-        for vm_info in running_vms:
-            execution = vm_info["execution"]
-            if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
-                try:
-                    # All rules were flushed: reapply from the persisted
-                    # mappings, then re-sync message-driven VMs against the
-                    # aggregate. Spec-built (reattached) executions have no
-                    # message; their persisted mappings are authoritative.
-                    execution.mapped_ports = await get_port_mappings(str(vm_info["vm_hash"]))
-                    if execution.mapped_ports:
-                        await execution.recreate_port_redirect_rules()
-                    if isinstance(execution.spec, MessageSpec):
-                        await execution.fetch_port_redirect_config_and_setup()
-                    logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
-                except Exception as e:
-                    logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")
-                    # Don't add to failed_vms as the VM network itself was created successfully
-
-        logger.info(
-            f"Network recreation complete. Removed chains: {len(removed_chains)}, "
-            f"Recreated VMs: {len(recreated_vms)}, Failed: {len(failed_vms)}"
-        )
-
-        return web.json_response(
-            {
-                "success": len(failed_vms) == 0,
-                "removed_chains_count": len(removed_chains),
-                "removed_chains": removed_chains,
-                "recreated_count": len(recreated_vms),
-                "failed_count": len(failed_vms),
-                "recreated_vms": recreated_vms,
-                "failed_vms": failed_vms,
-            },
-            status=200 if len(failed_vms) == 0 else 207,
-        )
+        return web.json_response(result, status=200 if result["success"] else 207)
 
 
 async def regenerate_proxy(request: web.Request):

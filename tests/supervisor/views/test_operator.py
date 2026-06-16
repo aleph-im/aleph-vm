@@ -45,6 +45,17 @@ def _vm_info(status: VmStatus = VmStatus.RUNNING, vm_id: str = _FAKE_HASH) -> Vm
     )
 
 
+_RECREATE_NETWORK_SUMMARY = {
+    "success": True,
+    "removed_chains_count": 1,
+    "removed_chains": ["aleph-supervisor-nat"],
+    "recreated_count": 1,
+    "failed_count": 0,
+    "recreated_vms": [_FAKE_HASH],
+    "failed_vms": [],
+}
+
+
 def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
     return MagicMock(
         get_vm=AsyncMock(return_value=_vm_info(status)),
@@ -55,6 +66,7 @@ def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
         reinstall_vm=AsyncMock(),
         get_logs=AsyncMock(return_value=[]),
         stream_logs=_fake_stream([]),
+        recreate_network=AsyncMock(return_value=dict(_RECREATE_NETWORK_SUMMARY)),
     )
 
 
@@ -2058,3 +2070,77 @@ def test_operator_module_does_not_read_execution_message():
         "operator.py must not read `execution.message`; authorize from the agent "
         "registry (get_agent_record_or_404 -> record.message) instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# recreate_network endpoint delegation (Phase 1 P1.6a)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recreate_network_delegates_to_supervisor(aiohttp_client, mocker):
+    """The endpoint delegates to supervisor.recreate_network and never reads the pool."""
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authenticate_api_request",
+        new=AsyncMock(return_value=True),
+    )
+
+    # A pool whose .executions access raises: the endpoint must not touch it.
+    class _ExplodingPool:
+        @property
+        def executions(self):
+            raise AssertionError("recreate_network endpoint must not read the pool")
+
+    app = setup_webapp(pool=_ExplodingPool())
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+
+    response = await client.post("/control/network/recreate")
+
+    assert response.status == 200, await response.text()
+    assert await response.json() == _RECREATE_NETWORK_SUMMARY
+    fake_sup.recreate_network.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_recreate_network_partial_failure_returns_207(aiohttp_client, mocker):
+    """A summary with success=False maps to HTTP 207 (partial)."""
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authenticate_api_request",
+        new=AsyncMock(return_value=True),
+    )
+    partial = dict(_RECREATE_NETWORK_SUMMARY, success=False, failed_count=1, failed_vms=[{"vm_hash": "x"}])
+
+    app = setup_webapp(pool=mocker.Mock())
+    fake_sup = _fake_supervisor()
+    fake_sup.recreate_network = AsyncMock(return_value=partial)
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+
+    response = await client.post("/control/network/recreate")
+
+    assert response.status == 207, await response.text()
+    assert await response.json() == partial
+
+
+@pytest.mark.asyncio
+async def test_recreate_network_internal_error_returns_500(aiohttp_client, mocker):
+    """An InternalSupervisorError from the engine maps to HTTP 500."""
+    from aleph.vm.supervisor.errors import InternalSupervisorError
+
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authenticate_api_request",
+        new=AsyncMock(return_value=True),
+    )
+
+    app = setup_webapp(pool=mocker.Mock())
+    fake_sup = _fake_supervisor()
+    fake_sup.recreate_network = AsyncMock(side_effect=InternalSupervisorError("nft broke"))
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+
+    response = await client.post("/control/network/recreate")
+
+    assert response.status == 500, await response.text()
+    assert (await response.json())["success"] is False

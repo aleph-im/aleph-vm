@@ -351,3 +351,7 @@ class GrpcSupervisor(Supervisor):
             ),
             LIFECYCLE_TIMEOUT_SECS,
         )
+
+    # ── Network ──
+    async def recreate_network(self) -> dict:
+        raise NotImplementedError("wired in Phase 2")
