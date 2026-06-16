@@ -28,12 +28,14 @@ from aleph.vm.controllers.configuration import remove_controller_configuration
 from aleph.vm.controllers.qemu.client import QemuVmClient
 from aleph.vm.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
+    backup_metadata,
     check_disk_space_for_multiple,
     cleanup_expired_backups,
     create_backup_archive,
     create_qemu_disk_backup,
     find_existing_backup,
     get_backup_directory,
+    get_qemu_disk_virtual_size,
     restore_rootfs,
     verify_qemu_disk,
 )
@@ -280,9 +282,10 @@ def _history_chunks(vm_id: VmId) -> list[LogChunk]:
     return chunks
 
 
-# The single archive member a supervisor backup carries today: the rootfs
-# disk. Extra data disks are not backed up (restore replaces the rootfs only,
-# and an asymmetric archive would be a trap).
+# The rootfs archive member, always present in a backup. With include_volumes
+# the VM's non-read-only persistent volumes are added alongside it (named by
+# their on-disk basename). restore_backup replaces only the rootfs member; the
+# extra volumes are carried for the operator's own use (download/restore).
 _BACKUP_ROOTFS_MEMBER = "rootfs.qcow2"
 _BACKUP_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -297,6 +300,14 @@ def _validate_backup_id(vm_id: VmId, backup_id: BackupId) -> None:
 
 def _backup_info_from_tar(tar_path: Path, vm_id: VmId) -> BackupInfo:
     stat = tar_path.stat()
+    try:
+        # checksum/source_sizes come from the sidecars; volumes is read from
+        # the archive index. A corrupt or non-tar file (e.g. a partial write)
+        # still yields a usable BackupInfo, just without the archive metadata.
+        meta = backup_metadata(tar_path)
+    except (tarfile.TarError, OSError):
+        logger.warning("Could not read backup metadata for %s", tar_path.name)
+        meta = {}
     return BackupInfo(
         vm_id=vm_id,
         backup_id=BackupId(tar_path.stem),
@@ -304,6 +315,9 @@ def _backup_info_from_tar(tar_path: Path, vm_id: VmId) -> BackupInfo:
         size_bytes=stat.st_size,
         created_at_unix_secs=int(stat.st_mtime),
         error_message="",
+        checksum=meta.get("checksum", ""),
+        volumes=list(meta.get("volumes", [])),
+        source_sizes=dict(meta.get("source_sizes", {})),
     )
 
 
@@ -643,10 +657,29 @@ class LocalSupervisor(Supervisor):
             raise InternalSupervisorError(msg)
         return Path(rootfs_path)
 
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
+    def _backup_disk_paths(self, execution, include_volumes: bool) -> dict[str, Path]:
+        """The archive members for a backup: the rootfs, plus the VM's
+        non-read-only persistent volumes when include_volumes is set. The
+        member name is the disk's basename stem with a .qcow2 suffix; the
+        rootfs is always 'rootfs.qcow2'."""
+        disk_paths: dict[str, Path] = {_BACKUP_ROOTFS_MEMBER: self._qemu_rootfs_path(execution)}
+        if not include_volumes:
+            return disk_paths
+        resources = getattr(execution, "resources", None)
+        volumes = getattr(resources, "volumes", None) or []
+        for vol in volumes:
+            if getattr(vol, "read_only", False):
+                continue
+            vol_path = Path(vol.path_on_host)
+            disk_paths[vol_path.stem + ".qcow2"] = vol_path
+        return disk_paths
+
+    async def start_backup(
+        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
+    ) -> BackupInfo:
         with translating_errors():
             execution = self._require(vm_id)
-            rootfs_path = self._qemu_rootfs_path(execution)
+            disk_paths = self._backup_disk_paths(execution, include_volumes)
             backup_dir = get_backup_directory()
             cleanup_expired_backups(backup_dir)
 
@@ -665,7 +698,7 @@ class LocalSupervisor(Supervisor):
                 return _backup_info_from_tar(existing, vm_id)
 
             try:
-                await check_disk_space_for_multiple([rootfs_path], backup_dir)
+                await check_disk_space_for_multiple(list(disk_paths.values()), backup_dir)
             except InsufficientDiskSpaceError as exc:
                 raise InsufficientResourcesError(str(exc)) from exc
 
@@ -688,7 +721,7 @@ class LocalSupervisor(Supervisor):
                     del self._backup_jobs[old_id]
             self._backup_jobs[backup_id] = job
             self._backup_tasks[vm_id] = asyncio.create_task(
-                self._run_backup(execution, vm_id, backup_id, timestamp, rootfs_path, backup_dir, quiesce_guest)
+                self._run_backup(execution, vm_id, backup_id, timestamp, disk_paths, backup_dir, quiesce_guest)
             )
             return job
 
@@ -698,29 +731,34 @@ class LocalSupervisor(Supervisor):
         vm_id: VmId,
         backup_id: BackupId,
         timestamp: str,
-        rootfs_path: Path,
+        disk_paths: dict[str, Path],
         backup_dir: Path,
         quiesce_guest: bool,
     ) -> None:
         lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
-        disk_backup: Path | None = None
+        disk_backups: list[Path] = []
         try:
             async with lock:
                 client = None
                 frozen = False
                 if quiesce_guest and _is_running(execution, self.pool):
                     client, frozen = await self._try_fsfreeze(execution)
+                backup_files: dict[str, Path] = {}
                 try:
-                    disk_backup = await create_qemu_disk_backup(str(vm_id), rootfs_path, backup_dir)
+                    for member_name, source_path in disk_paths.items():
+                        disk_backup = await create_qemu_disk_backup(str(vm_id), source_path, backup_dir)
+                        disk_backups.append(disk_backup)
+                        backup_files[member_name] = disk_backup
                 finally:
                     if frozen and client is not None:
                         await self._try_fsthaw(client, vm_id)
-                await verify_qemu_disk(disk_backup)
+                for disk_backup in disk_backups:
+                    await verify_qemu_disk(disk_backup)
                 await create_backup_archive(
                     vm_hash=str(vm_id),
-                    backup_files={_BACKUP_ROOTFS_MEMBER: disk_backup},
+                    backup_files=backup_files,
                     destination_dir=backup_dir,
-                    source_sizes={_BACKUP_ROOTFS_MEMBER: rootfs_path.stat().st_size},
+                    source_sizes={name: src.stat().st_size for name, src in disk_paths.items()},
                     timestamp=timestamp,
                 )
                 # The archive on disk is now the record; drop the live job.
@@ -736,7 +774,7 @@ class LocalSupervisor(Supervisor):
                 error_message=str(exc),
             )
         finally:
-            if disk_backup is not None:
+            for disk_backup in disk_backups:
                 disk_backup.unlink(missing_ok=True)
             self._backup_tasks.pop(vm_id, None)
 
@@ -847,6 +885,57 @@ class LocalSupervisor(Supervisor):
                     await self.pool.restart_persistent_vm(execution)
                 finally:
                     staging.unlink(missing_ok=True)
+                info = _to_vm_info(execution, _is_running(execution, self.pool))
+                if info.status is not VmStatus.STOPPED:
+                    self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+                return info
+
+    async def restore_from_image(
+        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
+    ) -> VmInfo:
+        """Restore the rootfs from a QCOW2 image already staged on a host path.
+
+        The agent stages the uploaded image (or the downloaded volume) to
+        image_path, then hands the disk/VM work here: validate the image,
+        reject one larger than max_virtual_size_bytes (a restore must not grow
+        the disk), swap it in for the current rootfs and restart the VM.
+        """
+        with translating_errors():
+            execution = self._require(vm_id)
+            rootfs_path = self._qemu_rootfs_path(execution)
+            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
+                msg = "Restoring an ephemeral VM is not supported; only persistent QEMU VMs can be restored"
+                raise NotImplementedSupervisorError(msg)
+
+            image = Path(image_path)
+            if not image.exists():
+                raise InternalSupervisorError(f"staged restore image {image} does not exist")
+
+            # qemu-img rejects anything that is not a valid QCOW2 image with a
+            # non-zero exit code; let it bubble up (the agent maps the client
+            # error to a 400).
+            await verify_qemu_disk(image)
+            if max_virtual_size_bytes:
+                new_size = await get_qemu_disk_virtual_size(image)
+                if new_size > max_virtual_size_bytes:
+                    msg = (
+                        f"New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size "
+                        f"({max_virtual_size_bytes} bytes). Restore cannot increase disk size."
+                    )
+                    raise InvalidBackendError(msg)
+
+            lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
+            async with lock:
+                old_status = self._status_snapshot(execution)
+                if _is_running(execution, self.pool):
+                    await self.pool.stop_vm(vm_id)
+                    # Fresh stop_event defuses the pool's forget-on-stop task;
+                    # the VM stays registered through the swap.
+                    execution.stop_event = asyncio.Event()
+                    self.pool.executions[execution.vm_hash] = execution
+                    self._emit_event(vm_id, old_status, VmStatus.STOPPED)
+                await restore_rootfs(image, rootfs_path)
+                await self.pool.restart_persistent_vm(execution)
                 info = _to_vm_info(execution, _is_running(execution, self.pool))
                 if info.status is not VmStatus.STOPPED:
                     self._emit_event(vm_id, VmStatus.STOPPED, info.status)

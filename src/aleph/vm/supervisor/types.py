@@ -300,6 +300,14 @@ class BackupInfo:
     size_bytes: int
     created_at_unix_secs: int
     error_message: str
+    # Archive metadata, populated for completed archives on disk. The agent
+    # turns these into the HTTP response body (checksum, volumes, source_sizes)
+    # and the download sidecar headers (X-Backup-Checksum, X-Source-Size). They
+    # default to empty so the gRPC path (which does not carry them in Phase 1)
+    # and in-flight RUNNING/FAILED jobs construct cleanly.
+    checksum: str = ""
+    volumes: list[str] = field(default_factory=list)
+    source_sizes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

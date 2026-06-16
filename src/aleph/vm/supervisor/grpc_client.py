@@ -258,7 +258,11 @@ class GrpcSupervisor(Supervisor):
             call.cancel()
 
     # ── Backups ──
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
+    async def start_backup(
+        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
+    ) -> BackupInfo:
+        # include_volumes is not yet carried by the proto (Phase 2); the gRPC
+        # path is not the prod path in Phase 1.
         reply = await self._unary(
             "StartBackup",
             pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
@@ -306,6 +310,11 @@ class GrpcSupervisor(Supervisor):
             LIFECYCLE_TIMEOUT_SECS,
         )
         return conv.vm_info_from_pb(reply)
+
+    async def restore_from_image(
+        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
+    ) -> VmInfo:
+        raise NotImplementedError("wired in Phase 2")
 
     # ── Migration ──
     async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:

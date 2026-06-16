@@ -103,7 +103,12 @@ class LogsOps(ABC):
 
 class BackupOps(ABC):
     @abstractmethod
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo: ...
+    async def start_backup(
+        self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False
+    ) -> BackupInfo:
+        """Start (or return) a backup of the VM's rootfs. quiesce_guest freezes
+        the guest filesystems through the QEMU agent during the copy;
+        include_volumes also archives the VM's non-read-only persistent volumes."""
 
     @abstractmethod
     async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo: ...
@@ -119,6 +124,14 @@ class BackupOps(ABC):
 
     @abstractmethod
     async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo: ...
+
+    @abstractmethod
+    async def restore_from_image(self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0) -> VmInfo:
+        """Restore a VM's rootfs from a QCOW2 image already staged on a host
+        path (an uploaded image or a downloaded volume). Validates the image,
+        rejects one whose virtual size exceeds max_virtual_size_bytes (0 = no
+        cap), swaps the rootfs and restarts the VM. The agent owns the staging;
+        the engine owns the disk/VM work."""
 
 
 class MigrationOps(ABC):

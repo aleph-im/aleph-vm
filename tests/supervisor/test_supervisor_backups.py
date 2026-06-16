@@ -50,12 +50,13 @@ def quiet_qemu_img(monkeypatch):
     monkeypatch.setattr("aleph.vm.supervisor.local.check_disk_space_for_multiple", noop)
 
 
-def _qemu_execution(tmp_path, *, running=True, persistent=True):
+def _qemu_execution(tmp_path, *, running=True, persistent=True, volumes=None):
     execution = make_execution(running=running)
     execution.persistent = persistent
     rootfs = tmp_path / "vm-rootfs.qcow2"
     rootfs.write_bytes(b"ORIGINAL-ROOTFS-BYTES" * 64)
-    execution.vm.resources = SimpleNamespace(rootfs_path=rootfs)
+    execution.vm.resources = SimpleNamespace(rootfs_path=rootfs, volumes=volumes or [])
+    execution.resources = SimpleNamespace(volumes=volumes or [])
     return execution
 
 
@@ -134,6 +135,50 @@ async def test_start_backup_creates_archive_and_completes(backup_dir, tmp_path, 
     assert [b.backup_id for b in listed] == [job.backup_id]
     listed_all = await sup.list_backups()
     assert [b.backup_id for b in listed_all] == [job.backup_id]
+
+
+@pytest.mark.asyncio
+async def test_completed_backup_info_carries_metadata(backup_dir, tmp_path, quiet_qemu_img):
+    """get_backup_status surfaces checksum, volumes and source_sizes so the
+    agent can build the HTTP body and the download sidecar headers."""
+    execution = _qemu_execution(tmp_path)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    job = await sup.start_backup(VM_ID)
+    await _finished_backup(sup)
+
+    info = await sup.get_backup_status(VM_ID, job.backup_id)
+    assert info.status is BackupStatus.COMPLETE
+    assert info.checksum.startswith("sha256:")
+    assert info.volumes == ["rootfs.qcow2"]
+    assert info.source_sizes == {"rootfs.qcow2": execution.vm.resources.rootfs_path.stat().st_size}
+
+
+@pytest.mark.asyncio
+async def test_start_backup_include_volumes_archives_writable_volumes(backup_dir, tmp_path, quiet_qemu_img):
+    """include_volumes adds non-read-only persistent volumes to the archive;
+    read-only volumes are skipped."""
+    writable = tmp_path / "data.qcow2"
+    writable.write_bytes(b"DATA-VOLUME-BYTES" * 16)
+    readonly = tmp_path / "ro.qcow2"
+    readonly.write_bytes(b"READONLY" * 8)
+    volumes = [
+        SimpleNamespace(read_only=False, path_on_host=str(writable)),
+        SimpleNamespace(read_only=True, path_on_host=str(readonly)),
+    ]
+    execution = _qemu_execution(tmp_path, volumes=volumes)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    job = await sup.start_backup(VM_ID, include_volumes=True)
+    await _finished_backup(sup)
+
+    info = await sup.get_backup_status(VM_ID, job.backup_id)
+    assert info.status is BackupStatus.COMPLETE
+    assert set(info.volumes) == {"rootfs.qcow2", "data.qcow2"}
+    assert "ro.qcow2" not in info.volumes
+    tar_path = backup_dir / f"{job.backup_id}.tar"
+    with tarfile.open(tar_path) as tar:
+        assert set(m.name for m in tar.getmembers()) == {"rootfs.qcow2", "data.qcow2"}
 
 
 @pytest.mark.asyncio
@@ -365,6 +410,62 @@ async def test_restore_backup_requires_persistent_vm(backup_dir, tmp_path, monke
     _make_archive(backup_dir, backup_id)
     with pytest.raises(NotImplementedSupervisorError):
         await sup.restore_backup(VM_ID, BackupId(backup_id))
+
+
+# ---------------------------------------------------------------------------
+# restore_from_image (staged upload / volume_ref)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_swaps_rootfs_and_restarts(backup_dir, tmp_path, monkeypatch):
+    sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=10)
+    )
+    rootfs = Path(execution.vm.resources.rootfs_path)
+    staged = tmp_path / "staged-upload.qcow2"
+    staged.write_bytes(b"UPLOADED-ROOTFS")
+
+    info = await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.restart_persistent_vm.assert_awaited_once_with(execution)
+    assert rootfs.read_bytes() == b"UPLOADED-ROOTFS"
+    assert info.status is VmStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_rejects_oversized_disk(backup_dir, tmp_path, monkeypatch):
+    sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=1000)
+    )
+    rootfs = Path(execution.vm.resources.rootfs_path)
+    original = rootfs.read_bytes()
+    staged = tmp_path / "staged-upload.qcow2"
+    staged.write_bytes(b"TOO-BIG")
+
+    with pytest.raises(InvalidBackendError):
+        await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
+
+    pool.stop_vm.assert_not_awaited()
+    assert rootfs.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_requires_persistent_vm(backup_dir, tmp_path, monkeypatch):
+    execution = _qemu_execution(tmp_path, persistent=False)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("aleph.vm.supervisor.local.verify_qemu_disk", noop)
+    staged = tmp_path / "staged.qcow2"
+    staged.write_bytes(b"X")
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.restore_from_image(VM_ID, staged)
 
 
 @pytest.mark.asyncio

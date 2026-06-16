@@ -40,6 +40,7 @@ EXPECTED_METHODS = {
     "download_backup",
     "delete_backup",
     "restore_backup",
+    "restore_from_image",
     "export_vm",
     "import_vm",
     "get_migration_status",
@@ -53,10 +54,10 @@ EXPECTED_METHODS = {
 STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
 
 
-def test_supervisor_aggregates_all_31_methods():
+def test_supervisor_aggregates_all_32_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 31
+    assert len(EXPECTED_METHODS) == 32
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -97,6 +98,7 @@ def test_capability_abcs_partition_the_surface():
             "download_backup",
             "delete_backup",
             "restore_backup",
+            "restore_from_image",
         },
         MigrationOps: {"export_vm", "import_vm", "get_migration_status"},
         ConfidentialOps: {"initialize_confidential", "get_measurement", "inject_secret"},
