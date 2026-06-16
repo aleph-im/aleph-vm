@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
 from aleph.vm.pool import VmPool
