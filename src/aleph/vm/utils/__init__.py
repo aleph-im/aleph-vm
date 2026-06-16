@@ -186,7 +186,7 @@ async def is_pinging(host: str, packets: int, timeout: int) -> bool:
     try:
         await run_in_subprocess(["ping", "-c", str(packets), "-W", str(timeout), host], check=True)
         return True
-    except subprocess.CalledProcessError as err:
+    except subprocess.CalledProcessError:
         return False
 
 

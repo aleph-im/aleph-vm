@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import List
 
 from aleph_message.models import ItemHash, PaymentType
 from eth_typing import HexAddress
@@ -80,7 +79,7 @@ async def fetch_credit_balance_of_address(address: str) -> Decimal:
 
 
 async def fetch_execution_price(
-    item_hash: ItemHash, allowed_payments: List[PaymentType], payment_type_required: bool = True
+    item_hash: ItemHash, allowed_payments: list[PaymentType], payment_type_required: bool = True
 ) -> Decimal:
     """Fetch the credit price of an execution from the reference API server.
 

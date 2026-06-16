@@ -47,12 +47,12 @@ def test_rootfs_returns_the_single_rootfs_disk():
 
 def test_rootfs_is_none_for_a_rootfs_less_spec():
     # Programs carry code + runtime, no rootfs disk.
-    spec = _spec(DiskRole.CODE, DiskRole.RUNTIME)
+    spec = _spec(DiskRole.EXTRA, DiskRole.EXTRA)
     assert spec.rootfs is None
 
 
 def test_require_rootfs_raises_when_absent():
-    spec = _spec(DiskRole.CODE, DiskRole.RUNTIME)
+    spec = _spec(DiskRole.EXTRA, DiskRole.EXTRA)
     with pytest.raises(InvalidBackendError, match="no ROOTFS"):
         spec.require_rootfs()
 

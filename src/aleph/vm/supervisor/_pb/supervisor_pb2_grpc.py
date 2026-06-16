@@ -54,6 +54,11 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.GetVmRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
+        self.GetVmSpec = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/GetVmSpec',
+                request_serializer=supervisor__pb2.GetVmSpecRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.CreateVmRequest.FromString,
+                _registered_method=True)
         self.ListVms = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/ListVms',
                 request_serializer=supervisor__pb2.ListVmsRequest.SerializeToString,
@@ -63,6 +68,16 @@ class SupervisorStub(object):
                 '/aleph.supervisor.v1.Supervisor/DeleteVm',
                 request_serializer=supervisor__pb2.DeleteVmRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.DeleteVmResponse.FromString,
+                _registered_method=True)
+        self.StopVm = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/StopVm',
+                request_serializer=supervisor__pb2.StopVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
+                _registered_method=True)
+        self.StartVm = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/StartVm',
+                request_serializer=supervisor__pb2.StartVmRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.RebootVm = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/RebootVm',
@@ -88,6 +103,11 @@ class SupervisorStub(object):
                 '/aleph.supervisor.v1.Supervisor/ListPortForwards',
                 request_serializer=supervisor__pb2.ListPortForwardsRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.ListPortForwardsResponse.FromString,
+                _registered_method=True)
+        self.WatchEvents = channel.unary_stream(
+                '/aleph.supervisor.v1.Supervisor/WatchEvents',
+                request_serializer=supervisor__pb2.WatchEventsRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.VmEvent.FromString,
                 _registered_method=True)
         self.GetLogs = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/GetLogs',
@@ -179,6 +199,9 @@ class SupervisorServicer(object):
 
     def CreateVm(self, request, context):
         """── VM lifecycle ──
+        Idempotent on vm_id: re-sending the same spec for a live VM returns its
+        current VmInfo (safe retry after UNAVAILABLE / DEADLINE_EXCEEDED); a
+        different spec for a live vm_id fails ALREADY_EXISTS.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -190,6 +213,15 @@ class SupervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetVmSpec(self, request, context):
+        """The spec a live VM was created from, as the supervisor holds it. Lets
+        the client rebuild its own records after a restart. UNIMPLEMENTED for
+        VMs created outside the spec path (legacy in-process executions).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListVms(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -197,6 +229,21 @@ class SupervisorServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def DeleteVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopVm(self, request, context):
+        """Stop a VM without releasing its definition: it stays listed (STOPPED)
+        and StartVm brings it back. Persistent VMs only today; for ephemeral
+        VMs the cycle is DeleteVm + CreateVm (UNIMPLEMENTED here).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartVm(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -229,6 +276,19 @@ class SupervisorServicer(object):
 
     def ListPortForwards(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WatchEvents(self, request, context):
+        """── Events ──
+        Lifecycle transitions as a server stream, no replay: snapshot with
+        ListVms first, then watch. This is the client's replacement for
+        in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
+        goes down). Today events reflect transitions the supervisor itself
+        performs (create/stop/start/reboot/reinstall/delete); spontaneous
+        guest-death detection is a future extension.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -344,6 +404,11 @@ def add_SupervisorServicer_to_server(servicer, server):
                     request_deserializer=supervisor__pb2.GetVmRequest.FromString,
                     response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
+            'GetVmSpec': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetVmSpec,
+                    request_deserializer=supervisor__pb2.GetVmSpecRequest.FromString,
+                    response_serializer=supervisor__pb2.CreateVmRequest.SerializeToString,
+            ),
             'ListVms': grpc.unary_unary_rpc_method_handler(
                     servicer.ListVms,
                     request_deserializer=supervisor__pb2.ListVmsRequest.FromString,
@@ -353,6 +418,16 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.DeleteVm,
                     request_deserializer=supervisor__pb2.DeleteVmRequest.FromString,
                     response_serializer=supervisor__pb2.DeleteVmResponse.SerializeToString,
+            ),
+            'StopVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopVm,
+                    request_deserializer=supervisor__pb2.StopVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'StartVm': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartVm,
+                    request_deserializer=supervisor__pb2.StartVmRequest.FromString,
+                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'RebootVm': grpc.unary_unary_rpc_method_handler(
                     servicer.RebootVm,
@@ -378,6 +453,11 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.ListPortForwards,
                     request_deserializer=supervisor__pb2.ListPortForwardsRequest.FromString,
                     response_serializer=supervisor__pb2.ListPortForwardsResponse.SerializeToString,
+            ),
+            'WatchEvents': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchEvents,
+                    request_deserializer=supervisor__pb2.WatchEventsRequest.FromString,
+                    response_serializer=supervisor__pb2.VmEvent.SerializeToString,
             ),
             'GetLogs': grpc.unary_unary_rpc_method_handler(
                     servicer.GetLogs,
@@ -569,6 +649,33 @@ class Supervisor(object):
             _registered_method=True)
 
     @staticmethod
+    def GetVmSpec(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/GetVmSpec',
+            supervisor__pb2.GetVmSpecRequest.SerializeToString,
+            supervisor__pb2.CreateVmRequest.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ListVms(request,
             target,
             options=(),
@@ -612,6 +719,60 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/DeleteVm',
             supervisor__pb2.DeleteVmRequest.SerializeToString,
             supervisor__pb2.DeleteVmResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/StopVm',
+            supervisor__pb2.StopVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartVm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/StartVm',
+            supervisor__pb2.StartVmRequest.SerializeToString,
+            supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -747,6 +908,33 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/ListPortForwards',
             supervisor__pb2.ListPortForwardsRequest.SerializeToString,
             supervisor__pb2.ListPortForwardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/WatchEvents',
+            supervisor__pb2.WatchEventsRequest.SerializeToString,
+            supervisor__pb2.VmEvent.FromString,
             options,
             channel_credentials,
             insecure,

@@ -25,6 +25,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    VmEvent,
     VmId,
     VmInfo,
 )
@@ -46,10 +47,24 @@ class LifecycleOps(ABC):
     async def get_vm(self, vm_id: VmId) -> VmInfo: ...
 
     @abstractmethod
+    async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
+        """The spec a live VM was created from. Raises
+        NotImplementedSupervisorError for VMs created outside the spec path."""
+
+    @abstractmethod
     async def list_vms(self) -> list[VmInfo]: ...
 
     @abstractmethod
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None: ...
+
+    @abstractmethod
+    async def stop_vm(self, vm_id: VmId) -> VmInfo:
+        """Stop without releasing the definition; the VM stays listed
+        (STOPPED) and start_vm brings it back. Persistent VMs only today."""
+
+    @abstractmethod
+    async def start_vm(self, vm_id: VmId) -> VmInfo:
+        """Start a stopped VM; a no-op (current info) if already running."""
 
     @abstractmethod
     async def reboot_vm(self, vm_id: VmId) -> VmInfo: ...
@@ -67,6 +82,13 @@ class PortForwardingOps(ABC):
 
     @abstractmethod
     async def list_port_forwards(self, vm_id: VmId | None = None) -> list[PortForwardInfo]: ...
+
+
+class EventsOps(ABC):
+    @abstractmethod
+    def watch_events(self) -> AsyncIterator[VmEvent]:
+        """Stream lifecycle transitions, no replay: snapshot with list_vms
+        first, then watch."""
 
 
 class LogsOps(ABC):
@@ -123,6 +145,7 @@ class Supervisor(
     HostOps,
     LifecycleOps,
     PortForwardingOps,
+    EventsOps,
     LogsOps,
     BackupOps,
     MigrationOps,
