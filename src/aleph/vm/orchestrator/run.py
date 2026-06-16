@@ -28,7 +28,6 @@ from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
-from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor import errors as supervisor_errors
 from aleph.vm.supervisor.abc import Supervisor
@@ -204,19 +203,6 @@ async def _wait_until_gone(
         await asyncio.sleep(interval)
 
 
-def _engine_pool(supervisor: Supervisor) -> VmPool | None:
-    """The supervisor's embedded VmPool, when it is the in-process engine.
-
-    The agent never holds the pool directly. The one create path that has not
-    moved behind a Supervisor method (legacy confidential / GPU / Firecracker
-    instances) reaches it through the embedded LocalSupervisor in single-process
-    mode; across the gRPC boundary there is no pool and those creates 501. This
-    is the only pool reference in run.py and it is read off the supervisor, not
-    the app, so the agent's views stay pool-free.
-    """
-    return getattr(supervisor, "pool", None)
-
-
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
@@ -226,12 +212,13 @@ async def create_vm_execution(
 ) -> VmExecution | None:
     """Create a VM for the given message.
 
-    Instances (QEMU-only, including confidential and GPU instances) and programs
-    are created through the Supervisor abstraction: the agent records and
-    persists its own knowledge of the VM and returns None, the hypervisor object
-    lives behind the supervisor, not in the pool. The remaining legacy create
-    path (supervisor's embedded pool) is kept for now but no current message type
-    routes to it; in split mode that path 501s.
+    Every supported content type is created through the Supervisor abstraction:
+    programs through the spec program path, instances (QEMU-only, including
+    confidential and GPU instances) through the spec path. The agent records and
+    persists its own knowledge of the VM and returns None; the hypervisor object
+    lives behind the supervisor. The agent never touches a VmPool: there is no
+    legacy create_a_vm fallback anymore. An unsupported content type is rejected
+    with a clear error.
     """
     message, original_message = await load_updated_message(vm_hash)
 
@@ -262,19 +249,11 @@ async def create_vm_execution(
         return None
 
     if _is_spec_eligible(content):
+        # The spec carries the owner address (build_create_vm_spec reads it from
+        # message.address), so the engine consumes this owner's own GPU
+        # reservation and skips other users' valid reservations during create.
+        # The agent does not touch reservations at all.
         spec = await build_create_vm_spec(vm_hash, content)
-        if spec.gpus:
-            # The engine resolves GPU requests against reservations held by
-            # OTHER users, skipping any that are still valid. This owner's own
-            # pre-reservation (made via the reserve_resources endpoint) would
-            # otherwise look like someone else's and block the create, because
-            # the spec path carries no owner address. Release it here, where the
-            # agent still has content.address, so the engine sees a clean slate
-            # for this owner. In-process only: split mode has no local pool and
-            # owner-aware reservation over the wire is a later slice.
-            pool = _engine_pool(supervisor)
-            if pool is not None:
-                pool.release_user_reservations(content.address)
         info = await supervisor.create_vm(spec)
         # Agent territory: record the message in the agent's own cache. This is
         # what the message-free agent will read once owner-auth and billing move
@@ -310,24 +289,13 @@ async def create_vm_execution(
         await persist_record(vm_hash, record)
         return None
 
-    pool = _engine_pool(supervisor)
-    if pool is None:
-        # Split mode: the legacy create path (confidential / GPU / firecracker
-        # instances) has not crossed the gRPC boundary.
-        raise web.HTTPNotImplemented(
-            reason="Unavailable in split mode",
-            text=f"VM {vm_hash} requires the legacy create path, which is not available "
-            "when the agent runs separately from the supervisor.",
-        )
-
-    execution = await pool.create_a_vm(
-        vm_hash=vm_hash,
-        message=content,
-        original=original_message.content,
-        persistent=persistent,
+    # Every supported content type is handled above: programs through the spec
+    # program path, instances (plain, GPU, confidential) through the spec path.
+    # There is no pool fallback anymore. Anything else is genuinely unsupported.
+    raise HTTPBadRequest(
+        reason="Unsupported message type",
+        text=f"VM {vm_hash} has content type {type(content).__name__}, which this CRN cannot run.",
     )
-    registry.record(vm_hash, message=content, original=original_message.content, persistent=persistent)
-    return execution
 
 
 async def create_vm_execution_or_raise_http_error(
@@ -337,28 +305,21 @@ async def create_vm_execution_or_raise_http_error(
     registry: AgentVmRegistry,
     persistent: bool = False,
 ) -> VmExecution | None:
-    def _forget() -> None:
-        # Clean up the half-registered legacy execution. The spec path forgets
-        # via the registry/supervisor inside create_vm_execution; this only
-        # matters for the embedded-pool legacy create.
-        pool = _engine_pool(supervisor)
-        if pool is not None:
-            pool.forget_vm(vm_hash=vm_hash)
-
+    # The spec path tears down and forgets a half-started VM inside
+    # create_vm_execution (registry.forget + supervisor.delete_vm), so this
+    # wrapper only translates failures to HTTP responses. The agent holds no
+    # pool to clean up.
     try:
         return await create_vm_execution(
             vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=persistent
         )
     except ResourceDownloadError as error:
         logger.exception(error)
-        _forget()
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     except (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError) as error:
-        # Two vocabularies meet here: the legacy pool path raises the
-        # resources-module error; the spec path's atomic admission surfaces the
-        # boundary error through LocalSupervisor.create_vm (translating_errors).
+        # The spec path's atomic admission surfaces the boundary error through
+        # LocalSupervisor.create_vm (translating_errors).
         logger.warning("Refusing %s: %s", vm_hash, error)
-        _forget()
         raise HTTPServiceUnavailable(
             reason="Insufficient capacity",
             text="This CRN cannot host the requested workload at this time.",
@@ -367,15 +328,12 @@ async def create_vm_execution_or_raise_http_error(
         raise HTTPInternalServerError(reason=error.args[0]) from error
     except VmSetupError as error:
         logger.exception(error)
-        _forget()
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
     except MicroVMFailedInitError as error:
         logger.exception(error)
-        _forget()
         raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     except HostNotFoundError as error:
         logger.exception(error)
-        _forget()
         raise HTTPInternalServerError(reason="Host did not respond to ping") from error
     except ClientResponseError as error:
         logger.exception(error)
@@ -385,7 +343,6 @@ async def create_vm_execution_or_raise_http_error(
             raise HTTPInternalServerError(reason=f"Error downloading {vm_hash}") from error
     except Exception as error:
         logger.exception(error)
-        _forget()
         raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
 
 

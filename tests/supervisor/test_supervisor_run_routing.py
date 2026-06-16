@@ -80,16 +80,16 @@ def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
     )
 
 
-def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING, pool=None):
-    # ``pool`` is the supervisor's embedded engine pool: run.py reaches the
-    # legacy create path through supervisor.pool (None across the gRPC boundary).
+def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING):
+    # The agent is fully pool-free: it drives the supervisor abstraction only and
+    # never reaches a pool. No ``pool`` attribute is exposed here on purpose - if
+    # run.py tried to read one, these tests would AttributeError.
     return SimpleNamespace(
         create_vm=AsyncMock(return_value=_info(create_status)),
         get_vm=AsyncMock(return_value=_info(get_status)),
         add_port_forward=AsyncMock(),
         delete_vm=AsyncMock(),
         start_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
-        pool=pool,
     )
 
 
@@ -109,16 +109,12 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
-    # An EMPTY pool: the spec path must never read pool.executions (the old
-    # readback would KeyError here).
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
         _HASH, supervisor=supervisor, registry=registry, persistent=True
     )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
-    pool.create_a_vm.assert_not_awaited()
     # The message is recorded in the agent registry, not on the execution.
     record = registry.get(_HASH)
     assert record.message is content
@@ -147,7 +143,6 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
 
     supervisor = _fake_supervisor(get_status=VmStatus.BOOTING)  # never RUNNING
     registry = AgentVmRegistry()
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(asyncio.TimeoutError):
         await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
@@ -172,7 +167,6 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     supervisor = _fake_supervisor()  # get_vm reports RUNNING immediately
     supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables boom"))
     registry = AgentVmRegistry()
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     with pytest.raises(RuntimeError, match="nftables boom"):
         await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
@@ -184,10 +178,10 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
 @pytest.mark.asyncio
 async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
     """Instances are QEMU-only: a Firecracker instance is spec-eligible (it
-    reaches build_create_vm_spec, never the legacy create_a_vm path) and is
-    rejected there with InvalidBackendError. The actual rejection is unit-tested
-    in test_supervisor_translate.py; here we assert routing reaches the spec path
-    and surfaces the error without touching the pool."""
+    reaches build_create_vm_spec) and is rejected there with InvalidBackendError.
+    The actual rejection is unit-tested in test_supervisor_translate.py; here we
+    assert routing reaches the spec path and surfaces the error without any pool
+    fallback."""
     content = _make_qemu_instance_message(hypervisor=HypervisorType.firecracker)
     message = MagicMock(content=content)
     original_message = MagicMock(content=_make_qemu_instance_message())
@@ -198,15 +192,13 @@ async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
         AsyncMock(side_effect=InvalidBackendError("instances are QEMU-only")),
     )
 
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
-    supervisor = _fake_supervisor(pool=pool)
+    supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
     with pytest.raises(InvalidBackendError, match="QEMU-only"):
         await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=False)
 
     run_module.build_create_vm_spec.assert_awaited_once()
-    pool.create_a_vm.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
     assert registry.get(_HASH) is None  # nothing recorded for a rejected create
 
@@ -214,7 +206,7 @@ async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
 @pytest.mark.asyncio
 async def test_program_routed_through_spec_program_path(monkeypatch):
     """Programs (persistent and on-demand) are created through the supervisor
-    spec path, never pool.create_a_vm."""
+    spec program path, never a pool."""
     content = MagicMock()
     content.__class__ = ProgramContent
     content.on.persistent = True
@@ -231,7 +223,6 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     supervisor = _fake_supervisor()
     supervisor.create_vm = AsyncMock(return_value=_info(VmStatus.RUNNING))
     registry = AgentVmRegistry()
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
 
     execution = await run_module.create_vm_execution(
         _HASH, supervisor=supervisor, registry=registry, persistent=True
@@ -239,7 +230,6 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
 
     build.assert_awaited_once()
     supervisor.create_vm.assert_awaited_once_with(program_spec)
-    pool.create_a_vm.assert_not_awaited()
     run_module.build_create_vm_spec.assert_not_awaited()
     assert execution is None
     record = registry.get(_HASH)
@@ -273,7 +263,6 @@ async def test_confidential_instance_routed_through_spec_awaiting_init(monkeypat
     supervisor = _fake_supervisor()
     supervisor.create_vm = AsyncMock(return_value=awaiting)
     registry = AgentVmRegistry()
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())  # noqa: F841
 
     execution = await run_module.create_vm_execution(
         _HASH, supervisor=supervisor, registry=registry, persistent=True
@@ -308,9 +297,9 @@ def test_gpu_instance_is_spec_eligible():
 
 @pytest.mark.asyncio
 async def test_gpu_instance_routed_through_supervisor(monkeypatch):
-    """GPU instances now reach the spec path; the agent clears its own GPU
-    pre-reservation (it holds content.address) before driving create_vm so the
-    engine's owner-less resolution sees a clean slate for this owner."""
+    """GPU instances reach the spec path. The agent does not touch reservations:
+    it builds a spec carrying owner_address and drives create_vm. The engine
+    consumes this owner's own reservation and skips other users' reservations."""
     content = _make_qemu_instance_message().model_copy(
         update={
             "requirements": HostRequirements(
@@ -328,25 +317,50 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     message = MagicMock(content=content)
     original_message = MagicMock(content=content)
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
-    # A spec carrying a GPU request triggers the reservation release.
-    spec = replace(_spec(), gpus=[_gpu_request()])
+    # The spec carries a GPU request and the owner address; the engine owns the
+    # reservation handling, the agent does not.
+    spec = replace(_spec(), gpus=[_gpu_request()], owner_address=content.address)
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
 
-    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock(), release_user_reservations=MagicMock())
-    supervisor = _fake_supervisor(pool=pool)
+    supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
         _HASH, supervisor=supervisor, registry=registry, persistent=True
     )
 
+    # The spec the agent built carries the owner address for engine-side
+    # reservation handling.
+    assert supervisor.create_vm.await_args.args[0].owner_address == content.address
     supervisor.create_vm.assert_awaited_once_with(spec)
-    pool.create_a_vm.assert_not_awaited()
-    pool.release_user_reservations.assert_called_once_with(content.address)
     assert execution is None
+
+
+@pytest.mark.asyncio
+async def test_unsupported_content_raises_clear_error_no_pool(monkeypatch):
+    """A content type that is neither a program nor a spec-eligible instance is
+    rejected with a clear HTTP error, never a pool fallback (there is none)."""
+    from aiohttp.web_exceptions import HTTPBadRequest
+
+    content = SimpleNamespace()  # neither ProgramContent nor InstanceContent
+    message = MagicMock(content=content)
+    original_message = MagicMock(content=content)
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
+    build = AsyncMock()
+    monkeypatch.setattr(run_module, "build_create_vm_spec", build)
+
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
+
+    with pytest.raises(HTTPBadRequest):
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=False)
+
+    build.assert_not_awaited()
+    supervisor.create_vm.assert_not_awaited()
+    assert registry.get(_HASH) is None
 
 
 @pytest.mark.asyncio
