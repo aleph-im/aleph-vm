@@ -319,10 +319,31 @@ class MigrationInfo:
 
 
 @dataclass(frozen=True)
+class SevInfo:
+    """AMD SEV platform/launch state, mirroring the QEMU query-sev result the
+    confidential client needs to verify a launch measurement. The field set
+    matches the seven values today's measurement endpoint returns."""
+
+    enabled: bool
+    api_major: int
+    api_minor: int
+    build_id: int
+    policy: int
+    state: str
+    handle: int
+
+
+@dataclass(frozen=True)
 class Measurement:
     vm_id: VmId
     measurement_bytes: bytes
     tee_backend: TeeBackend
+    # SEV launch attestation, preserved for the confidential measurement
+    # response. sev_info is the query-sev platform state and launch_measure is
+    # the base64 launch measurement; both default to empty for callers (and the
+    # proto, until Phase 2) that only carry measurement_bytes/tee_backend.
+    sev_info: SevInfo | None = None
+    launch_measure: str = ""
 
 
 @dataclass(frozen=True)

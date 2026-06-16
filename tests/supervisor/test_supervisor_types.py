@@ -22,9 +22,11 @@ from aleph.vm.supervisor.types import (
     IpAssignment,
     LogChunk,
     LogSource,
+    Measurement,
     NetworkConfig,
     PciAddress,
     Protocol,
+    SevInfo,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -132,3 +134,41 @@ def test_vm_info_has_no_persistent_field():
 
 def test_confidential_mode_members():
     assert [m.name for m in ConfidentialMode] == ["NONE", "SEV", "SEV_ES", "SEV_SNP"]
+
+
+def test_measurement_defaults_keep_existing_callers_working():
+    """measurement_bytes + tee_backend remain the only required fields; the
+    SEV info and launch measure default to empty so current construction
+    sites do not break."""
+    m = Measurement(
+        vm_id=VmId("vm-a"),
+        measurement_bytes=b"abc",
+        tee_backend=TeeBackend.SEV,
+    )
+    assert m.measurement_bytes == b"abc"
+    assert m.tee_backend is TeeBackend.SEV
+    assert m.sev_info is None
+    assert m.launch_measure == ""
+
+
+def test_measurement_round_trips_sev_info_and_launch_measure():
+    sev_info = SevInfo(
+        enabled=True,
+        api_major=1,
+        api_minor=55,
+        build_id=21,
+        policy=3,
+        state="launch-secret",
+        handle=7,
+    )
+    m = Measurement(
+        vm_id=VmId("vm-a"),
+        measurement_bytes=b"",
+        tee_backend=TeeBackend.SEV,
+        sev_info=sev_info,
+        launch_measure="bWVhc3VyZQ==",
+    )
+    assert m.sev_info == sev_info
+    assert m.sev_info.api_minor == 55
+    assert m.sev_info.state == "launch-secret"
+    assert m.launch_measure == "bWVhc3VyZQ=="
