@@ -27,6 +27,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import reconcile_port_forwards
 from aleph.vm.orchestrator.utils import (
@@ -200,7 +201,7 @@ async def watch_for_messages(
                 if key == "port-forwarding":
                     await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
-                    await _handle_domains_aggregate(message, pool, registry)
+                    await _handle_domains_aggregate(message, pool, supervisor, registry)
 
 
 async def _handle_port_forwarding_aggregate(
@@ -232,7 +233,9 @@ async def _handle_port_forwarding_aggregate(
             logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
-async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, registry: AgentVmRegistry):
+async def _handle_domains_aggregate(
+    message: AggregateMessage, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
+):
     """Update HAProxy domain mapping when a domains aggregate changes.
 
     The aggregate content maps domain names to instance configs:
@@ -263,7 +266,7 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, reg
 
     logger.info("Domains aggregate for %s, updating HAProxy domain mapping", address)
     try:
-        await pool.update_domain_mapping()
+        await sync_domain_mappings(supervisor)
     except Exception:
         logger.exception("Failed to update domain mapping for %s", address)
 
@@ -532,12 +535,12 @@ async def periodic_domain_resync(app: web.Application):
     First sleep picks a random phase across the full interval;
     subsequent sleeps stay decorrelated with ±15% jitter.
     """
-    pool: VmPool = app["vm_pool"]
+    supervisor = app["supervisor"]
     interval = settings.DOMAIN_RESYNC_INTERVAL
     await asyncio.sleep(random.uniform(0, interval))
     while True:
         try:
-            await pool.update_domain_mapping()
+            await sync_domain_mappings(supervisor)
         except Exception as e:
             if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
                 logger.debug("periodic_domain_resync exiting: event loop closed")

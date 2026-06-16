@@ -1071,7 +1071,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
         )
     )
     web_app["supervisor"] = fake_sup
-    web_app["vm_pool"].update_domain_mapping = AsyncMock()
+    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=AsyncMock())
 
     response: web.Response = await client.post(f"/control/machine/{vm_hash}/update")
     assert response.status == 200, await response.text()
@@ -1110,10 +1110,11 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     """Test that the regenerate_proxy endpoint succeeds with a valid auth token."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to avoid actual HAProxy operations
-    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=True))
+    # Mock the agent-side HAProxy sync to avoid actual HAProxy operations.
+    sync = mocker.patch(
+        "aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True)
+    )
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1123,7 +1124,7 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     assert response.status == 200
     resp = await response.json()
     assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
-    pool.update_domain_mapping.assert_called_once_with(force_update=True)
+    sync.assert_called_once_with(web_app["supervisor"], force_update=True)
 
 
 @pytest.mark.asyncio
@@ -1131,10 +1132,9 @@ async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_a
     """Test that regenerate_proxy handles missing HAProxy socket gracefully."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to return False (socket not found)
-    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=False))
+    # Sync returns False (socket not found): endpoint still reports success.
+    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=False))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1151,11 +1151,10 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
     """Test that regenerate_proxy handles exceptions gracefully."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to raise an exception
-    mocker.patch.object(
-        pool, "update_domain_mapping", new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed"))
+    mocker.patch(
+        "aleph.vm.orchestrator.views.sync_domain_mappings",
+        new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed")),
     )
 
     client = await aiohttp_client(web_app)

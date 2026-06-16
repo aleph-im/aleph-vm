@@ -50,6 +50,7 @@ from aleph.vm.orchestrator.run import (
     run_code_on_request,
     start_persistent_vm,
 )
+from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.orchestrator.utils import (
     format_cost,
@@ -771,13 +772,11 @@ async def regenerate_proxy(request: web.Request):
     if proxy_regeneration_lock is None:
         proxy_regeneration_lock = asyncio.Lock()
 
-    pool: VmPool = require_vm_pool(request)
-
     async with proxy_regeneration_lock:
         logger.info("Starting HAProxy configuration regeneration")
 
         try:
-            await pool.update_domain_mapping(force_update=True)
+            await sync_domain_mappings(request.app["supervisor"], force_update=True)
             logger.info("HAProxy configuration regeneration complete")
             return web.json_response(
                 {
@@ -978,8 +977,7 @@ async def notify_allocation(request: web.Request):
             update_watcher=update_watcher,
         )
         successful = True
-        if pool is not None:
-            await pool.update_domain_mapping()
+        await sync_domain_mappings(request.app["supervisor"])
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error
@@ -1072,6 +1070,5 @@ async def operate_update(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
 
     await reconcile_port_forwards(supervisor, vm_id, record.message)
-    if request.app.get("vm_pool") is not None:
-        await request.app["vm_pool"].update_domain_mapping()
+    await sync_domain_mappings(request.app["supervisor"])
     return web.json_response({}, dumps=dumps_for_json, status=200)
