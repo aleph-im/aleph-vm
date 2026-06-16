@@ -1269,54 +1269,45 @@ async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkey
 
 
 @pytest.mark.asyncio
-async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
+async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_path):
     """Uploading a file that is not a valid QCOW2 image returns a 4xx, not a 500.
 
-    Regression: ``qemu-img check`` exits non-zero on e.g. a tar archive, so
-    ``verify_qemu_disk`` raises ``CalledProcessError``. Previously this fell
-    through to the generic handler and produced an HTTP 500.
+    The agent stages the upload and hands the disk work to the supervisor; the
+    engine's qemu-img check rejects a non-QCOW2 image with InvalidBackendError,
+    which the endpoint maps to a 400 (a client error, not a generic 500).
     """
-    import subprocess
+    import aiohttp
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuInstance
     from aleph.vm.orchestrator.views import operator
+    from aleph.vm.supervisor.errors import InvalidBackendError
 
-    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    from aleph.vm.storage import get_message
 
-    execution = mocker.Mock()
-    execution.is_running = False
-    execution.vm = mocker.Mock()
-    # Make the AlephQemuInstance isinstance check pass.
-    execution.vm.__class__ = AlephQemuInstance
-    execution.vm.resources.rootfs_path = str(tmp_path / "rootfs.qcow2")
+    instance_message = await get_message(ref=vm_hash)
 
-    record = mocker.Mock()
-    record.message.rootfs.size_mib = 1000
-
-    mocker.patch.object(operator, "get_execution_or_404", return_value=execution)
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
     mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
     mocker.patch.object(operator, "get_backup_directory", return_value=tmp_path)
 
-    uploaded = tmp_path / f"restore-{vm_hash}.qcow2"
-    uploaded.write_bytes(b"this is a tar archive, not a qcow2")
-    mocker.patch.object(operator, "_parse_restore_upload", new=mocker.AsyncMock(return_value=uploaded))
-
-    # qemu-img check exits non-zero on a non-QCOW2 file.
-    mocker.patch.object(
-        operator,
-        "verify_qemu_disk",
-        new=mocker.AsyncMock(side_effect=subprocess.CalledProcessError(2, "qemu-img", "not in qcow2 format")),
+    app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
     )
+    app["supervisor"] = MagicMock(
+        restore_from_image=AsyncMock(side_effect=InvalidBackendError("not in qcow2 format")),
+    )
+    client = await aiohttp_client(app)
 
-    request = mocker.Mock()
-    request.app = {
-        "vm_pool": mocker.Mock(),
-        "vm_registry": mocker.Mock(get=mocker.Mock(return_value=record)),
-    }
-    request.content_length = None
-    request.content_type = "multipart/form-data"
-
-    response = await operator._do_restore(request, vm_hash, "0xSender")
+    form = aiohttp.FormData()
+    form.add_field("rootfs", b"this is a tar archive, not a qcow2", filename="rootfs.qcow2")
+    response = await client.post(f"/control/machine/{vm_hash}/restore", data=form)
 
     assert 400 <= response.status < 500, f"expected a 4xx response, got {response.status}"
 
