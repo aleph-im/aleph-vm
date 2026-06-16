@@ -1,9 +1,9 @@
-"""In-process Supervisor: wraps today's VmPool / VmExecution.
+"""Local Supervisor: the pool-backed engine that wraps today's VmPool / VmExecution.
 
-This is the throwaway implementation that runs in the same process as the
-agent during the strangler period. It validates the contract under real pool
-behavior before any gRPC exists. Methods not yet implemented raise
-NotImplementedSupervisorError.
+This is the embedded engine that runs in the same process as the agent
+(dev/tests and Phase 1 production). It does all the real VM work behind the
+`Supervisor` interface, driving the local `VmPool` directly. Methods not yet
+implemented raise NotImplementedSupervisorError.
 """
 
 from __future__ import annotations
@@ -319,7 +319,7 @@ def _extract_rootfs_member(tar_path: Path, destination: Path) -> None:
             shutil.copyfileobj(source, dst)
 
 
-class InProcessSupervisor(Supervisor):
+class LocalSupervisor(Supervisor):
     def __init__(self, pool: VmPool):
         self.pool = pool
         # Live watch_events subscribers; events are fan-out, no replay.
