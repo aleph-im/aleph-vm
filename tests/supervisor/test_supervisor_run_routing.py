@@ -195,8 +195,38 @@ async def _assert_routed_to_legacy(monkeypatch, content) -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_instance_falls_back_to_legacy(monkeypatch):
-    await _assert_routed_to_legacy(monkeypatch, MagicMock(spec=ProgramContent))
+async def test_program_routed_through_spec_program_path(monkeypatch):
+    """Programs (persistent and on-demand) are created through the supervisor
+    spec path, never pool.create_a_vm."""
+    content = MagicMock()
+    content.__class__ = ProgramContent
+    content.on.persistent = True
+    message = MagicMock(content=content)
+    original_message = MagicMock(content=content)
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
+    program_spec = SimpleNamespace(vm_id=VmId(str(_HASH)))
+    build = AsyncMock(return_value=(program_spec, SimpleNamespace()))
+    monkeypatch.setattr(run_module, "build_program_create_vm_spec", build)
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
+    monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+
+    supervisor = _fake_supervisor()
+    supervisor.create_vm = AsyncMock(return_value=_info(VmStatus.RUNNING))
+    registry = AgentVmRegistry()
+    pool = SimpleNamespace(executions={}, create_a_vm=AsyncMock())
+
+    execution = await run_module.create_vm_execution(
+        _HASH, pool, supervisor=supervisor, registry=registry, persistent=True
+    )
+
+    build.assert_awaited_once()
+    supervisor.create_vm.assert_awaited_once_with(program_spec)
+    pool.create_a_vm.assert_not_awaited()
+    run_module.build_create_vm_spec.assert_not_awaited()
+    assert execution is None
+    record = registry.get(_HASH)
+    assert record is not None and record.persistent is True
 
 
 @pytest.mark.asyncio

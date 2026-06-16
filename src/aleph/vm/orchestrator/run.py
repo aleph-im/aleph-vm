@@ -222,18 +222,41 @@ async def create_vm_execution(
 ) -> VmExecution | None:
     """Create a VM for the given message.
 
-    Spec-eligible messages (QEMU instances) are created through the Supervisor
-    abstraction: the agent records and persists its own knowledge of the VM and
-    returns None — the hypervisor object lives behind the supervisor, not in the
-    pool. Legacy messages (programs) take the pool create path and return the
-    pool-managed VmExecution. The two program callers (run_code_on_request /
-    run_code_on_event) guard the None case explicitly.
+    Spec-eligible messages (QEMU instances) and programs are created through the
+    Supervisor abstraction: the agent records and persists its own knowledge of
+    the VM and returns None — the hypervisor object lives behind the supervisor,
+    not in the pool. The remaining legacy messages (confidential / GPU /
+    firecracker instances) take the pool create path and return the pool-managed
+    VmExecution.
     """
     message, original_message = await load_updated_message(vm_hash)
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
 
     content = message.content
+    if isinstance(content, ProgramContent):
+        # Programs go through the spec path. Persistent programs boot under
+        # systemd now; their guest configuration (code push) is applied lazily
+        # on the first request through _ensure_program_vm. On-demand programs
+        # are created and configured per request there too, so this branch only
+        # does eager work for the persistent (scheduled) case.
+        spec, _resources = await build_program_create_vm_spec(vm_hash, content)
+        info = await supervisor.create_vm(spec)
+        record = registry.record(
+            vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
+        )
+        try:
+            await _wait_until_running(supervisor, info.vm_id)
+        except Exception:
+            registry.forget(vm_hash)
+            try:
+                await supervisor.delete_vm(info.vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+            raise
+        await persist_record(vm_hash, record)
+        return None
+
     if _is_spec_eligible(content):
         spec = await build_create_vm_spec(vm_hash, content)
         info = await supervisor.create_vm(spec)
@@ -420,7 +443,9 @@ async def _ensure_program_vm(
         try:
             spec, resources = await build_program_create_vm_spec(vm_hash, content)
             await supervisor.create_vm(spec)
-            record = registry.record(vm_hash, message=content, original=original, persistent=False)
+            record = registry.record(
+                vm_hash, message=content, original=original, persistent=bool(content.on.persistent)
+            )
             try:
                 info = await _wait_until_running(supervisor, vm_id)
                 await program_client.setup_program(info, content, resources)
@@ -507,11 +532,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
-    if content.on.persistent:
-        # Persistent programs still run through the legacy pool path (systemd
-        # controller + in-pool execution); spec-path support is deferred.
-        return await _run_code_on_request_legacy(vm_hash, path, pool, request)
-
+    persistent = bool(content.on.persistent)
     info = await _ensure_program_vm(
         vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
     )
@@ -520,14 +541,22 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
     timeout = content.resources.seconds
 
     try:
-        result_raw: bytes = await program_client.run_code(info, scope, timeout=timeout)
+        # On-demand programs are recreated per request; the agent reaches their
+        # guest channel directly. A persistent program is long-lived behind the
+        # supervisor, which runs the code over the channel on its side.
+        if persistent:
+            result_raw = await supervisor.run_program_code(vm_id, scope, timeout=timeout)
+        else:
+            result_raw = await program_client.run_code(info, scope, timeout=timeout)
 
         if result_raw == b"":
             # Missing result from the init process of the virtual machine, not
-            # even an error message. It may have completely crashed. Tear it
-            # down; it will be recreated on a future request.
-            await supervisor.delete_vm(vm_id)
-            await program_client.forget(vm_id)
+            # even an error message. It may have completely crashed. Tear an
+            # on-demand VM down (it is recreated on a future request); a
+            # persistent VM is left for the scheduler to restart.
+            if not persistent:
+                await supervisor.delete_vm(vm_id)
+                await program_client.forget(vm_id)
 
             return web.Response(
                 status=HTTPBadGateway.status_code,
@@ -546,79 +575,13 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, pool: VmPool, reques
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 update_watcher.watch(vm_id, vm_hash, request.app["pubsub"])
-            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
-        else:
+            # Persistent programs are long-running by design: never idle-reap them.
+            if not persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+        elif not persistent:
             update_watcher.cancel(vm_id)
             await supervisor.delete_vm(vm_id)
             await program_client.forget(vm_id)
-
-
-async def _run_code_on_request_legacy(vm_hash: ItemHash, path: str, pool: VmPool, request: web.Request) -> web.Response:
-    """Persistent programs: the un-migrated pool/VmExecution serving path."""
-    if pool is None:
-        raise web.HTTPNotImplemented(
-            reason="Unavailable in split mode",
-            text="Persistent programs are not served yet when the agent runs separately from the supervisor.",
-        )
-    supervisor: Supervisor = request.app["supervisor"]
-    expiry: ExpiryManager = request.app["expiry"]
-    update_watcher: UpdateWatcher = request.app["update_watcher"]
-    vm_id = VmId(str(vm_hash))
-
-    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
-
-    # Prevent execution issues if the execution resources are empty
-    if execution and not execution.has_resources:
-        logger.warning("VM %s has no resources, stopping and removing", vm_hash)
-        await pool.stop_vm(execution.vm_hash)
-        pool.forget_vm(execution.vm_hash)
-        execution = None
-
-    if not execution:
-        registry = request.app["vm_registry"]
-        execution = await create_vm_execution_or_raise_http_error(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
-        )
-        if execution is None:
-            # Spec-eligible messages are instances; they cannot serve code requests.
-            raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
-
-    logger.debug(f"Using vm={execution.vm_id}")
-
-    scope: dict = await build_asgi_scope(path, request)
-
-    try:
-        await execution.becomes_ready()
-        result_raw: bytes = await execution.run_code(scope=scope)
-
-        if result_raw == b"":
-            # Stop the virtual machine due to failing init.
-            # It will be restarted on a future request.
-            await execution.stop()
-
-            return web.Response(
-                status=HTTPBadGateway.status_code,
-                reason="No response from VM",
-                text="VM did not respond and was shut down",
-            )
-
-        return _program_result_response(result_raw, vm_hash=vm_hash, code_ref=execution.message.code.ref)
-    except asyncio.TimeoutError:
-        logger.warning(f"VM{execution.vm_id} did not respond within `resource.seconds`")
-        return HTTPGatewayTimeout(body="Program did not respond within `resource.seconds`")
-    except UnpackValueError as error:
-        logger.exception(error)
-        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
-    finally:
-        if settings.REUSE_TIMEOUT > 0:
-            if settings.WATCH_FOR_UPDATES:
-                update_watcher.watch(vm_id, vm_hash, request.app["pubsub"])
-            # Persistent executions are long-running by design: never idle-reap them.
-            if not execution.persistent:
-                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
-        else:
-            update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
 
 
 async def run_code_on_event(
@@ -642,19 +605,8 @@ async def run_code_on_event(
     content, original = await _resolve_program_content(vm_hash, registry)
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
-    if content.on.persistent:
-        # Persistent programs still run through the legacy pool path.
-        return await _run_code_on_event_legacy(
-            vm_hash,
-            event,
-            pubsub,
-            pool,
-            supervisor=supervisor,
-            expiry=expiry,
-            update_watcher=update_watcher,
-            registry=registry,
-        )
 
+    persistent = bool(content.on.persistent)
     info = await _ensure_program_vm(
         vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
     )
@@ -662,7 +614,10 @@ async def run_code_on_event(
     scope: dict = await build_event_scope(event)
 
     try:
-        result_raw: bytes = await program_client.run_code(info, scope, timeout=content.resources.seconds)
+        if persistent:
+            result_raw = await supervisor.run_program_code(vm_id, scope, timeout=content.resources.seconds)
+        else:
+            result_raw = await program_client.run_code(info, scope, timeout=content.resources.seconds)
     except UnpackValueError as error:
         logger.exception(error)
         return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
@@ -691,83 +646,13 @@ async def run_code_on_event(
         if settings.REUSE_TIMEOUT > 0:
             if settings.WATCH_FOR_UPDATES:
                 update_watcher.watch(vm_id, vm_hash, pubsub)
-            expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
-        else:
+            # Persistent programs are long-running by design: never idle-reap them.
+            if not persistent:
+                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
+        elif not persistent:
             update_watcher.cancel(vm_id)
             await supervisor.delete_vm(vm_id)
             await program_client.forget(vm_id)
-
-
-async def _run_code_on_event_legacy(
-    vm_hash: ItemHash,
-    event,
-    pubsub: PubSub,
-    pool: VmPool,
-    *,
-    supervisor: Supervisor,
-    expiry: ExpiryManager,
-    update_watcher: UpdateWatcher,
-    registry: AgentVmRegistry,
-):
-    """Persistent programs: the un-migrated pool/VmExecution event path."""
-    if pool is None:
-        raise web.HTTPNotImplemented(
-            reason="Unavailable in split mode",
-            text="Persistent programs are not served yet when the agent runs separately from the supervisor.",
-        )
-    vm_id = VmId(str(vm_hash))
-
-    execution: VmExecution | None = pool.get_running_vm(vm_hash=vm_hash)
-
-    if not execution:
-        execution = await create_vm_execution_or_raise_http_error(
-            vm_hash=vm_hash, pool=pool, supervisor=supervisor, registry=registry, persistent=True
-        )
-        if execution is None:
-            # Spec-eligible messages are instances; they cannot serve code requests.
-            raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
-
-    logger.debug(f"Using vm={execution.vm_id}")
-
-    scope: dict = await build_event_scope(event)
-
-    try:
-        await execution.becomes_ready()
-        result_raw: bytes = await execution.run_code(scope=scope)
-    except UnpackValueError as error:
-        logger.exception(error)
-        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
-
-    try:
-        result = msgpack.loads(result_raw, raw=False)
-
-        logger.debug(f"Result from VM: <<<\n\n{str(result)[:1000]}\n\n>>>")
-
-        if "traceback" in result:
-            logger.warning(result["traceback"])
-            return web.Response(
-                status=HTTPInternalServerError.status_code,
-                reason="Error in VM execution",
-                body=result["traceback"],
-                content_type="text/plain",
-            )
-
-        logger.info(f"Result: {result['body']}")
-        return result["body"]
-
-    except UnpackValueError as error:
-        logger.exception(error)
-        return web.Response(status=HTTPBadGateway.status_code, reason="Invalid response from VM")
-    finally:
-        if settings.REUSE_TIMEOUT > 0:
-            if settings.WATCH_FOR_UPDATES:
-                update_watcher.watch(vm_id, vm_hash, pubsub)
-            # Persistent executions are long-running by design: never idle-reap them.
-            if not execution.persistent:
-                expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
-        else:
-            update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
 
 
 async def start_persistent_vm(
