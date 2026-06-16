@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,7 +6,7 @@ import pytest
 from aleph.vm.conf import settings
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import ConfidentialMode, DirectoryPath, TeeBackend, VmId
+from aleph.vm.supervisor.types import ConfidentialMode, TeeBackend, VmId
 
 
 class FakePool:
@@ -26,9 +25,9 @@ def test_can_instantiate(supervisor):
 
 @pytest.mark.asyncio
 async def test_migration_is_real_not_stubbed(supervisor):
-    # Migration is implemented: an unknown VM is a lookup error, not a stub.
+    # The export-stop step is implemented: an unknown VM is a lookup error, not a stub.
     with pytest.raises(VmNotFoundError):
-        await supervisor.export_vm(VmId("abc"), DirectoryPath(Path("/tmp/x")))
+        await supervisor.stop_vm_for_export(VmId("abc"))
 
 
 # ── Confidential ─────────────────────────────────────────────────────────────

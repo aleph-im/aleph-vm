@@ -1,7 +1,7 @@
 """The Supervisor abstraction: capability ABCs aggregated into one interface.
 
-Seven capability ABCs, all async, one method per proto RPC. A concrete
-supervisor (in-process today, gRPC client in 0.D) implements all 25 methods.
+Ten capability ABCs, all async (bar the streaming iterators). A concrete
+supervisor (in-process today, gRPC client in 0.D) implements all 30 methods.
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ from aleph.vm.supervisor.types import (
     HostPort,
     LogChunk,
     Measurement,
-    MigrationId,
-    MigrationInfo,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
@@ -138,45 +136,19 @@ class BackupOps(ABC):
 
 class MigrationOps(ABC):
     @abstractmethod
-    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo: ...
-
-    @abstractmethod
-    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo: ...
-
-    @abstractmethod
-    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo: ...
-
-    @abstractmethod
     async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
         """Gracefully stop a VM so its disks are quiescent, then return the
         host directory holding its persistent volumes.
 
-        The disk/VM half of the P2P export: the agent owns the network
-        transport (compress, hash, serve the files in this directory over
-        HTTP), the supervisor owns stopping the VM and locating its disks."""
-
-    @abstractmethod
-    async def restart_after_failed_export(self, vm_id: VmId) -> None:
-        """Bring a VM back up after its export failed: it is not leaving this
-        host after all. Best-effort; the agent calls this from the runner's
-        failure path."""
-
-    @abstractmethod
-    async def create_migrated_vm(self, vm_id: VmId, message: Any, original: Any) -> VmInfo:
-        """Create a persistent VM from an Aleph instance message whose disks
-        the agent has already staged under the supervisor's persistent volumes
-        directory.
-
-        The disk/VM half of the P2P import: the agent owns the network
-        transport (message fetch, disk download, overlay rebase), the
-        supervisor owns the create-and-boot step. ``message`` and ``original``
-        are the Aleph ExecutableContent, kept untyped at the boundary in
-        Phase 1 (same convention as reserve_resources)."""
-
-    @abstractmethod
-    async def release_migrated_vm(self, vm_id: VmId) -> None:
-        """Release a VM that has migrated away: stop it and forget its
-        definition. Drives migration cleanup on the source host."""
+        The disk/VM half of the P2P export. Migration otherwise rides the
+        standard lifecycle RPCs (the agent stages and rebases the disks, then
+        drives create_vm / start_vm / delete_vm), but this step cannot: a plain
+        stop_vm tears the QEMU process down via systemd without a guest
+        powerdown, leaving the guest filesystem unsynced. This method sends a
+        QMP system_powerdown and waits for the guest to halt so the exported
+        overlay is consistent on the destination. The agent owns the network
+        transport (compress, hash, serve the files in the returned directory
+        over HTTP)."""
 
 
 class ConfidentialOps(ABC):

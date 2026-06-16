@@ -61,8 +61,6 @@ from aleph.vm.supervisor.types import (
     HostPort,
     LogChunk,
     Measurement,
-    MigrationId,
-    MigrationInfo,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
@@ -318,40 +316,7 @@ class GrpcSupervisor(Supervisor):
         raise NotImplementedError("wired in Phase 2")
 
     # ── Migration ──
-    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
-        reply = await self._unary(
-            "ExportVm",
-            pb.ExportVmRequest(vm_id=str(vm_id), destination_dir=str(destination_dir)),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.migration_info_from_pb(reply)
-
-    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
-        reply = await self._unary(
-            "ImportVm",
-            pb.ImportVmRequest(vm_id=str(vm_id), source_dir=str(source_dir)),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.vm_info_from_pb(reply)
-
-    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
-        reply = await self._unary(
-            "GetMigrationStatus",
-            pb.GetMigrationStatusRequest(vm_id=str(vm_id), migration_id=str(migration_id)),
-            QUERY_TIMEOUT_SECS,
-        )
-        return conv.migration_info_from_pb(reply)
-
     async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
-        raise NotImplementedError("wired in Phase 2")
-
-    async def restart_after_failed_export(self, vm_id: VmId) -> None:
-        raise NotImplementedError("wired in Phase 2")
-
-    async def create_migrated_vm(self, vm_id: VmId, message, original) -> VmInfo:
-        raise NotImplementedError("wired in Phase 2")
-
-    async def release_migrated_vm(self, vm_id: VmId) -> None:
         raise NotImplementedError("wired in Phase 2")
 
     # ── Confidential ──

@@ -13,7 +13,6 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from pathlib import Path
 from typing import TypeVar
 
 import grpc
@@ -29,10 +28,8 @@ from aleph.vm.supervisor.errors import (
 )
 from aleph.vm.supervisor.types import (
     BackupId,
-    DirectoryPath,
     ErrorCode,
     HostPort,
-    MigrationId,
     VmId,
 )
 
@@ -241,20 +238,10 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         return conv.vm_info_to_pb(info)
 
     # ── Migration ──
-    @_translating
-    async def ExportVm(self, request: pb.ExportVmRequest, context) -> pb.MigrationInfo:
-        info = await self._supervisor.export_vm(VmId(request.vm_id), DirectoryPath(Path(request.destination_dir)))
-        return conv.migration_info_to_pb(info)
-
-    @_translating
-    async def ImportVm(self, request: pb.ImportVmRequest, context) -> pb.VmInfo:
-        info = await self._supervisor.import_vm(VmId(request.vm_id), DirectoryPath(Path(request.source_dir)))
-        return conv.vm_info_to_pb(info)
-
-    @_translating
-    async def GetMigrationStatus(self, request: pb.GetMigrationStatusRequest, context) -> pb.MigrationInfo:
-        info = await self._supervisor.get_migration_status(VmId(request.vm_id), MigrationId(request.migration_id))
-        return conv.migration_info_to_pb(info)
+    # Phase 1 collapsed migration onto the standard lifecycle RPCs (the agent
+    # stages and rebases disks then drives create_vm / start_vm / delete_vm).
+    # The directory-based ExportVm / ImportVm / GetMigrationStatus handlers are
+    # gone; their orphan proto RPCs are dropped in the Phase 2 proto pass.
 
     # ── Confidential ──
     @_translating

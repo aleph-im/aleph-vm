@@ -9,7 +9,6 @@ implemented raise NotImplementedSupervisorError.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import os
 import shutil
@@ -39,7 +38,7 @@ from aleph.vm.controllers.qemu.backup import (
     restore_rootfs,
     verify_qemu_disk,
 )
-from aleph.vm.migration.helpers import compress_disk, compute_sha256, graceful_shutdown
+from aleph.vm.migration.helpers import graceful_shutdown
 from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
     initialize_nftables,
@@ -47,17 +46,13 @@ from aleph.vm.network.firewall import (
     remove_all_aleph_chains,
 )
 from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
-from aleph.vm.supervisor import migrate
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import (
     BackupNotFoundError,
     InsufficientResourcesError,
     InternalSupervisorError,
     InvalidBackendError,
-    MigrationInProgressError,
-    MigrationNotFoundError,
     NotImplementedSupervisorError,
-    VmAlreadyExistsError,
     VmNotFoundError,
     translating_errors,
 )
@@ -70,7 +65,6 @@ from aleph.vm.supervisor.types import (
     ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
-    DiskFormat,
     GpuDevice,
     GuestPort,
     HealthInfo,
@@ -81,9 +75,6 @@ from aleph.vm.supervisor.types import (
     LogChunk,
     LogSource,
     Measurement,
-    MigrationId,
-    MigrationInfo,
-    MigrationPhase,
     PciAddress,
     PortForwardInfo,
     PortForwardSpec,
@@ -351,14 +342,9 @@ class LocalSupervisor(Supervisor):
         # truth); _backup_jobs only holds in-flight and failed runs.
         self._backup_jobs: dict[BackupId, BackupInfo] = {}
         self._backup_tasks: dict[VmId, asyncio.Task] = {}
-        # Serializes backup, restore and export per VM: none of them may
-        # touch the disks while another one converts or swaps them.
+        # Serializes backup and restore per VM: neither may touch the disks
+        # while the other one converts or swaps them.
         self._backup_locks: dict[VmId, asyncio.Lock] = {}
-        # Migration bookkeeping: jobs are kept (also after completion) so
-        # get_migration_status stays answerable; tasks track in-flight
-        # exports per VM.
-        self._migration_jobs: dict[MigrationId, MigrationInfo] = {}
-        self._migration_tasks: dict[VmId, asyncio.Task] = {}
 
     # ── Events ──
     def _emit_event(self, vm_id: VmId, old_status: VmStatus, new_status: VmStatus) -> None:
@@ -941,171 +927,25 @@ class LocalSupervisor(Supervisor):
                     self._emit_event(vm_id, VmStatus.STOPPED, info.status)
                 return info
 
-    # Migration
-    def _update_migration(self, migration_id: MigrationId, **changes) -> None:
-        self._migration_jobs[migration_id] = dataclasses.replace(self._migration_jobs[migration_id], **changes)
-
-    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
-        """Stop the VM and dump it (standalone disks + manifest) into a
-        host-local directory. Asynchronous: returns the PREPARING job;
-        poll get_migration_status. The VM is left STOPPED on success (it
-        is leaving this host) and restarted on failure."""
-        with translating_errors():
-            execution = self._require(vm_id)
-            if _backend_of(execution) is not Backend.QEMU:
-                raise InvalidBackendError("Export is only supported for QEMU VMs")
-            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
-                raise NotImplementedSupervisorError("Export requires a persistent VM")
-            spec = execution.vm_spec
-            if spec is None:
-                msg = f"VM {vm_id} was created outside the spec path (message-built); no spec to export"
-                raise NotImplementedSupervisorError(msg)
-
-            running_task = self._migration_tasks.get(vm_id)
-            if running_task is not None and not running_task.done():
-                raise MigrationInProgressError(f"An export of {vm_id} is already running")
-
-            destination = Path(destination_dir)
-            destination.mkdir(parents=True, exist_ok=True)
-
-            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            migration_id = MigrationId(f"{vm_id}-{timestamp}")
-            job = MigrationInfo(
-                vm_id=vm_id,
-                migration_id=migration_id,
-                phase=MigrationPhase.PREPARING,
-                bytes_transferred=0,
-                bytes_total=sum(disk.path.stat().st_size for disk in spec.disks),
-                error_message="",
-            )
-            self._migration_jobs[migration_id] = job
-            self._migration_tasks[vm_id] = asyncio.create_task(self._run_export(vm_id, migration_id, spec, destination))
-            return job
-
-    async def _run_export(self, vm_id: VmId, migration_id: MigrationId, spec: CreateVmSpec, destination: Path) -> None:
-        lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
-        try:
-            async with lock:
-                # The disks must be quiescent: a graceful stop (through the
-                # same path stop_vm uses) flushes the guest to disk.
-                await self.stop_vm(vm_id)
-                self._update_migration(migration_id, phase=MigrationPhase.EXPORTING)
-
-                manifest_disks: list[migrate.ManifestDisk] = []
-                transferred = 0
-                for index, disk in enumerate(spec.disks):
-                    name = migrate.disk_file_name(index, disk.format.value)
-                    dest_path = destination / name
-                    if disk.format is DiskFormat.QCOW2:
-                        # Collapses any backing chain: the export must be
-                        # self-contained on the target host.
-                        await compress_disk(disk.path, dest_path)
-                    else:
-                        await asyncio.to_thread(shutil.copy2, disk.path, dest_path)
-                    sha256 = await compute_sha256(dest_path)
-                    manifest_disks.append(
-                        migrate.ManifestDisk(name=name, sha256=sha256, size_bytes=dest_path.stat().st_size)
-                    )
-                    transferred += disk.path.stat().st_size
-                    self._update_migration(migration_id, bytes_transferred=transferred)
-
-                migrate.write_manifest(destination, spec, manifest_disks)
-                self._update_migration(migration_id, phase=MigrationPhase.COMPLETE)
-        except Exception as exc:
-            logger.exception("Export %s failed", migration_id)
-            self._update_migration(migration_id, phase=MigrationPhase.FAILED, error_message=str(exc))
-            try:
-                # The VM is not leaving after all; bring it back.
-                await self.start_vm(vm_id)
-            except Exception:
-                logger.exception("Failed to restart %s after a failed export", vm_id)
-        finally:
-            self._migration_tasks.pop(vm_id, None)
-
-    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
-        """Recreate a VM from an exported directory: verify the disks
-        against the manifest, copy them into supervisor-owned storage,
-        rewrite the spec paths and boot through the regular create path."""
-        with translating_errors():
-            spec, manifest_disks = migrate.read_manifest(Path(source_dir), vm_id)
-            if str(vm_id) in self.pool.executions:
-                # Guarded before any disk copy: an import onto a live VM
-                # must not overwrite the disks it is running from.
-                raise VmAlreadyExistsError(str(vm_id))
-
-            dest_dir = settings.PERSISTENT_VOLUMES_DIR / str(vm_id)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                new_disks = []
-                for manifest_disk, disk_spec in zip(manifest_disks, spec.disks, strict=True):
-                    source_path = Path(source_dir) / manifest_disk.name
-                    if not source_path.exists():
-                        raise MigrationNotFoundError(f"exported disk {manifest_disk.name} missing in {source_dir}")
-                    sha256 = await compute_sha256(source_path)
-                    if sha256 != manifest_disk.sha256:
-                        msg = f"checksum mismatch for {manifest_disk.name}: the export is corrupt or incomplete"
-                        raise InternalSupervisorError(msg)
-                    dest_path = dest_dir / manifest_disk.name
-                    await asyncio.to_thread(shutil.copy2, source_path, dest_path)
-                    new_disks.append(dataclasses.replace(disk_spec, path=dest_path))
-                spec = dataclasses.replace(spec, vm_id=vm_id, disks=new_disks)
-                # The regular create path: conflict guards, events, boot.
-                return await self.create_vm(spec)
-            except BaseException:
-                if str(vm_id) not in self.pool.executions:
-                    shutil.rmtree(dest_dir, ignore_errors=True)
-                raise
-
-    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
-        with translating_errors():
-            job = self._migration_jobs.get(migration_id)
-            if job is None or job.vm_id != vm_id:
-                raise MigrationNotFoundError(str(migration_id))
-            return job
-
     # ── Migration: the disk/VM half of the agent's P2P pull protocol ──
     #
-    # The agent owns the network transport (compress, hash, serve over HTTP,
-    # download, overlay rebase); these methods own the parts that touch the
-    # VmExecution and the pool, which the agent must not reach into directly.
+    # Migration rides the standard lifecycle RPCs: the agent stages and rebases
+    # the disks and then drives create_vm / start_vm / delete_vm. The one step
+    # that cannot ride a standard RPC is the export-time stop, which needs a
+    # guest powerdown (not the systemd teardown stop_vm performs) so the
+    # exported overlay is consistent on the destination.
     async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
-        """Gracefully stop the VM and return its persistent-volumes directory.
+        """Gracefully power the VM down and return its persistent-volumes dir.
 
-        The agent then compresses and serves the disk files it finds there.
+        A plain stop_vm tears the QEMU process down through systemd without a
+        guest powerdown, leaving the guest filesystem unsynced; this sends a
+        QMP system_powerdown and waits for the guest to halt so the disks are
+        quiescent before the agent compresses and serves them.
         """
         with translating_errors():
             execution = self._require(vm_id)
             await graceful_shutdown(execution)
             return DirectoryPath(settings.PERSISTENT_VOLUMES_DIR / str(vm_id))
-
-    async def restart_after_failed_export(self, vm_id: VmId) -> None:
-        """Bring the VM back up after a failed export. Best-effort: the VM may
-        already be gone (forgotten), in which case there is nothing to do."""
-        with translating_errors():
-            execution = self.pool.executions.get(vm_id)
-            if execution is None or not getattr(execution, "systemd_manager", None):
-                return
-            await execution.systemd_manager.enable_and_start(execution.controller_service)
-
-    async def create_migrated_vm(self, vm_id: VmId, message, original) -> VmInfo:
-        """Create a persistent VM from an instance message whose disks the
-        agent has already staged under PERSISTENT_VOLUMES_DIR / vm_id."""
-        with translating_errors():
-            execution = await self.pool.create_a_vm(
-                vm_hash=vm_id,
-                message=message,
-                original=original,
-                persistent=True,
-            )
-            info = _to_vm_info(execution, _is_running(execution, self.pool))
-            self._emit_event(vm_id, VmStatus.DEFINED, info.status)
-            return info
-
-    async def release_migrated_vm(self, vm_id: VmId) -> None:
-        """Release a VM that has migrated away: stop it and forget it."""
-        with translating_errors():
-            await self.pool.stop_vm(vm_id)
-            self.pool.forget_vm(vm_id)
 
     # Confidential
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
