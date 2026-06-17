@@ -1580,24 +1580,68 @@ class GetMeasurementRequest(google.protobuf.message.Message):
 global___GetMeasurementRequest = GetMeasurementRequest
 
 @typing.final
+class SevInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    ENABLED_FIELD_NUMBER: builtins.int
+    API_MAJOR_FIELD_NUMBER: builtins.int
+    API_MINOR_FIELD_NUMBER: builtins.int
+    BUILD_ID_FIELD_NUMBER: builtins.int
+    POLICY_FIELD_NUMBER: builtins.int
+    STATE_FIELD_NUMBER: builtins.int
+    HANDLE_FIELD_NUMBER: builtins.int
+    enabled: builtins.bool
+    api_major: builtins.int
+    api_minor: builtins.int
+    build_id: builtins.int
+    policy: builtins.int
+    state: builtins.str
+    handle: builtins.int
+    def __init__(
+        self,
+        *,
+        enabled: builtins.bool = ...,
+        api_major: builtins.int = ...,
+        api_minor: builtins.int = ...,
+        build_id: builtins.int = ...,
+        policy: builtins.int = ...,
+        state: builtins.str = ...,
+        handle: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["api_major", b"api_major", "api_minor", b"api_minor", "build_id", b"build_id", "enabled", b"enabled", "handle", b"handle", "policy", b"policy", "state", b"state"]) -> None: ...
+
+global___SevInfo = SevInfo
+
+@typing.final
 class Measurement(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
     MEASUREMENT_BYTES_FIELD_NUMBER: builtins.int
     TEE_BACKEND_FIELD_NUMBER: builtins.int
+    SEV_INFO_FIELD_NUMBER: builtins.int
+    LAUNCH_MEASURE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     measurement_bytes: builtins.bytes
     """attestation report / SEV launch measure"""
     tee_backend: global___TeeBackend.ValueType
+    launch_measure: builtins.str
+    """base64 launch measurement"""
+    @property
+    def sev_info(self) -> global___SevInfo:
+        """present for SEV launches"""
+
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         measurement_bytes: builtins.bytes = ...,
         tee_backend: global___TeeBackend.ValueType = ...,
+        sev_info: global___SevInfo | None = ...,
+        launch_measure: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["sev_info", b"sev_info"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["launch_measure", b"launch_measure", "measurement_bytes", b"measurement_bytes", "sev_info", b"sev_info", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
 
 global___Measurement = Measurement
 

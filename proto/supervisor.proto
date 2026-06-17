@@ -533,10 +533,22 @@ message InitializeConfidentialResponse {}
 
 message GetMeasurementRequest { string vm_id = 1; }
 
+message SevInfo {
+  bool enabled = 1;
+  uint32 api_major = 2;
+  uint32 api_minor = 3;
+  uint32 build_id = 4;
+  uint32 policy = 5;
+  string state = 6;
+  uint32 handle = 7;
+}
+
 message Measurement {
   string vm_id = 1;
   bytes measurement_bytes = 2;       // attestation report / SEV launch measure
   TeeBackend tee_backend = 3;
+  SevInfo sev_info = 4;              // present for SEV launches
+  string launch_measure = 5;        // base64 launch measurement
 }
 
 message InjectSecretRequest {

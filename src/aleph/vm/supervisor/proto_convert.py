@@ -48,6 +48,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    SevInfo,
     TeeBackend,
     TeeConfig,
     VmEvent,
@@ -564,12 +565,40 @@ def migration_info_from_pb(msg: pb.MigrationInfo) -> MigrationInfo:
 # ── Confidential ─────────────────────────────────────────────────────────────
 
 
+def sev_info_to_pb(info: SevInfo) -> pb.SevInfo:
+    return pb.SevInfo(
+        enabled=info.enabled,
+        api_major=info.api_major,
+        api_minor=info.api_minor,
+        build_id=info.build_id,
+        policy=info.policy,
+        state=info.state,
+        handle=info.handle,
+    )
+
+
+def sev_info_from_pb(msg: pb.SevInfo) -> SevInfo:
+    return SevInfo(
+        enabled=msg.enabled,
+        api_major=msg.api_major,
+        api_minor=msg.api_minor,
+        build_id=msg.build_id,
+        policy=msg.policy,
+        state=msg.state,
+        handle=msg.handle,
+    )
+
+
 def measurement_to_pb(measurement: Measurement) -> pb.Measurement:
-    return pb.Measurement(
+    msg = pb.Measurement(
         vm_id=str(measurement.vm_id),
         measurement_bytes=measurement.measurement_bytes,
         tee_backend=TEE_BACKEND_TO_PB[measurement.tee_backend],
+        launch_measure=measurement.launch_measure,
     )
+    if measurement.sev_info is not None:
+        msg.sev_info.CopyFrom(sev_info_to_pb(measurement.sev_info))
+    return msg
 
 
 def measurement_from_pb(msg: pb.Measurement) -> Measurement:
@@ -577,4 +606,6 @@ def measurement_from_pb(msg: pb.Measurement) -> Measurement:
         vm_id=VmId(msg.vm_id),
         measurement_bytes=msg.measurement_bytes,
         tee_backend=TEE_BACKEND_FROM_PB[msg.tee_backend],
+        sev_info=sev_info_from_pb(msg.sev_info) if msg.HasField("sev_info") else None,
+        launch_measure=msg.launch_measure,
     )

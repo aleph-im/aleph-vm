@@ -371,8 +371,8 @@ class Measurement:
     tee_backend: TeeBackend
     # SEV launch attestation, preserved for the confidential measurement
     # response. sev_info is the query-sev platform state and launch_measure is
-    # the base64 launch measurement; both default to empty for callers (and the
-    # proto, until Phase 2) that only carry measurement_bytes/tee_backend.
+    # the base64 launch measurement; both default to empty for callers that only
+    # carry measurement_bytes/tee_backend.
     sev_info: SevInfo | None = None
     launch_measure: str = ""
 

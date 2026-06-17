@@ -37,6 +37,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    SevInfo,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -286,3 +287,24 @@ def test_enum_tables_are_total():
     assert set(conv.LOG_SOURCE_TO_PB) == set(LogSource)
     assert set(conv.BACKUP_STATUS_TO_PB) == set(BackupStatus)
     assert set(conv.MIGRATION_PHASE_TO_PB) == set(MigrationPhase)
+
+
+def test_measurement_carries_sev_info_and_launch_measure():
+    m = Measurement(
+        vm_id=VmId("vm1"),
+        measurement_bytes=b"m",
+        tee_backend=TeeBackend.SEV,
+        sev_info=SevInfo(
+            enabled=True,
+            api_major=1,
+            api_minor=55,
+            build_id=21,
+            policy=3,
+            state="launch-update",
+            handle=7,
+        ),
+        launch_measure="bWVhc3VyZQ==",
+    )
+    out = conv.measurement_from_pb(conv.measurement_to_pb(m))
+    assert out.launch_measure == "bWVhc3VyZQ=="
+    assert out.sev_info == m.sev_info
