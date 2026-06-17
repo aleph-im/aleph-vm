@@ -127,10 +127,24 @@ async def test_recreate_network_roundtrip(grpc_pair):
 async def test_run_program_code_roundtrip(grpc_pair):
     client, fake = grpc_pair
     fake.run_program_code.return_value = b"RESULT"
-    out = await client.run_program_code(VmId("vm1"), {"type": "http", "path": "/"}, timeout=12.5)
+    # msgpack converts tuples to lists on the wire, so build the scope with lists
+    # and assert the server receives those same lists; callers must not rely on
+    # tuple identity surviving the round-trip.
+    scope = {
+        "type": "http",
+        "path": "/",
+        "query_string": "a=1",
+        "headers": [["host", "example"]],
+    }
+    out = await client.run_program_code(VmId("vm1"), scope, timeout=12.5)
     assert out == b"RESULT"
     args, kwargs = fake.run_program_code.call_args
-    assert args[1] == {"type": "http", "path": "/"}
+    assert args[1] == {
+        "type": "http",
+        "path": "/",
+        "query_string": "a=1",
+        "headers": [["host", "example"]],
+    }
     assert kwargs["timeout"] == 12.5
 
 
