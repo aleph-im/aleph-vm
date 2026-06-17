@@ -1,6 +1,5 @@
 import pytest
-from aleph_message.models import ItemHash
-from aleph_message.models.execution.instance import InstanceContent
+from conftest import make_spec
 
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
@@ -940,15 +939,14 @@ def fake_instance_content():
 
 
 def create_mock_execution(mocker, fake_instance_content):
-    """Create a mock VmExecution with necessary attributes."""
-    execution = VmExecution(
-        vm_hash=ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"),
-        message=InstanceContent.model_validate(fake_instance_content),
-        original=InstanceContent.model_validate(fake_instance_content),
-        persistent=True,
-        snapshot_manager=None,
-        systemd_manager=None,
-    )
+    """Create a mock spec-built VmExecution with necessary attributes.
+
+    fake_instance_content is retained in the signature for the test fixtures
+    that still pass it; recreate_port_redirect_rules reads only mapped_ports
+    and the mocked vm.tap_interface, so the spec content is immaterial here.
+    """
+    spec = make_spec(vm_hash="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca", persistent=True)
+    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
 
     # Mock the vm attribute with tap_interface
     mock_interface = mocker.MagicMock()

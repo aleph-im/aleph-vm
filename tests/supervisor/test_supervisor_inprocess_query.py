@@ -11,7 +11,13 @@ from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
 
 
 def make_execution(
-    *, vm_hash="itemhash123", running=True, confidential=False, hypervisor=HypervisorType.qemu, with_ip=True
+    *,
+    vm_hash="itemhash123",
+    running=True,
+    confidential=False,
+    hypervisor=HypervisorType.qemu,
+    is_program=False,
+    with_ip=True,
 ):
     started = datetime.now(tz=timezone.utc) - timedelta(seconds=120)
     times = SimpleNamespace(
@@ -36,8 +42,8 @@ def make_execution(
         persistent=True,
         controller_service=f"aleph-vm-controller@{vm_hash}.service",
         systemd_manager=object(),
-        is_program=False,
-        is_instance=True,
+        is_program=is_program,
+        is_instance=not is_program,
         is_confidential=confidential,
         is_awaiting_confidential_init=False,
         hypervisor=hypervisor,
@@ -87,11 +93,11 @@ async def test_vm_info_has_no_is_instance_field():
     """The instance/program distinction is agent vocabulary: the wire must not
     carry it. The agent derives it from its registry (or from the guest
     channel's presence as a registry-miss fallback)."""
-    execution = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
+    execution = make_execution(vm_hash="i", is_program=True)
     sup = LocalSupervisor(pool=FakePool(executions={"i": execution}))
     info = await sup.get_vm(VmId("i"))
     assert not hasattr(info, "is_instance")
-    # An instance under Firecracker still reports the FIRECRACKER backend.
+    # A program (Firecracker-backed) execution reports the FIRECRACKER backend.
     assert info.backend is Backend.FIRECRACKER
 
 
