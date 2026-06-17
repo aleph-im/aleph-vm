@@ -15,7 +15,6 @@ from typing import NewType
 
 VmId = NewType("VmId", str)
 BackupId = NewType("BackupId", str)
-MigrationId = NewType("MigrationId", str)
 PciAddress = NewType("PciAddress", str)
 HostPort = NewType("HostPort", int)
 GuestPort = NewType("GuestPort", int)
@@ -76,14 +75,6 @@ class LogSource(Enum):
 class BackupStatus(Enum):
     PENDING = "pending"
     RUNNING = "running"
-    COMPLETE = "complete"
-    FAILED = "failed"
-
-
-class MigrationPhase(Enum):
-    PREPARING = "preparing"
-    EXPORTING = "exporting"
-    IMPORTING = "importing"
     COMPLETE = "complete"
     FAILED = "failed"
 
@@ -352,16 +343,6 @@ class BackupInfo:
 class BackupChunk:
     data: bytes
     offset: int
-
-
-@dataclass(frozen=True)
-class MigrationInfo:
-    vm_id: VmId
-    migration_id: MigrationId
-    phase: MigrationPhase
-    bytes_transferred: int
-    bytes_total: int
-    error_message: str
 
 
 @dataclass(frozen=True)
