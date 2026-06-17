@@ -832,8 +832,8 @@ async def notify_allocation(request: web.Request):
     update_watcher = request.app["update_watcher"]
 
     # Capacity admission is no longer checked here: the engine enforces it
-    # atomically inside the create path (pool.check_admission for the message
-    # path, pool.check_spec_admission for the spec path), raising the typed
+    # atomically inside the create path (pool.check_spec_admission, on the
+    # shared pool.check_capacity core), raising the typed
     # InsufficientResourcesError. The vm_creation_exceptions / 503 path below
     # surfaces that error to the caller.
 
