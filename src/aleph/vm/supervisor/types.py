@@ -140,8 +140,6 @@ class TeeConfig:
     # Host path to the resolved OVMF firmware blob (the message path's
     # trusted_execution.firmware ref, downloaded to disk by the agent before
     # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
-    # Not carried over the Phase 1 proto yet (proto_convert drops it; defaulted
-    # so the round-trip keeps building); Phase 2 adds it to the wire.
     firmware_path: Path | None = None
 
 
@@ -164,11 +162,6 @@ class GpuSpec:
     - ``pci_host`` is the RESOLVED concrete host address. The engine fills it in
       atomically inside the create path (pool.create_vm_from_spec) by matching
       ``device_id`` against the host's available GPUs. A request leaves it empty.
-
-    ``device_id`` / ``model`` are not carried over the Phase 1 proto yet
-    (proto_convert only round-trips ``pci_host`` / ``supports_x_vga`` and gives
-    these the defaults below). Phase 2 adds them to the proto so a remote
-    supervisor can resolve the request itself.
     """
 
     pci_host: PciAddress
@@ -208,9 +201,7 @@ class CreateVmSpec:
     # The VM owner's Aleph address. The engine uses it to consume this owner's
     # own GPU reservation (made via the reserve_resources endpoint) inside the
     # create path, while skipping reservations held by OTHER users. Empty = no
-    # owner-scoped reservation handling (e.g. programs, migration). Not carried
-    # over the Phase 1 proto yet (proto_convert drops it; defaulted so the
-    # round-trip keeps building); Phase 2 adds it to the wire.
+    # owner-scoped reservation handling (e.g. programs, migration).
     owner_address: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.

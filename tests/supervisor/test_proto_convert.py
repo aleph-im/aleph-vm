@@ -55,12 +55,25 @@ FULL_SPEC = CreateVmSpec(
     ],
     vcpus=4,
     memory_mib=4096,
-    tee=TeeConfig(backend=TeeBackend.SEV_SNP, policy="0x07", session_dir=DirectoryPath(Path("/var/lib/sessions"))),
+    tee=TeeConfig(
+        backend=TeeBackend.SEV_SNP,
+        policy="0x07",
+        session_dir=DirectoryPath(Path("/var/lib/sessions")),
+        firmware_path=Path("/var/cache/ovmf.fd"),
+    ),
     network=NetworkConfig(internet_access=True, requested_ipv6="fd00::42", ipv6_prefix_len=124),
-    gpus=[GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)],
+    gpus=[
+        GpuSpec(
+            pci_host=PciAddress("0000:01:00.0"),
+            supports_x_vga=True,
+            device_id="10de:2504",
+            model="RTX 3090",
+        )
+    ],
     numa_node=1,
     persistent=True,
     ssh_authorized_keys=["ssh-ed25519 AAAA test@host"],
+    owner_address="0xOWNER",
 )
 
 MINIMAL_SPEC = CreateVmSpec(
