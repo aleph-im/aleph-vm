@@ -24,6 +24,17 @@ def _reset_semaphore():
     _reset_migration_semaphore_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def stub_finish_instance_create(monkeypatch):
+    """run_import runs the shared post-create tail finish_instance_create
+    (wait-until-running + apply the agent's port forwards). Stub it by default so
+    the import tests don't need a fully wired supervisor; the success test takes
+    this fixture to assert run_import invokes it. Returns the mock."""
+    mock = AsyncMock()
+    monkeypatch.setattr("aleph.vm.migration.runner.finish_instance_create", mock)
+    return mock
+
+
 def _export_supervisor(volumes_dir: Path, *, missing: bool = False):
     """A fake supervisor for the export runner: stop_vm gracefully powers the VM
     down (the runner then derives the volumes dir from settings), start_vm
@@ -134,7 +145,7 @@ from aleph.vm.migration.jobs import ImportJob
 
 
 @pytest.mark.asyncio
-async def testrun_import_success(tmp_path, monkeypatch):
+async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_create):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -209,6 +220,14 @@ async def testrun_import_success(tmp_path, monkeypatch):
     supervisor.create_vm.assert_awaited_once()
     (created_spec,), _ = supervisor.create_vm.await_args
     assert created_spec.vm_id == vm_hash
+    # Import runs the same post-create tail as a normal create so the migrated
+    # instance gets its host port forwards (SSH/22) on the destination; without
+    # it mapped_ports stays empty and the VM is unreachable on the new CRN.
+    stub_finish_instance_create.assert_awaited_once()
+    (fsup, fvm_id, fcontent), _ = stub_finish_instance_create.await_args
+    assert fsup is supervisor
+    assert fvm_id == vm_hash
+    assert fcontent is fake_message.content
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ from aleph.vm.migration.jobs import (
 )
 from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.messages import load_updated_message
+from aleph.vm.orchestrator.run import finish_instance_create
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.translate import build_create_vm_spec
@@ -285,6 +286,15 @@ async def run_import(
             # it, so create_vm reuses the staged disk (no re-download).
             spec = await build_create_vm_spec(job.vm_hash, message.content)
             await supervisor.create_vm(spec)
+
+            # A fresh destination has no persisted port mappings, and
+            # create_vm_from_spec only reloads those - it never applies the
+            # agent's port-forwarding policy. Run the same post-create tail the
+            # normal create path runs so the migrated instance gets its SSH (and
+            # any aggregate) host port forwards; without this mapped_ports stays
+            # empty and the VM is unreachable on the new CRN.
+            job.current_step = "port_forwards"
+            await finish_instance_create(supervisor, spec.vm_id, message.content)
 
             job.transfer_time_ms = int((time.monotonic() - start) * 1000)
             job.finished_at = datetime.now(timezone.utc)
