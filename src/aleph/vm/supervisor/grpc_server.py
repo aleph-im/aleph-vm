@@ -11,6 +11,7 @@ exact exception class from the trailer.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -257,6 +258,12 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     async def InjectSecret(self, request: pb.InjectSecretRequest, context) -> pb.InjectSecretResponse:
         await self._supervisor.inject_secret(VmId(request.vm_id), request.secret_header_bytes, request.secret_bytes)
         return pb.InjectSecretResponse()
+
+    # ── Network ──
+    @_translating
+    async def RecreateNetwork(self, request: pb.RecreateNetworkRequest, context) -> pb.RecreateNetworkResponse:
+        summary = await self._supervisor.recreate_network()
+        return pb.RecreateNetworkResponse(summary_json=json.dumps(summary))
 
 
 async def serve_unix(supervisor: Supervisor, socket_path: Path | str) -> grpc.aio.Server:

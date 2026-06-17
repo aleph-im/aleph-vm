@@ -380,6 +380,8 @@ def test_full_service_surface_pinned():
         "InitializeConfidential",
         "GetMeasurement",
         "InjectSecret",
+        # Network
+        "RecreateNetwork",
     }
     actual = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert actual == expected, f"unexpected drift: missing {expected - actual}, " f"extra {actual - expected}"

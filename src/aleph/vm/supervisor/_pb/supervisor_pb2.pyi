@@ -1721,6 +1721,34 @@ class InjectSecretResponse(google.protobuf.message.Message):
 global___InjectSecretResponse = InjectSecretResponse
 
 @typing.final
+class RecreateNetworkRequest(google.protobuf.message.Message):
+    """── Network ──────────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___RecreateNetworkRequest = RecreateNetworkRequest
+
+@typing.final
+class RecreateNetworkResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    SUMMARY_JSON_FIELD_NUMBER: builtins.int
+    summary_json: builtins.str
+    """JSON-encoded summary dict from the engine"""
+    def __init__(
+        self,
+        *,
+        summary_json: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["summary_json", b"summary_json"]) -> None: ...
+
+global___RecreateNetworkResponse = RecreateNetworkResponse
+
+@typing.final
 class ErrorDetail(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 

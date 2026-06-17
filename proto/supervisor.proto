@@ -81,6 +81,9 @@ service Supervisor {
   rpc InitializeConfidential(InitializeConfidentialRequest) returns (InitializeConfidentialResponse);
   rpc GetMeasurement(GetMeasurementRequest) returns (Measurement);
   rpc InjectSecret(InjectSecretRequest) returns (InjectSecretResponse);
+
+  // ── Network ──
+  rpc RecreateNetwork(RecreateNetworkRequest) returns (RecreateNetworkResponse);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -566,6 +569,13 @@ message InjectSecretRequest {
 }
 
 message InjectSecretResponse {}
+
+// ── Network ──────────────────────────────────────────────────────────────
+
+message RecreateNetworkRequest {}
+message RecreateNetworkResponse {
+  string summary_json = 1;           // JSON-encoded summary dict from the engine
+}
 
 // ── Wire error vocabulary ────────────────────────────────────────────────
 //

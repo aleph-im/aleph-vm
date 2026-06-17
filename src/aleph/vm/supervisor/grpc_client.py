@@ -17,6 +17,7 @@ and carry none.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -336,7 +337,8 @@ class GrpcSupervisor(Supervisor):
 
     # ── Network ──
     async def recreate_network(self) -> dict:
-        raise NotImplementedError("wired in Phase 2")
+        reply = await self._unary("RecreateNetwork", pb.RecreateNetworkRequest(), LIFECYCLE_TIMEOUT_SECS)
+        return json.loads(reply.summary_json) if reply.summary_json else {}
 
     # ── Reservation ──
     async def reserve_resources(self, content, user) -> datetime:
