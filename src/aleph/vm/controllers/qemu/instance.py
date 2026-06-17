@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 import psutil
 from aleph_message.models import InstanceContent, ItemHash
-from aleph_message.models.execution.environment import MachineResources
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
@@ -35,6 +34,7 @@ from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
 from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_rootfs_base_path
+from aleph.vm.supervisor.types import HardwareResources
 from aleph.vm.utils import run_in_subprocess
 
 if TYPE_CHECKING:
@@ -167,7 +167,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     vm_hash: ItemHash
     resources: AlephQemuResources
     enable_networking: bool
-    hardware_resources: MachineResources
+    hardware_resources: HardwareResources
     tap_interface: TapInterface | None = None
     vm_configuration: ConfigurationType | None
     is_instance: bool
@@ -188,7 +188,7 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
         vm_hash: ItemHash,
         resources: AlephQemuResources,
         enable_networking: bool = False,
-        hardware_resources: MachineResources = MachineResources(),
+        hardware_resources: HardwareResources = HardwareResources(),
         tap_interface: TapInterface | None = None,
     ):
         self.vm_id = vm_id
