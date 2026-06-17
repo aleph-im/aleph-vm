@@ -7,13 +7,34 @@
 
 ## Goal
 
-Remove `aleph_message` from `VmExecution` (`src/aleph/vm/models.py`) and the
-controller layer completely. After this change the daemon side (the VM pool, the
-execution object, and every controller) imports zero `aleph_message` symbols,
-including the value types `MachineResources` and `HypervisorType`.
+Make `VmExecution` (`src/aleph/vm/models.py`) fully message-free, and remove the
+`aleph_message` value type `MachineResources` from the controller layer (replacing
+it with `HardwareResources`). Delete the dead message-path program controller
+`AlephFirecrackerProgram`. After this change `models.py` imports zero
+`aleph_message` symbols, and no controller imports `MachineResources`.
+`HypervisorType` is removed from `VmExecution`; where controllers still need a
+hypervisor tag they use the existing message-free enum in
+`controllers/configuration.py`, not `aleph_message`.
 
 The agent keeps `aleph_message` (it is the message boundary). The shared resource
 download classes keep their message constructors (see Boundary below).
+
+### Out of scope (by design, not a follow-up)
+
+`controllers/` continues to import `aleph_message`, and that is correct: the
+controllers are an AGENT-side primitive. They download resources from the Aleph
+network, so understanding Aleph primitives (`ItemHash`, `ProgramContent` /
+`InstanceContent` / `ExecutableContent`, volume types) is intrinsic to them. We do
+NOT scrub `aleph_message` from the controllers.
+
+The remaining supervisor-side cleanup (making the true supervisor message-free) is
+gated on a SEPARATE effort: cleanly splitting the agent and supervisor codebases.
+Today `supervisor/translate.py` (the message->spec translator) is pure agent code
+living in the supervisor package, `controllers/` is used as if neutral when it is
+agent-side, and several lower-level modules are shared. Once that split is done,
+the supervisor's own residual `aleph_message` coupling is small (notably
+`AMDSEVPolicy` in `local.py` plus a few identity/value types in shared modules) and
+can be removed cleanly. That split is its own design, not part of this change.
 
 ## Why this is possible now
 
