@@ -17,10 +17,10 @@ from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.types import Backend, CreateVmSpec, NetworkConfig, VmId
 
 
-def _spec(*, vcpus: int, memory_mib: int) -> CreateVmSpec:
+def _spec(*, vcpus: int, memory_mib: int, backend: Backend = Backend.QEMU) -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=VmId("itemhash123"),
-        backend=Backend.QEMU,
+        backend=backend,
         kernel_path=Path(""),
         initrd_path=Path(""),
         disks=[],
@@ -65,3 +65,21 @@ def test_over_vcpu_cap_spec_raises(pool, mocker):
 
     with pytest.raises(InsufficientResourcesError):
         pool.check_spec_admission(_spec(vcpus=10_000, memory_mib=1024))
+
+
+def test_program_spec_uses_program_bucket_when_instance_cap_is_zero(pool, mocker):
+    # Reproduces the droplet health-check: a small host where
+    # physical - host_reserved - program_reserved <= 0, so the instance bucket
+    # cap is 0. A Firecracker PROGRAM must still be admitted against the program
+    # bucket (cap = PROGRAM_MEMORY_RESERVED_MIB), not refused by the 0 instance cap.
+    mocker.patch("aleph.vm.pool.psutil.virtual_memory", return_value=mocker.Mock(total=3915 * 1024 * 1024))
+    mocker.patch("aleph.vm.pool.psutil.cpu_count", return_value=2)
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+
+    # Instance of the same size is refused (instance cap is 0)...
+    with pytest.raises(InsufficientResourcesError):
+        pool.check_spec_admission(_spec(vcpus=1, memory_mib=256, backend=Backend.QEMU))
+
+    # ...but the program is admitted against the program bucket.
+    assert pool.check_spec_admission(_spec(vcpus=1, memory_mib=256, backend=Backend.FIRECRACKER)) is None

@@ -287,10 +287,14 @@ class VmPool:
         """Refuse a message-free CreateVmSpec when it would exceed host capacity.
 
         The spec-path counterpart of :meth:`check_admission`. It reuses the
-        same instance-bucket memory accounting and vCPU overcommit ceiling, but
+        same two-bucket memory accounting and vCPU overcommit ceiling, but
         reads its requirements from the spec (``spec.memory_mib`` /
-        ``spec.vcpus``) instead of an Aleph message. Spec VMs are QEMU
-        instances, so they are always accounted against the instance bucket.
+        ``spec.vcpus``) instead of an Aleph message. The bucket follows the
+        spec backend: QEMU specs are instances (instance bucket), Firecracker
+        specs are programs (program bucket). This mirrors
+        :meth:`check_admission`'s ``isinstance(message, InstanceContent)`` split
+        so a program routed through the spec path is not starved by the instance
+        ceiling, which can be 0 on a small host with a large program reserve.
 
         Disk admission is deferred: ``DiskSpec`` carries no ``size_mib`` today,
         so there is nothing to sum against ``calculate_available_disk``. Revisit
@@ -309,7 +313,11 @@ class VmPool:
         required_memory_mib = spec.memory_mib
         required_vcpus = spec.vcpus
 
+        # QEMU specs are instances; Firecracker specs are programs.
+        is_instance = spec.backend is not Backend.FIRECRACKER
+
         committed_instance_memory_mib = 0
+        committed_program_memory_mib = 0
         committed_vcpus = 0
         for execution in tuple(self.executions.values()):
             memory = execution.allocated_memory_mib
@@ -318,6 +326,8 @@ class VmPool:
                 continue
             if execution.is_instance:
                 committed_instance_memory_mib += memory
+            else:
+                committed_program_memory_mib += memory
             committed_vcpus += vcpus
 
         physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
@@ -325,17 +335,23 @@ class VmPool:
         host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
         program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
 
-        # Spec VMs are QEMU instances: account against the instance bucket only.
-        memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        if is_instance:
+            bucket_name = "instance"
+            committed_memory_mib = committed_instance_memory_mib
+            memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        else:
+            bucket_name = "program"
+            committed_memory_mib = committed_program_memory_mib
+            memory_cap_mib = program_reserved_mib
         vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
 
         errors: list[str] = []
 
-        if committed_instance_memory_mib + required_memory_mib > memory_cap_mib:
+        if committed_memory_mib + required_memory_mib > memory_cap_mib:
             errors.append(
-                f"Memory (instance bucket): "
+                f"Memory ({bucket_name} bucket): "
                 f"required {required_memory_mib} MiB, "
-                f"committed {committed_instance_memory_mib} MiB, "
+                f"committed {committed_memory_mib} MiB, "
                 f"cap {memory_cap_mib} MiB "
                 f"(physical {physical_memory_mib} MiB, "
                 f"host_reserved {host_reserved_mib} MiB, "
@@ -352,7 +368,7 @@ class VmPool:
 
         if errors:
             detail = "Insufficient capacity to create VM. " + "; ".join(errors)
-            available_memory_mib = max(memory_cap_mib - committed_instance_memory_mib, 0)
+            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
             available_vcpus = max(vcpu_cap - committed_vcpus, 0)
             raise InsufficientResourcesError(
                 detail,
