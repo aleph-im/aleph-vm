@@ -40,9 +40,6 @@ from aleph.vm.supervisor.types import (
     LogChunk,
     LogSource,
     Measurement,
-    MigrationId,
-    MigrationInfo,
-    MigrationPhase,
     NetworkConfig,
     NumaNodeInfo,
     PciAddress,
@@ -134,15 +131,6 @@ BACKUP_STATUS_TO_PB = {
     BackupStatus.FAILED: pb.BACKUP_STATUS_FAILED,
 }
 BACKUP_STATUS_FROM_PB = {v: k for k, v in BACKUP_STATUS_TO_PB.items()}
-
-MIGRATION_PHASE_TO_PB = {
-    MigrationPhase.PREPARING: pb.MIGRATION_PHASE_PREPARING,
-    MigrationPhase.EXPORTING: pb.MIGRATION_PHASE_EXPORTING,
-    MigrationPhase.IMPORTING: pb.MIGRATION_PHASE_IMPORTING,
-    MigrationPhase.COMPLETE: pb.MIGRATION_PHASE_COMPLETE,
-    MigrationPhase.FAILED: pb.MIGRATION_PHASE_FAILED,
-}
-MIGRATION_PHASE_FROM_PB = {v: k for k, v in MIGRATION_PHASE_TO_PB.items()}
 
 ERROR_CODE_TO_PB = {
     ErrorCode.VM_NOT_FOUND: pb.ERROR_CODE_VM_NOT_FOUND,
@@ -593,31 +581,6 @@ def backup_chunk_to_pb(chunk: BackupChunk) -> pb.BackupChunk:
 
 def backup_chunk_from_pb(msg: pb.BackupChunk) -> BackupChunk:
     return BackupChunk(data=msg.data, offset=msg.offset)
-
-
-# ── Migration ────────────────────────────────────────────────────────────────
-
-
-def migration_info_to_pb(info: MigrationInfo) -> pb.MigrationInfo:
-    return pb.MigrationInfo(
-        vm_id=str(info.vm_id),
-        migration_id=str(info.migration_id),
-        phase=MIGRATION_PHASE_TO_PB[info.phase],
-        bytes_transferred=info.bytes_transferred,
-        bytes_total=info.bytes_total,
-        error_message=info.error_message,
-    )
-
-
-def migration_info_from_pb(msg: pb.MigrationInfo) -> MigrationInfo:
-    return MigrationInfo(
-        vm_id=VmId(msg.vm_id),
-        migration_id=MigrationId(msg.migration_id),
-        phase=MIGRATION_PHASE_FROM_PB[msg.phase],
-        bytes_transferred=msg.bytes_transferred,
-        bytes_total=msg.bytes_total,
-        error_message=msg.error_message,
-    )
 
 
 # ── Confidential ─────────────────────────────────────────────────────────────

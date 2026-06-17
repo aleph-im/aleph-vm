@@ -28,9 +28,6 @@ from aleph.vm.supervisor.types import (
     LogChunk,
     LogSource,
     Measurement,
-    MigrationId,
-    MigrationInfo,
-    MigrationPhase,
     NetworkConfig,
     NumaNodeInfo,
     PciAddress,
@@ -244,18 +241,6 @@ def test_backup_info_carries_archive_metadata():
     assert out.source_sizes == {"rootfs": 100, "data": 50}
 
 
-def test_migration_info_round_trip():
-    info = MigrationInfo(
-        vm_id=VmId("dead" * 16),
-        migration_id=MigrationId("mig-1"),
-        phase=MigrationPhase.EXPORTING,
-        bytes_transferred=10,
-        bytes_total=100,
-        error_message="",
-    )
-    assert conv.migration_info_from_pb(conv.migration_info_to_pb(info)) == info
-
-
 def test_measurement_round_trip():
     measurement = Measurement(vm_id=VmId("dead" * 16), measurement_bytes=b"\xaa\xbb", tee_backend=TeeBackend.SEV_SNP)
     assert conv.measurement_from_pb(conv.measurement_to_pb(measurement)) == measurement
@@ -322,7 +307,6 @@ def test_enum_tables_are_total():
     assert set(conv.DISK_ROLE_TO_PB) == set(DiskRole)
     assert set(conv.LOG_SOURCE_TO_PB) == set(LogSource)
     assert set(conv.BACKUP_STATUS_TO_PB) == set(BackupStatus)
-    assert set(conv.MIGRATION_PHASE_TO_PB) == set(MigrationPhase)
 
 
 def test_measurement_carries_sev_info_and_launch_measure():

@@ -159,21 +159,6 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.RestoreBackupRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
-        self.ExportVm = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/ExportVm',
-                request_serializer=supervisor__pb2.ExportVmRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.MigrationInfo.FromString,
-                _registered_method=True)
-        self.ImportVm = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/ImportVm',
-                request_serializer=supervisor__pb2.ImportVmRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.VmInfo.FromString,
-                _registered_method=True)
-        self.GetMigrationStatus = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/GetMigrationStatus',
-                request_serializer=supervisor__pb2.GetMigrationStatusRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.MigrationInfo.FromString,
-                _registered_method=True)
         self.InitializeConfidential = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/InitializeConfidential',
                 request_serializer=supervisor__pb2.InitializeConfidentialRequest.SerializeToString,
@@ -375,25 +360,6 @@ class SupervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ExportVm(self, request, context):
-        """── Migration ──
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ImportVm(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def GetMigrationStatus(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def InitializeConfidential(self, request, context):
         """── Confidential ──
         """
@@ -554,21 +520,6 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.RestoreBackup,
                     request_deserializer=supervisor__pb2.RestoreBackupRequest.FromString,
                     response_serializer=supervisor__pb2.VmInfo.SerializeToString,
-            ),
-            'ExportVm': grpc.unary_unary_rpc_method_handler(
-                    servicer.ExportVm,
-                    request_deserializer=supervisor__pb2.ExportVmRequest.FromString,
-                    response_serializer=supervisor__pb2.MigrationInfo.SerializeToString,
-            ),
-            'ImportVm': grpc.unary_unary_rpc_method_handler(
-                    servicer.ImportVm,
-                    request_deserializer=supervisor__pb2.ImportVmRequest.FromString,
-                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
-            ),
-            'GetMigrationStatus': grpc.unary_unary_rpc_method_handler(
-                    servicer.GetMigrationStatus,
-                    request_deserializer=supervisor__pb2.GetMigrationStatusRequest.FromString,
-                    response_serializer=supervisor__pb2.MigrationInfo.SerializeToString,
             ),
             'InitializeConfidential': grpc.unary_unary_rpc_method_handler(
                     servicer.InitializeConfidential,
@@ -1271,87 +1222,6 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/RestoreBackup',
             supervisor__pb2.RestoreBackupRequest.SerializeToString,
             supervisor__pb2.VmInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ExportVm(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/ExportVm',
-            supervisor__pb2.ExportVmRequest.SerializeToString,
-            supervisor__pb2.MigrationInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ImportVm(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/ImportVm',
-            supervisor__pb2.ImportVmRequest.SerializeToString,
-            supervisor__pb2.VmInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def GetMigrationStatus(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/GetMigrationStatus',
-            supervisor__pb2.GetMigrationStatusRequest.SerializeToString,
-            supervisor__pb2.MigrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
