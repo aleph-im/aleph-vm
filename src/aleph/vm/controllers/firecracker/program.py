@@ -13,7 +13,6 @@ from aleph_message.models import ProgramContent
 from aleph_message.models.execution.base import Encoding
 
 from aleph.vm.conf import settings
-from aleph.vm.hypervisors.firecracker.config import Drive
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
 from aleph.vm.storage import get_code_path, get_data_path, get_runtime_path
 from aleph.vm.utils import MsgpackSerializable
@@ -220,33 +219,3 @@ class AlephProgramResources(AlephFirecrackerResources):
             self.download_volumes(),
             self.download_data(),
         )
-
-
-def get_volumes_for_program(resources: AlephProgramResources, drives: list[Drive]) -> tuple[bytes | None, list[Volume]]:
-    code: bytes | None
-    volumes: list[Volume]
-    if resources.code_encoding == Encoding.squashfs:
-        code = b""
-        volumes = [Volume(mount="/opt/code", device="vdb", read_only=True)] + [
-            Volume(
-                mount=volume.mount,
-                device=drives[index + 1].drive_id,
-                read_only=volume.read_only,
-            )
-            for index, volume in enumerate(resources.volumes)
-        ]
-    else:
-        if os.path.getsize(resources.code_path) > settings.MAX_PROGRAM_ARCHIVE_SIZE:
-            msg = "Program file too large to pass as an inline zip"
-            raise FileTooLargeError(msg)
-
-        code = resources.code_path.read_bytes() if resources.code_path else None
-        volumes = [
-            Volume(
-                mount=volume.mount,
-                device=drives[index].drive_id,
-                read_only=volume.read_only,
-            )
-            for index, volume in enumerate(resources.volumes)
-        ]
-    return code, volumes
