@@ -1,3 +1,1 @@
-from .program import AlephFirecrackerProgram
-
-__all__ = ("AlephFirecrackerProgram",)
+__all__ = ()
