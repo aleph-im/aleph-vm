@@ -38,7 +38,6 @@ from aleph.vm.controllers.qemu.backup import (
     verify_qemu_disk,
 )
 from aleph.vm.controllers.qemu.client import QemuVmClient
-from aleph.vm.migration.helpers import graceful_shutdown
 from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
     initialize_nftables,
@@ -986,25 +985,13 @@ class LocalSupervisor(Supervisor):
                     self._emit_event(vm_id, VmStatus.STOPPED, info.status)
                 return info
 
-    # ── Migration: the disk/VM half of the agent's P2P pull protocol ──
+    # ── Migration ──
     #
-    # Migration rides the standard lifecycle RPCs: the agent stages and rebases
-    # the disks and then drives create_vm / start_vm / delete_vm. The one step
-    # that cannot ride a standard RPC is the export-time stop, which needs a
-    # guest powerdown (not the systemd teardown stop_vm performs) so the
-    # exported overlay is consistent on the destination.
-    async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
-        """Gracefully power the VM down and return its persistent-volumes dir.
-
-        A plain stop_vm tears the QEMU process down through systemd without a
-        guest powerdown, leaving the guest filesystem unsynced; this sends a
-        QMP system_powerdown and waits for the guest to halt so the disks are
-        quiescent before the agent compresses and serves them.
-        """
-        with translating_errors():
-            execution = self._require(vm_id)
-            await graceful_shutdown(execution)
-            return DirectoryPath(settings.PERSISTENT_VOLUMES_DIR / str(vm_id))
+    # Migration rides the standard lifecycle RPCs entirely: the agent stages and
+    # rebases the disks, then drives create_vm / stop_vm / start_vm / delete_vm.
+    # The export-time stop is a plain stop_vm: it stops the controller unit and
+    # blocks until the guest has ACPI-powered down and QEMU has flushed its disk
+    # caches, so the exported overlay is consistent with no extra step.
 
     # Confidential
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:

@@ -24,10 +24,12 @@ def test_can_instantiate(supervisor):
 
 
 @pytest.mark.asyncio
-async def test_migration_is_real_not_stubbed(supervisor):
-    # The export-stop step is implemented: an unknown VM is a lookup error, not a stub.
+async def test_migration_rides_standard_lifecycle(supervisor):
+    # Migration carries no dedicated method: the export stop is a plain stop_vm,
+    # which is implemented (an unknown VM is a lookup error, not a stub).
+    assert not hasattr(supervisor, "stop_vm_for_export")
     with pytest.raises(VmNotFoundError):
-        await supervisor.stop_vm_for_export(VmId("abc"))
+        await supervisor.stop_vm(VmId("abc"))
 
 
 # ── Confidential ─────────────────────────────────────────────────────────────

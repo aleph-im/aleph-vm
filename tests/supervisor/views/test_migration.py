@@ -49,7 +49,9 @@ def _migration_supervisor(get_vm=None, **overrides):
     """
     sup = MagicMock()
     sup.get_vm = get_vm if get_vm is not None else AsyncMock(side_effect=VmNotFoundError("absent"))
-    sup.stop_vm_for_export = AsyncMock()
+    # The export stop rides the standard stop_vm RPC; the runner derives the
+    # volumes dir from settings.PERSISTENT_VOLUMES_DIR itself.
+    sup.stop_vm = AsyncMock()
     sup.start_vm = AsyncMock()
     sup.create_vm = AsyncMock(return_value=MagicMock())
     sup.delete_vm = AsyncMock()
@@ -227,7 +229,6 @@ class TestMigrationExportEndpoint:
         app = setup_webapp(pool=mocker.Mock(executions={}))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
-            stop_vm_for_export=AsyncMock(return_value=volumes),
         )
         client: TestClient = await aiohttp_client(app)
 
@@ -711,7 +712,6 @@ class TestMigrationExportIdempotency:
         app = setup_webapp(pool=mocker.Mock(executions={}))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
-            stop_vm_for_export=AsyncMock(return_value=volumes),
         )
         client: TestClient = await aiohttp_client(app)
 
@@ -763,7 +763,6 @@ class TestMigrationFailedReset:
         app = setup_webapp(pool=mocker.Mock(executions={}))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
-            stop_vm_for_export=AsyncMock(return_value=volumes),
         )
         client: TestClient = await aiohttp_client(app)
 

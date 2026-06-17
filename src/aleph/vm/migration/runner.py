@@ -97,7 +97,15 @@ async def run_export(
     export_paths: list[Path] = []
     async with sem:
         try:
-            volumes_dir = Path(await supervisor.stop_vm_for_export(job.vm_hash))
+            # stop_vm already performs a graceful, disk-quiescing powerdown: it
+            # stops the controller unit and blocks (wait_for_controller_stopped)
+            # until the controller's SIGTERM handler has ACPI-powered the guest
+            # down and QMP-quit QEMU with a cache flush. The exported overlay is
+            # therefore consistent once stop_vm returns; no separate graceful
+            # step is needed. The volumes dir is the same settings-derived path
+            # the import runner stages into.
+            await supervisor.stop_vm(job.vm_hash)
+            volumes_dir = settings.PERSISTENT_VOLUMES_DIR / str(job.vm_hash)
             job.volumes_dir = volumes_dir
 
             disk_files: list[DiskFileInfo] = []

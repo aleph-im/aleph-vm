@@ -25,13 +25,17 @@ def _reset_semaphore():
 
 
 def _export_supervisor(volumes_dir: Path, *, missing: bool = False):
-    """A fake supervisor for the export runner: stop_vm_for_export returns the
-    given volumes dir, start_vm records the restart call on the failure path."""
+    """A fake supervisor for the export runner: stop_vm gracefully powers the VM
+    down (the runner then derives the volumes dir from settings), start_vm
+    records the restart call on the failure path.
+
+    volumes_dir is unused now that the runner computes the path itself; kept so
+    callers can keep documenting which dir the test stages disks into."""
     sup = MagicMock()
     if missing:
-        sup.stop_vm_for_export = AsyncMock(side_effect=VmNotFoundError("nope"))
+        sup.stop_vm = AsyncMock(side_effect=VmNotFoundError("nope"))
     else:
-        sup.stop_vm_for_export = AsyncMock(return_value=volumes_dir)
+        sup.stop_vm = AsyncMock()
     sup.start_vm = AsyncMock()
     return sup
 
@@ -75,7 +79,7 @@ async def testrun_export_success(tmp_path, monkeypatch):
     )
     await run_export(job, supervisor)
 
-    supervisor.stop_vm_for_export.assert_awaited_once_with(vm_hash)
+    supervisor.stop_vm.assert_awaited_once_with(vm_hash)
     assert job.state == MigrationState.EXPORTED
     assert job.finished_at is not None
     assert job.error is None

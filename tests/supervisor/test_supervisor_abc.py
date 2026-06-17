@@ -9,7 +9,6 @@ from aleph.vm.supervisor.abc import (
     HostOps,
     LifecycleOps,
     LogsOps,
-    MigrationOps,
     NetworkOps,
     PortForwardingOps,
     ReservationOps,
@@ -42,7 +41,6 @@ EXPECTED_METHODS = {
     "delete_backup",
     "restore_backup",
     "restore_from_image",
-    "stop_vm_for_export",
     "initialize_confidential",
     "get_measurement",
     "inject_secret",
@@ -53,10 +51,10 @@ EXPECTED_METHODS = {
 STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
 
 
-def test_supervisor_aggregates_all_31_methods():
+def test_supervisor_aggregates_all_30_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 31
+    assert len(EXPECTED_METHODS) == 30
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -99,9 +97,6 @@ def test_capability_abcs_partition_the_surface():
             "delete_backup",
             "restore_backup",
             "restore_from_image",
-        },
-        MigrationOps: {
-            "stop_vm_for_export",
         },
         ConfidentialOps: {"initialize_confidential", "get_measurement", "inject_secret"},
         NetworkOps: {"recreate_network"},

@@ -1,7 +1,8 @@
 """The Supervisor abstraction: capability ABCs aggregated into one interface.
 
-Ten capability ABCs, all async (bar the streaming iterators). A concrete
+Nine capability ABCs, all async (bar the streaming iterators). A concrete
 supervisor (in-process today, gRPC client in 0.D) implements all 30 methods.
+Migration carries no method of its own: it rides the standard lifecycle RPCs.
 """
 
 from __future__ import annotations
@@ -143,23 +144,6 @@ class BackupOps(ABC):
         the engine owns the disk/VM work."""
 
 
-class MigrationOps(ABC):
-    @abstractmethod
-    async def stop_vm_for_export(self, vm_id: VmId) -> DirectoryPath:
-        """Gracefully stop a VM so its disks are quiescent, then return the
-        host directory holding its persistent volumes.
-
-        The disk/VM half of the P2P export. Migration otherwise rides the
-        standard lifecycle RPCs (the agent stages and rebases the disks, then
-        drives create_vm / start_vm / delete_vm), but this step cannot: a plain
-        stop_vm tears the QEMU process down via systemd without a guest
-        powerdown, leaving the guest filesystem unsynced. This method sends a
-        QMP system_powerdown and waits for the guest to halt so the exported
-        overlay is consistent on the destination. The agent owns the network
-        transport (compress, hash, serve the files in the returned directory
-        over HTTP)."""
-
-
 class ConfidentialOps(ABC):
     @abstractmethod
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None: ...
@@ -198,7 +182,6 @@ class Supervisor(
     EventsOps,
     LogsOps,
     BackupOps,
-    MigrationOps,
     ConfidentialOps,
     NetworkOps,
     ReservationOps,
