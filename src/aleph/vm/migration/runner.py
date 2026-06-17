@@ -216,7 +216,13 @@ async def run_import(
             if message.type != MessageType.instance:
                 msg = "Message is not an instance"
                 raise RuntimeError(msg)
-            hypervisor = message.content.environment.hypervisor or HypervisorType.firecracker
+            # Resolve the hypervisor exactly as the create path does
+            # (translate.build_create_vm_spec): an instance message that omits
+            # the field (the CLI never sets it) falls back to
+            # INSTANCE_DEFAULT_HYPERVISOR, which is QEMU. A hardcoded Firecracker
+            # fallback here rejected every default instance before create_vm,
+            # so migrated VMs never booted on the destination.
+            hypervisor = message.content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
             if hypervisor != HypervisorType.qemu:
                 msg = "Migration only supported for QEMU instances"
                 raise RuntimeError(msg)
