@@ -28,7 +28,7 @@ from aleph.vm.supervisor.errors import (
     SupervisorError,
     translate_exception,
 )
-from aleph.vm.supervisor.types import BackupId, ErrorCode, HostPort, VmId
+from aleph.vm.supervisor.types import BackupId, DirectoryPath, ErrorCode, HostPort, VmId
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,15 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     @_translating
     async def RestoreBackup(self, request: pb.RestoreBackupRequest, context) -> pb.VmInfo:
         info = await self._supervisor.restore_backup(VmId(request.vm_id), BackupId(request.backup_id))
+        return conv.vm_info_to_pb(info)
+
+    @_translating
+    async def RestoreFromImage(self, request: pb.RestoreFromImageRequest, context) -> pb.VmInfo:
+        info = await self._supervisor.restore_from_image(
+            VmId(request.vm_id),
+            DirectoryPath(conv.path_from_wire(request.image_path)),
+            max_virtual_size_bytes=request.max_virtual_size_bytes,
+        )
         return conv.vm_info_to_pb(info)
 
     # ── Migration ──

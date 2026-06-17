@@ -312,7 +312,16 @@ class GrpcSupervisor(Supervisor):
     async def restore_from_image(
         self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
     ) -> VmInfo:
-        raise NotImplementedError("wired in Phase 2")
+        reply = await self._unary(
+            "RestoreFromImage",
+            pb.RestoreFromImageRequest(
+                vm_id=str(vm_id),
+                image_path=conv.path_to_wire(Path(image_path)),
+                max_virtual_size_bytes=max_virtual_size_bytes,
+            ),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
+        return conv.vm_info_from_pb(reply)
 
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:

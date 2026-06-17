@@ -356,6 +356,7 @@ def test_full_service_surface_pinned():
         "StartVm",
         "RebootVm",
         "ReinstallVm",
+        "RestoreFromImage",
         # Port forwarding
         "AddPortForward",
         "RemovePortForward",

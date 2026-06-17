@@ -999,6 +999,29 @@ class ReinstallVmRequest(google.protobuf.message.Message):
 global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
+class RestoreFromImageRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    IMAGE_PATH_FIELD_NUMBER: builtins.int
+    MAX_VIRTUAL_SIZE_BYTES_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    image_path: builtins.str
+    """host path to a staged QCOW2 image"""
+    max_virtual_size_bytes: builtins.int
+    """0 = no cap"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        image_path: builtins.str = ...,
+        max_virtual_size_bytes: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["image_path", b"image_path", "max_virtual_size_bytes", b"max_virtual_size_bytes", "vm_id", b"vm_id"]) -> None: ...
+
+global___RestoreFromImageRequest = RestoreFromImageRequest
+
+@typing.final
 class WatchEventsRequest(google.protobuf.message.Message):
     """── Events ───────────────────────────────────────────────────────────────"""
 

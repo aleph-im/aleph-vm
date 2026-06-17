@@ -45,6 +45,7 @@ service Supervisor {
   rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
+  rpc RestoreFromImage(RestoreFromImageRequest) returns (VmInfo);
 
   // ── Port forwarding ──
   rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
@@ -364,6 +365,12 @@ message ReinstallVmRequest {
                                      // `optional` so the server can distinguish unset from false:
                                      // the Python ABC defaults wipe_volumes to true, so an unset
                                      // field is treated as true.
+}
+
+message RestoreFromImageRequest {
+  string vm_id = 1;
+  string image_path = 2;             // host path to a staged QCOW2 image
+  uint64 max_virtual_size_bytes = 3; // 0 = no cap
 }
 
 // ── Events ───────────────────────────────────────────────────────────────

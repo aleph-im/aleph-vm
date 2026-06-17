@@ -16,6 +16,7 @@ mock with ``fake.<method>.return_value = ...`` before calling the client, then
 assert on ``fake.<method>`` (e.g. ``assert_awaited_once_with(...)``).
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,6 +25,14 @@ import pytest_asyncio
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.grpc_server import serve_unix
+from aleph.vm.supervisor.types import (
+    Backend,
+    DirectoryPath,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 _ASYNC_METHODS = (
     "health",
@@ -86,6 +95,25 @@ async def grpc_pair(tmp_path):
         await server.stop(grace=0)
 
 
+@pytest.fixture
+def make_vm_info():
+    """Minimal VmInfo factory for round-trip assertions."""
+
+    def _make(vm_id: str) -> VmInfo:
+        return VmInfo(
+            vm_id=VmId(vm_id),
+            status=VmStatus.RUNNING,
+            ipv4=IpAssignment(),
+            ipv6=IpAssignment(),
+            uptime_secs=0,
+            backend=Backend.QEMU,
+            numa_node=None,
+            status_message="",
+        )
+
+    return _make
+
+
 @pytest.mark.asyncio
 async def test_recreate_network_roundtrip(grpc_pair):
     client, fake = grpc_pair
@@ -93,3 +121,15 @@ async def test_recreate_network_roundtrip(grpc_pair):
     result = await client.recreate_network()
     assert result == {"success": True, "recreated_count": 2, "failed_vms": []}
     fake.recreate_network.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_roundtrip(grpc_pair, make_vm_info):
+    client, fake = grpc_pair
+    fake.restore_from_image.return_value = make_vm_info("vm1")
+    out = await client.restore_from_image(VmId("vm1"), DirectoryPath(Path("/img.qcow2")), max_virtual_size_bytes=42)
+    assert out.vm_id == "vm1"
+    fake.restore_from_image.assert_awaited_once()
+    args, kwargs = fake.restore_from_image.call_args
+    assert str(args[1]) == "/img.qcow2"
+    assert kwargs.get("max_virtual_size_bytes", args[2] if len(args) > 2 else None) == 42
