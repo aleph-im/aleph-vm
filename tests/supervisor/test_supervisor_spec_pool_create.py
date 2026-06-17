@@ -57,10 +57,13 @@ def _spec(
     )
 
 
-def _tee(firmware_path: Path | None = Path("/data/firmware.fd")) -> TeeConfig:
+def _tee(
+    firmware_path: Path | None = Path("/data/firmware.fd"),
+    policy: int = int(AMDSEVPolicy.NO_DBG),
+) -> TeeConfig:
     return TeeConfig(
         backend=TeeBackend.SEV,
-        policy=hex(AMDSEVPolicy.NO_DBG),
+        policy=hex(policy),
         session_dir=DirectoryPath(Path("/tmp/session")),
         firmware_path=firmware_path,
     )
@@ -187,6 +190,34 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
     # Awaiting confidential init: started but not running, controller untouched.
     pool.systemd_manager.enable_and_start.assert_not_awaited()
     assert execution.is_awaiting_confidential_init is True
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_confidential_applies_requested_policy(monkeypatch):
+    """The requested SEV policy on spec.tee flows through verbatim to the engine
+    configuration: the supervisor neither defaults nor clamps it."""
+    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
+    from aleph.vm.controllers.qemu_confidential.instance import (
+        AlephQemuConfidentialInstance,
+    )
+
+    requested_policy = int(AMDSEVPolicy.NO_DBG | AMDSEVPolicy.SEV_ES)
+    assert requested_policy != int(AMDSEVPolicy.NO_DBG)
+
+    pool = _bare_pool()
+    pool.systemd_manager.is_service_active.return_value = False
+    save_cfg = _patch_confidential_boot(monkeypatch)
+    monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", AsyncMock(return_value="plain-cfg"))
+
+    execution = await pool.create_vm_from_spec(_spec(tee=_tee(policy=requested_policy)))
+
+    # The requested policy reached the controller object and the saved config.
+    assert isinstance(execution.vm, AlephQemuConfidentialInstance)
+    assert execution.vm.confidential_policy == requested_policy
+    saved_config = save_cfg.call_args.args[1]
+    vm_cfg = saved_config.vm_configuration
+    assert isinstance(vm_cfg, QemuConfidentialVMConfiguration)
+    assert vm_cfg.sev_policy == requested_policy
 
 
 @pytest.mark.asyncio

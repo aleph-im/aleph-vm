@@ -247,9 +247,8 @@ async def test_firecracker_hypervisor_raises(monkeypatch: pytest.MonkeyPatch) ->
 @pytest.mark.asyncio
 async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPatch) -> None:
     """A confidential InstanceContent yields a CreateVmSpec carrying spec.tee:
-    backend SEV, the launched policy (NO_DBG, matching the message path which
-    ignores message.policy), the per-VM session dir, and the resolved firmware
-    host path."""
+    backend SEV, the requested policy (trusted_execution.policy, applied
+    verbatim), the per-VM session dir, and the resolved firmware host path."""
     from aleph_message.models.execution.environment import AMDSEVPolicy
 
     from aleph.vm.conf import settings
@@ -269,18 +268,20 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
     monkeypatch.setattr("aleph.vm.supervisor.translate.get_existing_file", fake_get_existing_file)
 
-    # The message policy is deliberately a non-default value: the spec path must
-    # still launch with NO_DBG, exactly like the message path (which never reads
-    # message.policy). Preserving that behavior is safety-critical.
+    # The message requests a non-default policy: the spec must carry that
+    # requested policy verbatim (the supervisor holds no opinion; the schema
+    # defaults the policy at the message layer).
+    requested_policy = int(AMDSEVPolicy.SEV_ES)
     message = _make_qemu_instance_message(
-        trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=int(AMDSEVPolicy.SEV_ES))
+        trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=requested_policy)
     )
 
     spec = await build_create_vm_spec(_VM_HASH, message)
 
     assert spec.tee is not None
     assert spec.tee.backend is TeeBackend.SEV
-    assert int(spec.tee.policy, 0) == int(AMDSEVPolicy.NO_DBG)
+    assert int(spec.tee.policy, 0) == requested_policy
+    assert requested_policy != int(AMDSEVPolicy.NO_DBG)
     assert spec.tee.session_dir == settings.CONFIDENTIAL_SESSION_DIRECTORY / _VM_HASH
     assert spec.tee.firmware_path == firmware_path
 

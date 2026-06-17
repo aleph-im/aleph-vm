@@ -13,7 +13,7 @@ from pathlib import Path
 
 from aleph_message.models import ExecutableContent, ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
-from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
+from aleph_message.models.execution.environment import HypervisorType
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.conf import settings
@@ -54,9 +54,9 @@ async def build_create_vm_spec(
 
     Confidential (trusted_execution set) instances ARE supported: the firmware
     ref is resolved to a host path and ``spec.tee`` is populated so the engine
-    takes the confidential launch path. The launched SEV policy is NO_DBG,
-    matching the message path (which never reads message.policy); see the tee
-    block below.
+    takes the confidential launch path. The launched SEV policy is the one the
+    message requested (trusted_execution.policy, schema-defaulted to NO_DBG);
+    see the tee block below.
 
     The routing gate ``run._is_spec_eligible`` mirrors these checks to decide
     which messages reach this path; keep the two in sync.
@@ -104,19 +104,17 @@ async def build_create_vm_spec(
     # ref to a host path here (agent territory, like every other resource) and
     # hand the engine a TeeConfig so it takes the confidential launch path.
     #
-    # SAFETY-CRITICAL: the launched SEV policy is NO_DBG, reproducing the
-    # message path exactly. The message path never reads
-    # trusted_execution.policy: AlephQemuConfidentialInstance defaults
-    # confidential_policy to AMDSEVPolicy.NO_DBG and VmExecution.create() does
-    # not override it. We mirror that here (NOT message.policy) so the spec path
-    # cannot launch a confidential VM under a weaker policy than today.
+    # The launched SEV policy is the one the message requested
+    # (trusted_execution.policy). The aleph-message schema defaults it to
+    # AMDSEVPolicy.NO_DBG, so it is always present; the supervisor applies it
+    # verbatim and holds no opinion of its own.
     tee: TeeConfig | None = None
     trusted_execution = getattr(message.environment, "trusted_execution", None)
     if trusted_execution is not None:
         firmware_path = await get_existing_file(trusted_execution.firmware)
         tee = TeeConfig(
             backend=TeeBackend.SEV,
-            policy=hex(AMDSEVPolicy.NO_DBG),
+            policy=hex(trusted_execution.policy),
             session_dir=DirectoryPath(settings.CONFIDENTIAL_SESSION_DIRECTORY / vm_hash),
             firmware_path=firmware_path,
         )

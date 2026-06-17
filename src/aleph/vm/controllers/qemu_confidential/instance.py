@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import AMDSEVPolicy, MachineResources
+from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -97,8 +97,8 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         vm_id: int,
         vm_hash: ItemHash,
         resources: AlephQemuConfidentialResources,
+        confidential_policy: int,
         enable_networking: bool = False,
-        confidential_policy: int = AMDSEVPolicy.NO_DBG,
         hardware_resources: MachineResources = MachineResources(),
         tap_interface: TapInterface | None = None,
     ):

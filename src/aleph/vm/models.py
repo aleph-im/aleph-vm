@@ -661,6 +661,7 @@ class VmExecution:
                     vm_hash=self.vm_hash,
                     resources=self.resources,
                     enable_networking=message.environment.internet,
+                    confidential_policy=message.environment.trusted_execution.policy,
                     hardware_resources=message.resources,
                     tap_interface=tap_interface,
                 )
