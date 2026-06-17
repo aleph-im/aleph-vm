@@ -1,3 +1,21 @@
+"""Mock-backed gRPC-over-UDS round-trip tests for newly-wired RPCs.
+
+This harness complements (rather than duplicates) the real-engine harness in
+``test_supervisor_grpc.py``, which wraps a real ``LocalSupervisor`` via
+``_ServerHarness`` to verify wire behavior and contract conformance.
+
+Here the gRPC server is fed a ``_Fake`` whose every method is a
+per-test-configurable ``AsyncMock``. That lets a test drive an RPC end to end
+(client -> UDS -> server -> backend) while controlling the backend's exact
+return value and asserting the precise call args it received, all without
+standing up a real engine or VM pool. It is the cheapest way to confirm a
+freshly-wired RPC is plumbed correctly through the client and server.
+
+Future authors (A6/A7/A8): add a test function here and configure the relevant
+mock with ``fake.<method>.return_value = ...`` before calling the client, then
+assert on ``fake.<method>`` (e.g. ``assert_awaited_once_with(...)``).
+"""
+
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,10 +59,6 @@ _ASYNC_METHODS = (
 class _Fake(Supervisor):
     """A Supervisor whose every method is an AsyncMock, configured per test."""
 
-    # Concrete class-level placeholders satisfy ABCMeta's abstract-method check;
-    # each instance gets its own AsyncMock in __init__ for per-test configuration.
-    locals().update({name: None for name in _ASYNC_METHODS})
-
     def __init__(self):
         for name in _ASYNC_METHODS:
             setattr(self, name, AsyncMock())
@@ -52,6 +66,11 @@ class _Fake(Supervisor):
     def watch_events(self): ...
     def stream_logs(self, *a, **k): ...
     def download_backup(self, *a, **k): ...
+
+
+# ABCMeta recomputes __abstractmethods__ from the class body, so clear it after
+# the class is built; instances then get their AsyncMocks in __init__.
+_Fake.__abstractmethods__ = frozenset()
 
 
 @pytest_asyncio.fixture
