@@ -52,14 +52,18 @@ leak through the controller constructors.
 - `controllers/qemu_confidential/instance.py` (attr + ctor default; reads `.vcpus`/`.memory`)
 - `models.py` (spec path builds it; message path passes `message.resources`)
 
-`MachineResources` fields actually read by controllers: `vcpus`, `memory` (MiB),
-`seconds` (program max-runtime, firecracker `run_code` timeout only). `published_ports`
-is never read by any controller.
+`MachineResources` fields actually read by controllers: `vcpus`, `memory` (MiB).
+The third field `seconds` (program run timeout) is read in exactly one place,
+`AlephFirecrackerProgram.run_code` (program.py:472), which this change deletes
+(see below). The run timeout is already agent-driven: the agent reads
+`content.resources.seconds` off the message and passes it over the gRPC
+`run_program_code` call (`program_client.run_code(..., timeout=...)`), so the
+supervisor never needs it. `published_ports` is never read by any controller.
 
 ## The new DTO
 
 A frozen, message-free dataclass in `src/aleph/vm/supervisor/types.py`, mirroring
-the three fields controllers read with the same defaults so `HardwareResources()`
+the two fields controllers read with the same defaults so `HardwareResources()`
 is a drop-in for `MachineResources()`:
 
 ```python
@@ -67,15 +71,15 @@ is a drop-in for `MachineResources()`:
 class HardwareResources:
     """Message-free hardware sizing handed to controllers.
 
-    Mirrors the three fields the controllers read from aleph_message's
-    MachineResources (vcpus, memory in MiB, seconds for the program run
-    timeout) so the daemon never imports a message type. Field names match
-    MachineResources so controller field access is unchanged.
+    Mirrors the fields the controllers read from aleph_message's
+    MachineResources (vcpus, memory in MiB) so the daemon never imports a
+    message type. The `seconds` run-timeout field is intentionally absent: it
+    is agent-side policy (the agent passes the timeout over the gRPC run call).
+    Field names match MachineResources so controller field access is unchanged.
     """
 
     vcpus: int = 1
     memory: int = 128  # MiB
-    seconds: int = 1
 ```
 
 Field name `memory` (not `memory_mib`) is kept deliberately: controllers read
@@ -117,23 +121,37 @@ integer memory fields, not `MachineResources`.
 for the QEMU paths; `SpecFirecrackerProgram` already builds its own from the spec
 (swap the type there too).
 
-## Dead message-path controllers
+## Deleting the dead message-path program controller
 
-After the purge these are constructed only in tests:
+`AlephFirecrackerProgram` is removed in this change. It is dead in production:
 
-- `AlephFirecrackerProgram` (constructed only at the deleted `models.py` message
-  branch; the spec program path uses the sibling `SpecFirecrackerProgram`).
-- The message-built forms of `AlephQemuInstance` /
-  `AlephQemuConfidentialInstance` (but their spec-built forms stay live, so the
-  classes stay).
+- The persistent-controller subprocess (`controllers/__main__.py`) instantiates
+  the low-level `MicroVM` / `QemuVM` / `QemuConfidentialVM` directly, never
+  `AlephFirecrackerProgram`.
+- Programs run through the sibling `SpecFirecrackerProgram` plus the channel run
+  path (`_run_code_over_channel` on the supervisor, `ProgramGuestClient` on the
+  agent). `AlephFirecrackerProgram` is constructed only at the `models.py`
+  message branch this change deletes, and its `run_code` (the sole reader of
+  `MachineResources.seconds`) has no production caller.
+- Its two re-exports (`controllers/firecracker/__init__.py`,
+  `orchestrator/vm/__init__.py`) are unused.
 
-Decision: this change removes the message *construction* from `VmExecution` and
-swaps `MachineResources` everywhere, but does NOT delete `AlephFirecrackerProgram`
-the class. Deleting that class (and `ProgramVmConfiguration`, its message-coupled
-`run_code`, etc.) is a larger, separable cleanup tracked as a follow-up. Rationale:
-keep this change focused on the stated goal (message-free `VmExecution` + value-type
-purge) and avoid entangling it with controller deletion, which has its own test
-surface. The class keeps compiling against `HardwareResources` after the swap.
+`program.py` is a shared module, so the deletion is surgical:
+
+- **Delete:** `class AlephFirecrackerProgram`; `class ProgramVmConfiguration` (its
+  only config type); and the now-unreferenced `ConfigurationPayload` /
+  `ConfigurationPayloadV1` / `ConfigurationPayloadV2` classes (0 external refs;
+  confirm no kept symbol references them before removing). Remove the two
+  re-exports.
+- **Keep:** `AlephProgramResources`, `get_volumes_for_program`,
+  `ProgramConfiguration`, `ConfigurationResponse`, `RunCodePayload`, `Interface`,
+  `read_input_data`, `FileTooLargeError` — all imported by the agent's
+  `program_client.py` (the configuration-push path, which never crosses the
+  supervisor boundary).
+
+The message-built forms of `AlephQemuInstance` / `AlephQemuConfidentialInstance`
+also disappear from `VmExecution`, but their spec-built forms stay live, so those
+classes remain (swapped to `HardwareResources`).
 
 ## Boundary: what stays aleph_message-coupled, by design
 
@@ -154,7 +172,13 @@ daemon uses. These classes remain message-aware; the daemon only ever calls
 2. **`save()` removal.** Must confirm no production caller relies on the daemon
    writing a DB record (the agent writes its own via `VmRegistry`). The plan has
    an explicit verification step before removal.
-3. **Stack depth 3** (#981 <- #982 <- this). Churn on the lower PRs forces
+3. **`AlephFirecrackerProgram` deletion surface.** `program.py` is shared with the
+   agent; deleting the class must not touch the symbols `program_client.py`
+   imports. The plan deletes only the class + its exclusive config types and
+   verifies remaining-reference counts before removing each payload class. Tests
+   referencing `AlephFirecrackerProgram` (only `test_execution.py`) are handled in
+   the test-migration task.
+4. **Stack depth 3** (#981 <- #982 <- this). Churn on the lower PRs forces
    rebases here. Accepted for momentum.
 
 ## Verification
