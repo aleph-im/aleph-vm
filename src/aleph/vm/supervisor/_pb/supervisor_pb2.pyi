@@ -1249,12 +1249,31 @@ global___LogChunk = LogChunk
 class BackupInfo(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
+    @typing.final
+    class SourceSizesEntry(google.protobuf.message.Message):
+        DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+        KEY_FIELD_NUMBER: builtins.int
+        VALUE_FIELD_NUMBER: builtins.int
+        key: builtins.str
+        value: builtins.int
+        def __init__(
+            self,
+            *,
+            key: builtins.str = ...,
+            value: builtins.int = ...,
+        ) -> None: ...
+        def ClearField(self, field_name: typing.Literal["key", b"key", "value", b"value"]) -> None: ...
+
     VM_ID_FIELD_NUMBER: builtins.int
     BACKUP_ID_FIELD_NUMBER: builtins.int
     STATUS_FIELD_NUMBER: builtins.int
     SIZE_BYTES_FIELD_NUMBER: builtins.int
     CREATED_AT_UNIX_SECS_FIELD_NUMBER: builtins.int
     ERROR_MESSAGE_FIELD_NUMBER: builtins.int
+    CHECKSUM_FIELD_NUMBER: builtins.int
+    VOLUMES_FIELD_NUMBER: builtins.int
+    SOURCE_SIZES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     backup_id: builtins.str
     """supervisor-issued"""
@@ -1264,6 +1283,16 @@ class BackupInfo(google.protobuf.message.Message):
     created_at_unix_secs: builtins.int
     error_message: builtins.str
     """populated when status = FAILED"""
+    checksum: builtins.str
+    """archive checksum, populated when COMPLETE"""
+    @property
+    def volumes(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
+        """archived volume names"""
+
+    @property
+    def source_sizes(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.int]:
+        """per-volume uncompressed source size"""
+
     def __init__(
         self,
         *,
@@ -1273,8 +1302,11 @@ class BackupInfo(google.protobuf.message.Message):
         size_bytes: builtins.int = ...,
         created_at_unix_secs: builtins.int = ...,
         error_message: builtins.str = ...,
+        checksum: builtins.str = ...,
+        volumes: collections.abc.Iterable[builtins.str] | None = ...,
+        source_sizes: collections.abc.Mapping[builtins.str, builtins.int] | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "status", b"status", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "checksum", b"checksum", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "source_sizes", b"source_sizes", "status", b"status", "vm_id", b"vm_id", "volumes", b"volumes"]) -> None: ...
 
 global___BackupInfo = BackupInfo
 

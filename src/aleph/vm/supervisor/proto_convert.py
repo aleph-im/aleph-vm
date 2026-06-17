@@ -515,6 +515,9 @@ def backup_info_to_pb(info: BackupInfo) -> pb.BackupInfo:
         size_bytes=info.size_bytes,
         created_at_unix_secs=info.created_at_unix_secs,
         error_message=info.error_message,
+        checksum=info.checksum,
+        volumes=list(info.volumes),
+        source_sizes=dict(info.source_sizes),
     )
 
 
@@ -526,6 +529,9 @@ def backup_info_from_pb(msg: pb.BackupInfo) -> BackupInfo:
         size_bytes=msg.size_bytes,
         created_at_unix_secs=msg.created_at_unix_secs,
         error_message=msg.error_message,
+        checksum=msg.checksum,
+        volumes=list(msg.volumes),
+        source_sizes=dict(msg.source_sizes),
     )
 
 

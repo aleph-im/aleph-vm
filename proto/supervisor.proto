@@ -455,6 +455,9 @@ message BackupInfo {
   uint64 size_bytes = 4;             // 0 until COMPLETE
   uint64 created_at_unix_secs = 5;
   string error_message = 6;          // populated when status = FAILED
+  string checksum = 7;                  // archive checksum, populated when COMPLETE
+  repeated string volumes = 8;          // archived volume names
+  map<string, uint64> source_sizes = 9; // per-volume uncompressed source size
 }
 
 message StartBackupRequest {

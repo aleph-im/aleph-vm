@@ -208,6 +208,24 @@ def test_backup_round_trip():
     assert conv.backup_chunk_from_pb(conv.backup_chunk_to_pb(chunk)) == chunk
 
 
+def test_backup_info_carries_archive_metadata():
+    info = BackupInfo(
+        vm_id=VmId("vm1"),
+        backup_id=BackupId("b1"),
+        status=BackupStatus.COMPLETE,
+        size_bytes=10,
+        created_at_unix_secs=1,
+        error_message="",
+        checksum="sha256:abc",
+        volumes=["rootfs", "data"],
+        source_sizes={"rootfs": 100, "data": 50},
+    )
+    out = conv.backup_info_from_pb(conv.backup_info_to_pb(info))
+    assert out.checksum == "sha256:abc"
+    assert out.volumes == ["rootfs", "data"]
+    assert out.source_sizes == {"rootfs": 100, "data": 50}
+
+
 def test_migration_info_round_trip():
     info = MigrationInfo(
         vm_id=VmId("dead" * 16),
