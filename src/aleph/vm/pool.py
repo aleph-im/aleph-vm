@@ -196,17 +196,26 @@ class VmPool:
             for volume in message.volumes:
                 required_disk_mib += getattr(volume, "size_mib", 0) or 0
 
-        self._check_capacity(
+        self.check_capacity(
             memory_mib=message.resources.memory,
             vcpus=message.resources.vcpus,
             disk_mib=required_disk_mib,
             is_instance=isinstance(message, InstanceContent),
         )
 
-    def _check_capacity(self, *, memory_mib: int, vcpus: int, disk_mib: int, is_instance: bool) -> None:
-        """Raise InsufficientResourcesError if these requirements exceed the
-        host caps. The numbers-only core shared by check_admission (message),
-        check_spec_admission (spec) and reserve_gpus' pre-check (DTO)."""
+    def check_capacity(self, *, memory_mib: int, vcpus: int, disk_mib: int, is_instance: bool) -> None:
+        """Raise InsufficientResourcesError if these requirements exceed the host caps.
+
+        The numbers-only core of capacity admission, shared by both entry
+        points: :meth:`check_admission` (the message path) and
+        :meth:`check_spec_admission` (the spec path) both reduce their input to
+        scalar requirements and delegate here. It is also reached by the reserve
+        path, via :meth:`LocalSupervisor.reserve_resources`, which keeps the
+        dry-run honest before holding GPUs.
+
+        This is part of the pool's public contract: ``LocalSupervisor`` calls it
+        cross-module against a message-free resources DTO.
+        """
         required_memory_mib = memory_mib
         required_vcpus = vcpus
         required_disk_mib = disk_mib
@@ -319,80 +328,18 @@ class VmPool:
             InsufficientResourcesError: The memory or vCPU bucket would be
                 exceeded; carries structured ``required`` / ``available`` dicts.
         """
-        required_memory_mib = spec.memory_mib
-        required_vcpus = spec.vcpus
-
         # QEMU specs are instances; Firecracker specs are programs.
         is_instance = spec.backend is not Backend.FIRECRACKER
-
-        committed_instance_memory_mib = 0
-        committed_program_memory_mib = 0
-        committed_vcpus = 0
-        for execution in tuple(self.executions.values()):
-            memory = execution.allocated_memory_mib
-            vcpus = execution.allocated_vcpus
-            if not memory and not vcpus:
-                continue
-            if execution.is_instance:
-                committed_instance_memory_mib += memory
-            else:
-                committed_program_memory_mib += memory
-            committed_vcpus += vcpus
-
-        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
-        physical_cores = psutil.cpu_count() or 1
-        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
-        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
-
-        if is_instance:
-            bucket_name = "instance"
-            committed_memory_mib = committed_instance_memory_mib
-            memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
-        else:
-            bucket_name = "program"
-            committed_memory_mib = committed_program_memory_mib
-            memory_cap_mib = program_reserved_mib
-        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
-
-        errors: list[str] = []
-
-        if committed_memory_mib + required_memory_mib > memory_cap_mib:
-            errors.append(
-                f"Memory ({bucket_name} bucket): "
-                f"required {required_memory_mib} MiB, "
-                f"committed {committed_memory_mib} MiB, "
-                f"cap {memory_cap_mib} MiB "
-                f"(physical {physical_memory_mib} MiB, "
-                f"host_reserved {host_reserved_mib} MiB, "
-                f"program_reserved {program_reserved_mib} MiB)"
-            )
-
-        if committed_vcpus + required_vcpus > vcpu_cap:
-            errors.append(
-                f"vCPUs: required {required_vcpus}, "
-                f"committed {committed_vcpus}, "
-                f"cap {vcpu_cap} "
-                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
-            )
-
-        if errors:
-            detail = "Insufficient capacity to create VM. " + "; ".join(errors)
-            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
-            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
-            raise InsufficientResourcesError(
-                detail,
-                required={
-                    "vcpus": required_vcpus,
-                    "memory_mib": required_memory_mib,
-                    # Disk admission is deferred (DiskSpec has no size_mib).
-                    "disk_mib": 0,
-                },
-                available={
-                    "vcpus": available_vcpus,
-                    "memory_mib": available_memory_mib,
-                    "disk_mib": 0,
-                },
-            )
+        # Disk admission is deferred (DiskSpec has no size_mib today), so 0 is
+        # passed: check_capacity's disk branch only fires for disk_mib > 0, so
+        # the disk check is skipped and the structured dicts carry disk_mib 0,
+        # exactly as the standalone spec check did.
+        self.check_capacity(
+            memory_mib=spec.memory_mib,
+            vcpus=spec.vcpus,
+            disk_mib=0,
+            is_instance=is_instance,
+        )
 
     def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
@@ -1153,23 +1100,6 @@ class VmPool:
         if resource in self.reservations and self.reservations[resource].is_expired():
             del self.reservations[resource]
         return self.reservations.get(resource)
-
-    async def reserve_resources(self, message: ExecutableContent, user):
-        gpu_to_reserve = message.requirements.gpu if message.requirements and message.requirements.gpu else []
-        expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
-        if not gpu_to_reserve:
-            return expiration_date
-
-        # Use the creation lock, to avoid racing issues, with VM creation
-        async with self.creation_lock:
-            # Will raise Exception if not all resources are found.
-            resources = self.find_resources_available_for_user(message, user)
-
-            for resource in resources:
-                # Existing reservation for that user will be overwritten by fresher one
-                self.reservations[resource] = Reservation(user=user, expiration=expiration_date, resource=resource)
-
-        return expiration_date
 
     def find_resources_available_for_user(self, message: ExecutableContent, user) -> set[GpuDevice]:
         """Find the required resource to run ExecutableContent from reserved resources by user or free resources.

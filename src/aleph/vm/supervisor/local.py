@@ -1146,12 +1146,12 @@ class LocalSupervisor(Supervisor):
         """Run capacity admission, then hold the requested resources for the user.
 
         ``request`` is a message-free resources DTO the agent built from the
-        Aleph message: _check_capacity keeps the dry-run honest (refuse here
+        Aleph message: check_capacity keeps the dry-run honest (refuse here
         rather than let the client pay and be rejected by notify_allocation),
         then reserve_gpus holds the GPUs and returns the reservation expiry.
         """
         with translating_errors():
-            self.pool._check_capacity(
+            self.pool.check_capacity(
                 memory_mib=request.memory_mib,
                 vcpus=request.vcpus,
                 disk_mib=request.disk_mib,

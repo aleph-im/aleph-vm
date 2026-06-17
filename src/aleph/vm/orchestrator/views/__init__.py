@@ -1012,9 +1012,9 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     # supervisor runs capacity admission (keeping the dry-run honest) then holds
     # the requested resources, returning the reservation expiry. No Aleph message
     # crosses the supervisor boundary.
-    request = build_reservation_request(message, authenticated_sender)
+    reservation_request = build_reservation_request(message, authenticated_sender)
     try:
-        expiration_date = await supervisor.reserve_resources(request)
+        expiration_date = await supervisor.reserve_resources(reservation_request)
     except BoundaryInsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(

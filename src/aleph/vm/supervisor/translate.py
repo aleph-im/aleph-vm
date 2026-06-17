@@ -245,13 +245,11 @@ async def build_program_create_vm_spec(
     return spec, resources
 
 
-def build_reservation_request(content, user_address: str) -> ReservationRequest:
+def build_reservation_request(content: ExecutableContent, user_address: str) -> ReservationRequest:
     """Extract the resources an Aleph message requests into a message-free DTO.
 
     Keeps message vocabulary on the agent side: the supervisor reserves against
     the returned DTO and never parses a message."""
-    from aleph_message.models import InstanceContent
-
     is_instance = isinstance(content, InstanceContent)
     disk_mib = 0
     if is_instance and content.rootfs:

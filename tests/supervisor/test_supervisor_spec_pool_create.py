@@ -410,3 +410,23 @@ async def test_reserve_gpus_respects_another_users_hold():
 
     # The owner's hold is untouched.
     assert pool.reservations[gpu].user == "0xOWNER"
+
+
+@pytest.mark.asyncio
+async def test_reserve_gpus_no_partial_commit_when_one_request_unmatched():
+    """A multi-GPU request that cannot be fully satisfied holds nothing: the
+    matched card must not leave a stray reservation when a later request fails."""
+    from aleph.vm.resources import InsufficientResourcesError
+
+    pool = _bare_pool()
+    matching = _gpu_device(device_id=_DEVICE_ID, pci_host="0000:01:00.0")
+    pool.gpus = [matching]
+
+    matched_request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
+    unmatched_request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:OTHER", model="")
+
+    with pytest.raises(InsufficientResourcesError):
+        await pool.reserve_gpus([matched_request, unmatched_request], "0xUSER")
+
+    # The card matched by the first request must not have been held.
+    assert pool.reservations == {}
