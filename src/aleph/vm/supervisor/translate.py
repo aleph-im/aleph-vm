@@ -252,7 +252,7 @@ def build_reservation_request(content: ExecutableContent, user_address: str) -> 
     the returned DTO and never parses a message."""
     is_instance = isinstance(content, InstanceContent)
     disk_mib = 0
-    if is_instance and content.rootfs:
+    if isinstance(content, InstanceContent) and content.rootfs:
         disk_mib += content.rootfs.size_mib
     for volume in content.volumes or []:
         disk_mib += getattr(volume, "size_mib", 0) or 0
