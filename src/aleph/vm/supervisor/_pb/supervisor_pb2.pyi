@@ -469,6 +469,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
+    OWNER_ADDRESS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -486,6 +487,8 @@ class CreateVmRequest(google.protobuf.message.Message):
     """Guest hostname for provisioning (cloud-init). Naming is the client's
     business; empty falls back to a mechanical derivation from vm_id.
     """
+    owner_address: builtins.str
+    """VM owner's Aleph address; engine consumes this owner's GPU reservation"""
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -528,9 +531,10 @@ class CreateVmRequest(google.protobuf.message.Message):
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
         hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
+        owner_address: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "owner_address", b"owner_address", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload
@@ -631,20 +635,24 @@ class TeeConfig(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
+    FIRMWARE_PATH_FIELD_NUMBER: builtins.int
     backend: global___TeeBackend.ValueType
     """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
     """empty = default"""
     session_dir: builtins.str
     """confidential session files"""
+    firmware_path: builtins.str
+    """resolved OVMF blob path (empty = none)"""
     def __init__(
         self,
         *,
         backend: global___TeeBackend.ValueType = ...,
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
+        firmware_path: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
 global___TeeConfig = TeeConfig
 
@@ -677,15 +685,24 @@ class GpuConfig(google.protobuf.message.Message):
 
     PCI_HOST_FIELD_NUMBER: builtins.int
     SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
+    DEVICE_ID_FIELD_NUMBER: builtins.int
+    MODEL_FIELD_NUMBER: builtins.int
     pci_host: builtins.str
+    """RESOLVED concrete address; empty in a request"""
     supports_x_vga: builtins.bool
+    device_id: builtins.str
+    """REQUEST: vendor:device, e.g. "10de:2504" """
+    model: builtins.str
+    """REQUEST: human label"""
     def __init__(
         self,
         *,
         pci_host: builtins.str = ...,
         supports_x_vga: builtins.bool = ...,
+        device_id: builtins.str = ...,
+        model: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
 global___GpuConfig = GpuConfig
 
@@ -1267,16 +1284,20 @@ class StartBackupRequest(google.protobuf.message.Message):
 
     VM_ID_FIELD_NUMBER: builtins.int
     QUIESCE_GUEST_FIELD_NUMBER: builtins.int
+    INCLUDE_VOLUMES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     quiesce_guest: builtins.bool
     """request guest fs-freeze if supported"""
+    include_volumes: builtins.bool
+    """also archive non-read-only persistent volumes"""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         quiesce_guest: builtins.bool = ...,
+        include_volumes: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["include_volumes", b"include_volumes", "quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
 
 global___StartBackupRequest = StartBackupRequest
 
@@ -1450,6 +1471,7 @@ class ExportVmRequest(google.protobuf.message.Message):
     fetches). The contract needs reshaping for host-to-host transport
     before Plan 0.C wires real implementations. See design doc §9 open
     questions.
+    Phase 1 removed the directory-based migration; drop these RPCs in the Phase 2 proto pass.
     """
 
     DESCRIPTOR: google.protobuf.descriptor.Descriptor

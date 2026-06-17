@@ -199,7 +199,9 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     # ── Backups ──
     @_translating
     async def StartBackup(self, request: pb.StartBackupRequest, context) -> pb.BackupInfo:
-        info = await self._supervisor.start_backup(VmId(request.vm_id), quiesce_guest=request.quiesce_guest)
+        info = await self._supervisor.start_backup(
+            VmId(request.vm_id), quiesce_guest=request.quiesce_guest, include_volumes=request.include_volumes
+        )
         return conv.backup_info_to_pb(info)
 
     @_translating

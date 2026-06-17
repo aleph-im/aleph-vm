@@ -208,10 +208,19 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
             requested_ipv6=spec.network.requested_ipv6,
             ipv6_prefix_len=spec.network.ipv6_prefix_len,
         ),
-        gpus=[pb.GpuConfig(pci_host=str(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in spec.gpus],
+        gpus=[
+            pb.GpuConfig(
+                pci_host=str(gpu.pci_host),
+                supports_x_vga=gpu.supports_x_vga,
+                device_id=gpu.device_id,
+                model=gpu.model,
+            )
+            for gpu in spec.gpus
+        ],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
         hostname=spec.hostname,
+        owner_address=spec.owner_address,
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(
@@ -226,6 +235,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
                 backend=TEE_BACKEND_TO_PB[spec.tee.backend],
                 policy=spec.tee.policy,
                 session_dir=path_to_wire(Path(spec.tee.session_dir)),
+                firmware_path=path_to_wire(spec.tee.firmware_path) if spec.tee.firmware_path is not None else "",
             )
         )
     if spec.numa_node is not None:
@@ -240,6 +250,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
             backend=TEE_BACKEND_FROM_PB[msg.tee.backend],
             policy=msg.tee.policy,
             session_dir=DirectoryPath(path_from_wire(msg.tee.session_dir)),
+            firmware_path=path_from_wire(msg.tee.firmware_path) if msg.tee.firmware_path else None,
         )
     return CreateVmSpec(
         vm_id=VmId(msg.vm_id),
@@ -255,11 +266,20 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
             requested_ipv6=msg.network.requested_ipv6,
             ipv6_prefix_len=msg.network.ipv6_prefix_len,
         ),
-        gpus=[GpuSpec(pci_host=PciAddress(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in msg.gpus],
+        gpus=[
+            GpuSpec(
+                pci_host=PciAddress(gpu.pci_host),
+                supports_x_vga=gpu.supports_x_vga,
+                device_id=gpu.device_id,
+                model=gpu.model,
+            )
+            for gpu in msg.gpus
+        ],
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
         hostname=msg.hostname,
+        owner_address=msg.owner_address,
         guest_channel=(
             GuestChannelSpec(
                 ready_port=msg.guest_channel.ready_port,

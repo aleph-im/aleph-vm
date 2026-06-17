@@ -259,15 +259,10 @@ class GrpcSupervisor(Supervisor):
             call.cancel()
 
     # ── Backups ──
-    async def start_backup(
-        self,
-        vm_id: VmId,
-        quiesce_guest: bool = False,
-        include_volumes: bool = False,  # noqa: ARG002  not yet carried by the proto (Phase 2)
-    ) -> BackupInfo:
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
         reply = await self._unary(
             "StartBackup",
-            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
+            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest, include_volumes=include_volumes),
             LIFECYCLE_TIMEOUT_SECS,
         )
         return conv.backup_info_from_pb(reply)

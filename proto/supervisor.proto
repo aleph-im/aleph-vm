@@ -201,6 +201,7 @@ message CreateVmRequest {
   // signal. What is spoken over the channel is the client's business, opaque
   // to the supervisor.
   optional GuestChannel guest_channel = 14;
+  string owner_address = 16;         // VM owner's Aleph address; engine consumes this owner's GPU reservation
 }
 
 message GuestChannel {
@@ -245,6 +246,7 @@ message TeeConfig {
   TeeBackend backend = 1;            // attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
+  string firmware_path = 4;          // resolved OVMF blob path (empty = none)
 }
 
 message NetworkConfig {
@@ -254,8 +256,10 @@ message NetworkConfig {
 }
 
 message GpuConfig {
-  string pci_host = 1;
+  string pci_host = 1;               // RESOLVED concrete address; empty in a request
   bool supports_x_vga = 2;
+  string device_id = 3;              // REQUEST: vendor:device, e.g. "10de:2504"
+  string model = 4;                  // REQUEST: human label
 }
 
 // The confidential-computing mode a VM is actually running under. Precise by
@@ -456,6 +460,7 @@ message BackupInfo {
 message StartBackupRequest {
   string vm_id = 1;
   bool quiesce_guest = 2;            // request guest fs-freeze if supported
+  bool include_volumes = 3;          // also archive non-read-only persistent volumes
 }
 
 message GetBackupStatusRequest { string vm_id = 1; string backup_id = 2; }

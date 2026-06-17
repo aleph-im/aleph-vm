@@ -219,6 +219,51 @@ def test_error_code_table_is_total():
         assert conv.ERROR_CODE_FROM_PB[pb_value] is code
 
 
+def _minimal_spec(**over):
+    base = dict(
+        vm_id=VmId("vm1"),
+        backend=Backend.QEMU,
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=[],
+        vcpus=1,
+        memory_mib=512,
+        tee=None,
+        network=NetworkConfig(internet_access=True, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=True,
+    )
+    base.update(over)
+    return CreateVmSpec(**base)
+
+
+def test_create_vm_spec_carries_owner_address():
+    spec = _minimal_spec(owner_address="0xOWNER")
+    assert conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec)).owner_address == "0xOWNER"
+
+
+def test_create_vm_spec_carries_tee_firmware_path():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV,
+            policy="0x5",
+            session_dir=DirectoryPath(Path("/s")),
+            firmware_path=Path("/ovmf.fd"),
+        ),
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert out.tee.firmware_path == Path("/ovmf.fd")
+
+
+def test_create_vm_spec_carries_gpu_request_fields():
+    spec = _minimal_spec(
+        gpus=[GpuSpec(pci_host=PciAddress(""), supports_x_vga=True, device_id="10de:2504", model="RTX 3090")],
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert (out.gpus[0].device_id, out.gpus[0].model) == ("10de:2504", "RTX 3090")
+
+
 def test_enum_tables_are_total():
     assert set(conv.BACKEND_TO_PB) == set(Backend)
     assert set(conv.VM_STATUS_TO_PB) == set(VmStatus)
