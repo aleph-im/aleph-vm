@@ -134,6 +134,7 @@ async def test_create_vm_from_spec_passes_resolved_gpu_to_config(monkeypatch):
 
     await pool.create_vm_from_spec(_spec([_gpu_request()]))
 
+    assert build_cfg.await_args is not None
     passed_spec = build_cfg.await_args.args[0]
     assert passed_spec.gpus[0].pci_host == "0000:02:00.0"
 
