@@ -16,6 +16,7 @@ mock with ``fake.<method>.return_value = ...`` before calling the client, then
 assert on ``fake.<method>`` (e.g. ``assert_awaited_once_with(...)``).
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,7 +29,10 @@ from aleph.vm.supervisor.grpc_server import serve_unix
 from aleph.vm.supervisor.types import (
     Backend,
     DirectoryPath,
+    GpuSpec,
     IpAssignment,
+    PciAddress,
+    ReservationRequest,
     VmId,
     VmInfo,
     VmStatus,
@@ -158,3 +162,22 @@ async def test_restore_from_image_roundtrip(grpc_pair, make_vm_info):
     args, kwargs = fake.restore_from_image.call_args
     assert str(args[1]) == "/img.qcow2"
     assert kwargs.get("max_virtual_size_bytes", args[2] if len(args) > 2 else None) == 42
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources_roundtrip(grpc_pair):
+    client, fake = grpc_pair
+    expiry = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    fake.reserve_resources.return_value = expiry
+    req = ReservationRequest(
+        user_address="0xUSER",
+        vcpus=2,
+        memory_mib=2048,
+        disk_mib=10,
+        is_instance=True,
+        gpus=[GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:2504", model="X")],
+    )
+    out = await client.reserve_resources(req)
+    assert out == expiry
+    (sent,), _ = fake.reserve_resources.call_args
+    assert sent == req

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import grpc
@@ -66,6 +66,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    ReservationRequest,
     VmEvent,
     VmId,
     VmInfo,
@@ -362,5 +363,10 @@ class GrpcSupervisor(Supervisor):
         return json.loads(reply.summary_json) if reply.summary_json else {}
 
     # ── Reservation ──
-    async def reserve_resources(self, content, user) -> datetime:
-        raise NotImplementedError("wired in Phase 2")
+    async def reserve_resources(self, request: ReservationRequest) -> datetime:
+        reply = await self._unary(
+            "ReserveResources",
+            conv.reservation_request_to_pb(request),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
+        return datetime.fromtimestamp(reply.expiry_unix_ns / 1_000_000_000, tz=timezone.utc)

@@ -49,6 +49,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    ReservationRequest,
     SevInfo,
     TeeBackend,
     TeeConfig,
@@ -308,6 +309,44 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
         device_id=msg.device_id,
         model=msg.model,
         supports_x_vga=msg.supports_x_vga,
+    )
+
+
+def reservation_request_to_pb(req: ReservationRequest) -> pb.ReserveResourcesRequest:
+    return pb.ReserveResourcesRequest(
+        user_address=req.user_address,
+        vcpus=req.vcpus,
+        memory_mib=req.memory_mib,
+        disk_mib=req.disk_mib,
+        is_instance=req.is_instance,
+        gpus=[
+            pb.GpuConfig(
+                pci_host=str(g.pci_host),
+                supports_x_vga=g.supports_x_vga,
+                device_id=g.device_id,
+                model=g.model,
+            )
+            for g in req.gpus
+        ],
+    )
+
+
+def reservation_request_from_pb(msg: pb.ReserveResourcesRequest) -> ReservationRequest:
+    return ReservationRequest(
+        user_address=msg.user_address,
+        vcpus=msg.vcpus,
+        memory_mib=msg.memory_mib,
+        disk_mib=msg.disk_mib,
+        is_instance=msg.is_instance,
+        gpus=[
+            GpuSpec(
+                pci_host=PciAddress(g.pci_host),
+                supports_x_vga=g.supports_x_vga,
+                device_id=g.device_id,
+                model=g.model,
+            )
+            for g in msg.gpus
+        ],
     )
 
 

@@ -86,6 +86,9 @@ service Supervisor {
 
   // ── Network ──
   rpc RecreateNetwork(RecreateNetworkRequest) returns (RecreateNetworkResponse);
+
+  // ── Reservation ──
+  rpc ReserveResources(ReserveResourcesRequest) returns (ReserveResourcesResponse);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -592,6 +595,20 @@ message InjectSecretResponse {}
 message RecreateNetworkRequest {}
 message RecreateNetworkResponse {
   string summary_json = 1;           // JSON-encoded summary dict from the engine
+}
+
+// ── Reservation ──────────────────────────────────────────────────────────
+
+message ReserveResourcesRequest {
+  string user_address = 1;
+  uint32 vcpus = 2;
+  uint64 memory_mib = 3;
+  uint64 disk_mib = 4;
+  bool is_instance = 5;
+  repeated GpuConfig gpus = 6;        // request: matched by device_id
+}
+message ReserveResourcesResponse {
+  int64 expiry_unix_ns = 1;          // reservation expiry, unix ns UTC
 }
 
 // ── Wire error vocabulary ────────────────────────────────────────────────

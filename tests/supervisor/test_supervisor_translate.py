@@ -21,7 +21,10 @@ from aleph_message.utils import Mebibytes
 from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.resources import HostVolume
 from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.translate import build_create_vm_spec
+from aleph.vm.supervisor.translate import (
+    build_create_vm_spec,
+    build_reservation_request,
+)
 from aleph.vm.supervisor.types import Backend, DiskRole
 
 # ---------------------------------------------------------------------------
@@ -334,3 +337,41 @@ async def test_hypervisor_none_defaults_to_firecracker_raises(monkeypatch: pytes
         await build_create_vm_spec(_VM_HASH, message)
 
     assert not download_called, "download_all must not run when validation fails"
+
+
+# ---------------------------------------------------------------------------
+# build_reservation_request -- message -> message-free resources DTO
+# ---------------------------------------------------------------------------
+
+
+def test_build_reservation_request_extracts_resources() -> None:
+    """build_reservation_request pulls the scalar resources and GPU device_ids
+    out of an Aleph message into a message-free ReservationRequest. No download
+    or message parsing happens supervisor-side."""
+    from aleph_message.models.execution.environment import (
+        GpuProperties,
+        HostRequirements,
+    )
+
+    message = _make_qemu_instance_message(vcpus=2, memory=2048)
+    message = message.model_copy(
+        update={
+            "requirements": HostRequirements(
+                gpu=[
+                    GpuProperties(
+                        vendor="NVIDIA",
+                        device_name="GH100",
+                        device_class="0300",
+                        device_id="10de:2504",
+                    )
+                ]
+            )
+        }
+    )
+
+    req = build_reservation_request(message, "0xUSER")
+
+    assert (req.vcpus, req.memory_mib, req.is_instance, req.user_address) == (2, 2048, True, "0xUSER")
+    assert [g.device_id for g in req.gpus] == ["10de:2504"]
+    # rootfs size is summed into disk_mib (the message fixture sets size_mib=10000)
+    assert req.disk_mib == 10000

@@ -1810,6 +1810,57 @@ class RecreateNetworkResponse(google.protobuf.message.Message):
 global___RecreateNetworkResponse = RecreateNetworkResponse
 
 @typing.final
+class ReserveResourcesRequest(google.protobuf.message.Message):
+    """── Reservation ──────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    USER_ADDRESS_FIELD_NUMBER: builtins.int
+    VCPUS_FIELD_NUMBER: builtins.int
+    MEMORY_MIB_FIELD_NUMBER: builtins.int
+    DISK_MIB_FIELD_NUMBER: builtins.int
+    IS_INSTANCE_FIELD_NUMBER: builtins.int
+    GPUS_FIELD_NUMBER: builtins.int
+    user_address: builtins.str
+    vcpus: builtins.int
+    memory_mib: builtins.int
+    disk_mib: builtins.int
+    is_instance: builtins.bool
+    @property
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]:
+        """request: matched by device_id"""
+
+    def __init__(
+        self,
+        *,
+        user_address: builtins.str = ...,
+        vcpus: builtins.int = ...,
+        memory_mib: builtins.int = ...,
+        disk_mib: builtins.int = ...,
+        is_instance: builtins.bool = ...,
+        gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["disk_mib", b"disk_mib", "gpus", b"gpus", "is_instance", b"is_instance", "memory_mib", b"memory_mib", "user_address", b"user_address", "vcpus", b"vcpus"]) -> None: ...
+
+global___ReserveResourcesRequest = ReserveResourcesRequest
+
+@typing.final
+class ReserveResourcesResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    EXPIRY_UNIX_NS_FIELD_NUMBER: builtins.int
+    expiry_unix_ns: builtins.int
+    """reservation expiry, unix ns UTC"""
+    def __init__(
+        self,
+        *,
+        expiry_unix_ns: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["expiry_unix_ns", b"expiry_unix_ns"]) -> None: ...
+
+global___ReserveResourcesResponse = ReserveResourcesResponse
+
+@typing.final
 class ErrorDetail(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 

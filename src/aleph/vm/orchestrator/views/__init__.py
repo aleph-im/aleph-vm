@@ -79,6 +79,7 @@ from aleph.vm.supervisor.errors import (
     SupervisorError,
     VmNotFoundError,
 )
+from aleph.vm.supervisor.translate import build_reservation_request
 from aleph.vm.supervisor.types import (
     ConfidentialMode,
     PortForwardInfo,
@@ -1007,10 +1008,13 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
-    # The supervisor runs capacity admission (keeping the dry-run honest) then
-    # holds the requested resources, returning the reservation expiry.
+    # The agent translates the message into a message-free resources DTO; the
+    # supervisor runs capacity admission (keeping the dry-run honest) then holds
+    # the requested resources, returning the reservation expiry. No Aleph message
+    # crosses the supervisor boundary.
+    request = build_reservation_request(message, authenticated_sender)
     try:
-        expiration_date = await supervisor.reserve_resources(message, authenticated_sender)
+        expiration_date = await supervisor.reserve_resources(request)
     except BoundaryInsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(

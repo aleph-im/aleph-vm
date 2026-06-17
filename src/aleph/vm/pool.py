@@ -182,8 +182,6 @@ class VmPool:
         if current_vm_hash is not None and current_vm_hash in self.executions:
             return
 
-        required_memory_mib = message.resources.memory
-        required_vcpus = message.resources.vcpus
         required_disk_mib = 0
         if isinstance(message, InstanceContent) and message.rootfs:
             required_disk_mib += message.rootfs.size_mib
@@ -198,14 +196,25 @@ class VmPool:
             for volume in message.volumes:
                 required_disk_mib += getattr(volume, "size_mib", 0) or 0
 
-        is_instance_request = isinstance(message, InstanceContent)
+        self._check_capacity(
+            memory_mib=message.resources.memory,
+            vcpus=message.resources.vcpus,
+            disk_mib=required_disk_mib,
+            is_instance=isinstance(message, InstanceContent),
+        )
+
+    def _check_capacity(self, *, memory_mib: int, vcpus: int, disk_mib: int, is_instance: bool) -> None:
+        """Raise InsufficientResourcesError if these requirements exceed the
+        host caps. The numbers-only core shared by check_admission (message),
+        check_spec_admission (spec) and reserve_gpus' pre-check (DTO)."""
+        required_memory_mib = memory_mib
+        required_vcpus = vcpus
+        required_disk_mib = disk_mib
 
         committed_instance_memory_mib = 0
         committed_program_memory_mib = 0
         committed_vcpus = 0
         for execution in tuple(self.executions.values()):
-            if current_vm_hash is not None and execution.vm_hash == current_vm_hash:
-                continue
             memory = execution.allocated_memory_mib
             vcpus = execution.allocated_vcpus
             if not memory and not vcpus:
@@ -230,7 +239,7 @@ class VmPool:
         # with VCPU_OVERCOMMIT_FACTOR=4.0).
         vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
 
-        if is_instance_request:
+        if is_instance:
             bucket_name = "instance"
             committed_memory_mib = committed_instance_memory_mib
             memory_cap_mib = instance_memory_cap_mib
@@ -1190,6 +1199,41 @@ class VmPool:
                 err = f"Failed to find available GPU matching spec {gpu}"
                 raise Exception(err)
         return resources
+
+    async def reserve_gpus(self, requested: list[GpuSpec], user: str) -> datetime:
+        """Hold message-free GPU REQUESTS for ``user``, keyed by ``device_id``.
+
+        The message-free twin of reserve_resources / find_resources_available_for_user:
+        each request matches an available card by device_id, skipping cards held
+        by ANOTHER user. Atomic like the message path: cards are resolved first
+        and committed to ``self.reservations`` only once every request is matched,
+        so a partial request leaves no stray holds. Returns the reservation
+        expiry."""
+        expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
+        if not requested:
+            return expiration_date
+        async with self.creation_lock:
+            available_gpus = self.get_available_gpus()
+            resolved: list[GpuDevice] = []
+            for request in requested:
+                for available_gpu in available_gpus:
+                    if available_gpu.device_id != request.device_id:
+                        continue
+                    reservation = self.get_valid_reservation(available_gpu)
+                    if reservation is not None and reservation.user != user:
+                        continue
+                    available_gpus.remove(available_gpu)
+                    resolved.append(available_gpu)
+                    break
+                else:
+                    raise InsufficientResourcesError(
+                        f"No available GPU matching device_id {request.device_id!r}",
+                        required={"gpu_device_id": request.device_id},
+                        available={"gpus": [g.device_id for g in self.get_available_gpus()]},
+                    )
+            for gpu in resolved:
+                self.reservations[gpu] = Reservation(user=user, expiration=expiration_date, resource=gpu)
+        return expiration_date
 
     def _resolve_spec_gpus(self, requested: list[GpuSpec], *, owner: str = "") -> list[GpuDevice]:
         """Resolve message-free GPU REQUESTS to concrete available host cards.

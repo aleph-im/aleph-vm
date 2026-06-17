@@ -171,3 +171,43 @@ async def test_inject_secret_injects_and_continues(monkeypatch):
     client.continue_execution.assert_called_once()
     client.query_status.assert_called_once()
     client.close.assert_called_once()
+
+
+# ── Reservation ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reserve_resources_runs_capacity_then_reserves_gpus():
+    """The engine reserves against a message-free ReservationRequest DTO: it runs
+    _check_capacity from the scalar fields and reserve_gpus from the GPU list, and
+    never parses an Aleph message."""
+    from datetime import datetime, timezone
+
+    from aleph.vm.supervisor.types import GpuSpec, PciAddress, ReservationRequest
+
+    expiry = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    pool = FakePool()
+    pool._check_capacity = MagicMock()
+    pool.reserve_gpus = AsyncMock(return_value=expiry)
+    sup = LocalSupervisor(pool=pool)
+
+    gpu = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:2504", model="")
+    request = ReservationRequest(
+        user_address="0xUSER",
+        vcpus=2,
+        memory_mib=2048,
+        disk_mib=10,
+        is_instance=True,
+        gpus=[gpu],
+    )
+
+    result = await sup.reserve_resources(request)
+
+    assert result == expiry
+    pool._check_capacity.assert_called_once_with(
+        memory_mib=2048,
+        vcpus=2,
+        disk_mib=10,
+        is_instance=True,
+    )
+    pool.reserve_gpus.assert_awaited_once_with([gpu], "0xUSER")

@@ -33,6 +33,7 @@ from aleph.vm.supervisor.types import (
     GuestChannelSpec,
     NetworkConfig,
     PciAddress,
+    ReservationRequest,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -242,3 +243,39 @@ async def build_program_create_vm_spec(
         ),
     )
     return spec, resources
+
+
+def build_reservation_request(content, user_address: str) -> ReservationRequest:
+    """Extract the resources an Aleph message requests into a message-free DTO.
+
+    Keeps message vocabulary on the agent side: the supervisor reserves against
+    the returned DTO and never parses a message."""
+    from aleph_message.models import InstanceContent
+
+    is_instance = isinstance(content, InstanceContent)
+    disk_mib = 0
+    if is_instance and content.rootfs:
+        disk_mib += content.rootfs.size_mib
+    for volume in content.volumes or []:
+        disk_mib += getattr(volume, "size_mib", 0) or 0
+    requested = content.requirements.gpu if content.requirements and content.requirements.gpu else []
+    # Mirror build_create_vm_spec's GPU branch: device_id carries the request,
+    # pci_host is left empty (resolved by the engine), and the message GPU has no
+    # model field (it is a network-derived name) so model stays empty.
+    gpus = [
+        GpuSpec(
+            pci_host=PciAddress(""),
+            supports_x_vga=False,
+            device_id=gpu.device_id,
+            model=getattr(gpu, "model", "") or "",
+        )
+        for gpu in requested
+    ]
+    return ReservationRequest(
+        user_address=user_address,
+        vcpus=content.resources.vcpus,
+        memory_mib=content.resources.memory,
+        disk_mib=disk_mib,
+        is_instance=is_instance,
+        gpus=gpus,
+    )

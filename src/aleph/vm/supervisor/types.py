@@ -237,6 +237,22 @@ class CreateVmSpec:
 
 
 @dataclass(frozen=True)
+class ReservationRequest:
+    """Resources an instance needs, translated from an Aleph message by the
+    agent. The supervisor reserves against this and never sees a message:
+    capacity is checked from the scalar fields, GPUs are held by ``device_id``.
+    A reservation precedes downloads, so this is not a CreateVmSpec (no resolved
+    disk paths yet)."""
+
+    user_address: str
+    vcpus: int
+    memory_mib: int
+    disk_mib: int
+    is_instance: bool  # instance vs program memory bucket
+    gpus: list[GpuSpec] = field(default_factory=list)  # request: device_id/model
+
+
+@dataclass(frozen=True)
 class IpAssignment:
     """One address family's assignment for a VM; all fields empty until the
     tap device exists."""
