@@ -124,6 +124,17 @@ async def test_recreate_network_roundtrip(grpc_pair):
 
 
 @pytest.mark.asyncio
+async def test_run_program_code_roundtrip(grpc_pair):
+    client, fake = grpc_pair
+    fake.run_program_code.return_value = b"RESULT"
+    out = await client.run_program_code(VmId("vm1"), {"type": "http", "path": "/"}, timeout=12.5)
+    assert out == b"RESULT"
+    args, kwargs = fake.run_program_code.call_args
+    assert args[1] == {"type": "http", "path": "/"}
+    assert kwargs["timeout"] == 12.5
+
+
+@pytest.mark.asyncio
 async def test_restore_from_image_roundtrip(grpc_pair, make_vm_info):
     client, fake = grpc_pair
     fake.restore_from_image.return_value = make_vm_info("vm1")

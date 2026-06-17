@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import grpc
+import msgpack
 from google.protobuf.message import Message
 
 from aleph.vm.supervisor import proto_convert as conv
@@ -205,7 +206,20 @@ class GrpcSupervisor(Supervisor):
         return conv.vm_info_from_pb(reply)
 
     async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
-        raise NotImplementedError("wired in Phase 2")
+        # `run_program_code` carries a per-request `timeout`, but the gRPC deadline
+        # here is the fixed LIFECYCLE_TIMEOUT_SECS. If a program's `timeout` can
+        # exceed 300s, pass timeout=max(LIFECYCLE_TIMEOUT_SECS, timeout + overhead)
+        # to _unary instead so the deadline never fires before the engine's own
+        # timeout. Program timeouts come from content.resources.seconds (run.py
+        # call site), which stays well under 300s today, so the fixed deadline holds.
+        reply = await self._unary(
+            "RunProgramCode",
+            pb.RunProgramCodeRequest(
+                vm_id=str(vm_id), scope_msgpack=msgpack.packb(scope, use_bin_type=True), timeout_secs=timeout
+            ),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
+        return reply.reply
 
     # ── Port forwarding ──
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:

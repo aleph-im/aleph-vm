@@ -89,6 +89,11 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.ReinstallVmRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
+        self.RunProgramCode = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/RunProgramCode',
+                request_serializer=supervisor__pb2.RunProgramCodeRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.RunProgramCodeResponse.FromString,
+                _registered_method=True)
         self.RestoreFromImage = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/RestoreFromImage',
                 request_serializer=supervisor__pb2.RestoreFromImageRequest.SerializeToString,
@@ -266,6 +271,12 @@ class SupervisorServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def ReinstallVm(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RunProgramCode(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -461,6 +472,11 @@ def add_SupervisorServicer_to_server(servicer, server):
                     servicer.ReinstallVm,
                     request_deserializer=supervisor__pb2.ReinstallVmRequest.FromString,
                     response_serializer=supervisor__pb2.VmInfo.SerializeToString,
+            ),
+            'RunProgramCode': grpc.unary_unary_rpc_method_handler(
+                    servicer.RunProgramCode,
+                    request_deserializer=supervisor__pb2.RunProgramCodeRequest.FromString,
+                    response_serializer=supervisor__pb2.RunProgramCodeResponse.SerializeToString,
             ),
             'RestoreFromImage': grpc.unary_unary_rpc_method_handler(
                     servicer.RestoreFromImage,
@@ -860,6 +876,33 @@ class Supervisor(object):
             '/aleph.supervisor.v1.Supervisor/ReinstallVm',
             supervisor__pb2.ReinstallVmRequest.SerializeToString,
             supervisor__pb2.VmInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunProgramCode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aleph.supervisor.v1.Supervisor/RunProgramCode',
+            supervisor__pb2.RunProgramCodeRequest.SerializeToString,
+            supervisor__pb2.RunProgramCodeResponse.FromString,
             options,
             channel_credentials,
             insecure,

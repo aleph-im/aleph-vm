@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import grpc
+import msgpack
 
 from aleph.vm.supervisor import proto_convert as conv
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
@@ -146,6 +147,12 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         # `optional bool`: an unset field takes the ABC's default (True).
         wipe_volumes = request.wipe_volumes if request.HasField("wipe_volumes") else True
         return conv.vm_info_to_pb(await self._supervisor.reinstall_vm(VmId(request.vm_id), wipe_volumes=wipe_volumes))
+
+    @_translating
+    async def RunProgramCode(self, request: pb.RunProgramCodeRequest, context) -> pb.RunProgramCodeResponse:
+        scope = msgpack.unpackb(request.scope_msgpack, raw=False)
+        reply = await self._supervisor.run_program_code(VmId(request.vm_id), scope, timeout=request.timeout_secs)
+        return pb.RunProgramCodeResponse(reply=reply)
 
     # ── Port forwarding ──
     @_translating

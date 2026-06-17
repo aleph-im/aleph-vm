@@ -45,6 +45,7 @@ service Supervisor {
   rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
+  rpc RunProgramCode(RunProgramCodeRequest) returns (RunProgramCodeResponse);
   rpc RestoreFromImage(RestoreFromImageRequest) returns (VmInfo);
 
   // ── Port forwarding ──
@@ -371,6 +372,15 @@ message RestoreFromImageRequest {
   string vm_id = 1;
   string image_path = 2;             // host path to a staged QCOW2 image
   uint64 max_virtual_size_bytes = 3; // 0 = no cap
+}
+
+message RunProgramCodeRequest {
+  string vm_id = 1;
+  bytes scope_msgpack = 2;           // ASGI scope dict, msgpack-encoded
+  double timeout_secs = 3;
+}
+message RunProgramCodeResponse {
+  bytes reply = 1;                   // raw runtime reply, opaque to the supervisor
 }
 
 // ── Events ───────────────────────────────────────────────────────────────

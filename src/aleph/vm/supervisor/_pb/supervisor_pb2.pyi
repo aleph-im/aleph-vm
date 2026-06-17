@@ -1022,6 +1022,44 @@ class RestoreFromImageRequest(google.protobuf.message.Message):
 global___RestoreFromImageRequest = RestoreFromImageRequest
 
 @typing.final
+class RunProgramCodeRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    SCOPE_MSGPACK_FIELD_NUMBER: builtins.int
+    TIMEOUT_SECS_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    scope_msgpack: builtins.bytes
+    """ASGI scope dict, msgpack-encoded"""
+    timeout_secs: builtins.float
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        scope_msgpack: builtins.bytes = ...,
+        timeout_secs: builtins.float = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["scope_msgpack", b"scope_msgpack", "timeout_secs", b"timeout_secs", "vm_id", b"vm_id"]) -> None: ...
+
+global___RunProgramCodeRequest = RunProgramCodeRequest
+
+@typing.final
+class RunProgramCodeResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    REPLY_FIELD_NUMBER: builtins.int
+    reply: builtins.bytes
+    """raw runtime reply, opaque to the supervisor"""
+    def __init__(
+        self,
+        *,
+        reply: builtins.bytes = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["reply", b"reply"]) -> None: ...
+
+global___RunProgramCodeResponse = RunProgramCodeResponse
+
+@typing.final
 class WatchEventsRequest(google.protobuf.message.Message):
     """── Events ───────────────────────────────────────────────────────────────"""
 
