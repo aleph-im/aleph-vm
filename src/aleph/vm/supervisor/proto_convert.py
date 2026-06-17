@@ -11,6 +11,7 @@ to `Path("")`.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
@@ -400,6 +401,12 @@ def host_info_to_pb(info: HostInfo) -> pb.HostInfo:
         hostname=info.hostname,
         kernel_version=info.kernel_version,
         host_ipv4=info.host_ipv4,
+        cpu_frequency_mhz=info.cpu_frequency_mhz,
+        memory_type=info.memory_type,
+        memory_clock_mhz=info.memory_clock_mhz,
+        available_disk_bytes=info.available_disk_bytes,
+        gpu_inventory_json=json.dumps(info.gpu_inventory),
+        available_gpus_json=json.dumps(info.available_gpus),
     )
 
 
@@ -422,6 +429,12 @@ def host_info_from_pb(msg: pb.HostInfo) -> HostInfo:
         hostname=msg.hostname,
         kernel_version=msg.kernel_version,
         host_ipv4=msg.host_ipv4,
+        cpu_frequency_mhz=msg.cpu_frequency_mhz,
+        memory_type=msg.memory_type,
+        memory_clock_mhz=msg.memory_clock_mhz,
+        available_disk_bytes=msg.available_disk_bytes,
+        gpu_inventory=json.loads(msg.gpu_inventory_json) if msg.gpu_inventory_json else [],
+        available_gpus=json.loads(msg.available_gpus_json) if msg.available_gpus_json else [],
     )
 
 

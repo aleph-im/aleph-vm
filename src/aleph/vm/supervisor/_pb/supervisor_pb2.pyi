@@ -341,6 +341,9 @@ class HostInfo(google.protobuf.message.Message):
     HOSTNAME_FIELD_NUMBER: builtins.int
     KERNEL_VERSION_FIELD_NUMBER: builtins.int
     HOST_IPV4_FIELD_NUMBER: builtins.int
+    AVAILABLE_DISK_BYTES_FIELD_NUMBER: builtins.int
+    GPU_INVENTORY_JSON_FIELD_NUMBER: builtins.int
+    AVAILABLE_GPUS_JSON_FIELD_NUMBER: builtins.int
     cpu_count: builtins.int
     """CPU"""
     cpu_architecture: builtins.str
@@ -372,6 +375,12 @@ class HostInfo(google.protobuf.message.Message):
     """Networking
     primary external IPv4 of the host; empty when host networking is disabled
     """
+    available_disk_bytes: builtins.int
+    """Reservation-aware figures the agent's /about endpoints surface"""
+    gpu_inventory_json: builtins.str
+    """list[dict] as JSON; rich agent GPU inventory"""
+    available_gpus_json: builtins.str
+    """list[dict] as JSON"""
     @property
     def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]:
         """Topology"""
@@ -398,8 +407,11 @@ class HostInfo(google.protobuf.message.Message):
         hostname: builtins.str = ...,
         kernel_version: builtins.str = ...,
         host_ipv4: builtins.str = ...,
+        available_disk_bytes: builtins.int = ...,
+        gpu_inventory_json: builtins.str = ...,
+        available_gpus_json: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["available_disk_bytes", b"available_disk_bytes", "available_gpus_json", b"available_gpus_json", "cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpu_inventory_json", b"gpu_inventory_json", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
 
 global___HostInfo = HostInfo
 

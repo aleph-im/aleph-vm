@@ -413,12 +413,15 @@ class HostInfo:
     host_ipv4: str = ""  # primary external IPv4; empty when host networking is disabled
     numa_nodes: list[NumaNodeInfo] = field(default_factory=list)
     gpus: list[GpuDevice] = field(default_factory=list)
-    # Reservation-aware figures the agent's /about endpoints surface. These are
-    # not carried over the Phase 1 proto (GrpcSupervisor leaves them at the
-    # defaults); the embedded engine fills them from the pool. ``gpu_inventory``
-    # / ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
+    cpu_frequency_mhz: int = 0
+    memory_type: str = ""
+    memory_clock_mhz: int = 0
+    # Reservation-aware figures the agent's /about endpoints surface. The
+    # embedded engine fills them from the pool. ``gpu_inventory`` /
+    # ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
     # device_class, compatible) as plain dicts so the public usage endpoint does
-    # not regress to the narrow boundary GpuDevice.
+    # not regress to the narrow boundary GpuDevice; they ride the proto as JSON
+    # strings.
     available_disk_bytes: int = 0
     gpu_inventory: list[dict] = field(default_factory=list)
     available_gpus: list[dict] = field(default_factory=list)

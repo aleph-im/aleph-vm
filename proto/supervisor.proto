@@ -129,6 +129,11 @@ message HostInfo {
 
   // Networking
   string host_ipv4 = 17;             // primary external IPv4 of the host; empty when host networking is disabled
+
+  // Reservation-aware figures the agent's /about endpoints surface
+  uint64 available_disk_bytes = 18;
+  string gpu_inventory_json = 19;    // list[dict] as JSON; rich agent GPU inventory
+  string available_gpus_json = 20;   // list[dict] as JSON
 }
 
 message NumaNode {

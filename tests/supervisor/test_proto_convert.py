@@ -173,6 +173,24 @@ def test_host_info_round_trip():
     assert conv.host_info_from_pb(conv.host_info_to_pb(info)) == info
 
 
+def test_host_info_carries_reservation_and_hardware_fields():
+    info = HostInfo(
+        cpu_count=8,
+        memory_mib=1024,
+        cpu_frequency_mhz=3200,
+        memory_type="DDR5",
+        memory_clock_mhz=4800,
+        available_disk_bytes=999,
+        gpu_inventory=[{"vendor": "nvidia", "device_name": "RTX 3090"}],
+        available_gpus=[{"vendor": "nvidia"}],
+    )
+    out = conv.host_info_from_pb(conv.host_info_to_pb(info))
+    assert out.available_disk_bytes == 999
+    assert out.gpu_inventory == [{"vendor": "nvidia", "device_name": "RTX 3090"}]
+    assert out.cpu_frequency_mhz == 3200
+    assert (out.memory_type, out.memory_clock_mhz) == ("DDR5", 4800)
+
+
 def test_health_info_round_trip():
     info = HealthInfo(status=HealthStatus.OK, vm_count=3)
     assert conv.health_info_from_pb(conv.health_info_to_pb(info)) == info
