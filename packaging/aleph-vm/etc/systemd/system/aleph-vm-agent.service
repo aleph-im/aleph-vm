@@ -1,8 +1,7 @@
 [Unit]
-Description=Aleph.im VM supervisor daemon (pool owner, gRPC)
-After=network.target
-After=docker.service
-Wants=docker.service
+Description=Aleph.im VM agent (CRN HTTP API)
+After=network.target aleph-vm-supervisor.service
+Wants=aleph-vm-supervisor.service
 
 [Service]
 User=0
@@ -11,7 +10,7 @@ WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
-ExecStart=python3 -m aleph.vm.supervisor
+ExecStart=python3 -m aleph.vm.orchestrator --print-settings
 Restart=on-failure
 RestartPreventExitStatus=0 130 143
 RestartSec=10s
