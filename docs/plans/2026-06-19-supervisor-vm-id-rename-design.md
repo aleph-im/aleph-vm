@@ -1,6 +1,26 @@
 # Rename vm_hash -> vm_id on the supervisor objects (PR-0: behavior-neutral)
 
-**Status:** Design / approved scope
+**Status:** BLOCKED (2026-06-19) — needs a naming decision before implementation.
+
+> **Blocker: `vm_id` is already taken by a different concept.** `VmExecution` has
+> both `vm_hash: VmId` (the string identity we want to call `vm_id`) **and** a
+> `vm_id` property returning `int` (the numeric local VM id from the controller,
+> used for TAP/IP). The numeric `vm_id: int` is pervasive: ~11 files across all
+> controllers, `network/`, and `hypervisors/`. So `vm_hash -> vm_id` cannot be
+> done without first renaming the numeric id (candidate: `vm_id: int` ->
+> `vm_index` / `local_vm_id` / `tap_id`), which is (a) a naming choice for the
+> owner to make and (b) a large rename that would collide heavily with PR-2/PR-3's
+> controller edits if sequenced first.
+>
+> **Recommendation:** rename numeric `vm_id: int` -> `vm_index` everywhere and
+> string `vm_hash` -> `vm_id` (VmId), but sequence this **last**, after PR-3, to
+> avoid churn against the controller moves. Awaiting the owner's choice of the
+> numeric-id name and confirmation of the expanded (controllers + network) scope.
+
+**Original scope below assumed `vm_id` was free; it is not. Revise per the
+blocker before implementing.**
+
+**Status (original):** Design / approved scope
 **Date:** 2026-06-19
 **Owner:** Olivier Desenfans
 **Repo:** `aleph-im/aleph-vm`
