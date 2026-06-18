@@ -15,7 +15,6 @@ from typing import NewType
 
 VmId = NewType("VmId", str)
 BackupId = NewType("BackupId", str)
-MigrationId = NewType("MigrationId", str)
 PciAddress = NewType("PciAddress", str)
 HostPort = NewType("HostPort", int)
 GuestPort = NewType("GuestPort", int)
@@ -80,14 +79,6 @@ class BackupStatus(Enum):
     FAILED = "failed"
 
 
-class MigrationPhase(Enum):
-    PREPARING = "preparing"
-    EXPORTING = "exporting"
-    IMPORTING = "importing"
-    COMPLETE = "complete"
-    FAILED = "failed"
-
-
 class ErrorCode(Enum):
     """Mirror of proto ErrorCode. Carried by SupervisorError."""
 
@@ -140,8 +131,6 @@ class TeeConfig:
     # Host path to the resolved OVMF firmware blob (the message path's
     # trusted_execution.firmware ref, downloaded to disk by the agent before
     # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
-    # Not carried over the Phase 1 proto yet (proto_convert drops it; defaulted
-    # so the round-trip keeps building); Phase 2 adds it to the wire.
     firmware_path: Path | None = None
 
 
@@ -164,11 +153,6 @@ class GpuSpec:
     - ``pci_host`` is the RESOLVED concrete host address. The engine fills it in
       atomically inside the create path (pool.create_vm_from_spec) by matching
       ``device_id`` against the host's available GPUs. A request leaves it empty.
-
-    ``device_id`` / ``model`` are not carried over the Phase 1 proto yet
-    (proto_convert only round-trips ``pci_host`` / ``supports_x_vga`` and gives
-    these the defaults below). Phase 2 adds them to the proto so a remote
-    supervisor can resolve the request itself.
     """
 
     pci_host: PciAddress
@@ -208,9 +192,7 @@ class CreateVmSpec:
     # The VM owner's Aleph address. The engine uses it to consume this owner's
     # own GPU reservation (made via the reserve_resources endpoint) inside the
     # create path, while skipping reservations held by OTHER users. Empty = no
-    # owner-scoped reservation handling (e.g. programs, migration). Not carried
-    # over the Phase 1 proto yet (proto_convert drops it; defaulted so the
-    # round-trip keeps building); Phase 2 adds it to the wire.
+    # owner-scoped reservation handling (e.g. programs, migration).
     owner_address: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.
@@ -243,6 +225,22 @@ class CreateVmSpec:
         if rootfs is None:
             raise InvalidBackendError("CreateVmSpec has no ROOTFS disk")
         return rootfs
+
+
+@dataclass(frozen=True)
+class ReservationRequest:
+    """Resources an instance needs, translated from an Aleph message by the
+    agent. The supervisor reserves against this and never sees a message:
+    capacity is checked from the scalar fields, GPUs are held by ``device_id``.
+    A reservation precedes downloads, so this is not a CreateVmSpec (no resolved
+    disk paths yet)."""
+
+    user_address: str
+    vcpus: int
+    memory_mib: int
+    disk_mib: int
+    is_instance: bool  # instance vs program memory bucket
+    gpus: list[GpuSpec] = field(default_factory=list)  # request: device_id/model
 
 
 @dataclass(frozen=True)
@@ -335,8 +333,7 @@ class BackupInfo:
     # Archive metadata, populated for completed archives on disk. The agent
     # turns these into the HTTP response body (checksum, volumes, source_sizes)
     # and the download sidecar headers (X-Backup-Checksum, X-Source-Size). They
-    # default to empty so the gRPC path (which does not carry them in Phase 1)
-    # and in-flight RUNNING/FAILED jobs construct cleanly.
+    # default to empty so in-flight RUNNING/FAILED jobs construct cleanly.
     checksum: str = ""
     volumes: list[str] = field(default_factory=list)
     source_sizes: dict[str, int] = field(default_factory=dict)
@@ -346,16 +343,6 @@ class BackupInfo:
 class BackupChunk:
     data: bytes
     offset: int
-
-
-@dataclass(frozen=True)
-class MigrationInfo:
-    vm_id: VmId
-    migration_id: MigrationId
-    phase: MigrationPhase
-    bytes_transferred: int
-    bytes_total: int
-    error_message: str
 
 
 @dataclass(frozen=True)
@@ -380,8 +367,8 @@ class Measurement:
     tee_backend: TeeBackend
     # SEV launch attestation, preserved for the confidential measurement
     # response. sev_info is the query-sev platform state and launch_measure is
-    # the base64 launch measurement; both default to empty for callers (and the
-    # proto, until Phase 2) that only carry measurement_bytes/tee_backend.
+    # the base64 launch measurement; both default to empty for callers that only
+    # carry measurement_bytes/tee_backend.
     sev_info: SevInfo | None = None
     launch_measure: str = ""
 
@@ -423,12 +410,15 @@ class HostInfo:
     host_ipv4: str = ""  # primary external IPv4; empty when host networking is disabled
     numa_nodes: list[NumaNodeInfo] = field(default_factory=list)
     gpus: list[GpuDevice] = field(default_factory=list)
-    # Reservation-aware figures the agent's /about endpoints surface. These are
-    # not carried over the Phase 1 proto (GrpcSupervisor leaves them at the
-    # defaults); the embedded engine fills them from the pool. ``gpu_inventory``
-    # / ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
+    cpu_frequency_mhz: int = 0
+    memory_type: str = ""
+    memory_clock_mhz: int = 0
+    # Reservation-aware figures the agent's /about endpoints surface. The
+    # embedded engine fills them from the pool. ``gpu_inventory`` /
+    # ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
     # device_class, compatible) as plain dicts so the public usage endpoint does
-    # not regress to the narrow boundary GpuDevice.
+    # not regress to the narrow boundary GpuDevice; they ride the proto as JSON
+    # strings.
     available_disk_bytes: int = 0
     gpu_inventory: list[dict] = field(default_factory=list)
     available_gpus: list[dict] = field(default_factory=list)

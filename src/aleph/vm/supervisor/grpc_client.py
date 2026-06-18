@@ -17,12 +17,14 @@ and carry none.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import grpc
+import msgpack
 from google.protobuf.message import Message
 
 from aleph.vm.supervisor import proto_convert as conv
@@ -64,6 +66,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    ReservationRequest,
     VmEvent,
     VmId,
     VmInfo,
@@ -204,7 +207,18 @@ class GrpcSupervisor(Supervisor):
         return conv.vm_info_from_pb(reply)
 
     async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
-        raise NotImplementedError("wired in Phase 2")
+        # The gRPC deadline must outlast the engine's own per-request timeout, which
+        # comes from content.resources.seconds (bounded by MAX_SECONDS, far above 300s),
+        # plus boot/VMM/draining overhead. LIFECYCLE_TIMEOUT_SECS is that overhead cushion.
+        deadline = timeout + LIFECYCLE_TIMEOUT_SECS
+        reply = await self._unary(
+            "RunProgramCode",
+            pb.RunProgramCodeRequest(
+                vm_id=str(vm_id), scope_msgpack=msgpack.packb(scope, use_bin_type=True), timeout_secs=timeout
+            ),
+            deadline,
+        )
+        return reply.reply
 
     # ── Port forwarding ──
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
@@ -259,15 +273,10 @@ class GrpcSupervisor(Supervisor):
             call.cancel()
 
     # ── Backups ──
-    async def start_backup(
-        self,
-        vm_id: VmId,
-        quiesce_guest: bool = False,
-        include_volumes: bool = False,  # noqa: ARG002  not yet carried by the proto (Phase 2)
-    ) -> BackupInfo:
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
         reply = await self._unary(
             "StartBackup",
-            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
+            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest, include_volumes=include_volumes),
             LIFECYCLE_TIMEOUT_SECS,
         )
         return conv.backup_info_from_pb(reply)
@@ -316,7 +325,16 @@ class GrpcSupervisor(Supervisor):
     async def restore_from_image(
         self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
     ) -> VmInfo:
-        raise NotImplementedError("wired in Phase 2")
+        reply = await self._unary(
+            "RestoreFromImage",
+            pb.RestoreFromImageRequest(
+                vm_id=str(vm_id),
+                image_path=conv.path_to_wire(Path(image_path)),
+                max_virtual_size_bytes=max_virtual_size_bytes,
+            ),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
+        return conv.vm_info_from_pb(reply)
 
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
@@ -341,8 +359,14 @@ class GrpcSupervisor(Supervisor):
 
     # ── Network ──
     async def recreate_network(self) -> dict:
-        raise NotImplementedError("wired in Phase 2")
+        reply = await self._unary("RecreateNetwork", pb.RecreateNetworkRequest(), LIFECYCLE_TIMEOUT_SECS)
+        return json.loads(reply.summary_json) if reply.summary_json else {}
 
     # ── Reservation ──
-    async def reserve_resources(self, content, user) -> datetime:
-        raise NotImplementedError("wired in Phase 2")
+    async def reserve_resources(self, request: ReservationRequest) -> datetime:
+        reply = await self._unary(
+            "ReserveResources",
+            conv.reservation_request_to_pb(request),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
+        return datetime.fromtimestamp(reply.expiry_unix_ns / 1_000_000_000, tz=timezone.utc)

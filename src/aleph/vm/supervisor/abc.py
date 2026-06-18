@@ -10,7 +10,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any
 
 from aleph.vm.supervisor.types import (
     BackupChunk,
@@ -26,6 +25,7 @@ from aleph.vm.supervisor.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    ReservationRequest,
     VmEvent,
     VmId,
     VmInfo,
@@ -165,14 +165,12 @@ class NetworkOps(ABC):
 
 class ReservationOps(ABC):
     @abstractmethod
-    async def reserve_resources(self, content: Any, user: Any) -> datetime:
-        """Hold the resources (GPUs today) an instance message requests for a
-        user, returning the reservation expiry.
-
-        ``content`` is the Aleph ExecutableContent and ``user`` the
-        authenticated address; both are agent vocabulary kept untyped at the
-        boundary in Phase 1. The implementation runs the same capacity
-        admission as the create path before holding anything."""
+    async def reserve_resources(self, request: ReservationRequest) -> datetime:
+        """Hold the resources (GPUs today) an instance requests for a user,
+        returning the reservation expiry. ``request`` is a message-free
+        resources DTO the agent built from the Aleph message; the
+        implementation runs the same capacity admission as the create path
+        before holding anything."""
 
 
 class Supervisor(

@@ -2111,6 +2111,9 @@ async def test_operator_confidential_inject_secret_delegates(aiohttp_client, moc
         "aleph.vm.orchestrator.views.operator.is_sender_authorized",
         return_value=True,
     )
+    # After injecting the secret the endpoint reconciles the now-running VM's
+    # port forwards; that path is covered by the run helper's own tests.
+    mocker.patch("aleph.vm.orchestrator.run.reconcile_port_forwards", AsyncMock())
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
         vm_hash,
