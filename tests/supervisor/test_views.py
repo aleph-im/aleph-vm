@@ -906,14 +906,10 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
         return_value=other_user,
     ):
         response3: web.Response = await client.post("/control/reserve_resources", json=instance_content)
-    assert response3.status == 400, await response3.text()
-    resp3 = await response3.json()
-    assert resp3 == {
-        "status": "error",
-        "error": "Failed to reserves all resources",
-        "reason": "Failed to find available GPU matching spec vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada "
-        "Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
-    }
+    # The message-free reservation path holds GPUs by device_id and raises
+    # InsufficientResourcesError when no matching card is free (here the only card
+    # is held by the first user), which the endpoint maps to 503.
+    assert response3.status == 503, await response3.text()
     assert len(app["_engine_pool"].reservations) == 1
 
     # Try to reserve a GPU that the CRN doesn't have
@@ -930,7 +926,9 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
         ],
     )
     response4: web.Response = await client.post("/control/reserve_resources", json=instance_content2)
-    assert response4.status == 400, await response3.text()
+    # instance_content2 wraps the gpu list in a tuple, so model_validate rejects
+    # the body before reservation: a request-validation error, mapped to 400.
+    assert response4.status == 400, await response4.text()
 
 
 @pytest.mark.asyncio
@@ -998,9 +996,10 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     InstanceContent.model_validate(instance_content)
 
     response: web.Response = await client.post("/control/reserve_resources", json=instance_content)
-    assert response.status == 400, await response.text()
-    resp = await response.json()
-    assert resp["status"] == "error", await response.text()
+    # Two cards requested but only one is available: the message-free path resolves
+    # all cards before committing, raises InsufficientResourcesError, and holds
+    # nothing. The endpoint maps that to 503.
+    assert response.status == 503, await response.text()
     assert len(app["_engine_pool"].reservations) == 0
 
 

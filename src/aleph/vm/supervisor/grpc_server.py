@@ -11,12 +11,14 @@ exact exception class from the trailer.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TypeVar
 
 import grpc
+import msgpack
 
 from aleph.vm.supervisor import proto_convert as conv
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
@@ -27,7 +29,7 @@ from aleph.vm.supervisor.errors import (
     SupervisorError,
     translate_exception,
 )
-from aleph.vm.supervisor.types import BackupId, ErrorCode, HostPort, VmId
+from aleph.vm.supervisor.types import BackupId, DirectoryPath, ErrorCode, HostPort, VmId
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,12 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         wipe_volumes = request.wipe_volumes if request.HasField("wipe_volumes") else True
         return conv.vm_info_to_pb(await self._supervisor.reinstall_vm(VmId(request.vm_id), wipe_volumes=wipe_volumes))
 
+    @_translating
+    async def RunProgramCode(self, request: pb.RunProgramCodeRequest, context) -> pb.RunProgramCodeResponse:
+        scope = msgpack.unpackb(request.scope_msgpack, raw=False)
+        reply = await self._supervisor.run_program_code(VmId(request.vm_id), scope, timeout=request.timeout_secs)
+        return pb.RunProgramCodeResponse(reply=reply)
+
     # ── Port forwarding ──
     @_translating
     async def AddPortForward(self, request: pb.AddPortForwardRequest, context) -> pb.PortForwardInfo:
@@ -199,7 +207,9 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     # ── Backups ──
     @_translating
     async def StartBackup(self, request: pb.StartBackupRequest, context) -> pb.BackupInfo:
-        info = await self._supervisor.start_backup(VmId(request.vm_id), quiesce_guest=request.quiesce_guest)
+        info = await self._supervisor.start_backup(
+            VmId(request.vm_id), quiesce_guest=request.quiesce_guest, include_volumes=request.include_volumes
+        )
         return conv.backup_info_to_pb(info)
 
     @_translating
@@ -233,11 +243,14 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         info = await self._supervisor.restore_backup(VmId(request.vm_id), BackupId(request.backup_id))
         return conv.vm_info_to_pb(info)
 
-    # ── Migration ──
-    # Phase 1 collapsed migration onto the standard lifecycle RPCs (the agent
-    # stages and rebases disks then drives create_vm / start_vm / delete_vm).
-    # The directory-based ExportVm / ImportVm / GetMigrationStatus handlers are
-    # gone; their orphan proto RPCs are dropped in the Phase 2 proto pass.
+    @_translating
+    async def RestoreFromImage(self, request: pb.RestoreFromImageRequest, context) -> pb.VmInfo:
+        info = await self._supervisor.restore_from_image(
+            VmId(request.vm_id),
+            DirectoryPath(conv.path_from_wire(request.image_path)),
+            max_virtual_size_bytes=request.max_virtual_size_bytes,
+        )
+        return conv.vm_info_to_pb(info)
 
     # ── Confidential ──
     @_translating
@@ -255,6 +268,18 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     async def InjectSecret(self, request: pb.InjectSecretRequest, context) -> pb.InjectSecretResponse:
         await self._supervisor.inject_secret(VmId(request.vm_id), request.secret_header_bytes, request.secret_bytes)
         return pb.InjectSecretResponse()
+
+    # ── Network ──
+    @_translating
+    async def RecreateNetwork(self, request: pb.RecreateNetworkRequest, context) -> pb.RecreateNetworkResponse:
+        summary = await self._supervisor.recreate_network()
+        return pb.RecreateNetworkResponse(summary_json=json.dumps(summary))
+
+    # ── Reservation ──
+    @_translating
+    async def ReserveResources(self, request: pb.ReserveResourcesRequest, context) -> pb.ReserveResourcesResponse:
+        expiry = await self._supervisor.reserve_resources(conv.reservation_request_from_pb(request))
+        return pb.ReserveResourcesResponse(expiry_unix_ns=int(expiry.timestamp() * 1_000_000_000))
 
 
 async def serve_unix(supervisor: Supervisor, socket_path: Path | str) -> grpc.aio.Server:

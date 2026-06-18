@@ -236,29 +236,6 @@ def test_backup_info_shape():
     } <= statuses
 
 
-def test_migration_rpcs_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
-
-    methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
-    assert {"ExportVm", "ImportVm", "GetMigrationStatus"} <= methods
-
-
-def test_migration_info_shape():
-    from aleph.vm.supervisor._pb import supervisor_pb2
-
-    fields = {f.name for f in supervisor_pb2.MigrationInfo.DESCRIPTOR.fields}
-    assert {"vm_id", "migration_id", "phase", "bytes_transferred", "bytes_total"} <= fields
-    phases = {v.name for v in supervisor_pb2.MigrationPhase.DESCRIPTOR.values}
-    assert {
-        "MIGRATION_PHASE_UNSPECIFIED",
-        "MIGRATION_PHASE_PREPARING",
-        "MIGRATION_PHASE_EXPORTING",
-        "MIGRATION_PHASE_IMPORTING",
-        "MIGRATION_PHASE_COMPLETE",
-        "MIGRATION_PHASE_FAILED",
-    } <= phases
-
-
 def test_confidential_rpcs_defined():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
@@ -356,6 +333,8 @@ def test_full_service_surface_pinned():
         "StartVm",
         "RebootVm",
         "ReinstallVm",
+        "RunProgramCode",
+        "RestoreFromImage",
         # Port forwarding
         "AddPortForward",
         "RemovePortForward",
@@ -372,14 +351,14 @@ def test_full_service_surface_pinned():
         "DownloadBackup",
         "DeleteBackup",
         "RestoreBackup",
-        # Migration
-        "ExportVm",
-        "ImportVm",
-        "GetMigrationStatus",
         # Confidential
         "InitializeConfidential",
         "GetMeasurement",
         "InjectSecret",
+        # Network
+        "RecreateNetwork",
+        # Reservation
+        "ReserveResources",
     }
     actual = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert actual == expected, f"unexpected drift: missing {expected - actual}, " f"extra {actual - expected}"

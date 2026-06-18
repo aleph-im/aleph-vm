@@ -51,6 +51,12 @@ fi
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
   systemctl daemon-reload
-  systemctl enable aleph-vm-supervisor.service
+  systemctl enable aleph-vm-supervisor.service aleph-vm-agent.service
   systemctl restart aleph-vm-supervisor.service
+  # Wait for the daemon socket before the agent dials it (split mode).
+  for _ in $(seq 1 30); do
+    [ -S /var/lib/aleph/vm/supervisor.sock ] && break
+    sleep 1
+  done
+  systemctl restart aleph-vm-agent.service
 fi

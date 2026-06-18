@@ -152,7 +152,7 @@ class VmExecution:
         """Fetch the user's port-forwarding aggregate and apply updates.
 
         Persisted-mapping reload is the creator's job
-        (pool.create_a_vm / create_vm_from_spec / restart_persistent_vm).
+        (pool.create_vm_from_spec / restart_persistent_vm).
         """
         if not self.is_instance:
             return
