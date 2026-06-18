@@ -266,6 +266,8 @@ jobs:
         if: ${{ !cancelled() && steps.system-booted.outcome == 'success'}}
         run: |
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
+          # Two-service split: /control/* (port 4020) is served by the agent.
+          ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-agent" || true
 
       - name: Cleanup
         if: always()
