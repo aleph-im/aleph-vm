@@ -582,11 +582,22 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
             return web.Response(status=403, body="Unauthorized sender")
 
         supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
         await supervisor.inject_secret(
-            VmId(str(vm_hash)),
+            vm_id,
             params.packet_header.encode(),
             params.secret.encode(),
         )
+
+        # The confidential VM only boots now (post-secret). At create time it was
+        # awaiting init, so the normal create-completion port setup
+        # (run.finish_instance_create) was skipped; establish its host port
+        # forwards (SSH/22 + the owner's aggregate) now that it is running, like
+        # a normal instance gets at create. Without this the VM has no mapped
+        # port 22 and is unreachable.
+        from aleph.vm.orchestrator.run import reconcile_port_forwards
+
+        await reconcile_port_forwards(supervisor, vm_id, record.message)
 
         # inject_secret only returns on the success path (a QMP failure raises),
         # so the VM has resumed and is running. The void supervisor method cannot
