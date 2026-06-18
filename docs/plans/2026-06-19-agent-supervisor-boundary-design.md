@@ -252,6 +252,11 @@ regression of a fixed one, fails CI.
 
 ## 9. Next steps
 
+This PR is preceded by **PR-0**, the behavior-neutral `vm_hash` -> `vm_id` rename
+on the supervisor-side objects (see
+`2026-06-19-supervisor-vm-id-rename-design.md`); PR-1 builds on the clarified
+names.
+
 1. User review of this design.
 2. Implementation plan (writing-plans): the exact file moves, the
    `contract/errors.py` vs `supervisor/error_mapping.py` split, the port-mappings

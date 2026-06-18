@@ -113,8 +113,11 @@ do for it beyond confirming the import paths are already `contract.*`.
 
 ## 6. Sequence recap and what remains after
 
-The three-PR sequence:
+The sequence:
 
+0. **PR-0** (behavior-neutral): rename `vm_hash` -> `vm_id` on the supervisor-side
+   objects (`VmExecution`, `VmPool`, `local.py`) and the agent call sites reading
+   that attribute. See `2026-06-19-supervisor-vm-id-rename-design.md`.
 1. **PR-1** (behavior-neutral): contract layer, misfiled agent code out of
    `supervisor/`, three back-references fixed, import-linter.
 2. **PR-2** (behavior-affecting): split the `Resources` dual personality, finish
