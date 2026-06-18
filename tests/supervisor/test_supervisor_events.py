@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import VmEvent, VmId, VmStatus
 
 VM_ID = VmId("itemhash123")
@@ -44,7 +44,7 @@ async def _collect_events(supervisor, count: int, timeout: float = 2.0) -> list[
 @pytest.mark.asyncio
 async def test_delete_vm_emits_stopped_event():
     pool, _ = _pool_with_running_vm()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     collector = asyncio.ensure_future(_collect_events(sup, 1))
     await asyncio.sleep(0)  # let the watcher subscribe
@@ -61,7 +61,7 @@ async def test_delete_vm_emits_stopped_event():
 async def test_reboot_persistent_emits_down_then_up():
     pool, _ = _pool_with_running_vm()
     pool.systemd_manager.restart = MagicMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     collector = asyncio.ensure_future(_collect_events(sup, 2))
     await asyncio.sleep(0)
@@ -74,14 +74,14 @@ async def test_reboot_persistent_emits_down_then_up():
 @pytest.mark.asyncio
 async def test_events_without_watchers_are_a_noop():
     pool, _ = _pool_with_running_vm()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
     await sup.delete_vm(VM_ID)  # no watcher subscribed: must not raise
 
 
 @pytest.mark.asyncio
 async def test_closing_the_stream_unsubscribes():
     pool, _ = _pool_with_running_vm()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     gen = sup.watch_events()
     task = asyncio.ensure_future(anext(gen))
@@ -132,8 +132,8 @@ async def test_watch_events_round_trips_over_the_wire():
     from test_supervisor_grpc import _ServerHarness
 
     pool, _ = _pool_with_running_vm()
-    inprocess = InProcessSupervisor(pool=pool)
-    harness = _ServerHarness(inprocess)
+    local = LocalSupervisor(pool=pool)
+    harness = _ServerHarness(local)
     async with harness as client:
         received: list[VmEvent] = []
         got_one = asyncio.Event()
@@ -147,10 +147,10 @@ async def test_watch_events_round_trips_over_the_wire():
         consumer = asyncio.ensure_future(consume())
         # Wait for the server-side subscription before emitting.
         for _ in range(100):
-            if inprocess._event_queues:
+            if local._event_queues:
                 break
             await asyncio.sleep(0.01)
-        inprocess._emit_event(VM_ID, VmStatus.RUNNING, VmStatus.STOPPED)
+        local._emit_event(VM_ID, VmStatus.RUNNING, VmStatus.STOPPED)
         await asyncio.wait_for(got_one.wait(), timeout=2)
         await consumer
 

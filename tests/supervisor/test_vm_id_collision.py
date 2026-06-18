@@ -50,7 +50,6 @@ class TestDuplicateVmIdLoading:
             patch.object(pool, "_restore_running_execution_from_config", new_callable=AsyncMock) as restore,
             patch.object(pool, "_handle_dead_controller", new_callable=AsyncMock) as dead,
             patch.object(pool, "_cleanup_orphan_resources"),
-            patch.object(pool, "update_domain_mapping", new_callable=AsyncMock),
         ):
             pool.systemd_manager.get_services_active_states.return_value = active
             await pool.load_persistent_executions()

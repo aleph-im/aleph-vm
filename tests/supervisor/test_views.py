@@ -370,7 +370,7 @@ async def test_allocation_valid_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, mock_instance_content):
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -415,7 +415,7 @@ async def test_v2_executions_list_confidential_awaiting_init(
     """A confidential VM waiting for its owner to initialize it must be distinguishable
     from a dead VM in the executions list, so the scheduler and console can report it."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -464,7 +464,7 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(
     from ipaddress import IPv4Network, IPv6Network
 
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -526,7 +526,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
     (the scheduler requires networking.ipv4/ipv6), so an awaiting-init VM whose
     tap interface is not set up must stay out of the list."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
 
     content = deepcopy(mock_instance_content)
     content["environment"]["hypervisor"] = "qemu"
@@ -568,7 +568,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
 async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     "Test locally but do not create"
     web_app = await mock_app_with_pool
-    pool: VmPool = web_app["vm_pool"]
+    pool: VmPool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -888,7 +888,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     resp = await response.json()
     assert "expires" in resp
     assert resp["status"] == "reserved"
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # make a second reservation
     response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
@@ -897,7 +897,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert "expires" in resp2
     assert resp2["status"] == "reserved"
     assert resp2["expires"] > resp["expires"]
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # another user try to reserve, should return an error
     other_user = "other_user"
@@ -914,7 +914,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
         "reason": "Failed to find available GPU matching spec vendor='NVIDIA' device_name='AD104GL [RTX 4000 SFF Ada "
         "Generation]' device_class=<GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER: '0300'> device_id='10de:27b0'",
     }
-    assert len(app["vm_pool"].reservations) == 1
+    assert len(app["_engine_pool"].reservations) == 1
 
     # Try to reserve a GPU that the CRN doesn't have
 
@@ -1001,7 +1001,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     assert response.status == 400, await response.text()
     resp = await response.json()
     assert resp["status"] == "error", await response.text()
-    assert len(app["vm_pool"].reservations) == 0
+    assert len(app["_engine_pool"].reservations) == 0
 
 
 @pytest.mark.asyncio
@@ -1071,7 +1071,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
         )
     )
     web_app["supervisor"] = fake_sup
-    web_app["vm_pool"].update_domain_mapping = AsyncMock()
+    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=AsyncMock())
 
     response: web.Response = await client.post(f"/control/machine/{vm_hash}/update")
     assert response.status == 200, await response.text()
@@ -1110,10 +1110,9 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     """Test that the regenerate_proxy endpoint succeeds with a valid auth token."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to avoid actual HAProxy operations
-    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=True))
+    # Mock the agent-side HAProxy sync to avoid actual HAProxy operations.
+    sync = mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1123,7 +1122,7 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     assert response.status == 200
     resp = await response.json()
     assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
-    pool.update_domain_mapping.assert_called_once_with(force_update=True)
+    sync.assert_called_once_with(web_app["supervisor"], force_update=True)
 
 
 @pytest.mark.asyncio
@@ -1131,10 +1130,9 @@ async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_a
     """Test that regenerate_proxy handles missing HAProxy socket gracefully."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to return False (socket not found)
-    mocker.patch.object(pool, "update_domain_mapping", new=mocker.AsyncMock(return_value=False))
+    # Sync returns False (socket not found): endpoint still reports success.
+    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=False))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1151,11 +1149,10 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
     """Test that regenerate_proxy handles exceptions gracefully."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
 
-    # Mock update_domain_mapping to raise an exception
-    mocker.patch.object(
-        pool, "update_domain_mapping", new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed"))
+    mocker.patch(
+        "aleph.vm.orchestrator.views.sync_domain_mappings",
+        new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed")),
     )
 
     client = await aiohttp_client(web_app)
@@ -1270,54 +1267,45 @@ async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkey
 
 
 @pytest.mark.asyncio
-async def test_restore_rejects_invalid_image_format(mocker, tmp_path):
+async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_path):
     """Uploading a file that is not a valid QCOW2 image returns a 4xx, not a 500.
 
-    Regression: ``qemu-img check`` exits non-zero on e.g. a tar archive, so
-    ``verify_qemu_disk`` raises ``CalledProcessError``. Previously this fell
-    through to the generic handler and produced an HTTP 500.
+    The agent stages the upload and hands the disk work to the supervisor; the
+    engine's qemu-img check rejects a non-QCOW2 image with InvalidBackendError,
+    which the endpoint maps to a 400 (a client error, not a generic 500).
     """
-    import subprocess
+    import aiohttp
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuInstance
     from aleph.vm.orchestrator.views import operator
+    from aleph.vm.supervisor.errors import InvalidBackendError
 
-    vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    from aleph.vm.storage import get_message
 
-    execution = mocker.Mock()
-    execution.is_running = False
-    execution.vm = mocker.Mock()
-    # Make the AlephQemuInstance isinstance check pass.
-    execution.vm.__class__ = AlephQemuInstance
-    execution.vm.resources.rootfs_path = str(tmp_path / "rootfs.qcow2")
+    instance_message = await get_message(ref=vm_hash)
 
-    record = mocker.Mock()
-    record.message.rootfs.size_mib = 1000
-
-    mocker.patch.object(operator, "get_execution_or_404", return_value=execution)
+    mocker.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
     mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
     mocker.patch.object(operator, "get_backup_directory", return_value=tmp_path)
 
-    uploaded = tmp_path / f"restore-{vm_hash}.qcow2"
-    uploaded.write_bytes(b"this is a tar archive, not a qcow2")
-    mocker.patch.object(operator, "_parse_restore_upload", new=mocker.AsyncMock(return_value=uploaded))
-
-    # qemu-img check exits non-zero on a non-QCOW2 file.
-    mocker.patch.object(
-        operator,
-        "verify_qemu_disk",
-        new=mocker.AsyncMock(side_effect=subprocess.CalledProcessError(2, "qemu-img", "not in qcow2 format")),
+    app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
     )
+    app["supervisor"] = MagicMock(
+        restore_from_image=AsyncMock(side_effect=InvalidBackendError("not in qcow2 format")),
+    )
+    client = await aiohttp_client(app)
 
-    request = mocker.Mock()
-    request.app = {
-        "vm_pool": mocker.Mock(),
-        "vm_registry": mocker.Mock(get=mocker.Mock(return_value=record)),
-    }
-    request.content_length = None
-    request.content_type = "multipart/form-data"
-
-    response = await operator._do_restore(request, vm_hash, "0xSender")
+    form = aiohttp.FormData()
+    form.add_field("rootfs", b"this is a tar archive, not a qcow2", filename="rootfs.qcow2")
+    response = await client.post(f"/control/machine/{vm_hash}/restore", data=form)
 
     assert 400 <= response.status < 500, f"expected a 4xx response, got {response.status}"
 
@@ -1406,7 +1394,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
 async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     """/about/executions/list keeps its shape: running VMs only, networks + vm_type."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     registry = web_app["vm_registry"]
     message = InstanceContent.model_validate(mock_instance_content)
 
@@ -1457,7 +1445,7 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     """v2 rebuilds the legacy mapped_ports shape from list_port_forwards."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -1493,7 +1481,7 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(
     """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
     divergence from the legacy pool dump, which emitted it verbatim)."""
     web_app = await mock_app_with_pool
-    pool = web_app["vm_pool"]
+    pool = web_app["_engine_pool"]
     message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 

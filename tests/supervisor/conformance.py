@@ -12,11 +12,10 @@ import pytest
 from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.errors import NotImplementedSupervisorError
 
-STUB_METHODS = {
-    "initialize_confidential",
-    "get_measurement",
-    "inject_secret",
-}
+# Methods still raising NotImplementedSupervisorError on the local engine. The
+# confidential ops are implemented (P1.4): they raise VmNotFoundError for an
+# unknown VM, not NotImplementedSupervisorError, so they are no longer stubs.
+STUB_METHODS: set[str] = set()
 
 
 class SupervisorContractTests:

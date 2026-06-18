@@ -5,8 +5,10 @@ timer for on-demand executions only. Persistent executions (instances and
 persistent programs) are long-running by design and must never be idle-reaped
 — the guard that used to live inside VmExecution.stop_after_timeout.
 
-On-demand programs run through the supervisor + ProgramGuestClient path;
-persistent programs still take the legacy pool/VmExecution path.
+On-demand programs run through the supervisor + ProgramGuestClient path
+(served over the guest channel by the agent); persistent programs are served
+through the supervisor (supervisor.run_program_code), but both are long-running
+and the no-idle-reap guard applies to persistent programs.
 """
 
 import asyncio
@@ -89,33 +91,6 @@ class FakeProgramClient:
         self.forgotten.append(str(vm_id))
 
 
-class FakeExecution:
-    """Legacy pool execution (persistent programs)."""
-
-    def __init__(self, *, persistent: bool, result: dict):
-        self.persistent = persistent
-        self.vm_hash = VM_HASH
-        self.vm_id = 3
-        self.has_resources = True
-        self.message = SimpleNamespace(code=SimpleNamespace(ref="code-ref"))
-        self._result_raw = msgpack.dumps(result)
-
-    async def becomes_ready(self) -> None:
-        pass
-
-    async def run_code(self, scope: dict) -> bytes:
-        return self._result_raw
-
-
-class FakePool:
-    def __init__(self, execution: FakeExecution):
-        self._execution = execution
-
-    def get_running_vm(self, vm_hash: ItemHash) -> FakeExecution:
-        assert vm_hash == VM_HASH
-        return self._execution
-
-
 class FakeRequest:
     method = "GET"
     query_string = ""
@@ -160,7 +135,7 @@ def _on_demand_fakes():
 async def test_request_rearms_idle_timer_for_on_demand_vm(reuse_settings):
     _content, expiry, _supervisor, _program_client, app = _on_demand_fakes()
 
-    response = await run_code_on_request(VM_HASH, "/", SimpleNamespace(), FakeRequest(app=app))
+    response = await run_code_on_request(VM_HASH, "/", FakeRequest(app=app))
 
     assert response.status == 200
     assert expiry.cancelled == [str(VM_HASH)]
@@ -170,10 +145,16 @@ async def test_request_rearms_idle_timer_for_on_demand_vm(reuse_settings):
 @pytest.mark.asyncio
 async def test_request_never_schedules_expiry_for_persistent_vm(reuse_settings):
     content = _program_content(persistent=True)
-    execution = FakeExecution(persistent=True, result=OK_RESULT)
     expiry = SpyExpiry()
+    # Persistent programs are served through the supervisor: it runs the code
+    # over the VM's guest channel and returns the raw runtime reply.
+    supervisor = SimpleNamespace(
+        get_vm=AsyncMock(return_value=_running_info()),
+        delete_vm=AsyncMock(),
+        run_program_code=AsyncMock(return_value=msgpack.dumps(OK_RESULT)),
+    )
     app = {
-        "supervisor": None,
+        "supervisor": supervisor,
         "expiry": expiry,
         "pubsub": None,
         "update_watcher": None,
@@ -181,9 +162,10 @@ async def test_request_never_schedules_expiry_for_persistent_vm(reuse_settings):
         "program_client": FakeProgramClient(OK_RESULT),
     }
 
-    response = await run_code_on_request(VM_HASH, "/", FakePool(execution), FakeRequest(app=app))
+    response = await run_code_on_request(VM_HASH, "/", FakeRequest(app=app))
 
     assert response.status == 200
+    supervisor.run_program_code.assert_awaited_once()
     assert expiry.scheduled == []
 
 
@@ -198,7 +180,6 @@ async def test_event_rearms_idle_timer_for_on_demand_vm(reuse_settings):
         VM_HASH,
         None,
         None,
-        SimpleNamespace(),
         supervisor=supervisor,
         expiry=expiry,
         update_watcher=None,
@@ -213,15 +194,18 @@ async def test_event_rearms_idle_timer_for_on_demand_vm(reuse_settings):
 @pytest.mark.asyncio
 async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
     content = _program_content(persistent=True)
-    execution = FakeExecution(persistent=True, result={"body": "ok"})
     expiry = SpyExpiry()
+    supervisor = SimpleNamespace(
+        get_vm=AsyncMock(return_value=_running_info()),
+        delete_vm=AsyncMock(),
+        run_program_code=AsyncMock(return_value=msgpack.dumps({"body": "ok"})),
+    )
 
     result = await run_code_on_event(
         VM_HASH,
         None,
         None,
-        FakePool(execution),
-        supervisor=None,
+        supervisor=supervisor,
         expiry=expiry,
         update_watcher=None,
         registry=_registry_with(content),
@@ -229,4 +213,5 @@ async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
     )
 
     assert result == "ok"
+    supervisor.run_program_code.assert_awaited_once()
     assert expiry.scheduled == []

@@ -91,7 +91,6 @@ class Reactor:
                             vm_hash,
                             event,
                             self.pubsub,
-                            pool=self.pool,
                             supervisor=self.supervisor,
                             expiry=self.expiry,
                             update_watcher=self.update_watcher,

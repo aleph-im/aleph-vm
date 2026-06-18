@@ -1,4 +1,4 @@
-"""InProcessSupervisor.create_vm delegates to pool.create_vm_from_spec."""
+"""LocalSupervisor.create_vm delegates to pool.create_vm_from_spec."""
 
 from __future__ import annotations
 
@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.resources import InsufficientResourcesError as ResourcesInsufficientError
+from aleph.vm.supervisor.errors import (
+    InsufficientResourcesError as BoundaryInsufficientResourcesError,
+)
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -55,7 +59,7 @@ async def test_create_vm_delegates_and_returns_info():
         systemd=FakeSystemd({f"aleph-vm-controller@{_HASH}.service": True}),
     )
     pool.create_vm_from_spec = AsyncMock(return_value=execution)
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     spec = _spec()
     info = await sup.create_vm(spec)
@@ -63,3 +67,17 @@ async def test_create_vm_delegates_and_returns_info():
     pool.create_vm_from_spec.assert_awaited_once_with(spec)
     assert info.vm_id == _HASH
     assert info.status is VmStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_create_vm_translates_pool_insufficient_resources():
+    """An over-capacity create raises the pool's resources InsufficientResourcesError;
+    translating_errors must surface it as the boundary error so the agent maps it to 503."""
+    pool = FakePool(executions={})
+    pool.create_vm_from_spec = AsyncMock(
+        side_effect=ResourcesInsufficientError("over capacity", required={}, available={})
+    )
+    sup = LocalSupervisor(pool=pool)
+
+    with pytest.raises(BoundaryInsufficientResourcesError):
+        await sup.create_vm(_spec())

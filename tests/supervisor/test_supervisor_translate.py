@@ -134,6 +134,46 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_build_create_vm_spec_maps_gpu_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each message.requirements.gpu becomes an unresolved GpuSpec request:
+    device_id is carried, pci_host is left empty for the engine to resolve."""
+    from aleph_message.models.execution.environment import (
+        GpuProperties,
+        HostRequirements,
+    )
+
+    async def fake_download_all(self: Any) -> None:
+        self.rootfs_path = Path("/data/rootfs.qcow2")
+        self.volumes = []
+
+    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+
+    monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
+
+    message = _make_qemu_instance_message()
+    message = message.model_copy(
+        update={
+            "requirements": HostRequirements(
+                gpu=[
+                    GpuProperties(
+                        vendor="NVIDIA",
+                        device_name="GH100",
+                        device_class="0300",
+                        device_id="10de:2504",
+                    )
+                ]
+            )
+        }
+    )
+
+    spec = await build_create_vm_spec(_VM_HASH, message)
+
+    assert len(spec.gpus) == 1
+    assert spec.gpus[0].device_id == "10de:2504"
+    assert str(spec.gpus[0].pci_host) == ""
+
+
+@pytest.mark.asyncio
 async def test_authorized_keys_none_becomes_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     """authorized_keys=None in the message yields an empty list in the spec."""
 
@@ -205,24 +245,45 @@ async def test_firecracker_hypervisor_raises(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
-async def test_confidential_instance_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An InstanceContent with trusted_execution set raises InvalidBackendError."""
-    download_called = False
+async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A confidential InstanceContent yields a CreateVmSpec carrying spec.tee:
+    backend SEV, the requested policy (trusted_execution.policy, applied
+    verbatim), the per-VM session dir, and the resolved firmware host path."""
+    from aleph_message.models.execution.environment import AMDSEVPolicy
 
-    async def should_not_be_called(self: Any) -> None:
-        nonlocal download_called
-        download_called = True
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.types import TeeBackend
+
+    firmware_path = Path("/data/firmware.fd")
+
+    async def fake_download_all(self: Any) -> None:
+        self.rootfs_path = Path("/data/rootfs.qcow2")
+        self.volumes = []
+
+    async def fake_get_existing_file(ref: Any) -> Path:
+        return firmware_path
 
     from aleph.vm.controllers.qemu.instance import AlephQemuResources
 
-    monkeypatch.setattr(AlephQemuResources, "download_all", should_not_be_called)
+    monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
+    monkeypatch.setattr("aleph.vm.supervisor.translate.get_existing_file", fake_get_existing_file)
 
-    message = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=0))
+    # The message requests a non-default policy: the spec must carry that
+    # requested policy verbatim (the supervisor holds no opinion; the schema
+    # defaults the policy at the message layer).
+    requested_policy = int(AMDSEVPolicy.SEV_ES)
+    message = _make_qemu_instance_message(
+        trusted_execution=TrustedExecutionEnvironment(firmware=_FAKE_HASH, policy=requested_policy)
+    )
 
-    with pytest.raises(InvalidBackendError, match="(?i)confidential"):
-        await build_create_vm_spec(_VM_HASH, message)
+    spec = await build_create_vm_spec(_VM_HASH, message)
 
-    assert not download_called
+    assert spec.tee is not None
+    assert spec.tee.backend is TeeBackend.SEV
+    assert int(spec.tee.policy, 0) == requested_policy
+    assert requested_policy != int(AMDSEVPolicy.NO_DBG)
+    assert spec.tee.session_dir == settings.CONFIDENTIAL_SESSION_DIRECTORY / _VM_HASH
+    assert spec.tee.firmware_path == firmware_path
 
 
 # ---------------------------------------------------------------------------

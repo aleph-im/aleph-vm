@@ -23,7 +23,7 @@ from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
 from . import metrics, supervisor
@@ -195,7 +195,7 @@ async def benchmark(runs: int):
     loop = asyncio.get_event_loop()
     pool = VmPool()
     await pool.setup()
-    bench_supervisor = InProcessSupervisor(pool)
+    bench_supervisor = LocalSupervisor(pool)
     bench_registry = AgentVmRegistry()
     bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
     bench_expiry = ExpiryManager(bench_supervisor)
@@ -233,9 +233,7 @@ async def benchmark(runs: int):
         "/cache/keys",
     ):
         fake_request.match_info["suffix"] = path
-        response: Response = await run_code_on_request(
-            vm_hash=ref, path=path, pool=pool, request=cast(Request, fake_request)
-        )
+        response: Response = await run_code_on_request(vm_hash=ref, path=path, request=cast(Request, fake_request))
         assert response.status == 200
 
     # Disable VM timeout to exit benchmark properly
@@ -244,9 +242,7 @@ async def benchmark(runs: int):
     for _run in range(runs):
         t0 = time.time()
         fake_request.match_info["suffix"] = path
-        response2: Response = await run_code_on_request(
-            vm_hash=ref, path=path, pool=pool, request=cast(Request, fake_request)
-        )
+        response2: Response = await run_code_on_request(vm_hash=ref, path=path, request=cast(Request, fake_request))
         assert response2.status == 200
         bench.append(time.time() - t0)
 
@@ -257,7 +253,6 @@ async def benchmark(runs: int):
         vm_hash=ref,
         event=None,
         pubsub=PubSub(),
-        pool=pool,
         supervisor=bench_supervisor,
         expiry=fake_request.app["expiry"],
         update_watcher=bench_update_watcher,
@@ -269,7 +264,7 @@ async def benchmark(runs: int):
 
 async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> None:
     """Run an instance from an InstanceMessage."""
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     registry = AgentVmRegistry()
     expiry = ExpiryManager(supervisor)
     update_watcher = UpdateWatcher(supervisor, registry)
@@ -278,7 +273,6 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> No
     await start_persistent_vm(
         item_hash,
         pubsub,
-        pool,
         supervisor=supervisor,
         registry=registry,
         expiry=expiry,

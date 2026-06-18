@@ -1,4 +1,4 @@
-"""BackupOps on InProcessSupervisor: archive lifecycle over the real tar
+"""BackupOps on LocalSupervisor: archive lifecycle over the real tar
 machinery, with the qemu-img calls stubbed out."""
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from aleph.vm.supervisor.errors import (
     NotImplementedSupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import BackupId, BackupStatus, VmId, VmStatus
 
 VM_ID = VmId("itemhash123")
@@ -45,17 +45,18 @@ def quiet_qemu_img(monkeypatch):
     async def noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.create_qemu_disk_backup", fake_disk_backup)
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.verify_qemu_disk", noop)
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.check_disk_space_for_multiple", noop)
+    monkeypatch.setattr("aleph.vm.supervisor.local.create_qemu_disk_backup", fake_disk_backup)
+    monkeypatch.setattr("aleph.vm.supervisor.local.verify_qemu_disk", noop)
+    monkeypatch.setattr("aleph.vm.supervisor.local.check_disk_space_for_multiple", noop)
 
 
-def _qemu_execution(tmp_path, *, running=True, persistent=True):
+def _qemu_execution(tmp_path, *, running=True, persistent=True, volumes=None):
     execution = make_execution(running=running)
     execution.persistent = persistent
     rootfs = tmp_path / "vm-rootfs.qcow2"
     rootfs.write_bytes(b"ORIGINAL-ROOTFS-BYTES" * 64)
-    execution.vm.resources = SimpleNamespace(rootfs_path=rootfs)
+    execution.vm.resources = SimpleNamespace(rootfs_path=rootfs, volumes=volumes or [])
+    execution.resources = SimpleNamespace(volumes=volumes or [])
     return execution
 
 
@@ -90,7 +91,7 @@ def _make_archive(backup_dir: Path, backup_id: str, member: str = "rootfs.qcow2"
 
 @pytest.mark.asyncio
 async def test_start_backup_unknown_vm_raises(backup_dir):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     with pytest.raises(VmNotFoundError):
         await sup.start_backup(VmId("missing"))
 
@@ -99,7 +100,7 @@ async def test_start_backup_unknown_vm_raises(backup_dir):
 async def test_start_backup_firecracker_vm_is_invalid_backend(backup_dir, tmp_path):
     execution = make_execution(running=True, hypervisor=None)
     execution.is_program = True
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     with pytest.raises(InvalidBackendError):
         await sup.start_backup(VM_ID)
 
@@ -107,7 +108,7 @@ async def test_start_backup_firecracker_vm_is_invalid_backend(backup_dir, tmp_pa
 @pytest.mark.asyncio
 async def test_start_backup_creates_archive_and_completes(backup_dir, tmp_path, quiet_qemu_img):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
 
     job = await sup.start_backup(VM_ID)
     assert job.status is BackupStatus.RUNNING
@@ -137,9 +138,53 @@ async def test_start_backup_creates_archive_and_completes(backup_dir, tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_completed_backup_info_carries_metadata(backup_dir, tmp_path, quiet_qemu_img):
+    """get_backup_status surfaces checksum, volumes and source_sizes so the
+    agent can build the HTTP body and the download sidecar headers."""
+    execution = _qemu_execution(tmp_path)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    job = await sup.start_backup(VM_ID)
+    await _finished_backup(sup)
+
+    info = await sup.get_backup_status(VM_ID, job.backup_id)
+    assert info.status is BackupStatus.COMPLETE
+    assert info.checksum.startswith("sha256:")
+    assert info.volumes == ["rootfs.qcow2"]
+    assert info.source_sizes == {"rootfs.qcow2": execution.vm.resources.rootfs_path.stat().st_size}
+
+
+@pytest.mark.asyncio
+async def test_start_backup_include_volumes_archives_writable_volumes(backup_dir, tmp_path, quiet_qemu_img):
+    """include_volumes adds non-read-only persistent volumes to the archive;
+    read-only volumes are skipped."""
+    writable = tmp_path / "data.qcow2"
+    writable.write_bytes(b"DATA-VOLUME-BYTES" * 16)
+    readonly = tmp_path / "ro.qcow2"
+    readonly.write_bytes(b"READONLY" * 8)
+    volumes = [
+        SimpleNamespace(read_only=False, path_on_host=str(writable)),
+        SimpleNamespace(read_only=True, path_on_host=str(readonly)),
+    ]
+    execution = _qemu_execution(tmp_path, volumes=volumes)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    job = await sup.start_backup(VM_ID, include_volumes=True)
+    await _finished_backup(sup)
+
+    info = await sup.get_backup_status(VM_ID, job.backup_id)
+    assert info.status is BackupStatus.COMPLETE
+    assert set(info.volumes) == {"rootfs.qcow2", "data.qcow2"}
+    assert "ro.qcow2" not in info.volumes
+    tar_path = backup_dir / f"{job.backup_id}.tar"
+    with tarfile.open(tar_path) as tar:
+        assert set(m.name for m in tar.getmembers()) == {"rootfs.qcow2", "data.qcow2"}
+
+
+@pytest.mark.asyncio
 async def test_start_backup_is_idempotent_while_running(backup_dir, tmp_path, quiet_qemu_img, monkeypatch):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     release = asyncio.Event()
 
     async def blocking_disk_backup(vm_hash: str, source_disk_path: Path, destination_dir: Path) -> Path:
@@ -148,7 +193,7 @@ async def test_start_backup_is_idempotent_while_running(backup_dir, tmp_path, qu
         dest.write_bytes(source_disk_path.read_bytes())
         return dest
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.create_qemu_disk_backup", blocking_disk_backup)
+    monkeypatch.setattr("aleph.vm.supervisor.local.create_qemu_disk_backup", blocking_disk_backup)
 
     first = await sup.start_backup(VM_ID)
     await asyncio.sleep(0)
@@ -165,7 +210,7 @@ async def test_start_backup_is_idempotent_while_running(backup_dir, tmp_path, qu
 @pytest.mark.asyncio
 async def test_start_backup_returns_existing_fresh_archive(backup_dir, tmp_path, quiet_qemu_img):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     existing = _make_archive(backup_dir, f"{VM_ID}-20260611T000000Z")
 
     info = await sup.start_backup(VM_ID)
@@ -178,12 +223,12 @@ async def test_start_backup_returns_existing_fresh_archive(backup_dir, tmp_path,
 @pytest.mark.asyncio
 async def test_backup_failure_is_reported_and_superseded(backup_dir, tmp_path, quiet_qemu_img, monkeypatch):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
 
     async def exploding_disk_backup(vm_hash, source_disk_path, destination_dir):
         raise RuntimeError("qemu-img exploded")
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.create_qemu_disk_backup", exploding_disk_backup)
+    monkeypatch.setattr("aleph.vm.supervisor.local.create_qemu_disk_backup", exploding_disk_backup)
     failed_job = await sup.start_backup(VM_ID)
     await _finished_backup(sup)
 
@@ -198,7 +243,7 @@ async def test_backup_failure_is_reported_and_superseded(backup_dir, tmp_path, q
         dest.write_bytes(source_disk_path.read_bytes())
         return dest
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.create_qemu_disk_backup", fresh_disk_backup)
+    monkeypatch.setattr("aleph.vm.supervisor.local.create_qemu_disk_backup", fresh_disk_backup)
     new_job = await sup.start_backup(VM_ID)
     assert new_job.backup_id != failed_job.backup_id
     await _finished_backup(sup)
@@ -209,7 +254,7 @@ async def test_backup_failure_is_reported_and_superseded(backup_dir, tmp_path, q
 @pytest.mark.asyncio
 async def test_quiesce_guest_freezes_and_thaws(backup_dir, tmp_path, quiet_qemu_img, monkeypatch):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     client = MagicMock(guest_fsfreeze_thaw=AsyncMock())
     freeze = AsyncMock(return_value=(client, True))
     monkeypatch.setattr(sup, "_try_fsfreeze", freeze)
@@ -226,7 +271,7 @@ async def test_quiesce_guest_freezes_and_thaws(backup_dir, tmp_path, quiet_qemu_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_id", ["", "../etc/passwd", "othervm-20260611T000000Z", "itemhash123/../x"])
 async def test_backup_ids_are_validated(backup_dir, bad_id):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     with pytest.raises(BackupNotFoundError):
         await sup.get_backup_status(VM_ID, BackupId(bad_id))
     with pytest.raises(BackupNotFoundError):
@@ -235,7 +280,7 @@ async def test_backup_ids_are_validated(backup_dir, bad_id):
 
 @pytest.mark.asyncio
 async def test_get_backup_status_unknown_id_raises(backup_dir):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     with pytest.raises(BackupNotFoundError):
         await sup.get_backup_status(VM_ID, BackupId(f"{VM_ID}-20990101T000000Z"))
 
@@ -247,7 +292,7 @@ async def test_get_backup_status_unknown_id_raises(backup_dir):
 
 @pytest.mark.asyncio
 async def test_download_backup_streams_chunks_with_offsets(backup_dir):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     content = bytes(range(256)) * 4096 * 2 + b"tail"  # 2 MiB + 4 bytes
     backup_id = f"{VM_ID}-20260611T000000Z"
     backup_dir.mkdir(parents=True)
@@ -261,7 +306,7 @@ async def test_download_backup_streams_chunks_with_offsets(backup_dir):
 
 @pytest.mark.asyncio
 async def test_download_backup_unknown_id_raises(backup_dir):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     with pytest.raises(BackupNotFoundError):
         async for _ in sup.download_backup(VM_ID, BackupId(f"{VM_ID}-20990101T000000Z")):
             pass
@@ -269,7 +314,7 @@ async def test_download_backup_unknown_id_raises(backup_dir):
 
 @pytest.mark.asyncio
 async def test_delete_backup_removes_archive_and_sidecars(backup_dir):
-    sup = InProcessSupervisor(pool=FakePool(executions={}))
+    sup = LocalSupervisor(pool=FakePool(executions={}))
     backup_id = f"{VM_ID}-20260611T000000Z"
     tar_path = _make_archive(backup_dir, backup_id)
     tar_path.with_suffix(".tar.sha256").write_text("digest  file\n")
@@ -287,7 +332,7 @@ async def test_delete_backup_removes_archive_and_sidecars(backup_dir):
 @pytest.mark.asyncio
 async def test_delete_backup_refuses_running_job(backup_dir, tmp_path, quiet_qemu_img, monkeypatch):
     execution = _qemu_execution(tmp_path)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     release = asyncio.Event()
 
     async def blocking_disk_backup(vm_hash, source_disk_path, destination_dir):
@@ -296,7 +341,7 @@ async def test_delete_backup_refuses_running_job(backup_dir, tmp_path, quiet_qem
         dest.write_bytes(source_disk_path.read_bytes())
         return dest
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.create_qemu_disk_backup", blocking_disk_backup)
+    monkeypatch.setattr("aleph.vm.supervisor.local.create_qemu_disk_backup", blocking_disk_backup)
     job = await sup.start_backup(VM_ID)
 
     with pytest.raises(InternalSupervisorError):
@@ -317,12 +362,12 @@ def _restorable_supervisor(backup_dir, tmp_path, monkeypatch):
     pool = _pool_for(execution)
     pool.stop_vm = AsyncMock()
     pool.restart_persistent_vm = AsyncMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     async def noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.verify_qemu_disk", noop)
+    monkeypatch.setattr("aleph.vm.supervisor.local.verify_qemu_disk", noop)
     return sup, pool, execution
 
 
@@ -360,11 +405,63 @@ async def test_restore_backup_unknown_backup_raises(backup_dir, tmp_path, monkey
 @pytest.mark.asyncio
 async def test_restore_backup_requires_persistent_vm(backup_dir, tmp_path, monkeypatch):
     execution = _qemu_execution(tmp_path, persistent=False)
-    sup = InProcessSupervisor(pool=_pool_for(execution))
+    sup = LocalSupervisor(pool=_pool_for(execution))
     backup_id = f"{VM_ID}-20260611T000000Z"
     _make_archive(backup_dir, backup_id)
     with pytest.raises(NotImplementedSupervisorError):
         await sup.restore_backup(VM_ID, BackupId(backup_id))
+
+
+# ---------------------------------------------------------------------------
+# restore_from_image (staged upload / volume_ref)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_swaps_rootfs_and_restarts(backup_dir, tmp_path, monkeypatch):
+    sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr("aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=10))
+    rootfs = Path(execution.vm.resources.rootfs_path)
+    staged = tmp_path / "staged-upload.qcow2"
+    staged.write_bytes(b"UPLOADED-ROOTFS")
+
+    info = await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.restart_persistent_vm.assert_awaited_once_with(execution)
+    assert rootfs.read_bytes() == b"UPLOADED-ROOTFS"
+    assert info.status is VmStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_rejects_oversized_disk(backup_dir, tmp_path, monkeypatch):
+    sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr("aleph.vm.supervisor.local.get_qemu_disk_virtual_size", AsyncMock(return_value=1000))
+    rootfs = Path(execution.vm.resources.rootfs_path)
+    original = rootfs.read_bytes()
+    staged = tmp_path / "staged-upload.qcow2"
+    staged.write_bytes(b"TOO-BIG")
+
+    with pytest.raises(InvalidBackendError):
+        await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
+
+    pool.stop_vm.assert_not_awaited()
+    assert rootfs.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_requires_persistent_vm(backup_dir, tmp_path, monkeypatch):
+    execution = _qemu_execution(tmp_path, persistent=False)
+    sup = LocalSupervisor(pool=_pool_for(execution))
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("aleph.vm.supervisor.local.verify_qemu_disk", noop)
+    staged = tmp_path / "staged.qcow2"
+    staged.write_bytes(b"X")
+    with pytest.raises(NotImplementedSupervisorError):
+        await sup.restore_from_image(VM_ID, staged)
 
 
 @pytest.mark.asyncio

@@ -27,21 +27,12 @@ from aleph.vm.controllers.firecracker.executable import (
 )
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.models import MessageSpec
-from aleph.vm.network.firewall import (
-    initialize_nftables,
-    recreate_network_for_vms,
-    remove_all_aleph_chains,
-)
 from aleph.vm.orchestrator import payment, status
 from aleph.vm.orchestrator.chain import STREAM_CHAINS
 from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
+from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import (
-    delete_port_mappings,
-    get_execution_records,
-    get_port_mappings,
-)
+from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
 from aleph.vm.orchestrator.node_identity import NodeIdentity
 from aleph.vm.orchestrator.payment import (
     InvalidAddressError,
@@ -62,7 +53,6 @@ from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
-    require_vm_pool,
     update_aggregate_settings,
 )
 from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
@@ -79,10 +69,16 @@ from aleph.vm.orchestrator.views.host_status import (
 )
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
-from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.supervisor.errors import (
+    InsufficientResourcesError as BoundaryInsufficientResourcesError,
+)
+from aleph.vm.supervisor.errors import (
+    InternalSupervisorError,
+    SupervisorError,
+    VmNotFoundError,
+)
 from aleph.vm.supervisor.types import (
     ConfidentialMode,
     PortForwardInfo,
@@ -119,9 +115,8 @@ async def run_code_from_path(request: web.Request) -> web.Response:
             reason="Invalid message reference", text=f"Invalid message reference: {request.match_info['ref']}"
         ) from e
 
-    pool: VmPool = request.app["vm_pool"]
     with set_vm_for_logging(vm_hash=message_ref):
-        return await run_code_on_request(message_ref, path, pool, request)
+        return await run_code_on_request(message_ref, path, request)
 
 
 async def run_code_from_hostname(request: web.Request) -> web.Response:
@@ -157,9 +152,8 @@ async def run_code_from_hostname(request: web.Request) -> web.Response:
             except UnknownHashError:
                 return HTTPNotFound(reason="Invalid message reference")
 
-    pool = request.app["vm_pool"]
     with set_vm_for_logging(vm_hash=message_ref):
-        return await run_code_on_request(message_ref, path, pool, request)
+        return await run_code_on_request(message_ref, path, request)
 
 
 def authenticate_request(request: web.Request) -> None:
@@ -577,7 +571,6 @@ async def update_allocations(request: web.Request):
         return web.json_response(text=error.json(), status=web.HTTPBadRequest.status_code)
 
     pubsub: PubSub = request.app["pubsub"]
-    pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
@@ -630,6 +623,9 @@ async def update_allocations(request: web.Request):
             HostNotFoundError,
             HTTPNotFound,
             InsufficientResourcesError,
+            # The spec create path surfaces the boundary error (the engine's
+            # atomic admission, translated by LocalSupervisor.create_vm).
+            BoundaryInsufficientResourcesError,
         )
 
         scheduling_errors: dict[ItemHash, Exception] = {}
@@ -644,7 +640,6 @@ async def update_allocations(request: web.Request):
                 await start_persistent_vm(
                     vm_hash,
                     pubsub,
-                    pool,
                     supervisor=supervisor,
                     registry=registry,
                     expiry=expiry,
@@ -665,7 +660,6 @@ async def update_allocations(request: web.Request):
                 await start_persistent_vm(
                     instance_item_hash,
                     pubsub,
-                    pool,
                     supervisor=supervisor,
                     registry=registry,
                     expiry=expiry,
@@ -745,100 +739,14 @@ async def recreate_network(request: web.Request):
     if network_recreation_lock is None:
         network_recreation_lock = asyncio.Lock()
 
-    pool: VmPool = require_vm_pool(request)
-
     async with network_recreation_lock:
-        logger.info("Starting network recreation process")
-
-        # Step 1: Collect all running VMs and their network configuration
-        running_vms = []
-        for vm_hash, execution in pool.executions.items():
-            if execution.is_running and execution.vm and execution.vm.tap_interface:
-                running_vms.append(
-                    {
-                        "vm_hash": vm_hash,
-                        "vm_id": execution.vm.vm_id,
-                        "tap_interface": execution.vm.tap_interface,
-                        "execution": execution,
-                    }
-                )
-                logger.debug(f"Found running VM {vm_hash} with vm_id={execution.vm.vm_id}")
-
-        logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
-
-        # Step 2: Remove all aleph-related chains (VM-specific and supervisor chains)
         try:
-            removed_chains, failed_removals = remove_all_aleph_chains()
-            if failed_removals:
-                logger.warning(f"Failed to remove {len(failed_removals)} chains")
-                for chain_name, error in failed_removals:
-                    logger.warning(f"  - {chain_name}: {error}")
-        except Exception as e:
-            logger.error(f"Error removing aleph chains: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to remove existing chains: {e!s}"},
-                status=500,
-            )
+            result = await request.app["supervisor"].recreate_network()
+        except InternalSupervisorError as error:
+            logger.error(f"Network recreation failed: {error}")
+            return web.json_response({"success": False, "error": str(error)}, status=500)
 
-        # Step 3: Re-initialize the base network setup
-        logger.info("Re-initializing nftables")
-        try:
-            initialize_nftables()
-        except Exception as e:
-            logger.error(f"Error initializing nftables: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to initialize network: {e!s}"},
-                status=500,
-            )
-
-        # Step 4: Recreate VM-specific chains and rules
-        try:
-            recreated_vms, failed_vms = recreate_network_for_vms(running_vms)
-        except Exception as e:
-            logger.error(f"Error recreating VM networks: {e}")
-            return web.json_response(
-                {"success": False, "error": f"Failed to recreate VM networks: {e!s}"},
-                status=500,
-            )
-
-        # Step 5: Recreate port forwarding rules for instances
-        # TODO: recreate_network still drives executions directly (design §2 residual); operate_update uses the supervisor path.
-        logger.info("Recreating port forwarding rules for instances")
-        for vm_info in running_vms:
-            execution = vm_info["execution"]
-            if execution.is_instance and str(vm_info["vm_hash"]) in recreated_vms:
-                try:
-                    # All rules were flushed: reapply from the persisted
-                    # mappings, then re-sync message-driven VMs against the
-                    # aggregate. Spec-built (reattached) executions have no
-                    # message; their persisted mappings are authoritative.
-                    execution.mapped_ports = await get_port_mappings(str(vm_info["vm_hash"]))
-                    if execution.mapped_ports:
-                        await execution.recreate_port_redirect_rules()
-                    if isinstance(execution.spec, MessageSpec):
-                        await execution.fetch_port_redirect_config_and_setup()
-                    logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
-                except Exception as e:
-                    logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")
-                    # Don't add to failed_vms as the VM network itself was created successfully
-
-        logger.info(
-            f"Network recreation complete. Removed chains: {len(removed_chains)}, "
-            f"Recreated VMs: {len(recreated_vms)}, Failed: {len(failed_vms)}"
-        )
-
-        return web.json_response(
-            {
-                "success": len(failed_vms) == 0,
-                "removed_chains_count": len(removed_chains),
-                "removed_chains": removed_chains,
-                "recreated_count": len(recreated_vms),
-                "failed_count": len(failed_vms),
-                "recreated_vms": recreated_vms,
-                "failed_vms": failed_vms,
-            },
-            status=200 if len(failed_vms) == 0 else 207,
-        )
+        return web.json_response(result, status=200 if result["success"] else 207)
 
 
 async def regenerate_proxy(request: web.Request):
@@ -864,13 +772,11 @@ async def regenerate_proxy(request: web.Request):
     if proxy_regeneration_lock is None:
         proxy_regeneration_lock = asyncio.Lock()
 
-    pool: VmPool = require_vm_pool(request)
-
     async with proxy_regeneration_lock:
         logger.info("Starting HAProxy configuration regeneration")
 
         try:
-            await pool.update_domain_mapping(force_update=True)
+            await sync_domain_mappings(request.app["supervisor"], force_update=True)
             logger.info("HAProxy configuration regeneration complete")
             return web.json_response(
                 {
@@ -919,28 +825,16 @@ async def notify_allocation(request: web.Request):
             return web.HTTPBadRequest(reason="Instance is allocated to a different node")
 
     pubsub: PubSub = request.app["pubsub"]
-    pool: VmPool = request.app["vm_pool"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
     expiry = request.app["expiry"]
     update_watcher = request.app["update_watcher"]
 
-    # Capacity admission control: refuse the allocation early (before payment
-    # validation) if accepting it would push the host above its memory, vCPU,
-    # or disk caps. This is the advisory gate; the authoritative gate runs
-    # inside create_a_vm under the creation lock.
-    try:
-        if pool is not None:
-            # Split mode: the advisory admission gate needs the in-process
-            # pool; admission for spec-built VMs is enforced by the agent
-            # before create (deferred in split mode).
-            pool.check_admission(message.content, current_vm_hash=item_hash)
-    except InsufficientResourcesError as error:
-        logger.warning("Refusing allocation %s: %s", item_hash, error)
-        return web.HTTPServiceUnavailable(
-            reason="Insufficient capacity",
-            text="This CRN cannot host the requested instance at this time.",
-        )
+    # Capacity admission is no longer checked here: the engine enforces it
+    # atomically inside the create path (pool.check_admission for the message
+    # path, pool.check_spec_admission for the spec path), raising the typed
+    # InsufficientResourcesError. The vm_creation_exceptions / 503 path below
+    # surfaces that error to the caller.
 
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
@@ -1056,6 +950,9 @@ async def notify_allocation(request: web.Request):
         MicroVMFailedInitError,
         HostNotFoundError,
         InsufficientResourcesError,
+        # The spec create path surfaces the boundary error (the engine's
+        # atomic admission, translated by LocalSupervisor.create_vm).
+        BoundaryInsufficientResourcesError,
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}
@@ -1064,15 +961,13 @@ async def notify_allocation(request: web.Request):
         await start_persistent_vm(
             item_hash,
             pubsub,
-            pool,
             supervisor=supervisor,
             registry=registry,
             expiry=expiry,
             update_watcher=update_watcher,
         )
         successful = True
-        if pool is not None:
-            await pool.update_domain_mapping()
+        await sync_domain_mappings(request.app["supervisor"])
     except vm_creation_exceptions as error:
         logger.exception(error)
         scheduling_errors[item_hash] = error
@@ -1103,7 +998,7 @@ async def notify_allocation(request: web.Request):
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
     """Reserve a GPU"""
-    pool: VmPool = require_vm_pool(request)
+    supervisor: Supervisor = request.app["supervisor"]
     try:
         data = await request.json()
         message = InstanceContent.model_validate(data)
@@ -1112,22 +1007,17 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
-    # Capacity admission check before holding any resource. Keeps the
-    # dry-run honest: refusing here prevents a client from paying and then
-    # being rejected by notify_allocation for memory/CPU/disk reasons.
+    # The supervisor runs capacity admission (keeping the dry-run honest) then
+    # holds the requested resources, returning the reservation expiry.
     try:
-        pool.check_admission(message)
-    except InsufficientResourcesError as error:
+        expiration_date = await supervisor.reserve_resources(message, authenticated_sender)
+    except BoundaryInsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(
             reason="Insufficient capacity",
             text="This CRN cannot reserve the requested resources at this time.",
         )
-
-    # TODO When creating a new VM check if all reservation are for user
-    try:
-        expiration_date = await pool.reserve_resources(message, authenticated_sender)
-    except Exception as error:
+    except SupervisorError as error:
         return web.json_response(
             {"status": "error", "error": "Failed to reserves all resources", "reason": str(error)},
             status=http.HTTPStatus.BAD_REQUEST,
@@ -1165,6 +1055,5 @@ async def operate_update(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
 
     await reconcile_port_forwards(supervisor, vm_id, record.message)
-    if request.app.get("vm_pool") is not None:
-        await request.app["vm_pool"].update_domain_mapping()
+    await sync_domain_mappings(request.app["supervisor"])
     return web.json_response({}, dumps=dumps_for_json, status=200)

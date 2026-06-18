@@ -408,8 +408,8 @@ class Settings(BaseSettings):
 
     ENABLE_QEMU_SUPPORT: bool = Field(default=True)
     INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
-        default=HypervisorType.firecracker,  # User Firecracker
-        description="Default hypervisor to use on running instances, can be Firecracker or QEmu",
+        default=HypervisorType.qemu,
+        description="Default hypervisor for instances. Instances are QEMU-only.",
     )
 
     ENABLE_CONFIDENTIAL_COMPUTING: bool = Field(
@@ -654,10 +654,6 @@ class Settings(BaseSettings):
                 for server in self.DNS_NAMESERVERS_IPV6
                 if isinstance(ipaddress.ip_address(server), ipaddress.IPv6Address)
             ]
-
-        if not settings.ENABLE_QEMU_SUPPORT:
-            # If QEmu is not supported, ignore the setting and use Firecracker by default
-            settings.INSTANCE_DEFAULT_HYPERVISOR = HypervisorType.firecracker
 
     def display(self) -> str:
         attributes: dict[str, Any] = {}

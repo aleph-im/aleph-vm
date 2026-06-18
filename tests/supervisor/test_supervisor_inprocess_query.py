@@ -6,7 +6,7 @@ import pytest
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
 
 
@@ -70,7 +70,7 @@ async def test_get_vm_maps_a_running_qemu_instance():
         executions={"itemhash123": execution},
         systemd=FakeSystemd({"aleph-vm-controller@itemhash123.service": True}),
     )
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.get_vm(VmId("itemhash123"))
 
@@ -88,7 +88,7 @@ async def test_vm_info_has_no_is_instance_field():
     carry it. The agent derives it from its registry (or from the guest
     channel's presence as a registry-miss fallback)."""
     execution = make_execution(vm_hash="i", hypervisor=HypervisorType.firecracker)
-    sup = InProcessSupervisor(pool=FakePool(executions={"i": execution}))
+    sup = LocalSupervisor(pool=FakePool(executions={"i": execution}))
     info = await sup.get_vm(VmId("i"))
     assert not hasattr(info, "is_instance")
     # An instance under Firecracker still reports the FIRECRACKER backend.
@@ -97,7 +97,7 @@ async def test_vm_info_has_no_is_instance_field():
 
 @pytest.mark.asyncio
 async def test_get_vm_unknown_raises_vm_not_found():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
         await sup.get_vm(VmId("nope"))
 
@@ -110,7 +110,7 @@ async def test_confidential_instance_reports_qemu_backend_and_tee_mode():
         executions={"itemhash123": execution},
         systemd=FakeSystemd({"aleph-vm-controller@itemhash123.service": True}),
     )
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
     info = await sup.get_vm(VmId("itemhash123"))
     assert info.backend is Backend.QEMU
     assert info.confidential_mode is not ConfidentialMode.NONE
@@ -130,7 +130,7 @@ async def test_list_vms_returns_one_info_per_execution():
             }
         ),
     )
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
     infos = await sup.list_vms()
     assert {i.vm_id for i in infos} == {"hash-a", "hash-b"}
     assert len(infos) == 2
@@ -138,7 +138,7 @@ async def test_list_vms_returns_one_info_per_execution():
 
 @pytest.mark.asyncio
 async def test_list_vms_empty_pool_returns_empty_list():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     assert await sup.list_vms() == []
 
 
@@ -149,7 +149,7 @@ async def test_get_vm_reports_networks_and_lifecycle_timestamps():
         executions={"itemhash123": execution},
         systemd=FakeSystemd({"aleph-vm-controller@itemhash123.service": True}),
     )
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.get_vm(VmId("itemhash123"))
 
@@ -165,7 +165,7 @@ async def test_get_vm_reports_networks_and_lifecycle_timestamps():
 async def test_get_vm_without_tap_reports_empty_networks():
     execution = make_execution(running=False, with_ip=False)
     pool = FakePool(executions={"itemhash123": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.get_vm(VmId("itemhash123"))
 
@@ -186,7 +186,7 @@ async def test_list_vms_batches_the_systemd_query():
         executions={"hash-a": make_execution(vm_hash="hash-a"), "hash-b": make_execution(vm_hash="hash-b")},
         systemd=CountingSystemd({"aleph-vm-controller@hash-a.service": True}),
     )
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     infos = await sup.list_vms()
 
@@ -204,11 +204,11 @@ async def test_list_vms_batches_the_systemd_query():
 async def test_get_host_info_reports_host_ipv4():
     pool = FakePool()
     pool.network = SimpleNamespace(host_ipv4="10.0.5.201")
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
     assert (await sup.get_host_info()).host_ipv4 == "10.0.5.201"
 
 
 @pytest.mark.asyncio
 async def test_get_host_info_empty_host_ipv4_without_network():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     assert (await sup.get_host_info()).host_ipv4 == ""
