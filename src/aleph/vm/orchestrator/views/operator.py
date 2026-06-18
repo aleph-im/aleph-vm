@@ -557,11 +557,13 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
             params.secret.encode(),
         )
 
-        # The supervisor interface does not return the post-injection QMP
-        # status (the void method cannot carry it); a fixed ok keeps the
-        # endpoint's success body well-formed.
+        # inject_secret only returns on the success path (a QMP failure raises),
+        # so the VM has resumed and is running. The void supervisor method cannot
+        # carry the post-injection QMP status back, so we reproduce the running
+        # query-status body the pre-Phase-1 endpoint returned here instead of
+        # round-tripping query-status only to discard everything but this fact.
         return web.json_response(
-            data={"status": "ok"},
+            data={"status": {"status": "running", "running": True, "singlestep": False}},
             status=200,
             dumps=dumps_for_json,
         )

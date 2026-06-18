@@ -2093,7 +2093,8 @@ async def test_operator_confidential_measurement_delegates_and_preserves_respons
 @pytest.mark.asyncio
 async def test_operator_confidential_inject_secret_delegates(aiohttp_client, mocker):
     """The endpoint delegates to supervisor.inject_secret (header/secret as
-    bytes) and returns {"status": "ok"}."""
+    bytes) and returns the running query-status body the pre-Phase-1 endpoint
+    returned on success."""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
     settings.setup()
@@ -2125,7 +2126,7 @@ async def test_operator_confidential_inject_secret_delegates(aiohttp_client, moc
         json={"packet_header": "aGVhZGVy", "secret": "c2VjcmV0"},
     )
     assert response.status == 200, await response.text()
-    assert await response.json() == {"status": "ok"}
+    assert await response.json() == {"status": {"status": "running", "running": True, "singlestep": False}}
     fake_sup.inject_secret.assert_awaited_once_with(VmId(str(vm_hash)), b"aGVhZGVy", b"c2VjcmV0")
 
 

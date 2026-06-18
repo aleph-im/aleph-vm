@@ -1053,7 +1053,6 @@ class LocalSupervisor(Supervisor):
             try:
                 client.inject_secret(secret_header_bytes.decode(), secret_bytes.decode())
                 client.continue_execution()
-                client.query_status()
             finally:
                 client.close()
 

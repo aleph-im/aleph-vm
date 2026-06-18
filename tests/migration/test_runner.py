@@ -24,6 +24,17 @@ def _reset_semaphore():
     _reset_migration_semaphore_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def stub_finish_instance_create(monkeypatch):
+    """run_import runs the shared post-create tail finish_instance_create
+    (wait-until-running + apply the agent's port forwards). Stub it by default so
+    the import tests don't need a fully wired supervisor; the success test takes
+    this fixture to assert run_import invokes it. Returns the mock."""
+    mock = AsyncMock()
+    monkeypatch.setattr("aleph.vm.migration.runner.finish_instance_create", mock)
+    return mock
+
+
 def _export_supervisor(volumes_dir: Path, *, missing: bool = False):
     """A fake supervisor for the export runner: stop_vm gracefully powers the VM
     down (the runner then derives the volumes dir from settings), start_vm
@@ -134,7 +145,7 @@ from aleph.vm.migration.jobs import ImportJob
 
 
 @pytest.mark.asyncio
-async def testrun_import_success(tmp_path, monkeypatch):
+async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_create):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -209,6 +220,90 @@ async def testrun_import_success(tmp_path, monkeypatch):
     supervisor.create_vm.assert_awaited_once()
     (created_spec,), _ = supervisor.create_vm.await_args
     assert created_spec.vm_id == vm_hash
+    # Import runs the same post-create tail as a normal create so the migrated
+    # instance gets its host port forwards (SSH/22) on the destination; without
+    # it mapped_ports stays empty and the VM is unreachable on the new CRN.
+    stub_finish_instance_create.assert_awaited_once()
+    (fsup, fvm_id, fcontent), _ = stub_finish_instance_create.await_args
+    assert fsup is supervisor
+    assert fvm_id == vm_hash
+    assert fcontent is fake_message.content
+
+
+@pytest.mark.asyncio
+async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, monkeypatch):
+    """An instance message that omits environment.hypervisor (the CLI never sets
+    it) must import: the runner resolves the default the same way the create path
+    does (INSTANCE_DEFAULT_HYPERVISOR == QEMU), not via a hardcoded Firecracker
+    fallback that rejected every default instance before create_vm ran."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    monkeypatch.setattr(settings, "INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.qemu)
+
+    parent_path = tmp_path / "parent.qcow2"
+    parent_path.write_bytes(b"parent")
+
+    fake_message = MagicMock()
+    fake_message.type = MessageType.instance
+    fake_message.content.environment.hypervisor = None  # CLI omits it
+    fake_message.content.environment.trusted_execution = None
+    fake_message.content.rootfs.parent.ref = "parentref"
+
+    async def fake_load_message(_hash):
+        return (fake_message, fake_message)
+
+    async def fake_get_rootfs_base_path(_ref):
+        return parent_path
+
+    async def fake_detect_format(_path):
+        return "qcow2"
+
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(b"downloaded")
+        if on_chunk is not None:
+            on_chunk(10)
+        return 10
+
+    async def fake_rebase(overlay, parent, fmt):
+        return None
+
+    supervisor = _import_supervisor()
+
+    async def fake_build_spec(vm_hash, content, *, gpus=()):
+        return MagicMock(vm_id=vm_hash)
+
+    monkeypatch.setattr("aleph.vm.migration.runner.load_updated_message", fake_load_message)
+    monkeypatch.setattr("aleph.vm.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
+    monkeypatch.setattr("aleph.vm.migration.runner.detect_parent_format", fake_detect_format)
+    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", fake_rebase)
+    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
+
+    from aleph.vm.migration.jobs import DiskFileInfo
+    from aleph.vm.migration.runner import run_import
+
+    job = ImportJob(
+        vm_hash=vm_hash,
+        state=MigrationState.IMPORTING,
+        started_at=datetime.now(timezone.utc),
+        source_host="src.example",
+        source_port=443,
+    )
+    disk_files = [
+        DiskFileInfo(
+            name="rootfs.qcow2",
+            size_bytes=10,
+            sha256="0" * 64,
+            download_path=f"/control/machine/{vm_hash}/migration/disk/rootfs.qcow2",
+        )
+    ]
+
+    await run_import(job, supervisor, disk_files=disk_files, export_token="t0k3n")
+
+    assert job.state == MigrationState.IMPORTED
+    assert job.error is None
+    supervisor.create_vm.assert_awaited_once()
 
 
 @pytest.mark.asyncio

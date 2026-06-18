@@ -460,6 +460,10 @@ class TestMigrationImportEndpoint:
             "aleph.vm.migration.runner.build_create_vm_spec",
             AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
         )
+        # Post-create tail (wait-until-running + port forwards) is covered in the
+        # runner unit tests; stub it so the endpoint test's fake supervisor need
+        # not report RUNNING for the migrated VM.
+        mocker.patch("aleph.vm.migration.runner.finish_instance_create", AsyncMock())
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -823,6 +827,7 @@ class TestMigrationFailedReset:
             "aleph.vm.migration.runner.build_create_vm_spec",
             AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
         )
+        mocker.patch("aleph.vm.migration.runner.finish_instance_create", AsyncMock())
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)

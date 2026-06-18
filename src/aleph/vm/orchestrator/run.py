@@ -179,6 +179,22 @@ async def _wait_until_running(
         await asyncio.sleep(interval)
 
 
+async def finish_instance_create(supervisor: Supervisor, vm_id: VmId, content) -> None:
+    """Post-create completion shared by the normal create path and the migration
+    import runner: wait until the instance reports RUNNING, then apply the
+    agent's resolved port forwards (always-22 plus the user's port-forwarding
+    aggregate) through supervisor.add_port_forward.
+
+    create_vm_from_spec only reloads *persisted* host port mappings, so a fresh
+    destination (migration) would otherwise come up with no port forward at all
+    - no SSH, and mapped_ports empty. Running the same tail here keeps a migrated
+    instance identical to a freshly created one.
+    """
+    await _wait_until_running(supervisor, vm_id)
+    for forward in await resolve_port_forwards(vm_id, content):
+        await supervisor.add_port_forward(forward)
+
+
 async def _wait_until_gone(
     supervisor: Supervisor,
     vm_id: VmId,
@@ -271,9 +287,7 @@ async def create_vm_execution(
             await persist_record(vm_hash, record)
             return None
         try:
-            await _wait_until_running(supervisor, info.vm_id)
-            for forward in await resolve_port_forwards(info.vm_id, content):
-                await supervisor.add_port_forward(forward)
+            await finish_instance_create(supervisor, info.vm_id, content)
         except Exception:
             # Readiness or port-forward setup failed: tear the half-started VM
             # down, but never let a teardown error mask the original failure.

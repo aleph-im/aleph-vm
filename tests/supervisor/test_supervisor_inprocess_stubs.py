@@ -169,7 +169,7 @@ async def test_inject_secret_injects_and_continues(monkeypatch):
     client_factory.assert_called_once_with(execution.vm)
     client.inject_secret.assert_called_once_with("header", "secret")
     client.continue_execution.assert_called_once()
-    client.query_status.assert_called_once()
+    client.query_status.assert_not_called()
     client.close.assert_called_once()
 
 
