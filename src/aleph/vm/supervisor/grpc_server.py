@@ -1,6 +1,6 @@
 """gRPC server exposing a Supervisor over the wire contract.
 
-Wraps any `Supervisor` implementation (the `InProcessSupervisor` in the
+Wraps any `Supervisor` implementation (the `LocalSupervisor` in the
 daemon) behind `proto/supervisor.proto`. Errors cross the boundary as the
 closed `ErrorCode` vocabulary: every `SupervisorError` aborts the RPC with a
 mapped `grpc.StatusCode` and a serialized `ErrorDetail` in the
@@ -27,14 +27,7 @@ from aleph.vm.supervisor.errors import (
     SupervisorError,
     translate_exception,
 )
-from aleph.vm.supervisor.types import (
-    BackupId,
-    DirectoryPath,
-    ErrorCode,
-    HostPort,
-    MigrationId,
-    VmId,
-)
+from aleph.vm.supervisor.types import BackupId, ErrorCode, HostPort, VmId
 
 logger = logging.getLogger(__name__)
 
@@ -241,20 +234,10 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         return conv.vm_info_to_pb(info)
 
     # ── Migration ──
-    @_translating
-    async def ExportVm(self, request: pb.ExportVmRequest, context) -> pb.MigrationInfo:
-        info = await self._supervisor.export_vm(VmId(request.vm_id), DirectoryPath(Path(request.destination_dir)))
-        return conv.migration_info_to_pb(info)
-
-    @_translating
-    async def ImportVm(self, request: pb.ImportVmRequest, context) -> pb.VmInfo:
-        info = await self._supervisor.import_vm(VmId(request.vm_id), DirectoryPath(Path(request.source_dir)))
-        return conv.vm_info_to_pb(info)
-
-    @_translating
-    async def GetMigrationStatus(self, request: pb.GetMigrationStatusRequest, context) -> pb.MigrationInfo:
-        info = await self._supervisor.get_migration_status(VmId(request.vm_id), MigrationId(request.migration_id))
-        return conv.migration_info_to_pb(info)
+    # Phase 1 collapsed migration onto the standard lifecycle RPCs (the agent
+    # stages and rebases disks then drives create_vm / start_vm / delete_vm).
+    # The directory-based ExportVm / ImportVm / GetMigrationStatus handlers are
+    # gone; their orphan proto RPCs are dropped in the Phase 2 proto pass.
 
     # ── Confidential ──
     @_translating

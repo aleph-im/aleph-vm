@@ -1,14 +1,14 @@
 import pytest
 from test_supervisor_inprocess_query import FakePool, make_execution
 
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import HealthInfo, HealthStatus, HostInfo
 
 
 @pytest.mark.asyncio
 async def test_health_reports_ok_and_vm_count():
     pool = FakePool(executions={"a": make_execution(), "b": make_execution()})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     health = await sup.health()
 
@@ -19,7 +19,7 @@ async def test_health_reports_ok_and_vm_count():
 
 @pytest.mark.asyncio
 async def test_get_host_info_reports_cpu_and_memory():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
 
     info = await sup.get_host_info()
 

@@ -22,7 +22,6 @@ from pydantic.json import pydantic_encoder
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
-from aleph.vm.controllers.firecracker.instance import AlephInstanceResources
 from aleph.vm.controllers.firecracker.program import (
     AlephFirecrackerProgram,
     AlephProgramResources,
@@ -61,7 +60,6 @@ from aleph.vm.orchestrator.metrics import (
     save_port_mappings,
     save_record,
 )
-from aleph.vm.orchestrator.vm import AlephFirecrackerInstance
 from aleph.vm.resources import GpuDevice, HostGPU
 from aleph.vm.supervisor.types import Backend, CreateVmSpec
 from aleph.vm.systemd import SystemDManager
@@ -128,12 +126,7 @@ class VmExecution:
     # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
     spec: MessageSpec | CreateVmSpec
     resources: (
-        AlephProgramResources
-        | AlephInstanceResources
-        | AlephQemuResources
-        | AlephQemuConfidentialInstance
-        | SpecProgramResources
-        | None
+        AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance | SpecProgramResources | None
     ) = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: list[HostGPU]
@@ -409,8 +402,8 @@ class VmExecution:
             return HypervisorType.qemu
         if self.is_program:
             return HypervisorType.firecracker
-        # Hypervisor setting is only used for instances
-        return self.spec.message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
+        # Instances are QEMU-only.
+        return HypervisorType.qemu
 
     @property
     def becomes_ready(self) -> Callable[[], Coroutine]:
@@ -536,29 +529,27 @@ class VmExecution:
                 # Spec path: every path is already resolved on disk; no download.
                 if self.spec.backend is Backend.FIRECRACKER:
                     self.resources = SpecProgramResources.from_spec(self.spec)
+                elif self.spec.tee is not None:
+                    # Confidential: a dedicated resources holder carrying the
+                    # resolved firmware path (mirrors the message path's
+                    # AlephQemuConfidentialResources).
+                    self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 else:
                     self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
                 self.times.prepared_at = datetime.now(tz=timezone.utc)
                 return
 
             message = self.spec.message
-            resources: (
-                AlephProgramResources | AlephInstanceResources | AlephQemuResources | AlephQemuConfidentialInstance
-            )
+            resources: AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance
             if isinstance(message, ProgramContent):
                 resources = AlephProgramResources(message, namespace=self.vm_hash)
             elif isinstance(message, InstanceContent):
-                if self.hypervisor == HypervisorType.firecracker:
-                    resources = AlephInstanceResources(message, namespace=self.vm_hash)
-                elif self.hypervisor == HypervisorType.qemu:
-                    if self.is_confidential:
-                        resources = AlephQemuConfidentialResources(message, namespace=self.vm_hash)
-                    else:
-                        resources = AlephQemuResources(message, namespace=self.vm_hash)
-                    resources.gpus = self.gpus
+                # Instances are QEMU-only.
+                if self.is_confidential:
+                    resources = AlephQemuConfidentialResources(message, namespace=self.vm_hash)
                 else:
-                    msg = f"Unknown hypervisor type {self.hypervisor}"
-                    raise ValueError(msg)
+                    resources = AlephQemuResources(message, namespace=self.vm_hash)
+                resources.gpus = self.gpus
             else:
                 msg = "Unknown executable message type"
                 raise ValueError(msg)
@@ -621,8 +612,23 @@ class VmExecution:
                     prepare_jailer=prepare,
                 )
                 return vm
-            assert isinstance(self.resources, AlephQemuResources)
             hardware_resources = MachineResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
+            if self.spec.tee is not None:
+                # Confidential spec launch: same controller object as the
+                # message path, with the SEV policy converted from the spec.
+                # SAFETY-CRITICAL: never fall through to the plain AlephQemuInstance.
+                assert isinstance(self.resources, AlephQemuConfidentialResources)
+                self.vm = vm = AlephQemuConfidentialInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=self.spec.network.internet_access,
+                    confidential_policy=int(self.spec.tee.policy, 0),
+                    hardware_resources=hardware_resources,
+                    tap_interface=tap_interface,
+                )
+                return vm
+            assert isinstance(self.resources, AlephQemuResources)
             self.vm = vm = AlephQemuInstance(
                 vm_id=vm_id,
                 vm_hash=self.vm_hash,
@@ -647,41 +653,28 @@ class VmExecution:
                 prepare_jailer=prepare,
             )
         elif self.is_instance:
-            if self.hypervisor == HypervisorType.firecracker:
-                assert isinstance(self.resources, AlephInstanceResources)
-                self.vm = vm = AlephFirecrackerInstance(
+            # Instances are QEMU-only.
+            if self.is_confidential:
+                assert isinstance(self.resources, AlephQemuConfidentialResources)
+                self.vm = vm = AlephQemuConfidentialInstance(
+                    vm_id=vm_id,
+                    vm_hash=self.vm_hash,
+                    resources=self.resources,
+                    enable_networking=message.environment.internet,
+                    confidential_policy=message.environment.trusted_execution.policy,
+                    hardware_resources=message.resources,
+                    tap_interface=tap_interface,
+                )
+            else:
+                assert isinstance(self.resources, AlephQemuResources)
+                self.vm = vm = AlephQemuInstance(
                     vm_id=vm_id,
                     vm_hash=self.vm_hash,
                     resources=self.resources,
                     enable_networking=message.environment.internet,
                     hardware_resources=message.resources,
                     tap_interface=tap_interface,
-                    prepare_jailer=prepare,
                 )
-            elif self.hypervisor == HypervisorType.qemu:
-                if self.is_confidential:
-                    assert isinstance(self.resources, AlephQemuConfidentialResources)
-                    self.vm = vm = AlephQemuConfidentialInstance(
-                        vm_id=vm_id,
-                        vm_hash=self.vm_hash,
-                        resources=self.resources,
-                        enable_networking=message.environment.internet,
-                        hardware_resources=message.resources,
-                        tap_interface=tap_interface,
-                    )
-                else:
-                    assert isinstance(self.resources, AlephQemuResources)
-                    self.vm = vm = AlephQemuInstance(
-                        vm_id=vm_id,
-                        vm_hash=self.vm_hash,
-                        resources=self.resources,
-                        enable_networking=message.environment.internet,
-                        hardware_resources=message.resources,
-                        tap_interface=tap_interface,
-                    )
-            else:
-                msg = "Unknown VM"
-                raise Exception(msg)
         else:
             msg = "Unknown VM"
             raise Exception(msg)

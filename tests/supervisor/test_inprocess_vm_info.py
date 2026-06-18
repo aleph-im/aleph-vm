@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from aleph.vm.resources import HostGPU
-from aleph.vm.supervisor.inprocess import _to_vm_info
+from aleph.vm.supervisor.local import _to_vm_info
 from aleph.vm.supervisor.types import ConfidentialMode
 
 

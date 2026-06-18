@@ -6,7 +6,7 @@ from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_executio
 
 from aleph.vm.models import VmExecution
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import VmId
 
 VM_ID = VmId("itemhash123")
@@ -37,7 +37,7 @@ async def test_delete_vm_stops_and_forgets():
     pool = FakePool(executions={"itemhash123": execution})
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.delete_vm(VmId("itemhash123"))
 
@@ -50,7 +50,7 @@ async def test_delete_unknown_vm_raises():
     pool = FakePool()
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
     with pytest.raises(VmNotFoundError):
         await sup.delete_vm(VmId("nope"))
     pool.stop_vm.assert_not_awaited()
@@ -66,7 +66,7 @@ async def test_reboot_persistent_vm_restarts_systemd_and_returns_info():
     systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})
     systemd.restart = MagicMock(side_effect=lambda _svc: events.append("restart_unit"))
     pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     old_started_at = execution.times.started_at
     info = await sup.reboot_vm(VmId("itemhash123"))
@@ -79,7 +79,7 @@ async def test_reboot_persistent_vm_restarts_systemd_and_returns_info():
 
 @pytest.mark.asyncio
 async def test_reboot_unknown_vm_raises():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
         await sup.reboot_vm(VmId("nope"))
 
@@ -90,7 +90,7 @@ async def test_reinstall_persistent_erases_prepares_and_restarts():
     execution.erase_volumes = MagicMock()
     pool = _make_pool({VM_ID: execution})
     pool.restart_persistent_vm = AsyncMock()
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
 
     await supervisor.reinstall_vm(VM_ID, wipe_volumes=False)
 
@@ -106,7 +106,7 @@ async def test_reinstall_non_persistent_stops_forgets_and_erases():
     execution = _make_execution(persistent=False)
     execution.erase_volumes = MagicMock()
     pool = _make_pool({VM_ID: execution})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
 
     await supervisor.reinstall_vm(VM_ID)
 
@@ -121,9 +121,9 @@ async def test_delete_vm_wipe_erases_data_volumes_and_port_mappings(monkeypatch)
     pool = FakePool(executions={VM_ID: execution})
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     deleted = AsyncMock()
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.delete_port_mappings", deleted)
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
     erased = MagicMock(return_value=1)
     execution.erase_volumes = erased
 
@@ -140,9 +140,9 @@ async def test_delete_vm_without_wipe_keeps_data(monkeypatch):
     pool = FakePool(executions={VM_ID: execution})
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     deleted = AsyncMock()
-    monkeypatch.setattr("aleph.vm.supervisor.inprocess.delete_port_mappings", deleted)
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
     execution.erase_volumes = MagicMock()
 
     await supervisor.delete_vm(VM_ID)
@@ -223,7 +223,7 @@ async def test_reboot_ephemeral_spec_vm_recreates_from_held_spec():
     recreated = make_execution(vm_hash="itemhash123", running=True)
     pool = _make_pool(executions={"itemhash123": execution})
     pool.create_vm_from_spec = AsyncMock(return_value=recreated)
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.reboot_vm(VM_ID)
 
@@ -240,7 +240,7 @@ async def test_reboot_ephemeral_message_vm_stops_only():
     execution.vm_spec = None
     pool = _make_pool(executions={"itemhash123": execution})
     pool.create_vm_from_spec = AsyncMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.reboot_vm(VM_ID)
 
@@ -253,14 +253,14 @@ async def test_get_vm_spec_returns_held_spec():
     spec = _spec_for("itemhash123")
     execution = make_execution()
     execution.vm_spec = spec
-    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+    sup = LocalSupervisor(pool=FakePool(executions={"itemhash123": execution}))
 
     assert await sup.get_vm_spec(VM_ID) == spec
 
 
 @pytest.mark.asyncio
 async def test_get_vm_spec_unknown_vm_raises_not_found():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
         await sup.get_vm_spec(VmId("nope"))
 
@@ -270,7 +270,7 @@ async def test_get_vm_spec_message_built_vm_raises_unimplemented():
     from aleph.vm.supervisor.errors import NotImplementedSupervisorError
 
     execution = make_execution()  # vm_spec=None: legacy, message-built
-    sup = InProcessSupervisor(pool=FakePool(executions={"itemhash123": execution}))
+    sup = LocalSupervisor(pool=FakePool(executions={"itemhash123": execution}))
     with pytest.raises(NotImplementedSupervisorError):
         await sup.get_vm_spec(VM_ID)
 
@@ -290,7 +290,7 @@ async def test_stop_vm_persistent_keeps_execution_registered():
         execution.times.stopped_at = datetime.now(tz=timezone.utc)
 
     pool.stop_vm = AsyncMock(side_effect=fake_stop)
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.stop_vm(VM_ID)
 
@@ -309,7 +309,7 @@ async def test_stop_vm_ephemeral_raises_unimplemented():
 
     execution = _make_execution(persistent=False)
     pool = _make_pool(executions={"itemhash123": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     with pytest.raises(NotImplementedSupervisorError):
         await sup.stop_vm(VM_ID)
@@ -322,7 +322,7 @@ async def test_start_vm_restarts_stopped_persistent_vm():
     systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": False})  # stopped
     pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
     pool.restart_persistent_vm = AsyncMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.start_vm(VM_ID)
 
@@ -335,7 +335,7 @@ async def test_start_vm_running_is_a_noop_read():
     systemd = FakeSystemd({"aleph-vm-controller@itemhash123.service": True})  # running
     pool = FakePool(executions={"itemhash123": execution}, systemd=systemd)
     pool.restart_persistent_vm = AsyncMock()
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     from aleph.vm.supervisor.types import VmStatus
 
@@ -351,7 +351,7 @@ async def test_start_vm_ephemeral_raises_unimplemented():
 
     execution = _make_execution(persistent=False)
     pool = _make_pool(executions={"itemhash123": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     with pytest.raises(NotImplementedSupervisorError):
         await sup.start_vm(VM_ID)
@@ -359,7 +359,7 @@ async def test_start_vm_ephemeral_raises_unimplemented():
 
 @pytest.mark.asyncio
 async def test_stop_vm_unknown_raises_not_found():
-    sup = InProcessSupervisor(pool=_make_pool())
+    sup = LocalSupervisor(pool=_make_pool())
     with pytest.raises(VmNotFoundError):
         await sup.stop_vm(VmId("nope"))
 
@@ -383,7 +383,7 @@ async def test_delete_vm_removes_on_disk_artifacts(monkeypatch, tmp_path):
 
     execution = make_execution()
     pool = _make_pool({str(VM_ID): execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.delete_vm(VM_ID)
 

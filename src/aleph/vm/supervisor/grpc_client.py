@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 
 import grpc
@@ -60,8 +61,6 @@ from aleph.vm.supervisor.types import (
     HostPort,
     LogChunk,
     Measurement,
-    MigrationId,
-    MigrationInfo,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
@@ -204,6 +203,9 @@ class GrpcSupervisor(Supervisor):
         )
         return conv.vm_info_from_pb(reply)
 
+    async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
+        raise NotImplementedError("wired in Phase 2")
+
     # ── Port forwarding ──
     async def add_port_forward(self, spec: PortForwardSpec) -> PortForwardInfo:
         reply = await self._unary("AddPortForward", conv.port_forward_spec_to_pb(spec), QUERY_TIMEOUT_SECS)
@@ -257,7 +259,12 @@ class GrpcSupervisor(Supervisor):
             call.cancel()
 
     # ── Backups ──
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo:
+    async def start_backup(
+        self,
+        vm_id: VmId,
+        quiesce_guest: bool = False,
+        include_volumes: bool = False,  # noqa: ARG002  not yet carried by the proto (Phase 2)
+    ) -> BackupInfo:
         reply = await self._unary(
             "StartBackup",
             pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest),
@@ -306,30 +313,10 @@ class GrpcSupervisor(Supervisor):
         )
         return conv.vm_info_from_pb(reply)
 
-    # ── Migration ──
-    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo:
-        reply = await self._unary(
-            "ExportVm",
-            pb.ExportVmRequest(vm_id=str(vm_id), destination_dir=str(destination_dir)),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.migration_info_from_pb(reply)
-
-    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo:
-        reply = await self._unary(
-            "ImportVm",
-            pb.ImportVmRequest(vm_id=str(vm_id), source_dir=str(source_dir)),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.vm_info_from_pb(reply)
-
-    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo:
-        reply = await self._unary(
-            "GetMigrationStatus",
-            pb.GetMigrationStatusRequest(vm_id=str(vm_id), migration_id=str(migration_id)),
-            QUERY_TIMEOUT_SECS,
-        )
-        return conv.migration_info_from_pb(reply)
+    async def restore_from_image(
+        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
+    ) -> VmInfo:
+        raise NotImplementedError("wired in Phase 2")
 
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:
@@ -351,3 +338,11 @@ class GrpcSupervisor(Supervisor):
             ),
             LIFECYCLE_TIMEOUT_SECS,
         )
+
+    # ── Network ──
+    async def recreate_network(self) -> dict:
+        raise NotImplementedError("wired in Phase 2")
+
+    # ── Reservation ──
+    async def reserve_resources(self, content, user) -> datetime:
+        raise NotImplementedError("wired in Phase 2")

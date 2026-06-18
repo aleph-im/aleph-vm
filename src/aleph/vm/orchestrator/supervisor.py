@@ -25,7 +25,7 @@ from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registr
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -73,7 +73,6 @@ from .views.migration import (
     migration_import_status,
 )
 from .views.operator import (
-    BackupState,
     operate_backup,
     operate_backup_delete,
     operate_backup_download,
@@ -102,7 +101,7 @@ async def drain_middleware(request, handler) -> web.Response:
     (/vm/* and hostname-based routing). Status, control, and about
     endpoints remain accessible for monitoring and operations.
     """
-    pool: VmPool | None = request.app.get("vm_pool")
+    pool: VmPool | None = request.app.get("_engine_pool")
     if pool and getattr(pool, "is_draining", False):
         path = request.path
         is_vm_request = path.startswith("/vm/") or (
@@ -193,6 +192,20 @@ async def watch_supervisor_events(app: web.Application) -> None:
         await asyncio.sleep(5)
 
 
+def build_supervisor(settings, pool: VmPool | None) -> GrpcSupervisor | LocalSupervisor:
+    """Select the Supervisor the agent talks to.
+
+    Production split mode (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set): the supervisor
+    daemon owns the pool and the agent reaches it over gRPC (`GrpcSupervisor`).
+    Otherwise (dev/test, and Phase 1 single-process production): the embedded
+    pool-backed engine `LocalSupervisor(pool)` runs in the agent process.
+    """
+    if settings.SUPERVISOR_GRPC_SOCKET:
+        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
+        return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+    return LocalSupervisor(pool)
+
+
 def setup_webapp(pool: VmPool | None):
     """Create the webapp and set the VmPool.
 
@@ -205,12 +218,12 @@ def setup_webapp(pool: VmPool | None):
     """
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
-    app["vm_pool"] = pool
-    if settings.SUPERVISOR_GRPC_SOCKET:
-        app["supervisor"] = GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
-        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
-    else:
-        app["supervisor"] = InProcessSupervisor(pool)
+    # The raw pool is NOT exposed to request handlers: the agent reaches VMs
+    # only through app["supervisor"]. A few process-lifecycle hooks (drain,
+    # stop-all-on-shutdown, the migration reaper) still need the embedded pool;
+    # they read this private key, which is None in split mode.
+    app["_engine_pool"] = pool
+    app["supervisor"] = build_supervisor(settings, pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
@@ -252,7 +265,6 @@ def setup_webapp(pool: VmPool | None):
         app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
         app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
 
-    app["backup_state"] = BackupState()
     cors = setup(
         app,
         defaults={
@@ -336,13 +348,13 @@ def setup_webapp(pool: VmPool | None):
 
 async def drain_in_flight_requests(app: web.Application):
     """Drain in-flight requests before stopping VMs."""
-    pool: VmPool | None = app.get("vm_pool")
+    pool: VmPool | None = app.get("_engine_pool")
     if pool:
         await pool.drain()
 
 
 async def stop_all_vms(app: web.Application):
-    pool: VmPool | None = app.get("vm_pool")
+    pool: VmPool | None = app.get("_engine_pool")
     if pool is None:
         # Split mode: the supervisor daemon owns the VMs; the agent's exit
         # must not stop them.
@@ -378,7 +390,7 @@ async def stop_program_client(app: web.Application) -> None:
 
 async def _run_migration_reaper(app: web.Application) -> None:
     """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
-    pool = app.get("vm_pool")
+    pool = app.get("_engine_pool")
     if pool is not None:
         await reap_orphan_migration_files(pool)
 

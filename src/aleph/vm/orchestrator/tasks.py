@@ -27,6 +27,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import reconcile_port_forwards
 from aleph.vm.orchestrator.utils import (
@@ -200,7 +201,7 @@ async def watch_for_messages(
                 if key == "port-forwarding":
                     await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
-                    await _handle_domains_aggregate(message, pool, registry)
+                    await _handle_domains_aggregate(message, pool, supervisor, registry)
 
 
 async def _handle_port_forwarding_aggregate(
@@ -232,7 +233,9 @@ async def _handle_port_forwarding_aggregate(
             logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
-async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, registry: AgentVmRegistry):
+async def _handle_domains_aggregate(
+    message: AggregateMessage, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
+):
     """Update HAProxy domain mapping when a domains aggregate changes.
 
     The aggregate content maps domain names to instance configs:
@@ -263,7 +266,7 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, reg
 
     logger.info("Domains aggregate for %s, updating HAProxy domain mapping", address)
     try:
-        await pool.update_domain_mapping()
+        await sync_domain_mappings(supervisor)
     except Exception:
         logger.exception("Failed to update domain mapping for %s", address)
 
@@ -271,7 +274,10 @@ async def _handle_domains_aggregate(message: AggregateMessage, pool: VmPool, reg
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
-    pool: VmPool = app["vm_pool"]
+    # Process-lifecycle wiring (not an agent request handler): the message
+    # listener and reactor are built once at startup and legitimately hold the
+    # embedded pool, like the daemon and CLI. None in split mode.
+    pool: VmPool | None = app.get("_engine_pool")
     supervisor = app["supervisor"]
     registry = app["vm_registry"]
     reactor = Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])
@@ -532,12 +538,24 @@ async def periodic_domain_resync(app: web.Application):
     First sleep picks a random phase across the full interval;
     subsequent sleeps stay decorrelated with ±15% jitter.
     """
-    pool: VmPool = app["vm_pool"]
+    supervisor = app["supervisor"]
     interval = settings.DOMAIN_RESYNC_INTERVAL
+
+    # Seed the map once at startup (force), replacing the pool's old load-time
+    # sync. Restored/running VMs may already serve domains before the first
+    # jittered resync fires.
+    try:
+        await sync_domain_mappings(supervisor, force_update=True)
+    except Exception as e:
+        if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
+            logger.debug("periodic_domain_resync exiting: event loop closed")
+            return
+        logger.warning("initial domain sync failed: %s", e, exc_info=True)
+
     await asyncio.sleep(random.uniform(0, interval))
     while True:
         try:
-            await pool.update_domain_mapping()
+            await sync_domain_mappings(supervisor)
         except Exception as e:
             if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
                 logger.debug("periodic_domain_resync exiting: event loop closed")

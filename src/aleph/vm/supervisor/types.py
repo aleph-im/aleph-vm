@@ -137,6 +137,12 @@ class TeeConfig:
     backend: TeeBackend
     policy: str
     session_dir: DirectoryPath
+    # Host path to the resolved OVMF firmware blob (the message path's
+    # trusted_execution.firmware ref, downloaded to disk by the agent before
+    # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
+    # Not carried over the Phase 1 proto yet (proto_convert drops it; defaulted
+    # so the round-trip keeps building); Phase 2 adds it to the wire.
+    firmware_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -148,8 +154,27 @@ class NetworkConfig:
 
 @dataclass(frozen=True)
 class GpuSpec:
+    """A GPU on a CreateVmSpec.
+
+    Two roles in one type: the REQUEST and the RESOLVED assignment.
+
+    - ``device_id`` (vendor:device, e.g. "10de:2504") and ``model`` carry the
+      REQUEST. They are what the client (the agent's build_create_vm_spec) sets;
+      they say *which kind* of GPU the VM wants, not which physical card.
+    - ``pci_host`` is the RESOLVED concrete host address. The engine fills it in
+      atomically inside the create path (pool.create_vm_from_spec) by matching
+      ``device_id`` against the host's available GPUs. A request leaves it empty.
+
+    ``device_id`` / ``model`` are not carried over the Phase 1 proto yet
+    (proto_convert only round-trips ``pci_host`` / ``supports_x_vga`` and gives
+    these the defaults below). Phase 2 adds them to the proto so a remote
+    supervisor can resolve the request itself.
+    """
+
     pci_host: PciAddress
     supports_x_vga: bool
+    device_id: str = ""
+    model: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,6 +205,13 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
+    # The VM owner's Aleph address. The engine uses it to consume this owner's
+    # own GPU reservation (made via the reserve_resources endpoint) inside the
+    # create path, while skipping reservations held by OTHER users. Empty = no
+    # owner-scoped reservation handling (e.g. programs, migration). Not carried
+    # over the Phase 1 proto yet (proto_convert drops it; defaulted so the
+    # round-trip keeps building); Phase 2 adds it to the wire.
+    owner_address: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.
     hostname: str = ""
@@ -300,6 +332,14 @@ class BackupInfo:
     size_bytes: int
     created_at_unix_secs: int
     error_message: str
+    # Archive metadata, populated for completed archives on disk. The agent
+    # turns these into the HTTP response body (checksum, volumes, source_sizes)
+    # and the download sidecar headers (X-Backup-Checksum, X-Source-Size). They
+    # default to empty so the gRPC path (which does not carry them in Phase 1)
+    # and in-flight RUNNING/FAILED jobs construct cleanly.
+    checksum: str = ""
+    volumes: list[str] = field(default_factory=list)
+    source_sizes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -319,10 +359,31 @@ class MigrationInfo:
 
 
 @dataclass(frozen=True)
+class SevInfo:
+    """AMD SEV platform/launch state, mirroring the QEMU query-sev result the
+    confidential client needs to verify a launch measurement. The field set
+    matches the seven values today's measurement endpoint returns."""
+
+    enabled: bool
+    api_major: int
+    api_minor: int
+    build_id: int
+    policy: int
+    state: str
+    handle: int
+
+
+@dataclass(frozen=True)
 class Measurement:
     vm_id: VmId
     measurement_bytes: bytes
     tee_backend: TeeBackend
+    # SEV launch attestation, preserved for the confidential measurement
+    # response. sev_info is the query-sev platform state and launch_measure is
+    # the base64 launch measurement; both default to empty for callers (and the
+    # proto, until Phase 2) that only carry measurement_bytes/tee_backend.
+    sev_info: SevInfo | None = None
+    launch_measure: str = ""
 
 
 @dataclass(frozen=True)
@@ -362,3 +423,12 @@ class HostInfo:
     host_ipv4: str = ""  # primary external IPv4; empty when host networking is disabled
     numa_nodes: list[NumaNodeInfo] = field(default_factory=list)
     gpus: list[GpuDevice] = field(default_factory=list)
+    # Reservation-aware figures the agent's /about endpoints surface. These are
+    # not carried over the Phase 1 proto (GrpcSupervisor leaves them at the
+    # defaults); the embedded engine fills them from the pool. ``gpu_inventory``
+    # / ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
+    # device_class, compatible) as plain dicts so the public usage endpoint does
+    # not regress to the narrow boundary GpuDevice.
+    available_disk_bytes: int = 0
+    gpu_inventory: list[dict] = field(default_factory=list)
+    available_gpus: list[dict] = field(default_factory=list)

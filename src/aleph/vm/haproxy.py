@@ -85,30 +85,6 @@ def get_current_mappings(socket_path, map_file: str) -> dict[str, str]:
     return mappings
 
 
-def _resolve_vm_ip(local_ip: str | None) -> str | None:
-    """Convert a network address from the API to the VM's IP.
-
-    The API returns the gateway address (ending in .1) or a CIDR range.
-    The VM is always at .2 in the same subnet.
-    """
-    if not local_ip:
-        return None
-    addr = local_ip.split("/")[0]
-    if addr.endswith(".1"):
-        addr = addr.removesuffix(".1") + ".2"
-    return addr
-
-
-def _build_map_entries(instances: list[dict]) -> dict[str, str]:
-    """Build domain->IP mapping from instance list."""
-    entries = {}
-    for instance in instances:
-        ip = _resolve_vm_ip(instance["ipv4"]["local"])
-        if ip:
-            entries[instance["name"]] = ip
-    return entries
-
-
 def update_mapfile(entries: dict[str, str], map_file_path: str) -> bool:
     """Write domain->IP entries to the on-disk map file.
 
@@ -134,19 +110,38 @@ def sync_runtime_map(socket_path, map_file_path: str, entries: dict[str, str]):
         send_socket_command(socket_path, f"add map {map_file_path} {domain} {ip}")
 
 
-def update_backends(
+def build_map_entries_from_vm_ips(domain_records: list[dict], vm_ip_by_hash: dict[str, str]) -> dict[str, str]:
+    """Build a domain->IP mapping from DNS domain records and local VM IPs.
+
+    Each domain record carries a `name` and the `item_hash` of the instance it
+    points to. Only records whose item_hash matches a locally running VM (present
+    in `vm_ip_by_hash`) are kept; the rest are dropped. The IP comes from the
+    supervisor's view of the VM, not from the DNS record.
+    """
+    entries: dict[str, str] = {}
+    for record in domain_records:
+        ip = vm_ip_by_hash.get(record["item_hash"])
+        if ip:
+            entries[record["name"]] = ip
+    return entries
+
+
+def write_entries_to_backend(
     map_file_path: str,
     socket_path,
-    instances: list[dict],
+    entries: dict[str, str],
     force_update: bool = False,
 ):
-    """Update map file and sync HAProxy's in-memory map."""
-    entries = _build_map_entries(instances)
+    """Write domain->IP entries to one HAProxy backend's map file and runtime map.
+
+    Updates the on-disk map file, then syncs HAProxy's in-memory map when the file
+    changed, the runtime is out of sync, or `force_update` is set.
+    """
     file_updated = update_mapfile(entries, map_file_path)
 
-    # Check if runtime map matches — after HAProxy restart the
-    # in-memory map is reloaded from the file, but we sync anyway
-    # to handle edge cases (file written but HAProxy not reloaded).
+    # Check if runtime map matches: after HAProxy restart the in-memory map is
+    # reloaded from the file, but we sync anyway to handle edge cases (file
+    # written but HAProxy not reloaded).
     current_mappings = get_current_mappings(socket_path, map_file_path)
     runtime_matches = all(current_mappings.get(domain) == ip for domain, ip in entries.items()) and len(
         current_mappings
@@ -172,21 +167,3 @@ async def fetch_list(domain: str | None = None) -> list[dict]:
         if len(instances) == 0:
             return []
         return instances
-
-
-async def fetch_list_and_update(socket_path, local_vms: list[str], force_update):
-    """Fetch domain mappings and update all HAProxy backends."""
-    if settings.DOMAIN_NAME in ("localhost", "vm.example.org"):
-        logger.info("Skipping domain update because DOMAIN_NAME is not set")
-        return
-
-    instances = await fetch_list(settings.DOMAIN_NAME)
-    instances = [i for i in instances if i["item_hash"] in local_vms]
-
-    for backend in HAPROXY_BACKENDS:
-        update_backends(
-            map_file_path=str(backend["map_file"]),
-            socket_path=socket_path,
-            instances=instances,
-            force_update=force_update,
-        )

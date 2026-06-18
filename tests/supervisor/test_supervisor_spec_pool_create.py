@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aleph_message.models.execution.environment import AMDSEVPolicy
 
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.errors import TeeUnavailableError
+from aleph.vm.supervisor.errors import InvalidBackendError
 from aleph.vm.supervisor.types import (
     Backend,
     CreateVmSpec,
@@ -16,16 +17,23 @@ from aleph.vm.supervisor.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    GpuSpec,
     NetworkConfig,
+    PciAddress,
     TeeBackend,
     TeeConfig,
     VmId,
 )
 
 _HASH = "deadbeef" * 8
+_DEVICE_ID = "10de:2504"
 
 
-def _spec(backend: Backend = Backend.QEMU, tee: TeeConfig | None = None) -> CreateVmSpec:
+def _spec(
+    backend: Backend = Backend.QEMU,
+    tee: TeeConfig | None = None,
+    gpus: list[GpuSpec] | None = None,
+) -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=VmId(_HASH),
         backend=backend,
@@ -43,9 +51,21 @@ def _spec(backend: Backend = Backend.QEMU, tee: TeeConfig | None = None) -> Crea
         memory_mib=1024,
         tee=tee,
         network=NetworkConfig(internet_access=False, requested_ipv6="", ipv6_prefix_len=0),
-        gpus=[],
+        gpus=gpus or [],
         numa_node=None,
         persistent=True,
+    )
+
+
+def _tee(
+    firmware_path: Path | None = Path("/data/firmware.fd"),
+    policy: int = int(AMDSEVPolicy.NO_DBG),
+) -> TeeConfig:
+    return TeeConfig(
+        backend=TeeBackend.SEV,
+        policy=hex(policy),
+        session_dir=DirectoryPath(Path("/tmp/session")),
+        firmware_path=firmware_path,
     )
 
 
@@ -113,15 +133,142 @@ async def test_create_vm_from_spec_preloads_persisted_port_mappings(monkeypatch)
     recreate.assert_awaited_once()
 
 
+def _patch_confidential_boot(monkeypatch) -> MagicMock:
+    """Patch the create path so the real confidential config builder runs
+    (cloud-init drive stubbed) and return the save_controller_configuration mock
+    so tests can inspect the QemuConfidentialVMConfiguration it received."""
+    monkeypatch.setattr(
+        "aleph.vm.supervisor.qemu_build.build_cloud_init_drive",
+        AsyncMock(return_value=Path("/data/cloud-init.img")),
+    )
+    save_cfg = MagicMock()
+    monkeypatch.setattr("aleph.vm.pool.save_controller_configuration", save_cfg)
+    monkeypatch.setattr("aleph.vm.pool.get_port_mappings", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "aleph.vm.models.VmExecution.non_blocking_wait_for_boot",
+        AsyncMock(return_value=True),
+    )
+    return save_cfg
+
+
 @pytest.mark.asyncio
-async def test_create_vm_from_spec_rejects_tee():
-    """A confidential spec must fail loudly: the spec path would otherwise
-    boot the VM without memory encryption."""
+async def test_create_vm_from_spec_confidential_builds_confidential_config(monkeypatch):
+    """A confidential spec builds a QemuConfidentialVMConfiguration with the
+    resolved firmware as ovmf_path and the converted SEV policy, creates the
+    execution, and leaves it awaiting_confidential_init: the controller service
+    is NOT enabled/started (only the owner starts it via initialize)."""
+    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
+    from aleph.vm.controllers.qemu_confidential.instance import (
+        AlephQemuConfidentialInstance,
+    )
+
     pool = _bare_pool()
-    tee = TeeConfig(backend=TeeBackend.SEV, policy="", session_dir=DirectoryPath(Path("/tmp/session")))
-    with pytest.raises(TeeUnavailableError):
-        await pool.create_vm_from_spec(_spec(tee=tee))
+    # An awaiting-init confidential VM has no active controller service.
+    pool.systemd_manager.is_service_active.return_value = False
+    save_cfg = _patch_confidential_boot(monkeypatch)
+    # The plain builder must NOT be used for a confidential spec.
+    plain_builder = AsyncMock(return_value="plain-cfg")
+    monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", plain_builder)
+
+    execution = await pool.create_vm_from_spec(_spec(tee=_tee()))
+
+    # The confidential controller object, not the plain one.
+    assert isinstance(execution.vm, AlephQemuConfidentialInstance)
+    assert execution.is_confidential is True
+
+    # The saved config is a confidential configuration with the right fields.
+    save_cfg.assert_called_once()
+    saved_config = save_cfg.call_args.args[1]
+    vm_cfg = saved_config.vm_configuration
+    assert isinstance(vm_cfg, QemuConfidentialVMConfiguration)
+    assert str(vm_cfg.ovmf_path) == "/data/firmware.fd"
+    assert vm_cfg.sev_policy == int(AMDSEVPolicy.NO_DBG)
+
+    # The plain builder was never reached: no chance of an unprotected boot.
+    plain_builder.assert_not_awaited()
+
+    # Awaiting confidential init: started but not running, controller untouched.
+    pool.systemd_manager.enable_and_start.assert_not_awaited()
+    assert execution.is_awaiting_confidential_init is True
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_confidential_applies_requested_policy(monkeypatch):
+    """The requested SEV policy on spec.tee flows through verbatim to the engine
+    configuration: the supervisor neither defaults nor clamps it."""
+    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
+    from aleph.vm.controllers.qemu_confidential.instance import (
+        AlephQemuConfidentialInstance,
+    )
+
+    requested_policy = int(AMDSEVPolicy.NO_DBG | AMDSEVPolicy.SEV_ES)
+    assert requested_policy != int(AMDSEVPolicy.NO_DBG)
+
+    pool = _bare_pool()
+    pool.systemd_manager.is_service_active.return_value = False
+    save_cfg = _patch_confidential_boot(monkeypatch)
+    monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", AsyncMock(return_value="plain-cfg"))
+
+    execution = await pool.create_vm_from_spec(_spec(tee=_tee(policy=requested_policy)))
+
+    # The requested policy reached the controller object and the saved config.
+    assert isinstance(execution.vm, AlephQemuConfidentialInstance)
+    assert execution.vm.confidential_policy == requested_policy
+    saved_config = save_cfg.call_args.args[1]
+    vm_cfg = saved_config.vm_configuration
+    assert isinstance(vm_cfg, QemuConfidentialVMConfiguration)
+    assert vm_cfg.sev_policy == requested_policy
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_confidential_without_firmware_raises_no_plain_config(monkeypatch):
+    """A confidential spec whose firmware could not be resolved must fail loudly
+    and NEVER fall back to a plain QemuVMConfiguration."""
+    pool = _bare_pool()
+    _patch_confidential_boot(monkeypatch)
+    plain_builder = AsyncMock(return_value="plain-cfg")
+    monkeypatch.setattr("aleph.vm.pool.build_qemu_configuration", plain_builder)
+
+    with pytest.raises(InvalidBackendError, match="(?i)firmware"):
+        await pool.create_vm_from_spec(_spec(tee=_tee(firmware_path=None)))
+
+    # No fallback to a plain config, and the half-registered execution is gone.
+    plain_builder.assert_not_awaited()
     assert pool.executions == {}
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_confidential_with_gpu_carries_resolved_gpu(monkeypatch):
+    """Confidential + GPU compose: the GPU request is resolved to a concrete
+    host card and that pci_host lands in the confidential configuration."""
+    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
+    from aleph.vm.resources import GpuDevice as ResourceGpuDevice
+    from aleph.vm.resources import GpuDeviceClass
+
+    gpu = ResourceGpuDevice(
+        vendor="NVIDIA",
+        model="RTX 4000",
+        device_name="GH100",
+        device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+        pci_host="0000:01:00.0",
+        device_id=_DEVICE_ID,
+        compatible=True,
+    )
+    pool = _bare_pool()
+    pool.gpus = [gpu]
+    save_cfg = _patch_confidential_boot(monkeypatch)
+
+    request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
+    execution = await pool.create_vm_from_spec(_spec(tee=_tee(), gpus=[request]))
+
+    # The resolved GPU is attached to the execution.
+    assert execution.gpus[0].pci_host == "0000:01:00.0"
+
+    # And carried into the confidential config.
+    saved_config = save_cfg.call_args.args[1]
+    vm_cfg = saved_config.vm_configuration
+    assert isinstance(vm_cfg, QemuConfidentialVMConfiguration)
+    assert [g.pci_host for g in vm_cfg.gpus] == ["0000:01:00.0"]
 
 
 @pytest.mark.asyncio

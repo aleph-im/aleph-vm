@@ -1,13 +1,16 @@
 """The Supervisor abstraction: capability ABCs aggregated into one interface.
 
-Seven capability ABCs, all async, one method per proto RPC. A concrete
-supervisor (in-process today, gRPC client in 0.D) implements all 25 methods.
+Nine capability ABCs, all async (bar the streaming iterators). A concrete
+supervisor (in-process today, gRPC client in 0.D) implements all 30 methods.
+Migration carries no method of its own: it rides the standard lifecycle RPCs.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from datetime import datetime
+from typing import Any
 
 from aleph.vm.supervisor.types import (
     BackupChunk,
@@ -20,8 +23,6 @@ from aleph.vm.supervisor.types import (
     HostPort,
     LogChunk,
     Measurement,
-    MigrationId,
-    MigrationInfo,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
@@ -72,6 +73,17 @@ class LifecycleOps(ABC):
     @abstractmethod
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo: ...
 
+    @abstractmethod
+    async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
+        """Run one request inside a long-lived (persistent) program VM and return
+        the raw runtime reply.
+
+        Persistent programs are served through the supervisor: the agent does not
+        reach the guest channel of a supervisor-owned VM. Ephemeral programs are
+        recreated per request and keep the agent-side channel call. ``scope`` is
+        the ASGI scope the runtime expects; the supervisor blocks until the VM is
+        ready, then runs the code over its guest channel."""
+
 
 class PortForwardingOps(ABC):
     @abstractmethod
@@ -101,7 +113,10 @@ class LogsOps(ABC):
 
 class BackupOps(ABC):
     @abstractmethod
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False) -> BackupInfo: ...
+    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
+        """Start (or return) a backup of the VM's rootfs. quiesce_guest freezes
+        the guest filesystems through the QEMU agent during the copy;
+        include_volumes also archives the VM's non-read-only persistent volumes."""
 
     @abstractmethod
     async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo: ...
@@ -118,16 +133,15 @@ class BackupOps(ABC):
     @abstractmethod
     async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo: ...
 
-
-class MigrationOps(ABC):
     @abstractmethod
-    async def export_vm(self, vm_id: VmId, destination_dir: DirectoryPath) -> MigrationInfo: ...
-
-    @abstractmethod
-    async def import_vm(self, vm_id: VmId, source_dir: DirectoryPath) -> VmInfo: ...
-
-    @abstractmethod
-    async def get_migration_status(self, vm_id: VmId, migration_id: MigrationId) -> MigrationInfo: ...
+    async def restore_from_image(
+        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
+    ) -> VmInfo:
+        """Restore a VM's rootfs from a QCOW2 image already staged on a host
+        path (an uploaded image or a downloaded volume). Validates the image,
+        rejects one whose virtual size exceeds max_virtual_size_bytes (0 = no
+        cap), swaps the rootfs and restarts the VM. The agent owns the staging;
+        the engine owns the disk/VM work."""
 
 
 class ConfidentialOps(ABC):
@@ -141,6 +155,26 @@ class ConfidentialOps(ABC):
     async def inject_secret(self, vm_id: VmId, secret_header_bytes: bytes, secret_bytes: bytes) -> None: ...
 
 
+class NetworkOps(ABC):
+    @abstractmethod
+    async def recreate_network(self) -> dict:
+        """Flush and rebuild the host firewall/nftables for the local VMs.
+
+        Returns a JSON-serialisable summary of the work done."""
+
+
+class ReservationOps(ABC):
+    @abstractmethod
+    async def reserve_resources(self, content: Any, user: Any) -> datetime:
+        """Hold the resources (GPUs today) an instance message requests for a
+        user, returning the reservation expiry.
+
+        ``content`` is the Aleph ExecutableContent and ``user`` the
+        authenticated address; both are agent vocabulary kept untyped at the
+        boundary in Phase 1. The implementation runs the same capacity
+        admission as the create path before holding anything."""
+
+
 class Supervisor(
     HostOps,
     LifecycleOps,
@@ -148,8 +182,9 @@ class Supervisor(
     EventsOps,
     LogsOps,
     BackupOps,
-    MigrationOps,
     ConfidentialOps,
+    NetworkOps,
+    ReservationOps,
     ABC,
 ):
     """The single agent-to-VM-management interface."""

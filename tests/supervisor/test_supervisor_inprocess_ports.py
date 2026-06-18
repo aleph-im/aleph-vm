@@ -6,7 +6,7 @@ from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import (
     GuestPort,
     HostPort,
@@ -35,7 +35,7 @@ async def test_add_port_forward_calls_update_and_returns_info():
 
     execution.update_port_redirects.side_effect = fake_update
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.add_port_forward(
         PortForwardSpec(vm_id=VmId("vm1"), host_port=HostPort(0), vm_port=GuestPort(8080), protocol=Protocol.TCP)
@@ -52,7 +52,7 @@ async def test_add_port_forward_calls_update_and_returns_info():
 async def test_list_port_forwards_for_one_vm():
     execution = make_execution_with_ports({8080: {"host": 34000, "tcp": True, "udp": False}})
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     forwards = await sup.list_port_forwards(VmId("vm1"))
 
@@ -69,7 +69,7 @@ async def test_list_port_forwards_all_vms():
     e2 = make_execution_with_ports({53: {"host": 34001, "tcp": False, "udp": True}})
     e2.vm_hash = "vm2"
     pool = FakePool(executions={"vm1": e1, "vm2": e2})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     forwards = await sup.list_port_forwards(None)
 
@@ -80,7 +80,7 @@ async def test_list_port_forwards_all_vms():
 async def test_remove_port_forward_updates_redirects():
     execution = make_execution_with_ports({8080: {"host": 34000, "tcp": True, "udp": False}})
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.remove_port_forward(VmId("vm1"), host_port=HostPort(34000), protocol=Protocol.TCP)
 
@@ -89,7 +89,7 @@ async def test_remove_port_forward_updates_redirects():
 
 @pytest.mark.asyncio
 async def test_port_forward_unknown_vm_raises():
-    sup = InProcessSupervisor(pool=FakePool())
+    sup = LocalSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
         await sup.add_port_forward(
             PortForwardSpec(vm_id=VmId("nope"), host_port=HostPort(0), vm_port=GuestPort(80), protocol=Protocol.TCP)
@@ -100,7 +100,7 @@ async def test_port_forward_unknown_vm_raises():
 async def test_remove_one_protocol_keeps_sibling():
     execution = make_execution_with_ports({8080: {"host": 34000, "tcp": True, "udp": True}})
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     await sup.remove_port_forward(VmId("vm1"), host_port=HostPort(34000), protocol=Protocol.TCP)
 
@@ -112,7 +112,7 @@ async def test_remove_one_protocol_keeps_sibling():
 async def test_list_port_forwards_emits_one_info_per_protocol():
     execution = make_execution_with_ports({8080: {"host": 34000, "tcp": True, "udp": True}})
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     forwards = await sup.list_port_forwards(VmId("vm1"))
 
@@ -130,7 +130,7 @@ async def test_add_port_forward_udp():
 
     execution.update_port_redirects.side_effect = fake_update
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     info = await sup.add_port_forward(
         PortForwardSpec(vm_id=VmId("vm1"), host_port=HostPort(0), vm_port=GuestPort(53), protocol=Protocol.UDP)
@@ -147,7 +147,7 @@ async def test_reconcile_removes_last_protocol_drops_port_entirely(monkeypatch):
     mapping entirely rather than leaving a ghost entry."""
     execution = make_execution_with_ports({22: {"host": 24022, "tcp": True, "udp": False}})
     pool = FakePool(executions={"vm1": execution})
-    sup = InProcessSupervisor(pool=pool)
+    sup = LocalSupervisor(pool=pool)
 
     # reconcile_port_forwards drives the supervisor; patch resolve so desired=[]
     monkeypatch.setattr(run_module, "resolve_port_forwards", AsyncMock(return_value=[]))
