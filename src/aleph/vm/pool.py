@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psutil
-from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -34,7 +33,7 @@ from aleph.vm.supervisor.qemu_build import (
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress
+from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -59,7 +58,7 @@ class VmPool:
     configurable duration.
     """
 
-    executions: dict[ItemHash, VmExecution]
+    executions: dict[VmId, VmExecution]
     network: Network | None
     snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
@@ -294,7 +293,7 @@ class VmPool:
         if spec.backend is Backend.FIRECRACKER:
             return await self._create_firecracker_from_spec(spec)
 
-        vm_hash = ItemHash(spec.vm_id)
+        vm_hash = spec.vm_id
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
@@ -414,7 +413,7 @@ class VmPool:
             msg = "Firecracker spec VMs require a guest_channel"
             raise InvalidBackendError(msg)
 
-        vm_hash = ItemHash(spec.vm_id)
+        vm_hash = spec.vm_id
         async with self.creation_lock:
             current_execution = self.executions.get(vm_hash)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
@@ -488,7 +487,7 @@ class VmPool:
         msg = "No available value for vm_id."
         raise ValueError(msg)
 
-    def get_running_or_starting_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+    def get_running_or_starting_vm(self, vm_hash: VmId) -> VmExecution | None:
         """Return a running VM or None."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
@@ -496,7 +495,7 @@ class VmPool:
         else:
             return None
 
-    def get_running_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+    def get_running_vm(self, vm_hash: VmId) -> VmExecution | None:
         """Return a running VM or None."""
         execution = self.executions.get(vm_hash)
         if execution and execution.is_running and not execution.is_stopping:
@@ -504,7 +503,7 @@ class VmPool:
         else:
             return None
 
-    async def stop_vm(self, vm_hash: ItemHash) -> VmExecution | None:
+    async def stop_vm(self, vm_hash: VmId) -> VmExecution | None:
         """Stop a VM."""
         execution = self.executions.get(vm_hash)
         if not execution:
@@ -513,7 +512,7 @@ class VmPool:
         await execution.stop()
         return execution
 
-    def forget_vm(self, vm_hash: ItemHash) -> None:
+    def forget_vm(self, vm_hash: VmId) -> None:
         """Remove a VM from the executions pool.
 
         Used after VM creation raised an error in order to completely
@@ -597,7 +596,7 @@ class VmPool:
         configs: list[Configuration] = []
         for config_path in config_paths:
             vm_hash = config_path.name[: -len("-controller.json")]
-            if ItemHash(vm_hash) in self.executions:
+            if VmId(vm_hash) in self.executions:
                 continue
             config = load_controller_configuration(vm_hash)
             if config is None:
@@ -614,7 +613,7 @@ class VmPool:
         claimed_vm_ids: set[int] = set()
 
         for config in configs:
-            vm_hash = ItemHash(str(config.vm_hash))
+            vm_hash = VmId(str(config.vm_hash))
             vm_id = config.vm_id
             service_name = f"aleph-vm-controller@{config.vm_hash}.service"
             is_active = service_active_states.get(service_name, False)
@@ -640,7 +639,7 @@ class VmPool:
 
         logger.info("Loaded %d executions", len(self.executions))
 
-    async def _restore_network(self, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
+    async def _restore_network(self, vm_id: int, vm_hash: VmId) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
@@ -663,9 +662,7 @@ class VmPool:
         setup_nftables_for_vm(vm_id, interface=tap_interface)
         return tap_interface
 
-    async def _restore_running_execution_from_config(
-        self, config: Configuration, vm_id: int, vm_hash: ItemHash
-    ) -> None:
+    async def _restore_running_execution_from_config(self, config: Configuration, vm_id: int, vm_hash: VmId) -> None:
         """Rebuild in-memory state for a VM whose controller is still active.
 
         Sourced entirely from the on-disk controller config -- message-free.

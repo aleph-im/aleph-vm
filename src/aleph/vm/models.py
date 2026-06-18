@@ -7,12 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from aleph_message.models import (
-    ExecutableContent,
-    InstanceContent,
-    ItemHash,
-    ProgramContent,
-)
+from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
 from aleph_message.models.execution.environment import (
     GpuProperties,
     HypervisorType,
@@ -61,7 +56,7 @@ from aleph.vm.orchestrator.metrics import (
     save_record,
 )
 from aleph.vm.resources import GpuDevice, HostGPU
-from aleph.vm.supervisor.types import Backend, CreateVmSpec
+from aleph.vm.supervisor.types import Backend, CreateVmSpec, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import dumps_for_json
 from aleph.vm.utils.aggregate import get_user_settings
@@ -120,7 +115,7 @@ class VmExecution:
     """
 
     uuid: uuid.UUID  # Unique identifier of this execution
-    vm_hash: ItemHash
+    vm_hash: VmId
     # The source of this execution: either an Aleph message (MessageSpec) or a
     # message-free CreateVmSpec. Exactly one — "neither" is unrepresentable. The
     # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
@@ -454,7 +449,7 @@ class VmExecution:
 
     def __init__(
         self,
-        vm_hash: ItemHash,
+        vm_hash: VmId,
         message: ExecutableContent | None = None,
         original: ExecutableContent | None = None,
         snapshot_manager: SnapshotManager | None = None,
@@ -500,7 +495,7 @@ class VmExecution:
         for its own consumers (operator API, billing) — see orchestrator/run.py.
         """
         return cls(
-            vm_hash=ItemHash(spec.vm_id),
+            vm_hash=spec.vm_id,
             vm_spec=spec,
             snapshot_manager=snapshot_manager,
             systemd_manager=systemd_manager,
