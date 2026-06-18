@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import shutil
 from asyncio.subprocess import Process
 from collections.abc import Callable
 from pathlib import Path
@@ -8,19 +7,9 @@ from typing import TYPE_CHECKING
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
-    Configuration,
-    HypervisorType,
-    QemuConfidentialVMConfiguration,
-    QemuGPU,
-    QemuVMHostVolume,
-    save_controller_configuration,
-)
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.controllers.qemu.instance import AlephQemuResources, ConfigurationType
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor.types import HardwareResources
 
@@ -83,7 +72,6 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     support_snapshot = False
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
-    controller_configuration: Configuration
     confidential_policy: int
 
     def __repr__(self):
@@ -107,65 +95,6 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
 
     async def setup(self):
         pass
-
-    async def configure(self):
-        """Configure the VM by saving controller service configuration."""
-        logger.debug(f"Making Qemu configuration: {self}")
-        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_id) + "-monitor.socket")
-
-        cloud_init_drive = await self._create_cloud_init_drive(install_guest_agent=False)
-
-        image_path = str(self.resources.rootfs_path)
-        firmware_path = str(self.resources.firmware_path)
-        vcpu_count = self.hardware_resources.vcpus
-        # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
-        # through via a typed size to avoid the prior unit-mixing under-allocation.
-        mem_size_mb = MiB(self.hardware_resources.memory)
-
-        vm_session_path = settings.CONFIDENTIAL_SESSION_DIRECTORY / self.vm_hash
-        session_file_path = vm_session_path / "vm_session.b64"
-        godh_file_path = vm_session_path / "vm_godh.b64"
-
-        qemu_bin_path = shutil.which("qemu-system-x86_64")
-        interface_name = None
-        if self.tap_interface:
-            interface_name = self.tap_interface.device_name
-        cloud_init_drive_path = str(cloud_init_drive.path_on_host) if cloud_init_drive else None
-        vm_configuration = QemuConfidentialVMConfiguration(
-            qemu_bin_path=qemu_bin_path,
-            cloud_init_drive_path=cloud_init_drive_path,
-            image_path=image_path,
-            monitor_socket_path=monitor_socket_path,
-            qmp_socket_path=self.qmp_socket_path,
-            qga_socket_path=self.qga_socket_path,
-            vcpu_count=vcpu_count,
-            mem_size_mb=mem_size_mb,
-            interface_name=interface_name,
-            ovmf_path=firmware_path,
-            sev_session_file=session_file_path,
-            sev_dh_cert_file=godh_file_path,
-            sev_policy=self.confidential_policy,
-            host_volumes=[
-                QemuVMHostVolume(
-                    mount=volume.mount,
-                    path_on_host=volume.path_on_host,
-                    read_only=volume.read_only,
-                )
-                for volume in self.resources.volumes
-            ],
-            gpus=[QemuGPU(pci_host=gpu.pci_host) for gpu in self.resources.gpus],
-        )
-
-        configuration = Configuration(
-            vm_id=self.vm_id,
-            vm_hash=self.vm_hash,
-            settings=settings,
-            vm_configuration=vm_configuration,
-            hypervisor=HypervisorType.qemu,
-        )
-        logger.debug(configuration)
-
-        save_controller_configuration(self.vm_hash, configuration)
 
     async def wait_for_init(self) -> None:
         """Wait for the init process of the instance to be ready."""
