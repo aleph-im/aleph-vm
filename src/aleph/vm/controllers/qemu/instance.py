@@ -12,17 +12,8 @@ from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
-    Configuration,
-    HypervisorType,
-    QemuGPU,
-    QemuVMConfiguration,
-    QemuVMHostVolume,
-    save_controller_configuration,
-)
 from aleph.vm.controllers.firecracker.executable import VmSetupError
 from aleph.vm.controllers.interface import AlephVmControllerInterface
-from aleph.vm.controllers.qemu.cloudinit import CloudInitMixin
 from aleph.vm.controllers.resources import (
     HostVolume,
     VmResources,
@@ -32,7 +23,6 @@ from aleph.vm.controllers.resources import (
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
-from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.supervisor.types import HardwareResources
 from aleph.vm.utils import run_in_subprocess
@@ -162,7 +152,7 @@ class AlephQemuResources(VmResources):
 ConfigurationType = TypeVar("ConfigurationType")
 
 
-class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmControllerInterface):
+class AlephQemuInstance(Generic[ConfigurationType], AlephVmControllerInterface):
     vm_id: int
     vm_hash: ItemHash
     resources: AlephQemuResources
@@ -174,7 +164,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
     qemu_process: Process | None
     support_snapshot = False
     persistent = True
-    controller_configuration: Configuration
 
     def __repr__(self):
         return f"<AlephQemuInstance {self.vm_id}>"
@@ -231,63 +220,6 @@ class AlephQemuInstance(Generic[ConfigurationType], CloudInitMixin, AlephVmContr
 
     async def setup(self):
         pass
-
-    async def configure(self):
-        """Configure the VM by saving controller service configuration."""
-        logger.debug(f"Making Qemu configuration: {self}")
-
-        monitor_socket_path = settings.EXECUTION_ROOT / (str(self.vm_hash) + "-monitor.socket")
-
-        cloud_init_drive = await self._create_cloud_init_drive()
-
-        image_path = str(self.resources.rootfs_path)
-        vcpu_count = self.hardware_resources.vcpus
-        # QEMU's -m flag takes a value in MiB; message memory is already MiB. Pass it
-        # through via a typed size to avoid the prior unit-mixing under-allocation.
-        mem_size_mb = MiB(self.hardware_resources.memory)
-
-        qemu_bin_path = shutil.which("qemu-system-x86_64")
-        interface_name = None
-        if self.tap_interface:
-            interface_name = self.tap_interface.device_name
-        cloud_init_drive_path = str(cloud_init_drive.path_on_host) if cloud_init_drive else None
-        vm_configuration = QemuVMConfiguration(
-            qemu_bin_path=qemu_bin_path,
-            cloud_init_drive_path=cloud_init_drive_path,
-            image_path=image_path,
-            monitor_socket_path=monitor_socket_path,
-            qmp_socket_path=self.qmp_socket_path,
-            qga_socket_path=self.qga_socket_path,
-            vcpu_count=vcpu_count,
-            mem_size_mb=mem_size_mb,
-            interface_name=interface_name,
-            host_volumes=[
-                QemuVMHostVolume(
-                    mount=volume.mount,
-                    path_on_host=volume.path_on_host,
-                    read_only=volume.read_only,
-                )
-                for volume in self.resources.volumes
-            ],
-            gpus=[QemuGPU(pci_host=gpu.pci_host, supports_x_vga=gpu.supports_x_vga) for gpu in self.resources.gpus],
-        )
-
-        configuration = Configuration(
-            vm_id=self.vm_id,
-            vm_hash=self.vm_hash,
-            settings=settings,
-            vm_configuration=vm_configuration,
-            hypervisor=HypervisorType.qemu,
-        )
-        logger.debug(configuration)
-        save_controller_configuration(self.vm_hash, configuration)
-
-    def save_controller_configuration(self):
-        """Save VM configuration to be used by the controller service"""
-        path = Path(f"{settings.EXECUTION_ROOT}/{self.vm_hash}-controller.json")
-        path.write_text(self.controller_configuration.json(by_alias=True, exclude_none=True, indent=4))
-        path.chmod(0o644)
-        return path
 
     @property
     def qmp_socket_path(self) -> Path:
