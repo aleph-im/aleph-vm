@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from aiohttp import web
 from aleph_message.models import InstanceContent, ItemHash
+from conftest import make_spec
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
@@ -21,7 +22,22 @@ from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
-from aleph.vm.supervisor.types import IpAssignment, VmId
+from aleph.vm.supervisor.types import (
+    DirectoryPath,
+    IpAssignment,
+    TeeBackend,
+    TeeConfig,
+    VmId,
+)
+
+
+def _views_tee() -> TeeConfig:
+    return TeeConfig(
+        backend=TeeBackend.SEV,
+        policy="0x1",
+        session_dir=DirectoryPath(Path("/tmp/session")),
+        firmware_path=Path("/data/firmware.fd"),
+    )
 
 
 @pytest.fixture()
@@ -368,18 +384,14 @@ async def test_allocation_valid_token(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, mock_instance_content):
+async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool):
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
-    message = InstanceContent.model_validate(mock_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
-    execution = VmExecution(
-        vm_hash=hash,
-        message=message,
-        original=message,
-        persistent=False,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )
@@ -409,32 +421,19 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_confidential_awaiting_init(
-    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
-):
+async def test_v2_executions_list_confidential_awaiting_init(aiohttp_client, mocker, mock_app_with_pool):
     """A confidential VM waiting for its owner to initialize it must be distinguishable
     from a dead VM in the executions list, so the scheduler and console can report it."""
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
-
-    content = deepcopy(mock_instance_content)
-    content["environment"]["hypervisor"] = "qemu"
-    content["environment"]["trusted_execution"] = {
-        "policy": 1,
-        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
-    }
-    message = InstanceContent.model_validate(content)
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
         is_service_active=mocker.Mock(return_value=False),
         get_services_active_states=mocker.Mock(return_value={}),
     )
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=True,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
         snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
@@ -455,9 +454,7 @@ async def test_v2_executions_list_confidential_awaiting_init(
 
 
 @pytest.mark.asyncio
-async def test_v1_executions_list_includes_confidential_awaiting_init(
-    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
-):
+async def test_v1_executions_list_includes_confidential_awaiting_init(aiohttp_client, mocker, mock_app_with_pool):
     """The scheduler reads /about/executions/list and re-allocates any planned VM
     missing from it. A confidential VM waiting for its owner must be listed, else
     the scheduler re-POSTs allocations forever and keeps reporting it missing."""
@@ -466,24 +463,13 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
 
-    content = deepcopy(mock_instance_content)
-    content["environment"]["hypervisor"] = "qemu"
-    content["environment"]["trusted_execution"] = {
-        "policy": 1,
-        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
-    }
-    message = InstanceContent.model_validate(content)
-
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
         is_service_active=mocker.Mock(return_value=False),
         get_services_active_states=mocker.Mock(return_value={}),
     )
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=True,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
         snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
@@ -519,33 +505,20 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(
 
 
 @pytest.mark.asyncio
-async def test_v1_executions_list_excludes_awaiting_init_without_network(
-    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
-):
+async def test_v1_executions_list_excludes_awaiting_init_without_network(aiohttp_client, mocker, mock_app_with_pool):
     """Entries without networking would break strict consumers of the v1 schema
     (the scheduler requires networking.ipv4/ipv6), so an awaiting-init VM whose
     tap interface is not set up must stay out of the list."""
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
 
-    content = deepcopy(mock_instance_content)
-    content["environment"]["hypervisor"] = "qemu"
-    content["environment"]["trusted_execution"] = {
-        "policy": 1,
-        "firmware": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
-    }
-    message = InstanceContent.model_validate(content)
-
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
         is_service_active=mocker.Mock(return_value=False),
         get_services_active_states=mocker.Mock(return_value={}),
     )
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=True,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
         snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
@@ -565,19 +538,15 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool):
     "Test locally but do not create"
     web_app = await mock_app_with_pool
     pool: VmPool = web_app["_engine_pool"]
-    message = InstanceContent.model_validate(mock_instance_content)
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=False,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )
@@ -603,7 +572,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
 
     from aleph.vm.vm_type import VmType
 
-    vm_type = VmType.from_message_content(message)
+    vm_type = VmType.instance
     tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
     # await network.create_tap(vm_id, tap_interface)
     execution.vm = mocker.Mock()
@@ -1400,11 +1369,8 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
     running_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     stopped_hash = "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe"
 
-    running = VmExecution(
-        vm_hash=running_hash,
-        message=message,
-        original=message,
-        persistent=False,
+    running = VmExecution.from_spec(
+        make_spec(vm_hash=running_hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )
@@ -1418,11 +1384,8 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
     )
     registry.record(ItemHash(running_hash), message=message, original=message, persistent=False)
 
-    stopped = VmExecution(
-        vm_hash=stopped_hash,
-        message=message,
-        original=message,
-        persistent=False,
+    stopped = VmExecution.from_spec(
+        make_spec(vm_hash=stopped_hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )
@@ -1441,18 +1404,14 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
+async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool):
     """v2 rebuilds the legacy mapped_ports shape from list_port_forwards."""
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
-    message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=False,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )
@@ -1474,21 +1433,15 @@ async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_
 
 
 @pytest.mark.asyncio
-async def test_v2_executions_list_omits_ghost_mapped_ports(
-    aiohttp_client, mocker, mock_app_with_pool, mock_instance_content
-):
+async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocker, mock_app_with_pool):
     """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
     divergence from the legacy pool dump, which emitted it verbatim)."""
     web_app = await mock_app_with_pool
     pool = web_app["_engine_pool"]
-    message = InstanceContent.model_validate(mock_instance_content)
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message,
-        original=message,
-        persistent=False,
+    execution = VmExecution.from_spec(
+        make_spec(vm_hash=vm_hash, persistent=False),
         snapshot_manager=None,
         systemd_manager=None,
     )

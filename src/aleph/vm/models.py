@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import Callable, Coroutine
@@ -7,20 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
-from aleph_message.models.execution.environment import (
-    GpuProperties,
-    HypervisorType,
-    MachineResources,
-)
-from pydantic.json import pydantic_encoder
-
 from aleph.vm.conf import settings
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
-from aleph.vm.controllers.firecracker.program import (
-    AlephFirecrackerProgram,
-    AlephProgramResources,
-)
+from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.controllers.firecracker.spec_program import (
     SpecFirecrackerProgram,
@@ -48,18 +36,15 @@ from aleph.vm.network.port_availability_checker import (
     is_host_port_available,
 )
 from aleph.vm.orchestrator.metrics import (
-    ExecutionRecord,
     delete_port_mappings,
     delete_record,
     save_execution_data,
     save_port_mappings,
-    save_record,
 )
-from aleph.vm.resources import GpuDevice, HostGPU
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, VmId
+from aleph.vm.resources import HostGPU
+from aleph.vm.supervisor.types import Backend, CreateVmSpec, HardwareResources, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import dumps_for_json
-from aleph.vm.utils.aggregate import get_user_settings
 
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 
@@ -92,21 +77,6 @@ class VmExecutionTimes:
         return self.__dict__
 
 
-@dataclass
-class MessageSpec:
-    """The Aleph-message source of an execution.
-
-    Bundles the current message content with the original message it was
-    derived from (the original drives update-watching). The two are always
-    present or absent together, so they live as a unit. This is the
-    message-driven counterpart to the message-free ``CreateVmSpec``; an
-    execution's ``spec`` is exactly one of the two.
-    """
-
-    message: ExecutableContent
-    original: ExecutableContent
-
-
 class VmExecution:
     """
     Control the execution of a VM on a high level.
@@ -116,10 +86,8 @@ class VmExecution:
 
     uuid: uuid.UUID  # Unique identifier of this execution
     vm_hash: VmId
-    # The source of this execution: either an Aleph message (MessageSpec) or a
-    # message-free CreateVmSpec. Exactly one — "neither" is unrepresentable. The
-    # legacy ``message``/``original``/``vm_spec`` accessors derive from it.
-    spec: MessageSpec | CreateVmSpec
+    # The message-free description this execution is built from.
+    spec: CreateVmSpec
     resources: (
         AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance | SpecProgramResources | None
     ) = None
@@ -141,38 +109,6 @@ class VmExecution:
 
     persistent: bool = False
     mapped_ports: dict[int, dict]  # Port redirect to the VM
-    record: ExecutionRecord | None = None
-
-    async def fetch_port_redirect_config_and_setup(self):
-        """Fetch the user's port-forwarding aggregate and apply updates.
-
-        Persisted-mapping reload is the creator's job
-        (pool.create_vm_from_spec / restart_persistent_vm).
-        """
-        if not self.is_instance:
-            return
-
-        # Precondition: this is an agent-responsibility entrypoint. The agent
-        # attaches the message before calling it (see orchestrator/run.py); a
-        # message-free supervisor execution never reaches here.
-        if not isinstance(self.spec, MessageSpec):
-            raise TypeError("port forwarding is message-only; spec-built executions are driven by the agent")
-        message = self.spec.message
-        ports_requests: dict[int, dict] = {}
-        try:
-            port_forwarding_settings = await get_user_settings(message.address, "port-forwarding")
-            vm_port_forwarding = port_forwarding_settings.get(self.vm_hash, {}) or {}
-            fetched_ports_requests = vm_port_forwarding.get("ports", {})
-            # Force port always to be int and save it as int
-            ports_requests = {int(key): value for key, value in fetched_ports_requests.items()}
-            # Always forward port 22
-            if not ports_requests.get(22, None):
-                ports_requests[22] = {"tcp": True, "udp": False}
-
-        except Exception:
-            logger.info("Could not fetch the port redirect settings for user %s", message.address, exc_info=True)
-
-        await self.update_port_redirects(ports_requests)
 
     async def update_port_redirects(self, requested_ports: dict[int, dict[str, bool]]):
         assert self.vm, "The VM attribute has to be set before calling update_port_redirects()"
@@ -341,38 +277,21 @@ class VmExecution:
         return bool(self.times.stopping_at and not self.times.stopped_at)
 
     @property
-    def message(self) -> ExecutableContent | None:
-        """The current message content, or None for a message-free (spec) execution."""
-        return self.spec.message if isinstance(self.spec, MessageSpec) else None
-
-    @property
-    def original(self) -> ExecutableContent | None:
-        """The original message content, or None for a message-free (spec) execution."""
-        return self.spec.original if isinstance(self.spec, MessageSpec) else None
-
-    @property
-    def vm_spec(self) -> CreateVmSpec | None:
-        """The message-free CreateVmSpec, or None for a message-driven execution."""
-        return self.spec if isinstance(self.spec, CreateVmSpec) else None
+    def vm_spec(self) -> CreateVmSpec:
+        """The message-free CreateVmSpec this execution is built from."""
+        return self.spec
 
     @property
     def is_program(self) -> bool:
-        if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend is Backend.FIRECRACKER
-        return isinstance(self.spec.message, ProgramContent)
+        return self.spec.backend is Backend.FIRECRACKER
 
     @property
     def is_instance(self) -> bool:
-        if isinstance(self.spec, CreateVmSpec):
-            return self.spec.backend is Backend.QEMU
-        return isinstance(self.spec.message, InstanceContent)
+        return self.spec.backend is Backend.QEMU
 
     @property
     def is_confidential(self) -> bool:
-        if isinstance(self.spec, CreateVmSpec):
-            return self.spec.tee is not None
-        # FunctionEnvironment has no trusted_execution
-        return True if getattr(self.spec.message.environment, "trusted_execution", None) else False
+        return self.spec.tee is not None
 
     @property
     def is_awaiting_confidential_init(self) -> bool:
@@ -390,17 +309,6 @@ class VmExecution:
         )
 
     @property
-    def hypervisor(self) -> HypervisorType:
-        if isinstance(self.spec, CreateVmSpec):
-            if self.spec.backend is Backend.FIRECRACKER:
-                return HypervisorType.firecracker
-            return HypervisorType.qemu
-        if self.is_program:
-            return HypervisorType.firecracker
-        # Instances are QEMU-only.
-        return HypervisorType.qemu
-
-    @property
     def becomes_ready(self) -> Callable[[], Coroutine]:
         return self.ready_event.wait
 
@@ -414,32 +322,18 @@ class VmExecution:
 
     @property
     def allocated_memory_mib(self) -> int:
-        """Requested memory in MiB, from the spec or the message."""
-        if isinstance(self.spec, CreateVmSpec):
-            return self.spec.memory_mib
-        resources = self.spec.message.resources
-        if resources is None:
-            # resources is a required field on InstanceContent / ProgramContent,
-            # so this only happens on a malformed execution. Fail loud rather
-            # than under-reporting committed resources to the admission check.
-            raise ValueError(f"{self}: message has no resources to derive allocated memory from")
-        return resources.memory
+        """Requested memory in MiB."""
+        return self.spec.memory_mib
 
     @property
     def allocated_vcpus(self) -> int:
-        """Requested vCPUs, from the spec or the message."""
-        if isinstance(self.spec, CreateVmSpec):
-            return self.spec.vcpus
-        resources = self.spec.message.resources
-        if resources is None:
-            raise ValueError(f"{self}: message has no resources to derive allocated vCPUs from")
-        return resources.vcpus
+        """Requested vCPUs."""
+        return self.spec.vcpus
 
     @property
     def has_resources(self) -> bool:
         assert self.vm, "The VM attribute has to be set before calling has_resources()"
         if isinstance(self.vm, AlephFirecrackerExecutable):
-            assert self.hypervisor == HypervisorType.firecracker
             return self.vm.resources_path.exists()
         else:
             return True
@@ -450,22 +344,15 @@ class VmExecution:
     def __init__(
         self,
         vm_hash: VmId,
-        message: ExecutableContent | None = None,
-        original: ExecutableContent | None = None,
+        vm_spec: CreateVmSpec,
         snapshot_manager: SnapshotManager | None = None,
         systemd_manager: SystemDManager | None = None,
         persistent: bool = False,
-        vm_spec: CreateVmSpec | None = None,
     ):
         self.init_task = None
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
         self.vm_hash = vm_hash
-        if vm_spec is not None:
-            self.spec = vm_spec
-        else:
-            assert message is not None, "an execution needs either a message or a vm_spec"
-            assert original is not None, "a message-driven execution needs its original message"
-            self.spec = MessageSpec(message=message, original=original)
+        self.spec = vm_spec
         self.times = VmExecutionTimes(defined_at=datetime.now(tz=timezone.utc))
         self.ready_event = asyncio.Event()
         self.concurrent_runs = 0
@@ -490,9 +377,7 @@ class VmExecution:
     ) -> "VmExecution":
         """Construct a message-free execution from a CreateVmSpec.
 
-        The supervisor's machinery (prepare/create/start/save) reads only the
-        spec. message/original stay None; an agent may attach them afterwards
-        for its own consumers (operator API, billing) — see orchestrator/run.py.
+        The supervisor's machinery (prepare/create/start) reads only the spec.
         """
         return cls(
             vm_hash=spec.vm_id,
@@ -512,73 +397,19 @@ class VmExecution:
         return dumps_for_json(self.to_dict(), indent=indent)
 
     async def prepare(self) -> None:
-        """Download VM required files"""
+        """Build VM resources from the spec. No download (paths are resolved)."""
         async with self.preparation_pending_lock:
             if self.resources:
                 # Already prepared
                 return
-
             self.times.preparing_at = datetime.now(tz=timezone.utc)
-
-            if isinstance(self.spec, CreateVmSpec):
-                # Spec path: every path is already resolved on disk; no download.
-                if self.spec.backend is Backend.FIRECRACKER:
-                    self.resources = SpecProgramResources.from_spec(self.spec)
-                elif self.spec.tee is not None:
-                    # Confidential: a dedicated resources holder carrying the
-                    # resolved firmware path (mirrors the message path's
-                    # AlephQemuConfidentialResources).
-                    self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_hash))
-                else:
-                    self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
-                self.times.prepared_at = datetime.now(tz=timezone.utc)
-                return
-
-            message = self.spec.message
-            resources: AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance
-            if isinstance(message, ProgramContent):
-                resources = AlephProgramResources(message, namespace=self.vm_hash)
-            elif isinstance(message, InstanceContent):
-                # Instances are QEMU-only.
-                if self.is_confidential:
-                    resources = AlephQemuConfidentialResources(message, namespace=self.vm_hash)
-                else:
-                    resources = AlephQemuResources(message, namespace=self.vm_hash)
-                resources.gpus = self.gpus
+            if self.spec.backend is Backend.FIRECRACKER:
+                self.resources = SpecProgramResources.from_spec(self.spec)
+            elif self.spec.tee is not None:
+                self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_hash))
             else:
-                msg = "Unknown executable message type"
-                raise ValueError(msg)
-
-            if not resources:
-                msg = "Unknown executable message type"
-                raise ValueError(msg, repr(message))
-            await resources.download_all()
+                self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
             self.times.prepared_at = datetime.now(tz=timezone.utc)
-            self.resources = resources
-
-    def prepare_gpus(self, available_gpus: list[GpuDevice]) -> None:
-        if not isinstance(self.spec, MessageSpec):
-            raise TypeError("prepare_gpus is message-only; GPU assignment is baked into CreateVmSpec")
-        message = self.spec.message
-        gpus: list[HostGPU] = []
-        assigned_pci_hosts: set[str] = set()
-
-        if message.requirements and message.requirements.gpu:
-            for gpu in message.requirements.gpu:
-                gpu = GpuProperties.model_validate(gpu)
-                for available_gpu in available_gpus:
-                    if available_gpu.device_id == gpu.device_id and available_gpu.pci_host not in assigned_pci_hosts:
-                        gpus.append(
-                            HostGPU(
-                                pci_host=available_gpu.pci_host,
-                                supports_x_vga=available_gpu.has_x_vga_support,
-                                device_id=available_gpu.device_id,
-                                model=available_gpu.model,
-                            )
-                        )
-                        assigned_pci_hosts.add(available_gpu.pci_host)
-                        break
-        self.gpus = gpus
 
     def uses_gpu(self, pci_host: str) -> bool:
         for gpu in self.gpus:
@@ -595,85 +426,42 @@ class VmExecution:
             raise ValueError(msg)
 
         vm: AlephVmControllerInterface
-        if isinstance(self.spec, CreateVmSpec):
-            if self.spec.backend is Backend.FIRECRACKER:
-                assert isinstance(self.resources, SpecProgramResources)
-                self.vm = vm = SpecFirecrackerProgram(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    spec=self.spec,
-                    resources=self.resources,
-                    tap_interface=tap_interface,
-                    prepare_jailer=prepare,
-                )
-                return vm
-            hardware_resources = MachineResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
-            if self.spec.tee is not None:
-                # Confidential spec launch: same controller object as the
-                # message path, with the SEV policy converted from the spec.
-                # SAFETY-CRITICAL: never fall through to the plain AlephQemuInstance.
-                assert isinstance(self.resources, AlephQemuConfidentialResources)
-                self.vm = vm = AlephQemuConfidentialInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=self.spec.network.internet_access,
-                    confidential_policy=int(self.spec.tee.policy, 0),
-                    hardware_resources=hardware_resources,
-                    tap_interface=tap_interface,
-                )
-                return vm
-            assert isinstance(self.resources, AlephQemuResources)
-            self.vm = vm = AlephQemuInstance(
+        if self.spec.backend is Backend.FIRECRACKER:
+            assert isinstance(self.resources, SpecProgramResources)
+            self.vm = vm = SpecFirecrackerProgram(
+                vm_id=vm_id,
+                vm_hash=self.vm_hash,
+                spec=self.spec,
+                resources=self.resources,
+                tap_interface=tap_interface,
+                prepare_jailer=prepare,
+            )
+            return vm
+        hardware_resources = HardwareResources(vcpus=self.spec.vcpus, memory=self.spec.memory_mib)
+        if self.spec.tee is not None:
+            # Confidential spec launch: same controller object as the
+            # plain instance path, with the SEV policy converted from the spec.
+            # SAFETY-CRITICAL: never fall through to the plain AlephQemuInstance.
+            assert isinstance(self.resources, AlephQemuConfidentialResources)
+            self.vm = vm = AlephQemuConfidentialInstance(
                 vm_id=vm_id,
                 vm_hash=self.vm_hash,
                 resources=self.resources,
                 enable_networking=self.spec.network.internet_access,
+                confidential_policy=int(self.spec.tee.policy, 0),
                 hardware_resources=hardware_resources,
                 tap_interface=tap_interface,
             )
             return vm
-
-        message = self.spec.message
-        if self.is_program:
-            assert isinstance(self.resources, AlephProgramResources)
-            self.vm = vm = AlephFirecrackerProgram(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
-                resources=self.resources,
-                enable_networking=message.environment.internet,
-                hardware_resources=message.resources,
-                tap_interface=tap_interface,
-                persistent=self.persistent,
-                prepare_jailer=prepare,
-            )
-        elif self.is_instance:
-            # Instances are QEMU-only.
-            if self.is_confidential:
-                assert isinstance(self.resources, AlephQemuConfidentialResources)
-                self.vm = vm = AlephQemuConfidentialInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=message.environment.internet,
-                    confidential_policy=message.environment.trusted_execution.policy,
-                    hardware_resources=message.resources,
-                    tap_interface=tap_interface,
-                )
-            else:
-                assert isinstance(self.resources, AlephQemuResources)
-                self.vm = vm = AlephQemuInstance(
-                    vm_id=vm_id,
-                    vm_hash=self.vm_hash,
-                    resources=self.resources,
-                    enable_networking=message.environment.internet,
-                    hardware_resources=message.resources,
-                    tap_interface=tap_interface,
-                )
-        else:
-            msg = "Unknown VM"
-            raise Exception(msg)
-
+        assert isinstance(self.resources, AlephQemuResources)
+        self.vm = vm = AlephQemuInstance(
+            vm_id=vm_id,
+            vm_hash=self.vm_hash,
+            resources=self.resources,
+            enable_networking=self.spec.network.internet_access,
+            hardware_resources=hardware_resources,
+            tap_interface=tap_interface,
+        )
         return vm
 
     async def start(self, *, write_config: bool = True):
@@ -712,7 +500,6 @@ class VmExecution:
             else:
                 self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
-            await self.save()
         except Exception:
             logger.exception("%s error during start, tearing down", self)
             if self.vm and not self.times.stopped_at:
@@ -871,57 +658,6 @@ class VmExecution:
             logger.debug("Stop: waiting for runs to complete...")
             await self.runs_done_event.wait()
 
-    async def save(self):
-        """Save to DB"""
-        assert self.vm, "The VM attribute has to be set before calling save()"
-
-        if not isinstance(self.spec, MessageSpec):
-            # Spec-built executions keep no DB record. The durable description
-            # of a running VM is its on-disk controller config; the supervisor
-            # reattaches from that, not from a stored message.
-            return
-
-        if not self.record:
-            self.record = ExecutionRecord(
-                uuid=str(self.uuid),
-                vm_hash=self.vm_hash,
-                vm_id=self.vm_id,
-                time_defined=self.times.defined_at,
-                time_prepared=self.times.prepared_at,
-                time_started=self.times.started_at,
-                time_stopping=self.times.stopping_at,
-                cpu_time_user=None,
-                cpu_time_system=None,
-                io_read_count=None,
-                io_write_count=None,
-                io_read_bytes=None,
-                io_write_bytes=None,
-                vcpus=self.vm.hardware_resources.vcpus,
-                memory=self.vm.hardware_resources.memory,
-                message=self.spec.message.model_dump_json(),
-                original_message=self.spec.original.model_dump_json(),
-                persistent=self.persistent,
-                gpus=json.dumps(self.gpus, default=pydantic_encoder),
-                mapped_ports=self.mapped_ports,
-            )
-            pid_info = self.vm.to_dict() if self.vm else None
-            # Handle cases when the process cannot be accessed
-            if not self.persistent and pid_info and pid_info.get("process"):
-                self.record.cpu_time_user = pid_info["process"]["cpu_times"].user
-                self.record.cpu_time_system = pid_info["process"]["cpu_times"].system
-                self.record.io_read_count = pid_info["process"]["io_counters"][0]
-                self.record.io_write_count = pid_info["process"]["io_counters"][1]
-                self.record.io_read_bytes = pid_info["process"]["io_counters"][2]
-                self.record.io_write_bytes = pid_info["process"]["io_counters"][3]
-        else:
-            # Update mutable fields on existing record
-            self.record.time_prepared = self.times.prepared_at
-            self.record.time_started = self.times.started_at
-            self.record.time_stopping = self.times.stopping_at
-            self.record.persistent = self.persistent
-            self.record.mapped_ports = self.mapped_ports
-        await save_record(self.record)
-
     def erase_volumes(self, *, include_rootfs: bool = False, include_data_volumes: bool = True) -> int:
         """Delete this execution's on-disk volumes.
 
@@ -952,23 +688,3 @@ class VmExecution:
             await delete_port_mappings(self.vm_hash)
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
-
-    async def run_code(self, scope: dict | None = None) -> bytes:
-        if not self.vm:
-            msg = "The VM has not been created yet"
-            raise ValueError(msg)
-
-        if not self.is_program:
-            msg = "Code can ony be run on programs"
-            raise ValueError(msg)
-
-        assert isinstance(self.vm, AlephFirecrackerProgram)
-
-        self.concurrent_runs += 1
-        self.runs_done_event.clear()
-        try:
-            return await self.vm.run_code(scope=scope)
-        finally:
-            self.concurrent_runs -= 1
-            if self.concurrent_runs == 0:
-                self.runs_done_event.set()

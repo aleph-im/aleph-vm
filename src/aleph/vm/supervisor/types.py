@@ -228,6 +228,21 @@ class CreateVmSpec:
 
 
 @dataclass(frozen=True)
+class HardwareResources:
+    """Message-free hardware sizing handed to controllers.
+
+    Mirrors the fields the controllers read from aleph_message's
+    MachineResources (vcpus, memory in MiB) so the daemon never imports a
+    message type. The `seconds` run-timeout field is intentionally absent: it
+    is agent-side policy (the agent passes the timeout over the gRPC run call).
+    Field names match MachineResources so controller field access is unchanged.
+    """
+
+    vcpus: int = 1
+    memory: int = 128  # MiB
+
+
+@dataclass(frozen=True)
 class ReservationRequest:
     """Resources an instance needs, translated from an Aleph message by the
     agent. The supervisor reserves against this and never sees a message:

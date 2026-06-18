@@ -9,12 +9,15 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.__main__ import configuration_from_file, execute_persistent_vm
+from aleph.vm.controllers.configuration import save_controller_configuration
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.models import VmExecution
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator import metrics
 from aleph.vm.storage import get_message
+from aleph.vm.supervisor.qemu_build import build_qemu_configuration
+from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -101,17 +104,17 @@ async def test_create_qemu_instance(mocker):
 
     mock_systemd_manager = MockSystemDManager()
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message.content,
-        original=message.content,
-        snapshot_manager=None,
-        systemd_manager=None,
-        persistent=True,
-    )
+    spec = await build_create_vm_spec(vm_hash, message.content)
+    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_id = 3
+
+    # Mirror the production spec path (VmPool.create_vm_from_spec): write the
+    # controller config from the spec, then start with write_config=False. The
+    # legacy in-process configure() reads message_content, which is None here.
+    config = await build_qemu_configuration(spec, vm_id, None)
+    save_controller_configuration(spec.vm_id, config)
 
     vm = execution.create(vm_id=vm_id, tap_interface=None)
 
@@ -119,7 +122,7 @@ async def test_create_qemu_instance(mocker):
     assert isinstance(vm, AlephQemuInstance)
     assert vm.vm_id == vm_id
 
-    await execution.start()
+    await execution.start(write_config=False)
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.controller_service)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
@@ -191,14 +194,8 @@ async def test_create_qemu_instance_online(mocker):
     )
     network.setup()
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message.content,
-        original=message.content,
-        snapshot_manager=None,
-        systemd_manager=mock_systemd_manager,
-        persistent=True,
-    )
+    spec = await build_create_vm_spec(vm_hash, message.content)
+    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=mock_systemd_manager)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_id = 3
@@ -207,13 +204,18 @@ async def test_create_qemu_instance_online(mocker):
     tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
     await network.create_tap(vm_id, tap_interface)
 
+    # Mirror the production spec path (VmPool.create_vm_from_spec): write the
+    # controller config from the spec, then start with write_config=False.
+    config = await build_qemu_configuration(spec, vm_id, tap_interface)
+    save_controller_configuration(spec.vm_id, config)
+
     vm = execution.create(vm_id=vm_id, tap_interface=tap_interface)
 
     # Test that the VM is created correctly. It is not started yet.
     assert isinstance(vm, AlephQemuInstance)
     assert vm.vm_id == vm_id
 
-    await execution.start()
+    await execution.start(write_config=False)
     qemu_execution = mock_systemd_manager.execution
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
-from aleph_message.models.execution.environment import AMDSEVPolicy, HypervisorType
+from aleph_message.models.execution.environment import AMDSEVPolicy
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import remove_controller_configuration
@@ -38,7 +38,6 @@ from aleph.vm.controllers.qemu.backup import (
     verify_qemu_disk,
 )
 from aleph.vm.controllers.qemu.client import QemuVmClient
-from aleph.vm.models import MessageSpec
 from aleph.vm.network.firewall import (
     initialize_nftables,
     recreate_network_for_vms,
@@ -96,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 def _backend_of(execution) -> Backend:
     """The VMM only; confidential computing is reported via confidential_mode."""
-    if execution.is_program or execution.hypervisor == HypervisorType.firecracker:
+    if execution.is_program:
         return Backend.FIRECRACKER
     return Backend.QEMU
 
@@ -1118,8 +1117,6 @@ class LocalSupervisor(Supervisor):
                     execution.mapped_ports = await get_port_mappings(str(vm_info["vm_hash"]))
                     if execution.mapped_ports:
                         await execution.recreate_port_redirect_rules()
-                    if isinstance(execution.spec, MessageSpec):
-                        await execution.fetch_port_redirect_config_and_setup()
                     logger.debug(f"Recreated port redirects for instance {vm_info['vm_hash']}")
                 except Exception as e:
                     logger.error(f"Error recreating port redirects for VM {vm_info['vm_hash']}: {e}")

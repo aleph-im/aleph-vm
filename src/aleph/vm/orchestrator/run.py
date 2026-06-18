@@ -17,11 +17,11 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.program import (
-    FileTooLargeError,
+from aleph.vm.controllers.firecracker.executable import (
     ResourceDownloadError,
     VmSetupError,
 )
+from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager

@@ -6,10 +6,10 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.supervisor.types import HardwareResources
 from aleph.vm.utils.logs import get_past_vm_logs, make_logs_queue
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class AlephVmControllerInterface(ABC):
     enable_console: bool
     enable_networking: bool
     """enable networking for this VM"""
-    hardware_resources: MachineResources
+    hardware_resources: HardwareResources
     support_snapshot: bool
     """Does this controller support snapshotting"""
     guest_api_process: Process | None = None

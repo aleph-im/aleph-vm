@@ -12,7 +12,6 @@ from typing import Generic, TypeVar
 
 from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -32,6 +31,7 @@ from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman
+from aleph.vm.supervisor.types import HardwareResources
 
 try:
     import psutil  # type: ignore [no-redef]
@@ -131,7 +131,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     resources: AlephFirecrackerResources
     enable_console: bool
     enable_networking: bool
-    hardware_resources: MachineResources
+    hardware_resources: HardwareResources
     tap_interface: TapInterface | None = None
     fvm: MicroVM
     vm_configuration: ConfigurationType | None
@@ -153,7 +153,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
         enable_console: bool | None = None,
-        hardware_resources: MachineResources | None = None,
+        hardware_resources: HardwareResources | None = None,
         tap_interface: TapInterface | None = None,
         persistent: bool = False,
         prepare_jailer: bool = True,
@@ -165,7 +165,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             enable_console = settings.PRINT_SYSTEM_LOGS
         self.enable_console = enable_console
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
-        self.hardware_resources = hardware_resources or MachineResources()
+        self.hardware_resources = hardware_resources or HardwareResources()
         self.tap_interface = tap_interface
         self.persistent = persistent
 

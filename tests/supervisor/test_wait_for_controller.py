@@ -4,58 +4,18 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aleph_message.models import InstanceContent, ItemHash
+from aleph_message.models import ItemHash
+from conftest import make_spec
 
 from aleph.vm.models import VmExecution
 
 FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 
-FAKE_INSTANCE_CONTENT = {
-    "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
-    "time": 1713874241.800818,
-    "allow_amend": False,
-    "metadata": None,
-    "authorized_keys": None,
-    "variables": None,
-    "environment": {
-        "reproducible": False,
-        "internet": True,
-        "aleph_api": True,
-        "shared_cache": False,
-    },
-    "resources": {
-        "vcpus": 1,
-        "memory": 256,
-        "seconds": 30,
-        "published_ports": None,
-    },
-    "payment": {"type": "superfluid", "chain": "BASE"},
-    "requirements": None,
-    "replaces": None,
-    "rootfs": {
-        "parent": {
-            "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
-        },
-        "ref": "63f07193e6ee9d207b7d1fcf8286f9aee34e6f12f101d2ec77c1229f92964696",
-        "use_latest": True,
-        "comment": "",
-        "persistence": "host",
-        "size_mib": 1000,
-    },
-}
-
 
 def _make_execution(systemd_manager: MagicMock) -> VmExecution:
-    """Create a real persistent VmExecution with a mock systemd_manager."""
-    message = InstanceContent.model_validate(FAKE_INSTANCE_CONTENT)
-    return VmExecution(
-        vm_hash=FAKE_HASH,
-        message=message,
-        original=message,
-        persistent=True,
-        snapshot_manager=None,
-        systemd_manager=systemd_manager,
-    )
+    """Create a real persistent spec-built VmExecution with a mock systemd_manager."""
+    spec = make_spec(vm_hash=str(FAKE_HASH), persistent=True)
+    return VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=systemd_manager)
 
 
 @pytest.fixture(autouse=True)
@@ -179,14 +139,9 @@ class TestWaitForControllerReady:
 
     @pytest.mark.asyncio
     async def test_asserts_persistent_and_systemd_manager(self):
-        message = InstanceContent.model_validate(FAKE_INSTANCE_CONTENT)
-
         # Non-persistent execution
-        ex_non_persistent = VmExecution(
-            vm_hash=FAKE_HASH,
-            message=message,
-            original=message,
-            persistent=False,
+        ex_non_persistent = VmExecution.from_spec(
+            make_spec(vm_hash=str(FAKE_HASH), persistent=False),
             snapshot_manager=None,
             systemd_manager=MagicMock(),
         )
@@ -194,11 +149,8 @@ class TestWaitForControllerReady:
             await ex_non_persistent.wait_for_controller_ready()
 
         # No systemd_manager
-        ex_no_manager = VmExecution(
-            vm_hash=FAKE_HASH,
-            message=message,
-            original=message,
-            persistent=True,
+        ex_no_manager = VmExecution.from_spec(
+            make_spec(vm_hash=str(FAKE_HASH), persistent=True),
             snapshot_manager=None,
             systemd_manager=None,
         )
