@@ -28,15 +28,13 @@ from aleph.vm.supervisor.types import (
     LogChunk,
     LogSource,
     Measurement,
-    MigrationId,
-    MigrationInfo,
-    MigrationPhase,
     NetworkConfig,
     NumaNodeInfo,
     PciAddress,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    SevInfo,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -55,12 +53,25 @@ FULL_SPEC = CreateVmSpec(
     ],
     vcpus=4,
     memory_mib=4096,
-    tee=TeeConfig(backend=TeeBackend.SEV_SNP, policy="0x07", session_dir=DirectoryPath(Path("/var/lib/sessions"))),
+    tee=TeeConfig(
+        backend=TeeBackend.SEV_SNP,
+        policy="0x07",
+        session_dir=DirectoryPath(Path("/var/lib/sessions")),
+        firmware_path=Path("/var/cache/ovmf.fd"),
+    ),
     network=NetworkConfig(internet_access=True, requested_ipv6="fd00::42", ipv6_prefix_len=124),
-    gpus=[GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)],
+    gpus=[
+        GpuSpec(
+            pci_host=PciAddress("0000:01:00.0"),
+            supports_x_vga=True,
+            device_id="10de:2504",
+            model="RTX 3090",
+        )
+    ],
     numa_node=1,
     persistent=True,
     ssh_authorized_keys=["ssh-ed25519 AAAA test@host"],
+    owner_address="0xOWNER",
 )
 
 MINIMAL_SPEC = CreateVmSpec(
@@ -159,6 +170,24 @@ def test_host_info_round_trip():
     assert conv.host_info_from_pb(conv.host_info_to_pb(info)) == info
 
 
+def test_host_info_carries_reservation_and_hardware_fields():
+    info = HostInfo(
+        cpu_count=8,
+        memory_mib=1024,
+        cpu_frequency_mhz=3200,
+        memory_type="DDR5",
+        memory_clock_mhz=4800,
+        available_disk_bytes=999,
+        gpu_inventory=[{"vendor": "nvidia", "device_name": "RTX 3090"}],
+        available_gpus=[{"vendor": "nvidia"}],
+    )
+    out = conv.host_info_from_pb(conv.host_info_to_pb(info))
+    assert out.available_disk_bytes == 999
+    assert out.gpu_inventory == [{"vendor": "nvidia", "device_name": "RTX 3090"}]
+    assert out.cpu_frequency_mhz == 3200
+    assert (out.memory_type, out.memory_clock_mhz) == ("DDR5", 4800)
+
+
 def test_health_info_round_trip():
     info = HealthInfo(status=HealthStatus.OK, vm_count=3)
     assert conv.health_info_from_pb(conv.health_info_to_pb(info)) == info
@@ -194,16 +223,22 @@ def test_backup_round_trip():
     assert conv.backup_chunk_from_pb(conv.backup_chunk_to_pb(chunk)) == chunk
 
 
-def test_migration_info_round_trip():
-    info = MigrationInfo(
-        vm_id=VmId("dead" * 16),
-        migration_id=MigrationId("mig-1"),
-        phase=MigrationPhase.EXPORTING,
-        bytes_transferred=10,
-        bytes_total=100,
+def test_backup_info_carries_archive_metadata():
+    info = BackupInfo(
+        vm_id=VmId("vm1"),
+        backup_id=BackupId("b1"),
+        status=BackupStatus.COMPLETE,
+        size_bytes=10,
+        created_at_unix_secs=1,
         error_message="",
+        checksum="sha256:abc",
+        volumes=["rootfs", "data"],
+        source_sizes={"rootfs": 100, "data": 50},
     )
-    assert conv.migration_info_from_pb(conv.migration_info_to_pb(info)) == info
+    out = conv.backup_info_from_pb(conv.backup_info_to_pb(info))
+    assert out.checksum == "sha256:abc"
+    assert out.volumes == ["rootfs", "data"]
+    assert out.source_sizes == {"rootfs": 100, "data": 50}
 
 
 def test_measurement_round_trip():
@@ -219,6 +254,51 @@ def test_error_code_table_is_total():
         assert conv.ERROR_CODE_FROM_PB[pb_value] is code
 
 
+def _minimal_spec(**over):
+    base = dict(
+        vm_id=VmId("vm1"),
+        backend=Backend.QEMU,
+        kernel_path=Path(""),
+        initrd_path=Path(""),
+        disks=[],
+        vcpus=1,
+        memory_mib=512,
+        tee=None,
+        network=NetworkConfig(internet_access=True, requested_ipv6="", ipv6_prefix_len=0),
+        gpus=[],
+        numa_node=None,
+        persistent=True,
+    )
+    base.update(over)
+    return CreateVmSpec(**base)
+
+
+def test_create_vm_spec_carries_owner_address():
+    spec = _minimal_spec(owner_address="0xOWNER")
+    assert conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec)).owner_address == "0xOWNER"
+
+
+def test_create_vm_spec_carries_tee_firmware_path():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV,
+            policy="0x5",
+            session_dir=DirectoryPath(Path("/s")),
+            firmware_path=Path("/ovmf.fd"),
+        ),
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert out.tee.firmware_path == Path("/ovmf.fd")
+
+
+def test_create_vm_spec_carries_gpu_request_fields():
+    spec = _minimal_spec(
+        gpus=[GpuSpec(pci_host=PciAddress(""), supports_x_vga=True, device_id="10de:2504", model="RTX 3090")],
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert (out.gpus[0].device_id, out.gpus[0].model) == ("10de:2504", "RTX 3090")
+
+
 def test_enum_tables_are_total():
     assert set(conv.BACKEND_TO_PB) == set(Backend)
     assert set(conv.VM_STATUS_TO_PB) == set(VmStatus)
@@ -227,4 +307,24 @@ def test_enum_tables_are_total():
     assert set(conv.DISK_ROLE_TO_PB) == set(DiskRole)
     assert set(conv.LOG_SOURCE_TO_PB) == set(LogSource)
     assert set(conv.BACKUP_STATUS_TO_PB) == set(BackupStatus)
-    assert set(conv.MIGRATION_PHASE_TO_PB) == set(MigrationPhase)
+
+
+def test_measurement_carries_sev_info_and_launch_measure():
+    m = Measurement(
+        vm_id=VmId("vm1"),
+        measurement_bytes=b"m",
+        tee_backend=TeeBackend.SEV,
+        sev_info=SevInfo(
+            enabled=True,
+            api_major=1,
+            api_minor=55,
+            build_id=21,
+            policy=3,
+            state="launch-update",
+            handle=7,
+        ),
+        launch_measure="bWVhc3VyZQ==",
+    )
+    out = conv.measurement_from_pb(conv.measurement_to_pb(m))
+    assert out.launch_measure == "bWVhc3VyZQ=="
+    assert out.sev_info == m.sev_info

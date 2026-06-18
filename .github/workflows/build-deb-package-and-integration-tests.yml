@@ -214,6 +214,11 @@ jobs:
           # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
           # which is unreachable from inside the VMs and breaks all guest DNS.
           echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
+          # This file replaces the packaged supervisor.env (kept via --force-confold),
+          # so it must carry the two-service socket the package ships; otherwise the
+          # agent runs embedded alongside the daemon (two pools fighting over the VM
+          # tap -> "File descriptor in bad state"). Matches packaging/aleph-vm/etc/aleph-vm/supervisor.env.
+          echo ALEPH_VM_SUPERVISOR_GRPC_SOCKET=/var/lib/aleph/vm/supervisor.sock >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
@@ -244,6 +249,10 @@ jobs:
         run: |
           ssh root@${DROPLET_IPV4} "systemctl status aleph-vm-supervisor --no-pager" || true
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor -n 100 --no-pager" || true
+          # Two-service split: the HTTP API (port 4020, /control/*) is served by
+          # the agent, so capture its status and journal too.
+          ssh root@${DROPLET_IPV4} "systemctl status aleph-vm-agent --no-pager" || true
+          ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-agent -n 200 --no-pager" || true
 
       - name: "Test runtime: Debian 12, SDK 0.9.0"
         run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
@@ -265,6 +274,8 @@ jobs:
         if: ${{ !cancelled() && steps.system-booted.outcome == 'success'}}
         run: |
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-supervisor"
+          # Two-service split: /control/* (port 4020) is served by the agent.
+          ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-agent" || true
 
       - name: Cleanup
         if: always()

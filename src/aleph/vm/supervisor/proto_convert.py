@@ -11,6 +11,7 @@ to `Path("")`.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
@@ -39,15 +40,14 @@ from aleph.vm.supervisor.types import (
     LogChunk,
     LogSource,
     Measurement,
-    MigrationId,
-    MigrationInfo,
-    MigrationPhase,
     NetworkConfig,
     NumaNodeInfo,
     PciAddress,
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
+    ReservationRequest,
+    SevInfo,
     TeeBackend,
     TeeConfig,
     VmEvent,
@@ -132,15 +132,6 @@ BACKUP_STATUS_TO_PB = {
 }
 BACKUP_STATUS_FROM_PB = {v: k for k, v in BACKUP_STATUS_TO_PB.items()}
 
-MIGRATION_PHASE_TO_PB = {
-    MigrationPhase.PREPARING: pb.MIGRATION_PHASE_PREPARING,
-    MigrationPhase.EXPORTING: pb.MIGRATION_PHASE_EXPORTING,
-    MigrationPhase.IMPORTING: pb.MIGRATION_PHASE_IMPORTING,
-    MigrationPhase.COMPLETE: pb.MIGRATION_PHASE_COMPLETE,
-    MigrationPhase.FAILED: pb.MIGRATION_PHASE_FAILED,
-}
-MIGRATION_PHASE_FROM_PB = {v: k for k, v in MIGRATION_PHASE_TO_PB.items()}
-
 ERROR_CODE_TO_PB = {
     ErrorCode.VM_NOT_FOUND: pb.ERROR_CODE_VM_NOT_FOUND,
     ErrorCode.VM_ALREADY_EXISTS: pb.ERROR_CODE_VM_ALREADY_EXISTS,
@@ -208,10 +199,19 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
             requested_ipv6=spec.network.requested_ipv6,
             ipv6_prefix_len=spec.network.ipv6_prefix_len,
         ),
-        gpus=[pb.GpuConfig(pci_host=str(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in spec.gpus],
+        gpus=[
+            pb.GpuConfig(
+                pci_host=str(gpu.pci_host),
+                supports_x_vga=gpu.supports_x_vga,
+                device_id=gpu.device_id,
+                model=gpu.model,
+            )
+            for gpu in spec.gpus
+        ],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
         hostname=spec.hostname,
+        owner_address=spec.owner_address,
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(
@@ -226,6 +226,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
                 backend=TEE_BACKEND_TO_PB[spec.tee.backend],
                 policy=spec.tee.policy,
                 session_dir=path_to_wire(Path(spec.tee.session_dir)),
+                firmware_path=path_to_wire(spec.tee.firmware_path) if spec.tee.firmware_path is not None else "",
             )
         )
     if spec.numa_node is not None:
@@ -240,6 +241,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
             backend=TEE_BACKEND_FROM_PB[msg.tee.backend],
             policy=msg.tee.policy,
             session_dir=DirectoryPath(path_from_wire(msg.tee.session_dir)),
+            firmware_path=path_from_wire(msg.tee.firmware_path) if msg.tee.firmware_path else None,
         )
     return CreateVmSpec(
         vm_id=VmId(msg.vm_id),
@@ -255,11 +257,20 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
             requested_ipv6=msg.network.requested_ipv6,
             ipv6_prefix_len=msg.network.ipv6_prefix_len,
         ),
-        gpus=[GpuSpec(pci_host=PciAddress(gpu.pci_host), supports_x_vga=gpu.supports_x_vga) for gpu in msg.gpus],
+        gpus=[
+            GpuSpec(
+                pci_host=PciAddress(gpu.pci_host),
+                supports_x_vga=gpu.supports_x_vga,
+                device_id=gpu.device_id,
+                model=gpu.model,
+            )
+            for gpu in msg.gpus
+        ],
         numa_node=msg.numa_node if msg.HasField("numa_node") else None,
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
         hostname=msg.hostname,
+        owner_address=msg.owner_address,
         guest_channel=(
             GuestChannelSpec(
                 ready_port=msg.guest_channel.ready_port,
@@ -286,6 +297,44 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
         device_id=msg.device_id,
         model=msg.model,
         supports_x_vga=msg.supports_x_vga,
+    )
+
+
+def reservation_request_to_pb(req: ReservationRequest) -> pb.ReserveResourcesRequest:
+    return pb.ReserveResourcesRequest(
+        user_address=req.user_address,
+        vcpus=req.vcpus,
+        memory_mib=req.memory_mib,
+        disk_mib=req.disk_mib,
+        is_instance=req.is_instance,
+        gpus=[
+            pb.GpuConfig(
+                pci_host=str(g.pci_host),
+                supports_x_vga=g.supports_x_vga,
+                device_id=g.device_id,
+                model=g.model,
+            )
+            for g in req.gpus
+        ],
+    )
+
+
+def reservation_request_from_pb(msg: pb.ReserveResourcesRequest) -> ReservationRequest:
+    return ReservationRequest(
+        user_address=msg.user_address,
+        vcpus=msg.vcpus,
+        memory_mib=msg.memory_mib,
+        disk_mib=msg.disk_mib,
+        is_instance=msg.is_instance,
+        gpus=[
+            GpuSpec(
+                pci_host=PciAddress(g.pci_host),
+                supports_x_vga=g.supports_x_vga,
+                device_id=g.device_id,
+                model=g.model,
+            )
+            for g in msg.gpus
+        ],
     )
 
 
@@ -379,6 +428,12 @@ def host_info_to_pb(info: HostInfo) -> pb.HostInfo:
         hostname=info.hostname,
         kernel_version=info.kernel_version,
         host_ipv4=info.host_ipv4,
+        cpu_frequency_mhz=info.cpu_frequency_mhz,
+        memory_type=info.memory_type,
+        memory_clock_mhz=info.memory_clock_mhz,
+        available_disk_bytes=info.available_disk_bytes,
+        gpu_inventory_json=json.dumps(info.gpu_inventory),
+        available_gpus_json=json.dumps(info.available_gpus),
     )
 
 
@@ -401,6 +456,12 @@ def host_info_from_pb(msg: pb.HostInfo) -> HostInfo:
         hostname=msg.hostname,
         kernel_version=msg.kernel_version,
         host_ipv4=msg.host_ipv4,
+        cpu_frequency_mhz=msg.cpu_frequency_mhz,
+        memory_type=msg.memory_type,
+        memory_clock_mhz=msg.memory_clock_mhz,
+        available_disk_bytes=msg.available_disk_bytes,
+        gpu_inventory=json.loads(msg.gpu_inventory_json) if msg.gpu_inventory_json else [],
+        available_gpus=json.loads(msg.available_gpus_json) if msg.available_gpus_json else [],
     )
 
 
@@ -494,6 +555,9 @@ def backup_info_to_pb(info: BackupInfo) -> pb.BackupInfo:
         size_bytes=info.size_bytes,
         created_at_unix_secs=info.created_at_unix_secs,
         error_message=info.error_message,
+        checksum=info.checksum,
+        volumes=list(info.volumes),
+        source_sizes=dict(info.source_sizes),
     )
 
 
@@ -505,6 +569,9 @@ def backup_info_from_pb(msg: pb.BackupInfo) -> BackupInfo:
         size_bytes=msg.size_bytes,
         created_at_unix_secs=msg.created_at_unix_secs,
         error_message=msg.error_message,
+        checksum=msg.checksum,
+        volumes=list(msg.volumes),
+        source_sizes=dict(msg.source_sizes),
     )
 
 
@@ -516,40 +583,43 @@ def backup_chunk_from_pb(msg: pb.BackupChunk) -> BackupChunk:
     return BackupChunk(data=msg.data, offset=msg.offset)
 
 
-# ── Migration ────────────────────────────────────────────────────────────────
-
-
-def migration_info_to_pb(info: MigrationInfo) -> pb.MigrationInfo:
-    return pb.MigrationInfo(
-        vm_id=str(info.vm_id),
-        migration_id=str(info.migration_id),
-        phase=MIGRATION_PHASE_TO_PB[info.phase],
-        bytes_transferred=info.bytes_transferred,
-        bytes_total=info.bytes_total,
-        error_message=info.error_message,
-    )
-
-
-def migration_info_from_pb(msg: pb.MigrationInfo) -> MigrationInfo:
-    return MigrationInfo(
-        vm_id=VmId(msg.vm_id),
-        migration_id=MigrationId(msg.migration_id),
-        phase=MIGRATION_PHASE_FROM_PB[msg.phase],
-        bytes_transferred=msg.bytes_transferred,
-        bytes_total=msg.bytes_total,
-        error_message=msg.error_message,
-    )
-
-
 # ── Confidential ─────────────────────────────────────────────────────────────
 
 
+def sev_info_to_pb(info: SevInfo) -> pb.SevInfo:
+    return pb.SevInfo(
+        enabled=info.enabled,
+        api_major=info.api_major,
+        api_minor=info.api_minor,
+        build_id=info.build_id,
+        policy=info.policy,
+        state=info.state,
+        handle=info.handle,
+    )
+
+
+def sev_info_from_pb(msg: pb.SevInfo) -> SevInfo:
+    return SevInfo(
+        enabled=msg.enabled,
+        api_major=msg.api_major,
+        api_minor=msg.api_minor,
+        build_id=msg.build_id,
+        policy=msg.policy,
+        state=msg.state,
+        handle=msg.handle,
+    )
+
+
 def measurement_to_pb(measurement: Measurement) -> pb.Measurement:
-    return pb.Measurement(
+    msg = pb.Measurement(
         vm_id=str(measurement.vm_id),
         measurement_bytes=measurement.measurement_bytes,
         tee_backend=TEE_BACKEND_TO_PB[measurement.tee_backend],
+        launch_measure=measurement.launch_measure,
     )
+    if measurement.sev_info is not None:
+        msg.sev_info.CopyFrom(sev_info_to_pb(measurement.sev_info))
+    return msg
 
 
 def measurement_from_pb(msg: pb.Measurement) -> Measurement:
@@ -557,4 +627,6 @@ def measurement_from_pb(msg: pb.Measurement) -> Measurement:
         vm_id=VmId(msg.vm_id),
         measurement_bytes=msg.measurement_bytes,
         tee_backend=TEE_BACKEND_FROM_PB[msg.tee_backend],
+        sev_info=sev_info_from_pb(msg.sev_info) if msg.HasField("sev_info") else None,
+        launch_measure=msg.launch_measure,
     )

@@ -192,30 +192,6 @@ BACKUP_STATUS_COMPLETE: BackupStatus.ValueType  # 3
 BACKUP_STATUS_FAILED: BackupStatus.ValueType  # 4
 global___BackupStatus = BackupStatus
 
-class _MigrationPhase:
-    ValueType = typing.NewType("ValueType", builtins.int)
-    V: typing_extensions.TypeAlias = ValueType
-
-class _MigrationPhaseEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_MigrationPhase.ValueType], builtins.type):
-    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
-    MIGRATION_PHASE_UNSPECIFIED: _MigrationPhase.ValueType  # 0
-    MIGRATION_PHASE_PREPARING: _MigrationPhase.ValueType  # 1
-    MIGRATION_PHASE_EXPORTING: _MigrationPhase.ValueType  # 2
-    MIGRATION_PHASE_IMPORTING: _MigrationPhase.ValueType  # 3
-    MIGRATION_PHASE_COMPLETE: _MigrationPhase.ValueType  # 4
-    MIGRATION_PHASE_FAILED: _MigrationPhase.ValueType  # 5
-
-class MigrationPhase(_MigrationPhase, metaclass=_MigrationPhaseEnumTypeWrapper):
-    """── Migration ────────────────────────────────────────────────────────────"""
-
-MIGRATION_PHASE_UNSPECIFIED: MigrationPhase.ValueType  # 0
-MIGRATION_PHASE_PREPARING: MigrationPhase.ValueType  # 1
-MIGRATION_PHASE_EXPORTING: MigrationPhase.ValueType  # 2
-MIGRATION_PHASE_IMPORTING: MigrationPhase.ValueType  # 3
-MIGRATION_PHASE_COMPLETE: MigrationPhase.ValueType  # 4
-MIGRATION_PHASE_FAILED: MigrationPhase.ValueType  # 5
-global___MigrationPhase = MigrationPhase
-
 class _ErrorCode:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -341,6 +317,9 @@ class HostInfo(google.protobuf.message.Message):
     HOSTNAME_FIELD_NUMBER: builtins.int
     KERNEL_VERSION_FIELD_NUMBER: builtins.int
     HOST_IPV4_FIELD_NUMBER: builtins.int
+    AVAILABLE_DISK_BYTES_FIELD_NUMBER: builtins.int
+    GPU_INVENTORY_JSON_FIELD_NUMBER: builtins.int
+    AVAILABLE_GPUS_JSON_FIELD_NUMBER: builtins.int
     cpu_count: builtins.int
     """CPU"""
     cpu_architecture: builtins.str
@@ -372,6 +351,12 @@ class HostInfo(google.protobuf.message.Message):
     """Networking
     primary external IPv4 of the host; empty when host networking is disabled
     """
+    available_disk_bytes: builtins.int
+    """Reservation-aware figures the agent's /about endpoints surface"""
+    gpu_inventory_json: builtins.str
+    """list[dict] as JSON; rich agent GPU inventory"""
+    available_gpus_json: builtins.str
+    """list[dict] as JSON"""
     @property
     def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]:
         """Topology"""
@@ -398,8 +383,11 @@ class HostInfo(google.protobuf.message.Message):
         hostname: builtins.str = ...,
         kernel_version: builtins.str = ...,
         host_ipv4: builtins.str = ...,
+        available_disk_bytes: builtins.int = ...,
+        gpu_inventory_json: builtins.str = ...,
+        available_gpus_json: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["available_disk_bytes", b"available_disk_bytes", "available_gpus_json", b"available_gpus_json", "cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpu_inventory_json", b"gpu_inventory_json", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
 
 global___HostInfo = HostInfo
 
@@ -469,6 +457,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
+    OWNER_ADDRESS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -486,6 +475,8 @@ class CreateVmRequest(google.protobuf.message.Message):
     """Guest hostname for provisioning (cloud-init). Naming is the client's
     business; empty falls back to a mechanical derivation from vm_id.
     """
+    owner_address: builtins.str
+    """VM owner's Aleph address; engine consumes this owner's GPU reservation"""
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -528,9 +519,10 @@ class CreateVmRequest(google.protobuf.message.Message):
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
         hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
+        owner_address: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "owner_address", b"owner_address", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload
@@ -631,20 +623,24 @@ class TeeConfig(google.protobuf.message.Message):
     BACKEND_FIELD_NUMBER: builtins.int
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
+    FIRMWARE_PATH_FIELD_NUMBER: builtins.int
     backend: global___TeeBackend.ValueType
     """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
     """empty = default"""
     session_dir: builtins.str
     """confidential session files"""
+    firmware_path: builtins.str
+    """resolved OVMF blob path (empty = none)"""
     def __init__(
         self,
         *,
         backend: global___TeeBackend.ValueType = ...,
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
+        firmware_path: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
 global___TeeConfig = TeeConfig
 
@@ -677,15 +673,24 @@ class GpuConfig(google.protobuf.message.Message):
 
     PCI_HOST_FIELD_NUMBER: builtins.int
     SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
+    DEVICE_ID_FIELD_NUMBER: builtins.int
+    MODEL_FIELD_NUMBER: builtins.int
     pci_host: builtins.str
+    """RESOLVED concrete address; empty in a request"""
     supports_x_vga: builtins.bool
+    device_id: builtins.str
+    """REQUEST: vendor:device, e.g. "10de:2504" """
+    model: builtins.str
+    """REQUEST: human label"""
     def __init__(
         self,
         *,
         pci_host: builtins.str = ...,
         supports_x_vga: builtins.bool = ...,
+        device_id: builtins.str = ...,
+        model: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
 global___GpuConfig = GpuConfig
 
@@ -970,6 +975,67 @@ class ReinstallVmRequest(google.protobuf.message.Message):
 global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
+class RestoreFromImageRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    IMAGE_PATH_FIELD_NUMBER: builtins.int
+    MAX_VIRTUAL_SIZE_BYTES_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    image_path: builtins.str
+    """host path to a staged QCOW2 image"""
+    max_virtual_size_bytes: builtins.int
+    """0 = no cap"""
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        image_path: builtins.str = ...,
+        max_virtual_size_bytes: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["image_path", b"image_path", "max_virtual_size_bytes", b"max_virtual_size_bytes", "vm_id", b"vm_id"]) -> None: ...
+
+global___RestoreFromImageRequest = RestoreFromImageRequest
+
+@typing.final
+class RunProgramCodeRequest(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VM_ID_FIELD_NUMBER: builtins.int
+    SCOPE_MSGPACK_FIELD_NUMBER: builtins.int
+    TIMEOUT_SECS_FIELD_NUMBER: builtins.int
+    vm_id: builtins.str
+    scope_msgpack: builtins.bytes
+    """ASGI scope dict, msgpack-encoded"""
+    timeout_secs: builtins.float
+    def __init__(
+        self,
+        *,
+        vm_id: builtins.str = ...,
+        scope_msgpack: builtins.bytes = ...,
+        timeout_secs: builtins.float = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["scope_msgpack", b"scope_msgpack", "timeout_secs", b"timeout_secs", "vm_id", b"vm_id"]) -> None: ...
+
+global___RunProgramCodeRequest = RunProgramCodeRequest
+
+@typing.final
+class RunProgramCodeResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    REPLY_FIELD_NUMBER: builtins.int
+    reply: builtins.bytes
+    """raw runtime reply, opaque to the supervisor"""
+    def __init__(
+        self,
+        *,
+        reply: builtins.bytes = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["reply", b"reply"]) -> None: ...
+
+global___RunProgramCodeResponse = RunProgramCodeResponse
+
+@typing.final
 class WatchEventsRequest(google.protobuf.message.Message):
     """── Events ───────────────────────────────────────────────────────────────"""
 
@@ -1232,12 +1298,31 @@ global___LogChunk = LogChunk
 class BackupInfo(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
+    @typing.final
+    class SourceSizesEntry(google.protobuf.message.Message):
+        DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+        KEY_FIELD_NUMBER: builtins.int
+        VALUE_FIELD_NUMBER: builtins.int
+        key: builtins.str
+        value: builtins.int
+        def __init__(
+            self,
+            *,
+            key: builtins.str = ...,
+            value: builtins.int = ...,
+        ) -> None: ...
+        def ClearField(self, field_name: typing.Literal["key", b"key", "value", b"value"]) -> None: ...
+
     VM_ID_FIELD_NUMBER: builtins.int
     BACKUP_ID_FIELD_NUMBER: builtins.int
     STATUS_FIELD_NUMBER: builtins.int
     SIZE_BYTES_FIELD_NUMBER: builtins.int
     CREATED_AT_UNIX_SECS_FIELD_NUMBER: builtins.int
     ERROR_MESSAGE_FIELD_NUMBER: builtins.int
+    CHECKSUM_FIELD_NUMBER: builtins.int
+    VOLUMES_FIELD_NUMBER: builtins.int
+    SOURCE_SIZES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     backup_id: builtins.str
     """supervisor-issued"""
@@ -1247,6 +1332,16 @@ class BackupInfo(google.protobuf.message.Message):
     created_at_unix_secs: builtins.int
     error_message: builtins.str
     """populated when status = FAILED"""
+    checksum: builtins.str
+    """archive checksum, populated when COMPLETE"""
+    @property
+    def volumes(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
+        """archived volume names"""
+
+    @property
+    def source_sizes(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.int]:
+        """per-volume uncompressed source size"""
+
     def __init__(
         self,
         *,
@@ -1256,8 +1351,11 @@ class BackupInfo(google.protobuf.message.Message):
         size_bytes: builtins.int = ...,
         created_at_unix_secs: builtins.int = ...,
         error_message: builtins.str = ...,
+        checksum: builtins.str = ...,
+        volumes: collections.abc.Iterable[builtins.str] | None = ...,
+        source_sizes: collections.abc.Mapping[builtins.str, builtins.int] | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "status", b"status", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "checksum", b"checksum", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "source_sizes", b"source_sizes", "status", b"status", "vm_id", b"vm_id", "volumes", b"volumes"]) -> None: ...
 
 global___BackupInfo = BackupInfo
 
@@ -1267,16 +1365,20 @@ class StartBackupRequest(google.protobuf.message.Message):
 
     VM_ID_FIELD_NUMBER: builtins.int
     QUIESCE_GUEST_FIELD_NUMBER: builtins.int
+    INCLUDE_VOLUMES_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     quiesce_guest: builtins.bool
     """request guest fs-freeze if supported"""
+    include_volumes: builtins.bool
+    """also archive non-read-only persistent volumes"""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         quiesce_guest: builtins.bool = ...,
+        include_volumes: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["include_volumes", b"include_volumes", "quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
 
 global___StartBackupRequest = StartBackupRequest
 
@@ -1413,101 +1515,6 @@ class RestoreBackupRequest(google.protobuf.message.Message):
 global___RestoreBackupRequest = RestoreBackupRequest
 
 @typing.final
-class MigrationInfo(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    MIGRATION_ID_FIELD_NUMBER: builtins.int
-    PHASE_FIELD_NUMBER: builtins.int
-    BYTES_TRANSFERRED_FIELD_NUMBER: builtins.int
-    BYTES_TOTAL_FIELD_NUMBER: builtins.int
-    ERROR_MESSAGE_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    migration_id: builtins.str
-    phase: global___MigrationPhase.ValueType
-    bytes_transferred: builtins.int
-    bytes_total: builtins.int
-    error_message: builtins.str
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        migration_id: builtins.str = ...,
-        phase: global___MigrationPhase.ValueType = ...,
-        bytes_transferred: builtins.int = ...,
-        bytes_total: builtins.int = ...,
-        error_message: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["bytes_total", b"bytes_total", "bytes_transferred", b"bytes_transferred", "error_message", b"error_message", "migration_id", b"migration_id", "phase", b"phase", "vm_id", b"vm_id"]) -> None: ...
-
-global___MigrationInfo = MigrationInfo
-
-@typing.final
-class ExportVmRequest(google.protobuf.message.Message):
-    """NOTE (Plan 0.A): the directory-based shape below is provisional.
-    aleph-vm's current migration is HTTP-based (the source exposes
-    /control/machine/{ref}/migration/disk/... and the destination
-    fetches). The contract needs reshaping for host-to-host transport
-    before Plan 0.C wires real implementations. See design doc §9 open
-    questions.
-    """
-
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    DESTINATION_DIR_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    destination_dir: builtins.str
-    """PROVISIONAL: local path on the host"""
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        destination_dir: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["destination_dir", b"destination_dir", "vm_id", b"vm_id"]) -> None: ...
-
-global___ExportVmRequest = ExportVmRequest
-
-@typing.final
-class ImportVmRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    SOURCE_DIR_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    """id the new VM will be assigned post-import"""
-    source_dir: builtins.str
-    """PROVISIONAL: see note on ExportVmRequest"""
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        source_dir: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["source_dir", b"source_dir", "vm_id", b"vm_id"]) -> None: ...
-
-global___ImportVmRequest = ImportVmRequest
-
-@typing.final
-class GetMigrationStatusRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    MIGRATION_ID_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    migration_id: builtins.str
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        migration_id: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["migration_id", b"migration_id", "vm_id", b"vm_id"]) -> None: ...
-
-global___GetMigrationStatusRequest = GetMigrationStatusRequest
-
-@typing.final
 class InitializeConfidentialRequest(google.protobuf.message.Message):
     """── Confidential ─────────────────────────────────────────────────────────"""
 
@@ -1558,24 +1565,68 @@ class GetMeasurementRequest(google.protobuf.message.Message):
 global___GetMeasurementRequest = GetMeasurementRequest
 
 @typing.final
+class SevInfo(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    ENABLED_FIELD_NUMBER: builtins.int
+    API_MAJOR_FIELD_NUMBER: builtins.int
+    API_MINOR_FIELD_NUMBER: builtins.int
+    BUILD_ID_FIELD_NUMBER: builtins.int
+    POLICY_FIELD_NUMBER: builtins.int
+    STATE_FIELD_NUMBER: builtins.int
+    HANDLE_FIELD_NUMBER: builtins.int
+    enabled: builtins.bool
+    api_major: builtins.int
+    api_minor: builtins.int
+    build_id: builtins.int
+    policy: builtins.int
+    state: builtins.str
+    handle: builtins.int
+    def __init__(
+        self,
+        *,
+        enabled: builtins.bool = ...,
+        api_major: builtins.int = ...,
+        api_minor: builtins.int = ...,
+        build_id: builtins.int = ...,
+        policy: builtins.int = ...,
+        state: builtins.str = ...,
+        handle: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["api_major", b"api_major", "api_minor", b"api_minor", "build_id", b"build_id", "enabled", b"enabled", "handle", b"handle", "policy", b"policy", "state", b"state"]) -> None: ...
+
+global___SevInfo = SevInfo
+
+@typing.final
 class Measurement(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
     MEASUREMENT_BYTES_FIELD_NUMBER: builtins.int
     TEE_BACKEND_FIELD_NUMBER: builtins.int
+    SEV_INFO_FIELD_NUMBER: builtins.int
+    LAUNCH_MEASURE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     measurement_bytes: builtins.bytes
     """attestation report / SEV launch measure"""
     tee_backend: global___TeeBackend.ValueType
+    launch_measure: builtins.str
+    """base64 launch measurement"""
+    @property
+    def sev_info(self) -> global___SevInfo:
+        """present for SEV launches"""
+
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         measurement_bytes: builtins.bytes = ...,
         tee_backend: global___TeeBackend.ValueType = ...,
+        sev_info: global___SevInfo | None = ...,
+        launch_measure: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["measurement_bytes", b"measurement_bytes", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["sev_info", b"sev_info"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["launch_measure", b"launch_measure", "measurement_bytes", b"measurement_bytes", "sev_info", b"sev_info", "tee_backend", b"tee_backend", "vm_id", b"vm_id"]) -> None: ...
 
 global___Measurement = Measurement
 
@@ -1609,6 +1660,85 @@ class InjectSecretResponse(google.protobuf.message.Message):
     ) -> None: ...
 
 global___InjectSecretResponse = InjectSecretResponse
+
+@typing.final
+class RecreateNetworkRequest(google.protobuf.message.Message):
+    """── Network ──────────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___RecreateNetworkRequest = RecreateNetworkRequest
+
+@typing.final
+class RecreateNetworkResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    SUMMARY_JSON_FIELD_NUMBER: builtins.int
+    summary_json: builtins.str
+    """JSON-encoded summary dict from the engine"""
+    def __init__(
+        self,
+        *,
+        summary_json: builtins.str = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["summary_json", b"summary_json"]) -> None: ...
+
+global___RecreateNetworkResponse = RecreateNetworkResponse
+
+@typing.final
+class ReserveResourcesRequest(google.protobuf.message.Message):
+    """── Reservation ──────────────────────────────────────────────────────────"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    USER_ADDRESS_FIELD_NUMBER: builtins.int
+    VCPUS_FIELD_NUMBER: builtins.int
+    MEMORY_MIB_FIELD_NUMBER: builtins.int
+    DISK_MIB_FIELD_NUMBER: builtins.int
+    IS_INSTANCE_FIELD_NUMBER: builtins.int
+    GPUS_FIELD_NUMBER: builtins.int
+    user_address: builtins.str
+    vcpus: builtins.int
+    memory_mib: builtins.int
+    disk_mib: builtins.int
+    is_instance: builtins.bool
+    @property
+    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]:
+        """request: matched by device_id"""
+
+    def __init__(
+        self,
+        *,
+        user_address: builtins.str = ...,
+        vcpus: builtins.int = ...,
+        memory_mib: builtins.int = ...,
+        disk_mib: builtins.int = ...,
+        is_instance: builtins.bool = ...,
+        gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["disk_mib", b"disk_mib", "gpus", b"gpus", "is_instance", b"is_instance", "memory_mib", b"memory_mib", "user_address", b"user_address", "vcpus", b"vcpus"]) -> None: ...
+
+global___ReserveResourcesRequest = ReserveResourcesRequest
+
+@typing.final
+class ReserveResourcesResponse(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    EXPIRY_UNIX_NS_FIELD_NUMBER: builtins.int
+    expiry_unix_ns: builtins.int
+    """reservation expiry, unix ns UTC"""
+    def __init__(
+        self,
+        *,
+        expiry_unix_ns: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["expiry_unix_ns", b"expiry_unix_ns"]) -> None: ...
+
+global___ReserveResourcesResponse = ReserveResourcesResponse
 
 @typing.final
 class ErrorDetail(google.protobuf.message.Message):
