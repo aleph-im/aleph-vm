@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.hypervisors.firecracker.config import (
     BootSource,
@@ -33,7 +32,12 @@ from aleph.vm.hypervisors.firecracker.config import (
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.types import CreateVmSpec, DiskRole, DiskSpec
+from aleph.vm.supervisor.types import (
+    CreateVmSpec,
+    DiskRole,
+    DiskSpec,
+    HardwareResources,
+)
 
 from .executable import AlephFirecrackerExecutable
 
@@ -98,7 +102,7 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
             vm_hash=vm_hash,
             resources=resources,  # type: ignore[arg-type]
             enable_networking=spec.network.internet_access,
-            hardware_resources=MachineResources(vcpus=spec.vcpus, memory=spec.memory_mib),
+            hardware_resources=HardwareResources(vcpus=spec.vcpus, memory=spec.memory_mib),
             tap_interface=tap_interface,
             persistent=spec.persistent,
             prepare_jailer=prepare_jailer,
