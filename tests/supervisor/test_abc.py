@@ -2,7 +2,7 @@
 
 import inspect
 
-from aleph.vm.supervisor.abc import NetworkOps, ReservationOps, Supervisor
+from aleph.vm.contract.abc import NetworkOps, ReservationOps, Supervisor
 
 
 def test_recreate_network_is_abstract():

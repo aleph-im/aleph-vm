@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     BackupChunk,
     BackupId,
     BackupInfo,

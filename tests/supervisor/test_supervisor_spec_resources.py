@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from aleph.vm.controllers.qemu.instance import AlephQemuResources
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

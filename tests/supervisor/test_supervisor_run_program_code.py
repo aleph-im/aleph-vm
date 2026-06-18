@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from aleph.vm.supervisor.abc import LifecycleOps, Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.contract.abc import LifecycleOps, Supervisor
+from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import VmId
+from aleph.vm.contract.types import VmId
 
 
 def test_run_program_code_is_abstract():

@@ -8,7 +8,7 @@ from typing import BinaryIO, TextIO
 import qmp
 from systemd import journal
 
-from aleph.vm.controllers.configuration import QemuGPU, QemuVMConfiguration
+from aleph.vm.contract.configuration import QemuGPU, QemuVMConfiguration
 from aleph.vm.sizes import MiB
 
 logger = logging.getLogger(__name__)

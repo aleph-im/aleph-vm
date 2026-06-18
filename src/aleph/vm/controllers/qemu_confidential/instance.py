@@ -11,10 +11,10 @@ from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.controllers.qemu.instance import AlephQemuResources, ConfigurationType
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import get_existing_file
-from aleph.vm.supervisor.types import HardwareResources
+from aleph.vm.contract.types import HardwareResources
 
 if TYPE_CHECKING:
-    from aleph.vm.supervisor.types import CreateVmSpec
+    from aleph.vm.contract.types import CreateVmSpec
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class AlephQemuConfidentialResources(AlephQemuResources):
         spec's TeeConfig (resolved agent-side, like every other resource).
         """
         # Local import keeps the supervisor.* dependency out of module load order.
-        from aleph.vm.supervisor.errors import InvalidBackendError
+        from aleph.vm.contract.errors import InvalidBackendError
 
         resources = super().from_spec(spec, namespace)
         if spec.tee is None or spec.tee.firmware_path is None:

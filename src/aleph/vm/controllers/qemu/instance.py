@@ -24,11 +24,11 @@ from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
 from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.supervisor.types import HardwareResources
+from aleph.vm.contract.types import HardwareResources
 from aleph.vm.utils import run_in_subprocess
 
 if TYPE_CHECKING:
-    from aleph.vm.supervisor.types import CreateVmSpec
+    from aleph.vm.contract.types import CreateVmSpec
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ class AlephQemuResources(VmResources):
         gpus, kernel_image_path), with message_content left None.
         """
         # Local import keeps the supervisor.* dependency out of module load order.
-        from aleph.vm.supervisor.types import DiskRole
+        from aleph.vm.contract.types import DiskRole
 
         resources = cls(None, namespace)
         resources.kernel_image_path = Path(settings.LINUX_PATH)

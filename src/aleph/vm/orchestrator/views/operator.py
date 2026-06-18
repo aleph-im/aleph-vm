@@ -34,14 +34,14 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import (
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import (
     BackupNotFoundError,
     InsufficientResourcesError,
     InvalidBackendError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     BackupId,
     BackupInfo,
     BackupStatus,

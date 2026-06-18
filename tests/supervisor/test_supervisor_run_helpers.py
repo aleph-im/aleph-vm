@@ -10,7 +10,7 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.orchestrator import run as run_module
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     GuestPort,
     HostPort,
     PortForwardInfo,

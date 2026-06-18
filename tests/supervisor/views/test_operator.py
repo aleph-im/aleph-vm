@@ -14,8 +14,8 @@ from aleph.vm.orchestrator.metrics import ExecutionRecord
 from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
 from aleph.vm.storage import get_message
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.contract.types import (
     Backend,
     BackupId,
     BackupInfo,
@@ -2314,7 +2314,7 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
 
 def _backup_stream(chunks):
     """download_backup is a callable returning an async iterator of BackupChunk."""
-    from aleph.vm.supervisor.types import BackupChunk
+    from aleph.vm.contract.types import BackupChunk
 
     async def _gen(vm_id, backup_id):
         offset = 0
@@ -2401,7 +2401,7 @@ async def test_operator_backup_quiesce_default(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_backup_insufficient_space_returns_507(aiohttp_client, mocker):
-    from aleph.vm.supervisor.errors import InsufficientResourcesError
+    from aleph.vm.contract.errors import InsufficientResourcesError
 
     client, vm_hash, fake_sup = await _seed_authorized_backup_app(
         aiohttp_client, mocker, start_backup=AsyncMock(side_effect=InsufficientResourcesError("no space"))
@@ -2412,7 +2412,7 @@ async def test_operator_backup_insufficient_space_returns_507(aiohttp_client, mo
 
 @pytest.mark.asyncio
 async def test_operator_backup_invalid_backend_returns_400(aiohttp_client, mocker):
-    from aleph.vm.supervisor.errors import InvalidBackendError
+    from aleph.vm.contract.errors import InvalidBackendError
 
     client, vm_hash, fake_sup = await _seed_authorized_backup_app(
         aiohttp_client, mocker, start_backup=AsyncMock(side_effect=InvalidBackendError("not qemu"))
@@ -2512,7 +2512,7 @@ async def test_operator_backup_delete_delegates(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_backup_delete_unknown_returns_404(aiohttp_client, mocker):
-    from aleph.vm.supervisor.errors import BackupNotFoundError
+    from aleph.vm.contract.errors import BackupNotFoundError
 
     info = _backup_info(BackupStatus.COMPLETE)
     backup_id = str(info.backup_id)
@@ -2560,7 +2560,7 @@ async def test_operator_restore_upload_stages_and_restores(aiohttp_client, mocke
 @pytest.mark.asyncio
 async def test_operator_restore_invalid_image_returns_400(aiohttp_client, mocker):
     """qemu-img rejecting the staged image (InvalidBackendError) maps to 400."""
-    from aleph.vm.supervisor.errors import InvalidBackendError
+    from aleph.vm.contract.errors import InvalidBackendError
 
     client, vm_hash, fake_sup = await _seed_authorized_backup_app(
         aiohttp_client, mocker, restore_from_image=AsyncMock(side_effect=InvalidBackendError("not qcow2"))
@@ -2663,7 +2663,7 @@ async def test_recreate_network_partial_failure_returns_207(aiohttp_client, mock
 @pytest.mark.asyncio
 async def test_recreate_network_internal_error_returns_500(aiohttp_client, mocker):
     """An InternalSupervisorError from the engine maps to HTTP 500."""
-    from aleph.vm.supervisor.errors import InternalSupervisorError
+    from aleph.vm.contract.errors import InternalSupervisorError
 
     mocker.patch(
         "aleph.vm.orchestrator.views.authenticate_api_request",

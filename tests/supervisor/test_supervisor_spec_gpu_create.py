@@ -18,7 +18,7 @@ import pytest
 from aleph.vm.pool import Reservation, VmPool
 from aleph.vm.resources import GpuDevice as ResourceGpuDevice
 from aleph.vm.resources import GpuDeviceClass, InsufficientResourcesError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

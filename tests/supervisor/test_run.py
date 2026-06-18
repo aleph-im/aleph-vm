@@ -5,7 +5,7 @@ from aleph_message.models import ItemHash
 from conftest import make_spec
 
 from aleph.vm.models import VmExecution
-from aleph.vm.supervisor.types import DirectoryPath, TeeBackend, TeeConfig
+from aleph.vm.contract.types import DirectoryPath, TeeBackend, TeeConfig
 
 VM_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 

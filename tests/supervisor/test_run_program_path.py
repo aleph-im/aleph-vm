@@ -11,8 +11,8 @@ from aleph_message.models import ItemHash, ProgramContent
 
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.errors import InsufficientResourcesError, VmNotFoundError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.errors import InsufficientResourcesError, VmNotFoundError
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     GuestChannelSpec,

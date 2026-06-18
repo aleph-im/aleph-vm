@@ -42,7 +42,7 @@ from aleph.vm.orchestrator.metrics import (
     save_port_mappings,
 )
 from aleph.vm.resources import HostGPU
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, HardwareResources, VmId
+from aleph.vm.contract.types import Backend, CreateVmSpec, HardwareResources, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import dumps_for_json
 

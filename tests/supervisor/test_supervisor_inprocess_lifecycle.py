@@ -5,9 +5,9 @@ import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
 from aleph.vm.models import VmExecution
-from aleph.vm.supervisor.errors import VmNotFoundError
+from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import VmId
+from aleph.vm.contract.types import VmId
 
 VM_ID = VmId("itemhash123")
 
@@ -186,7 +186,7 @@ def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
 def _spec_for(vm_hash: str):
     from pathlib import Path
 
-    from aleph.vm.supervisor.types import (
+    from aleph.vm.contract.types import (
         Backend,
         CreateVmSpec,
         DiskFormat,
@@ -267,7 +267,7 @@ async def test_get_vm_spec_unknown_vm_raises_not_found():
 
 @pytest.mark.asyncio
 async def test_get_vm_spec_message_built_vm_raises_unimplemented():
-    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+    from aleph.vm.contract.errors import NotImplementedSupervisorError
 
     execution = make_execution()  # vm_spec=None: legacy, message-built
     sup = LocalSupervisor(pool=FakePool(executions={"itemhash123": execution}))
@@ -298,14 +298,14 @@ async def test_stop_vm_persistent_keeps_execution_registered():
     pool.forget_vm.assert_not_called()
     assert pool.executions["itemhash123"] is execution
     assert execution.stop_event is not old_stop_event
-    from aleph.vm.supervisor.types import VmStatus
+    from aleph.vm.contract.types import VmStatus
 
     assert info.status is VmStatus.STOPPED
 
 
 @pytest.mark.asyncio
 async def test_stop_vm_ephemeral_raises_unimplemented():
-    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+    from aleph.vm.contract.errors import NotImplementedSupervisorError
 
     execution = _make_execution(persistent=False)
     pool = _make_pool(executions={"itemhash123": execution})
@@ -337,7 +337,7 @@ async def test_start_vm_running_is_a_noop_read():
     pool.restart_persistent_vm = AsyncMock()
     sup = LocalSupervisor(pool=pool)
 
-    from aleph.vm.supervisor.types import VmStatus
+    from aleph.vm.contract.types import VmStatus
 
     info = await sup.start_vm(VM_ID)
 
@@ -347,7 +347,7 @@ async def test_start_vm_running_is_a_noop_read():
 
 @pytest.mark.asyncio
 async def test_start_vm_ephemeral_raises_unimplemented():
-    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+    from aleph.vm.contract.errors import NotImplementedSupervisorError
 
     execution = _make_execution(persistent=False)
     pool = _make_pool(executions={"itemhash123": execution})
@@ -370,7 +370,7 @@ async def test_delete_vm_removes_on_disk_artifacts(monkeypatch, tmp_path):
     controller config, the cloud-init seed and qemu's control sockets
     (which qemu never unlinks) must not outlive it (stop_vm keeps the
     definition files for reattach)."""
-    from aleph.vm.controllers import configuration as configuration_module
+    from aleph.vm.contract import configuration as configuration_module
 
     monkeypatch.setattr(configuration_module.settings, "EXECUTION_ROOT", tmp_path)
     config_file = tmp_path / f"{VM_ID}-controller.json"

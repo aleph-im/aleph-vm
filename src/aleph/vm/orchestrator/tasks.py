@@ -37,9 +37,9 @@ from aleph.vm.orchestrator.utils import (
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import ConfidentialMode, VmId, VmInfo, VmStatus
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.contract.types import ConfidentialMode, VmId, VmInfo, VmStatus
 from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.

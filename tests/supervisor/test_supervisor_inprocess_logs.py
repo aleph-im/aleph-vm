@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool
 
-from aleph.vm.supervisor.errors import InternalSupervisorError
+from aleph.vm.contract.errors import InternalSupervisorError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import LogChunk, LogSource, VmId
+from aleph.vm.contract.types import LogChunk, LogSource, VmId
 
 VM_ID = VmId("vm1")
 

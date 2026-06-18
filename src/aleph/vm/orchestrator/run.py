@@ -29,14 +29,14 @@ from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor import errors as supervisor_errors
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.translate import (
+from aleph.vm.contract import errors as supervisor_errors
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.orchestrator.translate import (
     build_create_vm_spec,
     build_program_create_vm_spec,
 )
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     GuestPort,
     HostPort,
     PortForwardSpec,

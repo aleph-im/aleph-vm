@@ -20,8 +20,8 @@ from conftest import (
     wait_for_tcp_banner,
 )
 
-from aleph.vm.supervisor.errors import VmAlreadyExistsError, VmNotFoundError
-from aleph.vm.supervisor.types import Backend, VmStatus
+from aleph.vm.contract.errors import VmAlreadyExistsError, VmNotFoundError
+from aleph.vm.contract.types import Backend, VmStatus
 
 pytestmark = pytest.mark.asyncio
 

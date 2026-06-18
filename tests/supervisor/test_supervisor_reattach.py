@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

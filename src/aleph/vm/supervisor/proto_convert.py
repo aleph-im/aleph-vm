@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     BackupChunk,
     BackupId,

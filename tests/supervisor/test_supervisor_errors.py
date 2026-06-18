@@ -1,18 +1,17 @@
 import pytest
 
-from aleph.vm.supervisor.errors import FileTooLargeError as SupFileTooLargeError
-from aleph.vm.supervisor.errors import HostNotFoundError as SupHostNotFoundError
-from aleph.vm.supervisor.errors import (
+from aleph.vm.contract.errors import FileTooLargeError as SupFileTooLargeError
+from aleph.vm.contract.errors import HostNotFoundError as SupHostNotFoundError
+from aleph.vm.contract.errors import (
     InsufficientResourcesError as SupInsufficientResourcesError,
 )
-from aleph.vm.supervisor.errors import (
+from aleph.vm.contract.errors import (
     InternalSupervisorError,
     NotImplementedSupervisorError,
     SupervisorError,
-    translate_exception,
-    translating_errors,
 )
-from aleph.vm.supervisor.types import ErrorCode
+from aleph.vm.supervisor.error_mapping import translate_exception, translating_errors
+from aleph.vm.contract.types import ErrorCode
 
 
 def test_supervisor_error_carries_code():

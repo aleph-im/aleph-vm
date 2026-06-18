@@ -23,7 +23,7 @@ from conftest import (
     vm_processes,
 )
 
-from aleph.vm.supervisor.types import VmStatus
+from aleph.vm.contract.types import VmStatus
 
 pytestmark = pytest.mark.asyncio
 

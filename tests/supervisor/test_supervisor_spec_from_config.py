@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from aleph.vm.conf import settings as real_settings
-from aleph.vm.controllers.configuration import (
+from aleph.vm.contract.configuration import (
     Configuration,
     HypervisorType,
     QemuGPU,
@@ -15,9 +15,9 @@ from aleph.vm.controllers.configuration import (
     QemuVMHostVolume,
 )
 from aleph.vm.sizes import MiB
-from aleph.vm.supervisor.errors import InvalidBackendError
+from aleph.vm.contract.errors import InvalidBackendError
 from aleph.vm.supervisor.qemu_build import spec_from_controller_configuration
-from aleph.vm.supervisor.types import Backend, DiskRole
+from aleph.vm.contract.types import Backend, DiskRole
 
 _HASH = "deadbeef" * 8
 
@@ -67,7 +67,7 @@ def test_spec_from_config_no_interface_means_no_internet():
 
 
 def test_spec_from_config_rejects_non_qemu():
-    from aleph.vm.controllers.configuration import VMConfiguration
+    from aleph.vm.contract.configuration import VMConfiguration
 
     cfg = Configuration(
         vm_id=1,

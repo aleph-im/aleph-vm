@@ -20,8 +20,8 @@ from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.orchestrator import run as run_module
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.errors import InvalidBackendError, VmNotFoundError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.errors import InvalidBackendError, VmNotFoundError
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

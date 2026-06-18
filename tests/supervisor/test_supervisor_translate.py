@@ -1,4 +1,4 @@
-"""Tests for aleph.vm.supervisor.translate.build_create_vm_spec."""
+"""Tests for aleph.vm.orchestrator.translate.build_create_vm_spec."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ from aleph_message.utils import Mebibytes
 
 from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.resources import HostVolume
-from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.translate import (
+from aleph.vm.contract.errors import InvalidBackendError
+from aleph.vm.orchestrator.translate import (
     build_create_vm_spec,
     build_reservation_request,
 )
-from aleph.vm.supervisor.types import Backend, DiskRole
+from aleph.vm.contract.types import Backend, DiskRole
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -255,7 +255,7 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     from aleph_message.models.execution.environment import AMDSEVPolicy
 
     from aleph.vm.conf import settings
-    from aleph.vm.supervisor.types import TeeBackend
+    from aleph.vm.contract.types import TeeBackend
 
     firmware_path = Path("/data/firmware.fd")
 
@@ -269,7 +269,7 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     from aleph.vm.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
-    monkeypatch.setattr("aleph.vm.supervisor.translate.get_existing_file", fake_get_existing_file)
+    monkeypatch.setattr("aleph.vm.orchestrator.translate.get_existing_file", fake_get_existing_file)
 
     # The message requests a non-default policy: the spec must carry that
     # requested policy verbatim (the supervisor holds no opinion; the schema

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from aleph.vm.supervisor import proto_convert as conv
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     BackupChunk,
     BackupId,

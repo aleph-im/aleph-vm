@@ -33,11 +33,11 @@ from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.orchestrator.run import finish_instance_create
 from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.translate import build_create_vm_spec
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.orchestrator.translate import build_create_vm_spec
 
 if TYPE_CHECKING:
-    from aleph.vm.supervisor.abc import Supervisor
+    from aleph.vm.contract.abc import Supervisor
 
 logger = logging.getLogger(__name__)
 

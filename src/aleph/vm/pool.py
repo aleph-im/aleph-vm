@@ -11,7 +11,7 @@ from typing import Any
 import psutil
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
+from aleph.vm.contract.configuration import (
     Configuration,
     load_controller_configuration,
     save_controller_configuration,
@@ -27,13 +27,13 @@ from aleph.vm.resources import (
     InsufficientResourcesError,
     get_gpu_devices,
 )
-from aleph.vm.supervisor.errors import InvalidBackendError, VmAlreadyExistsError
+from aleph.vm.contract.errors import InvalidBackendError, VmAlreadyExistsError
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_confidential_configuration,
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress, VmId
+from aleph.vm.contract.types import Backend, CreateVmSpec, GpuSpec, PciAddress, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 

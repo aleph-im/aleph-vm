@@ -8,8 +8,8 @@ from aleph.vm.controllers.firecracker.spec_program import (
     SpecFirecrackerProgram,
     SpecProgramResources,
 )
-from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.errors import InvalidBackendError
+from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

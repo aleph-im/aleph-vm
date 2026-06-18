@@ -14,7 +14,7 @@ from aleph.vm.orchestrator.tasks import (
     _handle_domains_aggregate,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.types import (
     Backend,
     ConfidentialMode,
     IpAssignment,

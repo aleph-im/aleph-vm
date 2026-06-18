@@ -11,8 +11,8 @@ from aleph_message.models import ItemHash
 from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import (
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.contract.types import (
     Backend,
     ConfidentialMode,
     IpAssignment,

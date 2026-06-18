@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from aleph.vm.supervisor.types import HardwareResources
+from aleph.vm.contract.types import HardwareResources
 
 
 def test_defaults_match_machineresources():

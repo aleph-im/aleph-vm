@@ -23,7 +23,7 @@ import psutil
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import remove_controller_configuration
+from aleph.vm.contract.configuration import remove_controller_configuration
 from aleph.vm.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
     backup_metadata,
@@ -44,17 +44,17 @@ from aleph.vm.network.firewall import (
     remove_all_aleph_chains,
 )
 from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import (
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import (
     BackupNotFoundError,
     InsufficientResourcesError,
     InternalSupervisorError,
     InvalidBackendError,
     NotImplementedSupervisorError,
     VmNotFoundError,
-    translating_errors,
 )
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor.error_mapping import translating_errors
+from aleph.vm.contract.types import (
     Backend,
     BackupChunk,
     BackupId,

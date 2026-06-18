@@ -9,8 +9,8 @@ import inspect
 
 import pytest
 
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import NotImplementedSupervisorError
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import NotImplementedSupervisorError
 
 # Methods still raising NotImplementedSupervisorError on the local engine. The
 # confidential ops are implemented (P1.4): they raise VmNotFoundError for an
