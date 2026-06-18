@@ -409,7 +409,11 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
 
-        if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+        # A confidential VM awaiting its owner's session reports BOOTING on the
+        # spec create path (start() sets starting_at without launching the
+        # controller), but it is precisely what this endpoint initializes — so
+        # only reject a VM that is actually running, not one awaiting init.
+        if info.status in (VmStatus.RUNNING, VmStatus.BOOTING) and not info.awaiting_confidential_init:
             return web.json_response(
                 {"code": "vm_running", "description": "Operation not allowed, instance already running"},
                 status=HTTPStatus.BAD_REQUEST,
