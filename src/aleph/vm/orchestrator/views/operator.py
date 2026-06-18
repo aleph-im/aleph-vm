@@ -146,26 +146,38 @@ def get_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmR
 
 
 # A confidential instance is created through the allocation path, where
-# create_vm (build config + start to the awaiting state) can take ~20s; the
-# scheduler exposes placement earlier, so the owner's one-shot init-session
-# call can land before the agent has recorded the VM (the record is written
-# once create completes and the VM is awaiting init). Wait it out instead of
-# 404ing the owner. Happy path returns in one poll; the cap only bounds a
-# genuinely-missing VM.
-_CONFIDENTIAL_RECORD_WAIT_SECONDS = 120
-_CONFIDENTIAL_RECORD_POLL_INTERVAL = 2.0
+# create_vm (build config + start to the awaiting state) can take ~20s, but the
+# scheduler exposes placement earlier. The agent now records the owner identity
+# at the *start* of create (see create_vm_execution), so owner-auth resolves
+# immediately via get_agent_record_or_404. The VM itself, however, only reaches
+# awaiting_confidential_init when create_vm completes (the controller config is
+# written and start() sets starting_at). The owner's one-shot init-session call
+# can still land in that window, so wait for the VM to become awaiting-ready
+# before initializing it. Happy path returns in one poll; the cap only bounds a
+# create that never reaches the awaiting state.
+_CONFIDENTIAL_AWAITING_WAIT_SECONDS = 120
+_CONFIDENTIAL_AWAITING_POLL_INTERVAL = 2.0
 
 
-async def wait_for_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmRecord:
-    registry = request.app["vm_registry"]
-    deadline = asyncio.get_running_loop().time() + _CONFIDENTIAL_RECORD_WAIT_SECONDS
+async def wait_for_awaiting_confidential_init(supervisor: Supervisor, vm_id: VmId) -> None:
+    """Block until the VM reaches awaiting_confidential_init, or time out.
+
+    initialize_confidential writes the session files and starts the controller;
+    it fails if called before the VM is awaiting-ready. The owner's single
+    init-session call may arrive while create_vm is still building the config,
+    so poll get_vm rather than racing it.
+    """
+    deadline = asyncio.get_running_loop().time() + _CONFIDENTIAL_AWAITING_WAIT_SECONDS
     while True:
-        record = registry.get(vm_hash)
-        if record is not None:
-            return record
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            info = None
+        if info is not None and info.awaiting_confidential_init:
+            return
         if asyncio.get_running_loop().time() >= deadline:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
-        await asyncio.sleep(_CONFIDENTIAL_RECORD_POLL_INTERVAL)
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_id}")
+        await asyncio.sleep(_CONFIDENTIAL_AWAITING_POLL_INTERVAL)
 
 
 async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
@@ -395,10 +407,11 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        # The owner's init-session may arrive while the confidential create is
-        # still in flight (see wait_for_agent_record_or_404); wait for the VM to
-        # be recorded rather than 404 their single call.
-        record = await wait_for_agent_record_or_404(request, vm_hash)
+        # Owner identity is recorded at the start of create (create_vm_execution),
+        # so this resolves immediately even while create_vm is still in flight;
+        # no long poll for the record. Readiness (the VM reaching the
+        # awaiting-init state) is handled separately, below.
+        record = get_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
@@ -407,22 +420,35 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         try:
             info = await supervisor.get_vm(vm_id)
         except VmNotFoundError:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
+            # create_vm may not have registered the VM with the supervisor yet;
+            # the awaiting-init wait below tolerates that, so don't 404 here.
+            info = None
 
         # A confidential VM awaiting its owner's session reports BOOTING on the
         # spec create path (start() sets starting_at without launching the
         # controller), but it is precisely what this endpoint initializes — so
         # only reject a VM that is actually running, not one awaiting init.
-        if info.status in (VmStatus.RUNNING, VmStatus.BOOTING) and not info.awaiting_confidential_init:
+        if (
+            info is not None
+            and info.status in (VmStatus.RUNNING, VmStatus.BOOTING)
+            and not info.awaiting_confidential_init
+        ):
             return web.json_response(
                 {"code": "vm_running", "description": "Operation not allowed, instance already running"},
                 status=HTTPStatus.BAD_REQUEST,
             )
-        if info.confidential_mode is ConfidentialMode.NONE:
+        if info is not None and info.confidential_mode is ConfidentialMode.NONE:
             return web.json_response(
                 {"code": "not_confidential", "description": "Instance is not a confidential instance"},
                 status=HTTPStatus.BAD_REQUEST,
             )
+
+        # The owner's init-session call can land before create_vm has finished
+        # building the controller config and started the VM into the awaiting
+        # state. initialize_confidential fails if the VM is not awaiting-ready,
+        # so wait for that state (bounded) before uploading the session files.
+        if info is None or not info.awaiting_confidential_init:
+            await wait_for_awaiting_confidential_init(supervisor, vm_id)
 
         post = await request.post()
 

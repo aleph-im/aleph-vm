@@ -43,6 +43,7 @@ def _vm_info(
     status: VmStatus = VmStatus.RUNNING,
     vm_id: str = _FAKE_HASH,
     confidential_mode: ConfidentialMode = ConfidentialMode.NONE,
+    awaiting_confidential_init: bool = False,
 ) -> VmInfo:
     return VmInfo(
         vm_id=VmId(vm_id),
@@ -54,6 +55,7 @@ def _vm_info(
         numa_node=None,
         status_message="",
         confidential_mode=confidential_mode,
+        awaiting_confidential_init=awaiting_confidential_init,
     )
 
 
@@ -353,8 +355,16 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
                 persistent=True,
             )
             fake_sup = _fake_supervisor()
+            # A confidential VM ready for its owner's session reports
+            # awaiting_confidential_init; the endpoint waits for this state
+            # before uploading the session files.
             fake_sup.get_vm = AsyncMock(
-                return_value=_vm_info(VmStatus.STOPPED, vm_id=str(vm_hash), confidential_mode=ConfidentialMode.SEV)
+                return_value=_vm_info(
+                    VmStatus.BOOTING,
+                    vm_id=str(vm_hash),
+                    confidential_mode=ConfidentialMode.SEV,
+                    awaiting_confidential_init=True,
+                )
             )
             app["supervisor"] = fake_sup
             client = await aiohttp_client(app)

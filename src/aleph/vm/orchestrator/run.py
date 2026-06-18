@@ -270,13 +270,26 @@ async def create_vm_execution(
         # reservation and skips other users' valid reservations during create.
         # The agent does not touch reservations at all.
         spec = await build_create_vm_spec(vm_hash, content)
-        info = await supervisor.create_vm(spec)
-        # Agent territory: record the message in the agent's own cache. This is
-        # what the message-free agent will read once owner-auth and billing move
-        # off the VmExecution (design doc section 5). The supervisor machinery
-        # that created the VM never reads it.
+        # Agent territory: record the message in the agent's own cache *before*
+        # create_vm, mirroring 1.13 where the VM entered the pool at the start of
+        # create. create_vm takes ~20s while the scheduler exposes placement
+        # earlier, so a confidential owner's one-shot init-session call can land
+        # before create returns. Recording the owner identity up front lets the
+        # operator API answer owner-auth immediately (get_agent_record_or_404)
+        # instead of polling for the record; the endpoint still waits for the VM
+        # to reach the awaiting-init state before initializing it. The supervisor
+        # machinery that creates the VM never reads this record.
         # Spec-eligible VMs are QEMU instances, which are always persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        try:
+            info = await supervisor.create_vm(spec)
+        except Exception:
+            # create_vm failed: drop the early record so a failed create never
+            # leaves a dangling owner-identity entry behind (a record with no VM
+            # the supervisor knows about). Nothing is persisted yet, so forgetting
+            # the in-memory entry is sufficient.
+            registry.forget(vm_hash)
+            raise
         if info.awaiting_confidential_init:
             # A confidential VM is created but not started: only the owner can
             # start it, by uploading the session certificates via
