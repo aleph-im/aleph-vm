@@ -1,6 +1,27 @@
 # Agent / Supervisor package boundary (PR-1: behavior-neutral reorg)
 
-**Status:** Design / approved scope
+**Status:** IMPLEMENTED (PR #986). Two corrections vs the design below, made
+during implementation against the real import graph:
+
+1. **`qemu_build.py` and `cloudinit.py` stay supervisor/controller-side** (the
+   design's §3/§4.2 moved them to the agent). Their only importer is the
+   supervisor `pool` (`build_qemu_configuration` turns a spec into the controller
+   config; `cloudinit` builds the cloud-init drive). Only `translate.py` is agent
+   code and moved to `orchestrator/`. `configuration.py` -> `contract/` as
+   designed.
+2. **The three leaks are documented import-linter residuals, not fixed here.**
+   The supervisor->agent edges are the shared port-mappings DB
+   (`models`/`pool`/`local`/`daemon` -> `orchestrator.metrics`) and the
+   aggregate-settings cache (`pool` -> `orchestrator.utils`); both are entangled
+   with the DB-engine / policy layer and are behavior-affecting to extract, so
+   they ride with the `VmExecution`/`VmPool` cleave (parent §4). `AMDSEVPolicy`
+   stays in `local.py` (third-party `aleph_message`, not an agent-boundary edge).
+   The import-linter encodes these as explicit `ignore_imports`, and uses
+   `allow_indirect_imports` so only direct edges are enforced (the foundation
+   modules `conf`/`resources` themselves leak to `orchestrator`, a separate
+   pre-existing tangle).
+
+**Status (original):** Design / approved scope
 **Date:** 2026-06-19
 **Owner:** Olivier Desenfans
 **Repo:** `aleph-im/aleph-vm`
