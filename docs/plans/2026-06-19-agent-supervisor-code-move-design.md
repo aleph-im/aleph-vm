@@ -43,34 +43,42 @@ Packaging follow-through (service *names* are unchanged, only module targets):
 The message->spec downloader extracted in PR-2 moves into `agent/` next to
 `translate.py` / `qemu_build.py` (which PR-1 already placed agent-side).
 
-### 2.3 `controllers/` becomes supervisor-owned
+### 2.3 `controllers/` -> `supervisor/controllers/`
 
 After PR-2, `controllers/` holds only the running controller, the runtime
 resource holder (`from_spec`), and management (`QemuVmClient`, `backup`,
 `snapshots`). It is the supervisor's execution worker.
 
-**Recommended: keep `controllers/` as a top-level package, reclassified
-supervisor-owned, without physically nesting it under `supervisor/`.** Rationale:
-the controller subprocess is launched as `python3 -m aleph.vm.controllers
---config=...` from `aleph-vm-controller@.service`; keeping the package path
-stable means that entry point and the on-disk controller config contract do not
-churn. The import-linter already places `controllers` on the supervisor side, so
-the name is the only thing that would change, and it carries no architectural
-weight.
+**Decision (2026-06-19): move it to `supervisor/controllers/`.** The controller
+is spawned by the supervisor (via its `SystemDManager`) and is logically the
+supervisor's execution worker; nesting reflects that, keeps the supervisor
+subtree together, and lines up with parent-design Phase 2, where the Python
+hypervisor and its controllers are swapped for Rust as one unit. Use `git mv` so
+rename detection keeps the diff reviewable.
 
-Alternative (deferred unless wanted): move to `supervisor/controllers/` and
-update `aleph-vm-controller@.service` to `-m aleph.vm.supervisor.controllers`.
-More "correct" nesting, more churn, touches the per-VM service template.
+Entry-point follow-through:
 
-### 2.4 `configuration.py` final home
+- `aleph-vm-controller@.service`: `ExecStart=/usr/bin/python3 -m
+  aleph.vm.supervisor.controllers --config=/var/lib/aleph/vm/%i-controller.json`.
+  The service *name* and the `%i-controller.json` config path are unchanged, so
+  operators and the on-disk config contract are unaffected; only the module
+  target moves. The unit file and the module ship in the same `.deb`, so the
+  rename is internally consistent within any version (already-running controller
+  instances keep running on their old invocation until their next start, which
+  uses the new, consistent unit).
+- `aleph/vm/supervisor/controllers/__main__.py` (moved) keeps the same
+  `--config` CLI surface.
 
-`controllers/configuration.py` is the on-disk config-file schema: the agent
-(`qemu_build`) writes it, the controller subprocess reads it, `local.py` removes
-it. It is a contract between agent and supervisor. Decide in the plan between
-`contract/` (it is genuinely a shared schema) and leaving it in `controllers/`
-(it is read by the controller and the move would touch the config path). Leaning
-`contract/configuration.py` for symmetry with the rest of the wire vocabulary,
-provided it carries no controller-only imports.
+### 2.4 `configuration.py` (already in `contract/` from PR-1)
+
+`controllers/configuration.py`, the on-disk config-file schema (agent
+`qemu_build` writes it, the controller reads it, `local.py` removes it), is
+**already moved to `contract/configuration.py` in PR-1**. It had to be: once
+controllers nests under `supervisor/` here, leaving the schema in
+`supervisor/controllers/` would make agent-side `qemu_build` import
+`supervisor/controllers`, a forbidden `agent -> supervisor` edge. PR-1 does the
+move (its deps are clean: stdlib, pydantic, foundation), so PR-3 has nothing to
+do for it beyond confirming the import paths are already `contract.*`.
 
 ## 3. Enforcement and cleanup
 
@@ -89,7 +97,7 @@ provided it carries no controller-only imports.
   env-only exceptions excepted).
 - **Launch smoke test**: confirm all three entry points still import and start:
   `python -m aleph.vm.agent --print-settings`, `python -m aleph.vm.supervisor`,
-  and the controller `python -m aleph.vm.controllers --config=<sample>`.
+  and the controller `python -m aleph.vm.supervisor.controllers --config=<sample>`.
 - `mypy` baseline unchanged; import-linter passes under the final names.
 - Grep for stale `aleph.vm.orchestrator` references across `packaging/`, docs,
   CI workflows, and tests; none should remain (or only intentional shims).
@@ -111,8 +119,9 @@ The three-PR sequence:
    `supervisor/`, three back-references fixed, import-linter.
 2. **PR-2** (behavior-affecting): split the `Resources` dual personality, finish
    the wire-error vocabulary, remove the two `controllers` residuals.
-3. **PR-3** (behavior-neutral): `orchestrator/` -> `agent/`, controllers
-   reclassified supervisor-owned, final import-linter names.
+3. **PR-3** (behavior-neutral): `orchestrator/` -> `agent/`, `controllers/` ->
+   `supervisor/controllers/`, final import-linter names. (`configuration.py` ->
+   `contract/` already happened in PR-1.)
 
 After PR-3 the only remaining cross-boundary coupling is `agent -> {pool,
 models}`: the `VmExecution`/`VmPool` cleave from the parent design §4, which is a

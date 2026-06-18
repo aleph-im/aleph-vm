@@ -109,9 +109,10 @@ After PR-2:
 - The agent imports its own downloader and catches only `SupervisorError`. The
   two `orchestrator -> controllers` residuals from PR-1 are deleted from the
   import-linter ignore list, and the linter is tightened to forbid them.
-- `controllers/` is now unambiguously a supervisor-owned package (modulo
-  `configuration.py`, the config-file contract). This is what makes PR-3's
-  physical move mechanical.
+- `controllers/` is now unambiguously a supervisor-owned package (its
+  config-file schema, `configuration.py`, already moved to `contract/` in PR-1).
+  This is what makes PR-3's physical move into `supervisor/controllers/`
+  mechanical.
 
 The only remaining documented residual is `orchestrator -> {pool, models}`,
 owned by the separate `VmExecution`/`VmPool` cleave.

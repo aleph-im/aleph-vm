@@ -49,12 +49,14 @@ that fails CI if the boundary is violated again.
 **Non-goals (explicitly deferred to the later behavior-changing step, parent §4 + A.6):**
 
 - Cleaving the `VmExecution` / `VmPool` god-objects.
-- Moving volume download out of `controllers.setup()` (the `Resources` classes).
+- Splitting the `Resources` classes' dual personality (agent message-downloader
+  vs supervisor spec-runtime holder). Volume download is already agent-side
+  (`translate.py`); what remains is prising the shared class apart, which is
+  behavior-affecting. That is PR-2.
 - The wire-error vocabulary that would let `orchestrator/views` stop importing
-  controller exception types.
-- The true "split by concern" of `controllers/` (see §4).
-- The cosmetic `orchestrator/` -> `agent/` package rename (a separate trivial
-  follow-up once the boundary is enforced).
+  controller exception types (also PR-2).
+- The physical `orchestrator/` -> `agent/` and `controllers/` ->
+  `supervisor/controllers/` moves (PR-3).
 
 **Hard constraint: no runtime behavior change.** Every change in this PR is a
 move, a re-export, or an import-direction fix. The existing test suite is the
@@ -63,28 +65,30 @@ contract; it must pass unchanged.
 ## 3. The constraint collision and how it is resolved
 
 The approved direction is "split controllers by concern" (download is agent,
-running is supervisor). But two pieces of the controllers package are used on
-**both** sides today, and separating them is exactly the behavior-changing §4
-work:
+running is supervisor). Most of the controllers package separates cleanly, but
+the `Resources` classes are used on **both** sides in a way that cannot be split
+behavior-neutrally. They are defined inside the controller modules and
+constructed two different ways: the agent's `translate.py` builds them from a
+message (`AlephQemuResources(message)` + `download_all()`) to produce the spec,
+while the running controller builds them from the resolved spec
+(`AlephQemuResources.from_spec(spec)`, no download). Download already lives
+agent-side; what remains tangled is the **single class with two personalities**,
+and prising those apart is exactly the behavior-changing §4 work.
 
-- The `Resources` classes (`AlephQemuResources`, `AlephProgramResources`) are
-  defined inside the controller modules, own the `download_*` methods, and the
-  **running controller's `setup()` calls `download_all()` at runtime**. The
-  agent's `translate.py` also constructs them to read volume structure into the
-  spec. They straddle.
-- `controllers/configuration.py` is the config-file contract: the agent
-  (`qemu_build`) writes it, the controller subprocess reads it, `local.py`
-  removes it.
-
-Because "split by concern" for those pieces cannot be done behavior-neutrally,
-this PR does the part that **is** free and defers the rest:
+So this PR does the part that **is** free and defers the `Resources` split:
 
 - `controllers/qemu/cloudinit.py` moves to the agent (post-#984 it is imported
   **only** by agent code: `translate`, `qemu_build`).
-- `controllers/` otherwise stays a **shared base layer** this round. The import
-  linter forbids `controllers -> agent` and `controllers -> supervisor`, and
-  records the agent->`controllers` (`Resources`) use as a known, documented
-  residual. The true controller split rides along with the §4 cleave.
+- `controllers/configuration.py` moves to `contract/` (it is the on-disk
+  config-file schema both daemons share; its only deps are stdlib, pydantic, and
+  foundation modules, so the move is clean and it removes the agent
+  `qemu_build` -> `controllers` edge).
+- `controllers/` is otherwise classified **supervisor-side** (a worker module the
+  supervisor daemon imports, not the reverse), with two explicit, documented
+  agent residuals: the `Resources` classes and the controller exception types the
+  views catch. The import linter forbids `controllers -> {agent, supervisor
+  daemon modules}` and ignores those two residuals. Removing them is PR-2; the
+  physical move into `supervisor/controllers/` is PR-3.
 
 This is an honest intermediate state: the boundary is enforced, and the
 remaining coupling is *marked*, not hidden.
@@ -100,6 +104,7 @@ Moves out of `supervisor/`:
 | `supervisor/abc.py`        | `contract/abc.py`      | The `Supervisor` ABC. |
 | `supervisor/types.py`      | `contract/types.py`    | `VmId`, `VmInfo`, `VmStatus`, `Backend`, `ConfidentialMode`, `CreateVmSpec`, `GpuSpec`, `PciAddress`, `ErrorCode`, etc. |
 | `SupervisorError` hierarchy from `supervisor/errors.py` | `contract/errors.py` | The error classes only. They already have no backend dependency. |
+| `controllers/configuration.py` | `contract/configuration.py` | On-disk controller config-file schema, shared by agent (writes) and controller (reads). Deps are clean (stdlib, pydantic, foundation). |
 
 `errors.py` **splits**: the `SupervisorError` subclasses (the closed
 vocabulary, one-to-one with `ErrorCode`) go to `contract/errors.py`; the
@@ -142,10 +147,11 @@ are the violations this PR removes).
 No file movement, but each is *classified* for the linter:
 
 - **Supervisor-side**: `pool.py`, `models.py` (supervisor-owned objects; the
-  agent's reach-ins into them are the documented residuals of §6). `hypervisors/`,
-  `sevclient.py`.
+  agent's reach-ins into them are the documented residuals of §6).
+  `controllers/` (a supervisor worker module, with the two agent residuals of §3
+  until PR-2), `hypervisors/`, `sevclient.py`.
 - **Shared base layer** (importable by both, importing neither side):
-  `controllers/` (see §3), `network/`, `migration/`, `storage.py`.
+  `network/`, `migration/`, `storage.py`.
 - **Foundation** (importable by everything, importing nothing above it):
   `conf.py`, `vm_type.py`, `resources.py`, `constants.py`, `version.py`,
   `utils/`.
@@ -199,15 +205,18 @@ the documented residual list:
    migration, hypervisors}`. It may import only the foundation modules (§4.4).
 2. **Supervisor never imports the agent**: forbid `supervisor -> orchestrator`
    (the §5 fixes make this hold).
-3. **The shared base never imports either side**: forbid
-   `{controllers, network, migration} -> {orchestrator, supervisor}`.
-4. **Agent never imports the supervisor implementation**: forbid
+3. **Controllers are a supervisor worker, not the daemon**: forbid
+   `controllers -> {orchestrator, supervisor}` (controllers may import only
+   `contract`, the shared base, and foundation).
+4. **The shared base never imports either side**: forbid
+   `{network, migration} -> {orchestrator, supervisor}`.
+5. **Agent never imports the supervisor implementation**: forbid
    `orchestrator -> {supervisor.local, supervisor.grpc_server,
    supervisor.grpc_client, supervisor.daemon, supervisor.proto_convert,
    supervisor._pb, supervisor.error_mapping}`. The agent may import
    `contract` and `supervisor` is otherwise off-limits except via the ABC, which
    now lives in `contract`.
-5. **Allowed residuals** (explicit `ignore_imports`, each with a comment
+6. **Allowed residuals** (explicit `ignore_imports`, each with a comment
    pointing at the §4 cleave): `orchestrator -> controllers` (the `Resources`
    classes, and the running-controller exception types still caught by views)
    and `orchestrator -> {pool, models}`. These are the seams the next step
@@ -248,6 +257,9 @@ regression of a fixed one, fails CI.
    `contract/errors.py` vs `supervisor/error_mapping.py` split, the port-mappings
    relocation target, the `AMDSEVPolicy` decision, the import-linter config and
    its residual-ignore list, and the test run checklist.
-3. After this lands: the parent design's §4 cleave (`VmExecution`/`VmPool`,
-   download extraction, wire-error vocabulary) and then the true controller
-   split; separately, the cosmetic `orchestrator/` -> `agent/` rename.
+3. After this lands: **PR-2** (the `Resources` dual-personality split + wire-error
+   vocabulary, see `2026-06-19-controller-split-by-concern-design.md`), then
+   **PR-3** (the physical `orchestrator/` -> `agent/` and `controllers/` ->
+   `supervisor/controllers/` moves, see
+   `2026-06-19-agent-supervisor-code-move-design.md`). The `VmExecution`/`VmPool`
+   cleave (parent §4) remains a separate, adjacent effort.
