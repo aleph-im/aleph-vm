@@ -555,9 +555,6 @@ class VmPool:
         execution.mapped_ports = await get_port_mappings(execution.vm_hash)
         if execution.mapped_ports:
             await execution.recreate_port_redirect_rules()
-        # Re-save so the record survives for registry rehydration.
-        execution.record = None
-        await execution.save()
 
     def _schedule_forget_on_stop(self, execution: VmExecution):
         """Create a task that will remove the VM from the pool after it stops."""

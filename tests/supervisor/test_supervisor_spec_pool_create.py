@@ -102,7 +102,7 @@ async def test_create_vm_from_spec_wires_into_pool(monkeypatch):
     execution = await pool.create_vm_from_spec(_spec())
 
     assert pool.executions[execution.vm_hash] is execution
-    assert execution.message is None
+    assert execution.vm_spec is not None
     assert execution.vm is not None
     build_cfg.assert_awaited_once()
     save_cfg.assert_called_once_with(_HASH, "fake-config")

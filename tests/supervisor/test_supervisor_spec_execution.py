@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
 from aleph.vm.models import VmExecution
@@ -54,15 +53,13 @@ def test_spec_properties_for_qemu_instance():
     assert execution.is_instance is True
     assert execution.is_program is False
     assert execution.is_confidential is False
-    assert execution.hypervisor is HypervisorType.qemu
 
 
-def test_from_spec_sets_spec_and_no_message():
+def test_from_spec_sets_spec():
     execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
 
     assert execution.spec is not None
-    assert execution.message is None
-    assert execution.original is None
+    assert execution.vm_spec is execution.spec
     assert execution.vm_hash == ItemHash(_HASH)
     assert execution.persistent is True
     assert execution.resources is None
@@ -108,7 +105,7 @@ async def test_create_builds_qemu_instance_from_spec():
 
 
 @pytest.mark.asyncio
-async def test_start_skips_configure_and_save_for_spec(monkeypatch):
+async def test_start_skips_configure_for_spec(monkeypatch):
     systemd = MagicMock()
     systemd.enable_and_start = AsyncMock()
     execution = VmExecution.from_spec(make_spec(internet=False), snapshot_manager=None, systemd_manager=systemd)
@@ -122,12 +119,9 @@ async def test_start_skips_configure_and_save_for_spec(monkeypatch):
     execution.vm.start_guest_api = AsyncMock()
     # Controller comes up immediately.
     monkeypatch.setattr(VmExecution, "non_blocking_wait_for_boot", AsyncMock(return_value=True))
-    save_record = AsyncMock()
-    monkeypatch.setattr("aleph.vm.models.save_record", save_record)
 
     await execution.start(write_config=False)
 
     execution.vm.configure.assert_not_awaited()
     systemd.enable_and_start.assert_awaited_once_with(execution.controller_service)
-    save_record.assert_not_awaited()  # spec path keeps no DB record
     assert execution.ready_event.is_set()

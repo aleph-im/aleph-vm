@@ -84,6 +84,6 @@ async def test_restore_running_execution_from_config_registers_execution(monkeyp
     assert _HASH in pool.executions
     execution = pool.executions[_HASH]
     assert execution.spec is not None
-    assert execution.message is None
+    assert execution.vm_spec is execution.spec
     fake_vm.start_guest_api.assert_awaited_once()
     assert execution.ready_event.is_set()

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph_message.models import ItemHash
-from aleph_message.models.execution.environment import MachineResources
 
 from aleph.vm.conf import settings
 from aleph.vm.controllers.configuration import (
@@ -23,6 +22,7 @@ from aleph.vm.controllers.qemu.instance import AlephQemuResources, Configuration
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.sizes import MiB
 from aleph.vm.storage import get_existing_file
+from aleph.vm.supervisor.types import HardwareResources
 
 if TYPE_CHECKING:
     from aleph.vm.supervisor.types import CreateVmSpec
@@ -75,7 +75,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     resources: AlephQemuConfidentialResources
     enable_console: bool
     enable_networking: bool
-    hardware_resources: MachineResources
+    hardware_resources: HardwareResources
     tap_interface: TapInterface | None = None
     vm_configuration: ConfigurationType | None
     is_instance: bool
@@ -99,7 +99,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         resources: AlephQemuConfidentialResources,
         confidential_policy: int,
         enable_networking: bool = False,
-        hardware_resources: MachineResources = MachineResources(),
+        hardware_resources: HardwareResources = HardwareResources(),
         tap_interface: TapInterface | None = None,
     ):
         super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
