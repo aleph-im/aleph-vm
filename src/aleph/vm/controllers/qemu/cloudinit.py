@@ -15,16 +15,12 @@ See also the cloud-localds  man page (1)
 
 import base64
 import json
-from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import yaml
 from aleph_message.models import ItemHash
 
-from aleph.vm.conf import settings
-from aleph.vm.controllers.interface import AlephVmControllerInterface
-from aleph.vm.hypervisors.firecracker.config import Drive
-from aleph.vm.utils import is_command_available, run_in_subprocess
+from aleph.vm.utils import run_in_subprocess
 
 
 def get_hostname_from_hash(vm_hash: ItemHash) -> str:
@@ -174,52 +170,4 @@ async def create_cloud_init_drive_image(
                 user_data_config_file.name,
                 metadata_config_file.name,
             ]
-        )
-
-
-class CloudInitMixin(AlephVmControllerInterface):
-    async def _create_cloud_init_drive(self, install_guest_agent: bool = True) -> Drive:
-        """Creates the cloud-init volume to configure and set up the VM"""
-        ssh_authorized_keys = self.resources.message_content.authorized_keys or []
-        if settings.USE_DEVELOPER_SSH_KEYS:
-            ssh_authorized_keys += settings.DEVELOPER_SSH_KEYS
-        ip = self.get_ip()
-        route = self.get_ip_route()
-        ipv6 = self.get_ipv6()
-        ipv6_gateway = self.get_ipv6_gateway()
-        vm_id = self.vm_id
-        nameservers = settings.DNS_NAMESERVERS
-        hostname = get_hostname_from_hash(self.vm_hash)
-
-        disk_image_path: Path = settings.EXECUTION_ROOT / f"cloud-init-{self.vm_hash}.img"
-        assert is_command_available("cloud-localds")
-
-        # Check if this VM has GPUs to enable PCI boot optimizations
-        has_gpu = bool(self.resources.gpus) if hasattr(self.resources, "gpus") else False
-        is_confidential = (
-            self.resources.message_content.environment.trusted_execution is not None
-            if hasattr(self.resources, "message_content")
-            else False
-        )
-
-        await create_cloud_init_drive_image(
-            disk_image_path,
-            hostname,
-            vm_id,
-            ip,
-            ipv6,
-            ipv6_gateway,
-            nameservers,
-            route,
-            ssh_authorized_keys,
-            has_gpu=has_gpu,
-            is_confidential=is_confidential,
-            install_guest_agent=install_guest_agent,
-        )
-
-        return Drive(
-            drive_id="Fake",
-            path_on_host=disk_image_path,
-            is_root_device=False,
-            is_read_only=True,
         )
