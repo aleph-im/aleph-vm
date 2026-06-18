@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -142,6 +143,29 @@ def get_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmR
     if record is None:
         raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
     return record
+
+
+# A confidential instance is created through the allocation path, where
+# create_vm (build config + start to the awaiting state) can take ~20s; the
+# scheduler exposes placement earlier, so the owner's one-shot init-session
+# call can land before the agent has recorded the VM (the record is written
+# once create completes and the VM is awaiting init). Wait it out instead of
+# 404ing the owner. Happy path returns in one poll; the cap only bounds a
+# genuinely-missing VM.
+_CONFIDENTIAL_RECORD_WAIT_SECONDS = 120
+_CONFIDENTIAL_RECORD_POLL_INTERVAL = 2.0
+
+
+async def wait_for_agent_record_or_404(request: web.Request, vm_hash: ItemHash) -> AgentVmRecord:
+    registry = request.app["vm_registry"]
+    deadline = asyncio.get_running_loop().time() + _CONFIDENTIAL_RECORD_WAIT_SECONDS
+    while True:
+        record = registry.get(vm_hash)
+        if record is not None:
+            return record
+        if asyncio.get_running_loop().time() >= deadline:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
+        await asyncio.sleep(_CONFIDENTIAL_RECORD_POLL_INTERVAL)
 
 
 async def check_owner_permissions(authenticated_sender: str, message: BaseExecutableContent) -> bool:
@@ -371,7 +395,10 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
     """Start the confidential virtual machine if possible."""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        record = get_agent_record_or_404(request, vm_hash)
+        # The owner's init-session may arrive while the confidential create is
+        # still in flight (see wait_for_agent_record_or_404); wait for the VM to
+        # be recorded rather than 404 their single call.
+        record = await wait_for_agent_record_or_404(request, vm_hash)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
