@@ -26,7 +26,10 @@ async def _patch_session_maker(async_session, monkeypatch):
     """Redirect AsyncSessionMaker in metrics module to the in-memory DB."""
     import aleph.vm.orchestrator.metrics as metrics_mod
 
-    monkeypatch.setattr(metrics_mod, "AsyncSessionMaker", async_session)
+    # raising=False: AsyncSessionMaker is a bare module annotation until
+    # setup_engine() binds it, so whether the attribute already exists depends
+    # on test order. Redirect it regardless of any prior setup_engine() call.
+    monkeypatch.setattr(metrics_mod, "AsyncSessionMaker", async_session, raising=False)
 
 
 @pytest.mark.asyncio
