@@ -15,6 +15,7 @@ from aleph.vm.models import VmExecution
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.orchestrator import metrics
 from aleph.vm.storage import get_message
+from aleph.vm.supervisor.translate import build_create_vm_spec
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -101,14 +102,8 @@ async def test_create_qemu_instance(mocker):
 
     mock_systemd_manager = MockSystemDManager()
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message.content,
-        original=message.content,
-        snapshot_manager=None,
-        systemd_manager=None,
-        persistent=True,
-    )
+    spec = await build_create_vm_spec(vm_hash, message.content)
+    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_id = 3
@@ -191,14 +186,8 @@ async def test_create_qemu_instance_online(mocker):
     )
     network.setup()
 
-    execution = VmExecution(
-        vm_hash=vm_hash,
-        message=message.content,
-        original=message.content,
-        snapshot_manager=None,
-        systemd_manager=mock_systemd_manager,
-        persistent=True,
-    )
+    spec = await build_create_vm_spec(vm_hash, message.content)
+    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=mock_systemd_manager)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_id = 3
