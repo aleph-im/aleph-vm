@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 import shutil
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -22,21 +22,22 @@ from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.orchestrator.metrics import get_port_mappings
 from aleph.vm.orchestrator.utils import update_aggregate_settings
-from aleph.vm.resources import GpuDevice, InsufficientResourcesError, get_gpu_devices
-from aleph.vm.supervisor.errors import (
-    InvalidBackendError,
-    TeeUnavailableError,
-    VmAlreadyExistsError,
+from aleph.vm.resources import (
+    GpuDevice,
+    HostGPU,
+    InsufficientResourcesError,
+    get_gpu_devices,
 )
+from aleph.vm.supervisor.errors import InvalidBackendError, VmAlreadyExistsError
 from aleph.vm.supervisor.qemu_build import (
+    build_qemu_confidential_configuration,
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
-from aleph.vm.supervisor.types import Backend, CreateVmSpec
+from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
-from .haproxy import fetch_list_and_update
 from .models import ExecutableContent, VmExecution
 from .network.firewall import (
     get_existing_nftables_ruleset,
@@ -155,11 +156,12 @@ class VmPool:
         locking because this method does not ``await``.
 
         The message-free spec path (:meth:`create_vm_from_spec`) does not
-        call this method: admission for spec-built VMs is the agent's
-        responsibility, enforced before it asks the supervisor to create.
-        Spec-built executions still contribute to the committed tally here
-        (via ``allocated_memory_mib`` / ``allocated_vcpus``), so they are
-        counted against any later message-driven admission check.
+        call this method; it enforces its own capacity admission via
+        :meth:`check_spec_admission`, which the engine runs atomically inside
+        the create path under ``creation_lock``. Spec-built executions still
+        contribute to the committed tally here (via ``allocated_memory_mib`` /
+        ``allocated_vcpus``), so they are counted against any later
+        message-driven admission check.
 
         Args:
             message: The executable content being evaluated for admission.
@@ -278,6 +280,108 @@ class VmPool:
                     "vcpus": available_vcpus,
                     "memory_mib": available_memory_mib,
                     "disk_mib": available_disk_mib,
+                },
+            )
+
+    def check_spec_admission(self, spec: CreateVmSpec) -> None:
+        """Refuse a message-free CreateVmSpec when it would exceed host capacity.
+
+        The spec-path counterpart of :meth:`check_admission`. It reuses the
+        same two-bucket memory accounting and vCPU overcommit ceiling, but
+        reads its requirements from the spec (``spec.memory_mib`` /
+        ``spec.vcpus``) instead of an Aleph message. The bucket follows the
+        spec backend: QEMU specs are instances (instance bucket), Firecracker
+        specs are programs (program bucket). This mirrors
+        :meth:`check_admission`'s ``isinstance(message, InstanceContent)`` split
+        so a program routed through the spec path is not starved by the instance
+        ceiling, which can be 0 on a small host with a large program reserve.
+
+        Disk admission is deferred: ``DiskSpec`` carries no ``size_mib`` today,
+        so there is nothing to sum against ``calculate_available_disk``. Revisit
+        when the spec carries disk sizes (mirrors the disk branch of
+        :meth:`check_admission`).
+
+        Called inside :meth:`create_vm_from_spec` under ``creation_lock`` so the
+        check and the subsequent registration are atomic. Reading
+        ``self.executions`` here is safe without locking because this method
+        does not ``await``.
+
+        Raises:
+            InsufficientResourcesError: The memory or vCPU bucket would be
+                exceeded; carries structured ``required`` / ``available`` dicts.
+        """
+        required_memory_mib = spec.memory_mib
+        required_vcpus = spec.vcpus
+
+        # QEMU specs are instances; Firecracker specs are programs.
+        is_instance = spec.backend is not Backend.FIRECRACKER
+
+        committed_instance_memory_mib = 0
+        committed_program_memory_mib = 0
+        committed_vcpus = 0
+        for execution in tuple(self.executions.values()):
+            memory = execution.allocated_memory_mib
+            vcpus = execution.allocated_vcpus
+            if not memory and not vcpus:
+                continue
+            if execution.is_instance:
+                committed_instance_memory_mib += memory
+            else:
+                committed_program_memory_mib += memory
+            committed_vcpus += vcpus
+
+        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
+        physical_cores = psutil.cpu_count() or 1
+        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
+        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+
+        if is_instance:
+            bucket_name = "instance"
+            committed_memory_mib = committed_instance_memory_mib
+            memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
+        else:
+            bucket_name = "program"
+            committed_memory_mib = committed_program_memory_mib
+            memory_cap_mib = program_reserved_mib
+        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
+
+        errors: list[str] = []
+
+        if committed_memory_mib + required_memory_mib > memory_cap_mib:
+            errors.append(
+                f"Memory ({bucket_name} bucket): "
+                f"required {required_memory_mib} MiB, "
+                f"committed {committed_memory_mib} MiB, "
+                f"cap {memory_cap_mib} MiB "
+                f"(physical {physical_memory_mib} MiB, "
+                f"host_reserved {host_reserved_mib} MiB, "
+                f"program_reserved {program_reserved_mib} MiB)"
+            )
+
+        if committed_vcpus + required_vcpus > vcpu_cap:
+            errors.append(
+                f"vCPUs: required {required_vcpus}, "
+                f"committed {committed_vcpus}, "
+                f"cap {vcpu_cap} "
+                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
+            )
+
+        if errors:
+            detail = "Insufficient capacity to create VM. " + "; ".join(errors)
+            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
+            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
+            raise InsufficientResourcesError(
+                detail,
+                required={
+                    "vcpus": required_vcpus,
+                    "memory_mib": required_memory_mib,
+                    # Disk admission is deferred (DiskSpec has no size_mib).
+                    "disk_mib": 0,
+                },
+                available={
+                    "vcpus": available_vcpus,
+                    "memory_mib": available_memory_mib,
+                    "disk_mib": 0,
                 },
             )
 
@@ -410,12 +514,6 @@ class VmPool:
         by build_qemu_configuration (0.C), so the message-coupled
         vm.configure() is skipped (start(write_config=False)).
         """
-        if spec.tee is not None:
-            # The spec path builds a plain QemuVMConfiguration; a confidential
-            # launch (QemuConfidentialVMConfiguration) is not wired yet.
-            # Failing beats silently booting the VM unprotected.
-            msg = "Confidential (TEE) VMs are not supported by the spec path yet"
-            raise TeeUnavailableError(msg)
         if spec.backend is Backend.FIRECRACKER:
             return await self._create_firecracker_from_spec(spec)
 
@@ -426,11 +524,51 @@ class VmPool:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
 
+            # Authoritative capacity admission, folded into the create path so
+            # the check and the registration below are atomic under the lock.
+            self.check_spec_admission(spec)
+
+            # GPU reservation, atomic with the registration below. The spec
+            # carries GPU REQUESTS (device_id, empty pci_host); resolve each to
+            # a concrete available host card and rewrite the spec with the
+            # resolved pci_host so build_qemu_configuration / from_spec see it.
+            # Mirrors the message path (create_a_vm + prepare_gpus). The engine
+            # owns reservation handling end to end: it consumes this OWNER's own
+            # reservation (spec.owner_address, made via reserve_resources) and
+            # skips reservations still held by OTHER users.
+            resolved_host_gpus: list[HostGPU] = []
+            if spec.gpus:
+                resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_address)
+                spec = replace(
+                    spec,
+                    gpus=[
+                        GpuSpec(
+                            pci_host=PciAddress(device.pci_host),
+                            supports_x_vga=device.has_x_vga_support,
+                            device_id=device.device_id,
+                            model=device.model or "",
+                        )
+                        for device in resolved_devices
+                    ],
+                )
+                resolved_host_gpus = [
+                    HostGPU(
+                        pci_host=device.pci_host,
+                        supports_x_vga=device.has_x_vga_support,
+                        device_id=device.device_id,
+                        model=device.model,
+                    )
+                    for device in resolved_devices
+                ]
+
             execution = VmExecution.from_spec(
                 spec,
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
             )
+            # Attach the resolved GPUs so uses_gpu() holds them against other
+            # creates and _to_vm_info reports them, exactly like the message path.
+            execution.gpus = resolved_host_gpus
             self.executions[vm_hash] = execution
 
             tap_interface = None
@@ -446,10 +584,25 @@ class VmPool:
                         await tap_interface.delete()
                     await self.network.create_tap(vm_id, tap_interface)
 
-                config = await build_qemu_configuration(spec, vm_id, tap_interface)
+                # Confidential VMs get a QemuConfidentialVMConfiguration; the
+                # GPU resolution above already rewrote spec.gpus with concrete
+                # pci_hosts, so the confidential config carries the resolved
+                # GPUs too. SAFETY-CRITICAL: a build failure (e.g. missing
+                # firmware) propagates and aborts the create; we never fall back
+                # to the plain QemuVMConfiguration, which would boot the VM
+                # unprotected.
+                if spec.tee is not None:
+                    config = await build_qemu_confidential_configuration(spec, vm_id, tap_interface)
+                else:
+                    config = await build_qemu_configuration(spec, vm_id, tap_interface)
                 save_controller_configuration(spec.vm_id, config)
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                # start(write_config=False): the controller config was just
+                # written above. For a confidential VM, VmExecution.start leaves
+                # it in awaiting_confidential_init (is_confidential is True, so
+                # it does NOT enable_and_start the controller); the owner starts
+                # it later via initialize_confidential.
                 await execution.start(write_config=False)
                 # Reuse persisted host ports across restarts. The agent then
                 # reconciles the aggregate settings through add_port_forward,
@@ -475,16 +628,13 @@ class VmPool:
         Boots the VM from the spec's resolved paths and, when the spec carries
         a guest channel, waits for the guest's ready signal as part of boot.
         The guest-level protocols spoken over the channel are the client's
-        business (VmInfo.guest_channel_path). Admission for spec-built VMs is
-        the agent's responsibility (see check_admission docstring).
+        business (VmInfo.guest_channel_path). Capacity admission is enforced by
+        the engine via check_spec_admission, atomically inside this create path.
         """
         if spec.guest_channel is None:
             # Firecracker VMs without a guest channel (full instances under
             # FC) have no spec-path boot flow yet; they keep the legacy path.
             msg = "Firecracker spec VMs require a guest_channel"
-            raise InvalidBackendError(msg)
-        if spec.persistent:
-            msg = "Persistent Firecracker spec VMs are not supported yet; use the legacy create path"
             raise InvalidBackendError(msg)
 
         vm_hash = ItemHash(spec.vm_id)
@@ -493,6 +643,11 @@ class VmPool:
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
+
+            # Authoritative capacity admission, atomic with the registration
+            # below. GPU reservation stays on the message path (see the note in
+            # create_vm_from_spec); spec programs carry no GPUs.
+            self.check_spec_admission(spec)
 
             execution = VmExecution.from_spec(
                 spec,
@@ -515,8 +670,11 @@ class VmPool:
                     await self.network.create_tap(vm_id, tap_interface)
 
                 execution.create(vm_id=vm_id, tap_interface=tap_interface)
-                # start() boots the VMM and blocks through the init-ready
-                # handshake; configure() is a no-op for ephemeral programs.
+                # start() boots the program: ephemeral programs run the VMM
+                # directly and block through the init-ready handshake;
+                # persistent programs save the controller config and boot under
+                # systemd, then wait for init (VmExecution.start branches on
+                # self.persistent).
                 await execution.start()
             except Exception:
                 if execution.vm:
@@ -703,8 +861,6 @@ class VmPool:
 
         self._cleanup_orphan_resources()
 
-        if self.executions:
-            await self.update_domain_mapping(force_update=True)
         logger.info("Loaded %d executions", len(self.executions))
 
     async def _restore_network(self, vm_id: int, vm_hash: ItemHash) -> TapInterface | None:
@@ -1035,19 +1191,50 @@ class VmPool:
                 raise Exception(err)
         return resources
 
-    async def update_domain_mapping(self, force_update=False):
-        socket = settings.HAPROXY_SOCKET
-        if not pathlib.Path(socket).exists():
-            logger.info("HAProxy not running? socket not found, skip domain mapping update")
-            return False
+    def _resolve_spec_gpus(self, requested: list[GpuSpec], *, owner: str = "") -> list[GpuDevice]:
+        """Resolve message-free GPU REQUESTS to concrete available host cards.
 
-        local_vms = list(self.executions.keys())
+        The spec-path counterpart of find_resources_available_for_user, matching
+        each request by device_id against get_available_gpus() (cards not used by
+        any current execution). The engine owns reservation handling end to end:
+        a reservation held by THIS owner (``owner`` == spec.owner_address, made
+        via the reserve_resources endpoint) is consumed - the card is taken and
+        its reservation dropped - while a reservation held by ANOTHER user blocks
+        the card. get_valid_reservation drops expired reservations as a side
+        effect, so a stale hold never blocks a request.
 
-        await fetch_list_and_update(
-            socket,
-            local_vms,
-            force_update=force_update,
-        )
+        Called inside create_vm_from_spec under creation_lock so resolution and
+        the subsequent registration are atomic (no card is double-assigned).
+
+        Raises:
+            InsufficientResourcesError: a requested device_id has no available
+                host card free of another user's reservation.
+        """
+        available_gpus = self.get_available_gpus()
+        resolved: list[GpuDevice] = []
+        for request in requested:
+            for available_gpu in available_gpus:
+                if available_gpu.device_id != request.device_id:
+                    continue
+                reservation = self.get_valid_reservation(available_gpu)
+                if reservation is not None and reservation.user != owner:
+                    # Reserved by another user: not available to this owner.
+                    continue
+                if reservation is not None:
+                    # This owner's own reservation: consume it.
+                    del self.reservations[available_gpu]
+                available_gpus.remove(available_gpu)
+                resolved.append(available_gpu)
+                break
+            else:  # for-else: no match for this request
+                detail = f"No available GPU matching device_id {request.device_id!r}"
+                logger.warning(detail)
+                raise InsufficientResourcesError(
+                    detail,
+                    required={"gpu_device_id": request.device_id},
+                    available={"gpus": [gpu.device_id for gpu in self.get_available_gpus()]},
+                )
+        return resolved
 
 
 class Reservation:

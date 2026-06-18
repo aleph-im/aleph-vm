@@ -500,6 +500,7 @@ message MigrationInfo {
 // fetches). The contract needs reshaping for host-to-host transport
 // before Plan 0.C wires real implementations. See design doc §9 open
 // questions.
+// Phase 1 removed the directory-based migration; drop these RPCs in the Phase 2 proto pass.
 message ExportVmRequest {
   string vm_id = 1;
   string destination_dir = 2;        // PROVISIONAL: local path on the host

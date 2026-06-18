@@ -72,25 +72,14 @@ async def test_fetch_list(mock_sample_domain_instance_list):
     assert len(instance_list) == 9
 
 
-def test_resolve_vm_ip():
-    assert haproxy._resolve_vm_ip("172.16.4.1/32") == "172.16.4.2"
-    assert haproxy._resolve_vm_ip("172.16.11.1/32") == "172.16.11.2"
-    assert haproxy._resolve_vm_ip("172.16.4.2") == "172.16.4.2"
-    assert haproxy._resolve_vm_ip(None) is None
-
-
-def test_build_map_entries():
-    instances = [
-        {
-            "name": "echo.agot.be",
-            "ipv4": {"local": "172.16.4.1/32"},
-        },
-        {
-            "name": "skip.example.com",
-            "ipv4": {"local": None},
-        },
+def test_build_map_entries_from_vm_ips():
+    domain_records = [
+        {"name": "echo.agot.be", "item_hash": "aa" * 32, "ipv4": {"local": "172.16.4.1/32"}},
+        {"name": "skip.example.com", "item_hash": "bb" * 32, "ipv4": {"local": "172.16.5.1/32"}},
     ]
-    entries = haproxy._build_map_entries(instances)
+    vm_ip_by_hash = {"aa" * 32: "172.16.4.2"}
+    entries = haproxy.build_map_entries_from_vm_ips(domain_records, vm_ip_by_hash)
+    # Only the record whose item_hash matches a local VM is kept.
     assert entries == {"echo.agot.be": "172.16.4.2"}
 
 
@@ -145,24 +134,16 @@ def test_sync_runtime_map(mock_haproxy_socket):
     assert "add map /etc/haproxy/test.map api.example.com 172.16.5.2" in mock_haproxy_socket.commands
 
 
-def test_update_backends_syncs_when_runtime_empty(mock_haproxy_socket, tmp_path):
+def test_write_entries_to_backend_syncs_when_runtime_empty(mock_haproxy_socket, tmp_path):
     """After HAProxy restart, map file is correct but runtime is empty."""
     map_file = tmp_path / "test.map"
     # Pre-populate file so file_updated=False
     map_file.write_text("echo.agot.be 172.16.4.2\n")
 
-    instances = [
-        {
-            "name": "echo.agot.be",
-            "item_hash": "deca" * 16,
-            "ipv4": {"local": "172.16.4.1/32"},
-        }
-    ]
-
-    haproxy.update_backends(
+    haproxy.write_entries_to_backend(
         map_file_path=str(map_file),
         socket_path=mock_haproxy_socket.socket_path,
-        instances=instances,
+        entries={"echo.agot.be": "172.16.4.2"},
     )
 
     # Runtime was empty, so sync should have happened
@@ -170,7 +151,7 @@ def test_update_backends_syncs_when_runtime_empty(mock_haproxy_socket, tmp_path)
     assert "add map" in " ".join(mock_haproxy_socket.commands)
 
 
-def test_update_backends_skips_when_in_sync(mock_haproxy_socket, tmp_path):
+def test_write_entries_to_backend_skips_when_in_sync(mock_haproxy_socket, tmp_path):
     """When file and runtime match, no update needed."""
     map_file = tmp_path / "test.map"
     map_file.write_text("echo.agot.be 172.16.4.2\n")
@@ -178,40 +159,24 @@ def test_update_backends_skips_when_in_sync(mock_haproxy_socket, tmp_path):
     # Pre-populate runtime
     mock_haproxy_socket.runtime_mappings["echo.agot.be"] = "172.16.4.2"
 
-    instances = [
-        {
-            "name": "echo.agot.be",
-            "item_hash": "deca" * 16,
-            "ipv4": {"local": "172.16.4.1/32"},
-        }
-    ]
-
-    haproxy.update_backends(
+    haproxy.write_entries_to_backend(
         map_file_path=str(map_file),
         socket_path=mock_haproxy_socket.socket_path,
-        instances=instances,
+        entries={"echo.agot.be": "172.16.4.2"},
     )
 
     # Only show map for checking, no clear/add
     assert "clear map" not in " ".join(mock_haproxy_socket.commands)
 
 
-def test_update_backends_with_multidigit_octets(mock_haproxy_socket, tmp_path):
-    """Regression: IP 172.16.11.1 should become 172.16.11.2, not 172.16.2."""
+def test_write_entries_to_backend_writes_ip_verbatim(mock_haproxy_socket, tmp_path):
+    """The VM IP is written exactly as provided by the supervisor."""
     map_file = tmp_path / "test.map"
 
-    instances = [
-        {
-            "name": "n8n.aleph.im",
-            "item_hash": "deca" * 16,
-            "ipv4": {"local": "172.16.11.1/32"},
-        }
-    ]
-
-    haproxy.update_backends(
+    haproxy.write_entries_to_backend(
         map_file_path=str(map_file),
         socket_path=mock_haproxy_socket.socket_path,
-        instances=instances,
+        entries={"n8n.aleph.im": "172.16.11.2"},
     )
 
     content = map_file.read_text()

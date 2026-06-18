@@ -7,7 +7,7 @@ import pytest
 from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.supervisor.errors import InternalSupervisorError
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import LogChunk, LogSource, VmId
 
 VM_ID = VmId("vm1")
@@ -50,9 +50,9 @@ def _make_execution_with_vm(vm) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_get_logs_returns_journald_history(monkeypatch):
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
 
@@ -68,9 +68,9 @@ async def test_get_logs_returns_journald_history(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_logs_max_lines_from_tail(monkeypatch):
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
 
@@ -79,7 +79,7 @@ async def test_get_logs_max_lines_from_tail(monkeypatch):
 
     # Also check head behavior
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
     chunks_head = await supervisor.get_logs(VM_ID, max_lines=1, from_tail=False)
@@ -90,9 +90,9 @@ async def test_get_logs_max_lines_from_tail(monkeypatch):
 async def test_get_logs_unknown_vm_returns_history_not_raises(monkeypatch):
     """get_logs no longer raises VmNotFoundError — history for stopped VMs is valid."""
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
 
@@ -105,9 +105,9 @@ async def test_get_logs_unknown_vm_returns_history_not_raises(monkeypatch):
 async def test_get_logs_raises_supervisor_error_on_journald_oserror(monkeypatch):
     """journald OSError in get_logs must surface as InternalSupervisorError."""
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: (_ for _ in ()).throw(OSError("journald unavailable")),
     )
 
@@ -118,9 +118,9 @@ async def test_get_logs_raises_supervisor_error_on_journald_oserror(monkeypatch)
 @pytest.mark.asyncio
 async def test_get_logs_returns_empty_when_no_history(monkeypatch):
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter([]),
     )
 
@@ -137,9 +137,9 @@ async def test_get_logs_returns_empty_when_no_history(monkeypatch):
 async def test_stream_logs_raises_supervisor_error_on_journald_oserror(monkeypatch):
     """journald OSError in stream_logs history read must surface as InternalSupervisorError."""
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: (_ for _ in ()).throw(OSError("journald unavailable")),
     )
 
@@ -155,9 +155,9 @@ async def test_stream_logs_with_history_then_live(monkeypatch):
     vm, unregistered = _make_vm_with_queue(queue)
     execution = _make_execution_with_vm(vm)
     pool = FakePool(executions={VM_ID: execution})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
 
@@ -181,9 +181,9 @@ async def test_stream_logs_with_history_then_live(monkeypatch):
 async def test_stream_logs_unknown_vm_ends_after_history(monkeypatch):
     """An unknown / stopped VM: stream_logs yields history then ends without exception."""
     pool = FakePool(executions={})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter(_entries(str(VM_ID))),
     )
 
@@ -202,9 +202,9 @@ async def test_stream_logs_stderr_maps_to_stderr_source(monkeypatch):
     vm, unregistered = _make_vm_with_queue(queue)
     execution = _make_execution_with_vm(vm)
     pool = FakePool(executions={VM_ID: execution})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter([]),
     )
 
@@ -229,9 +229,9 @@ async def test_stream_logs_yields_logchunks_and_unregisters(monkeypatch):
     vm, unregistered = _make_vm_with_queue(queue)
     execution = _make_execution_with_vm(vm)
     pool = FakePool(executions={VM_ID: execution})
-    supervisor = InProcessSupervisor(pool)
+    supervisor = LocalSupervisor(pool)
     monkeypatch.setattr(
-        "aleph.vm.supervisor.inprocess.get_past_vm_logs",
+        "aleph.vm.supervisor.local.get_past_vm_logs",
         lambda out, err: iter([]),
     )
 

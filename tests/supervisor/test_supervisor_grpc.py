@@ -1,7 +1,7 @@
 """GrpcSupervisor conformance + wire behavior over a real UDS channel.
 
 Stands up the real gRPC server (grpc_server.serve_unix) wrapping an
-InProcessSupervisor on a temp Unix socket and drives it through the
+LocalSupervisor on a temp Unix socket and drives it through the
 GrpcSupervisor client. Conformance checks mirror SupervisorContractTests;
 the sync shape checks from that suite are re-asserted here as async tests
 because the server fixture must live on the test's event loop.
@@ -30,7 +30,7 @@ from aleph.vm.supervisor.errors import (
 )
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.grpc_server import serve_unix
-from aleph.vm.supervisor.inprocess import InProcessSupervisor
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor.types import (
     GuestPort,
     HealthStatus,
@@ -73,7 +73,7 @@ class _ServerHarness:
 
 @pytest_asyncio.fixture
 async def harness():
-    harness = _ServerHarness(InProcessSupervisor(pool=FakePool()))
+    harness = _ServerHarness(LocalSupervisor(pool=FakePool()))
     async with harness as client:
         yield client
 
@@ -156,7 +156,7 @@ async def test_add_port_forward_not_found_over_the_wire(harness):
         await harness.add_port_forward(spec)
 
 
-class _RaisingSupervisor(InProcessSupervisor):
+class _RaisingSupervisor(LocalSupervisor):
     """In-process supervisor whose lifecycle calls raise a chosen error."""
 
     def __init__(self, error: SupervisorError):
@@ -203,7 +203,7 @@ async def test_stream_error_round_trips_class_exact():
                 pass
 
 
-class _StreamingSupervisor(InProcessSupervisor):
+class _StreamingSupervisor(LocalSupervisor):
     def __init__(self):
         super().__init__(pool=FakePool())
 
@@ -220,7 +220,7 @@ async def test_stream_logs_streams_chunks():
     assert all(chunk.source is LogSource.STDOUT for chunk in chunks)
 
 
-class _RecordingSupervisor(InProcessSupervisor):
+class _RecordingSupervisor(LocalSupervisor):
     """Records reinstall_vm kwargs to pin the optional-bool default."""
 
     def __init__(self):
@@ -279,7 +279,7 @@ async def test_get_vm_spec_round_trips_over_the_wire():
     )
     pool = FakePool()
     pool.executions["feed" * 16] = SimpleNamespace(vm_spec=spec)
-    harness = _ServerHarness(InProcessSupervisor(pool=pool))
+    harness = _ServerHarness(LocalSupervisor(pool=pool))
     async with harness as client:
         assert await client.get_vm_spec(VmId("feed" * 16)) == spec
 
@@ -291,7 +291,7 @@ async def test_unary_calls_carry_a_deadline(monkeypatch):
 
     from aleph.vm.supervisor.errors import InternalSupervisorError
 
-    class _WedgedSupervisor(InProcessSupervisor):
+    class _WedgedSupervisor(LocalSupervisor):
         async def health(self):
             await aio.sleep(30)
 
@@ -319,7 +319,7 @@ async def test_backup_surface_round_trips_over_the_wire(tmp_path, monkeypatch):
     vm_id = VmId("vmx")
     backup_id = BackupId(tar.stem)
 
-    harness = _ServerHarness(InProcessSupervisor(pool=FakePool()))
+    harness = _ServerHarness(LocalSupervisor(pool=FakePool()))
     async with harness as client:
         info = await client.get_backup_status(vm_id, backup_id)
         assert info.status is BackupStatus.COMPLETE
