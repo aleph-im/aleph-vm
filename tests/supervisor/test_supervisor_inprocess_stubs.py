@@ -12,6 +12,10 @@ from aleph.vm.supervisor.types import ConfidentialMode, TeeBackend, VmId
 class FakePool:
     def __init__(self):
         self.executions = {}
+        # Reservation entrypoints LocalSupervisor.reserve_resources drives; tests
+        # override these with mocks. Declared here so static typing sees them.
+        self.check_capacity = MagicMock()
+        self.reserve_gpus = AsyncMock()
 
 
 @pytest.fixture
