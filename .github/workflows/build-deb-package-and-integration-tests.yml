@@ -211,6 +211,11 @@ jobs:
           # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
           # which is unreachable from inside the VMs and breaks all guest DNS.
           echo 'ALEPH_VM_DNS_NAMESERVERS=["1.1.1.1","8.8.8.8"]' >> supervisor.env
+          # This file replaces the packaged supervisor.env (kept via --force-confold),
+          # so it must carry the two-service socket the package ships; otherwise the
+          # agent runs embedded alongside the daemon (two pools fighting over the VM
+          # tap -> "File descriptor in bad state"). Matches packaging/aleph-vm/etc/aleph-vm/supervisor.env.
+          echo ALEPH_VM_SUPERVISOR_GRPC_SOCKET=/var/lib/aleph/vm/supervisor.sock >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/${{ matrix.os_config.package_name }} root@${DROPLET_IPV4}:/opt
