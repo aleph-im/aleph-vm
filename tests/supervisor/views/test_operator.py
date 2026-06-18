@@ -378,6 +378,111 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
+async def test_operator_confidential_initialize_waits_for_awaiting(aiohttp_client, mocker):
+    """Owner identity is recorded at the start of create, so init-session can
+    land before the supervisor registers the VM (VmNotFoundError) or before it
+    reaches awaiting_confidential_init. The endpoint polls get_vm through both
+    states, then delegates once the VM is awaiting-ready."""
+
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+    # Don't sleep between polls in the test.
+    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    with tempfile.NamedTemporaryFile() as temp_file:
+        temp_file.write(b"cert-bytes")
+        temp_file.flush()
+        form_data = aiohttp.FormData()
+        form_data.add_field("session", open(temp_file.name, "rb"), filename="session.b64")
+        form_data.add_field("godh", open(temp_file.name, "rb"), filename="godh.b64")
+
+        with mock.patch(
+            "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+            return_value=instance_message.sender,
+        ):
+            app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+            app["vm_registry"].record(
+                vm_hash,
+                message=instance_message.content,
+                original=instance_message.content,
+                persistent=True,
+            )
+            fake_sup = _fake_supervisor()
+            # 1st call: supervisor hasn't registered the VM yet (info is None path).
+            # 2nd call: registered but still building config (not yet awaiting).
+            # 3rd call: awaiting_confidential_init -> proceed.
+            fake_sup.get_vm = AsyncMock(
+                side_effect=[
+                    VmNotFoundError("not registered yet"),
+                    _vm_info(
+                        VmStatus.BOOTING,
+                        vm_id=str(vm_hash),
+                        confidential_mode=ConfidentialMode.SEV,
+                        awaiting_confidential_init=False,
+                    ),
+                    _vm_info(
+                        VmStatus.BOOTING,
+                        vm_id=str(vm_hash),
+                        confidential_mode=ConfidentialMode.SEV,
+                        awaiting_confidential_init=True,
+                    ),
+                ]
+            )
+            app["supervisor"] = fake_sup
+            client = await aiohttp_client(app)
+            response = await client.post(
+                f"/control/machine/{vm_hash}/confidential/initialize",
+                data=form_data,
+            )
+            assert response.status == 200, await response.text()
+            assert fake_sup.get_vm.await_count == 3
+            fake_sup.initialize_confidential.assert_awaited_once_with(VmId(str(vm_hash)), b"cert-bytes", b"cert-bytes")
+
+
+@pytest.mark.asyncio
+async def test_operator_confidential_initialize_times_out(aiohttp_client, mocker):
+    """A VM that never reaches awaiting_confidential_init within the deadline
+    yields a 404; the session is never uploaded."""
+
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.ENABLE_CONFIDENTIAL_COMPUTING = True
+    settings.setup()
+    # Deadline has already passed on the first loop check: no real wait.
+    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_WAIT_SECONDS", 0)
+    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    with mock.patch(
+        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    ):
+        app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+        app["vm_registry"].record(
+            vm_hash,
+            message=instance_message.content,
+            original=instance_message.content,
+            persistent=True,
+        )
+        fake_sup = _fake_supervisor()
+        # Supervisor never registers the VM -> never awaiting -> times out.
+        fake_sup.get_vm = AsyncMock(side_effect=VmNotFoundError("never registered"))
+        app["supervisor"] = fake_sup
+        client = await aiohttp_client(app)
+        response = await client.post(
+            f"/control/machine/{vm_hash}/confidential/initialize",
+            data=aiohttp.FormData(),
+        )
+        assert response.status == 404
+        fake_sup.initialize_confidential.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reboot_ok(aiohttp_client, mocker):
     """Reboot a persistent VM: supervisor.reboot_vm is called."""
     mock_address = "mock_address"

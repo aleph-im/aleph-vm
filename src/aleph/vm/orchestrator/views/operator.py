@@ -159,13 +159,15 @@ _CONFIDENTIAL_AWAITING_WAIT_SECONDS = 120
 _CONFIDENTIAL_AWAITING_POLL_INTERVAL = 2.0
 
 
-async def wait_for_awaiting_confidential_init(supervisor: Supervisor, vm_id: VmId) -> None:
-    """Block until the VM reaches awaiting_confidential_init, or time out.
+async def wait_for_awaiting_confidential_init(supervisor: Supervisor, vm_id: VmId) -> bool:
+    """Poll until the VM reaches awaiting_confidential_init. Return True once it
+    does, or False if the bounded deadline passes first.
 
     initialize_confidential writes the session files and starts the controller;
     it fails if called before the VM is awaiting-ready. The owner's single
     init-session call may arrive while create_vm is still building the config,
-    so poll get_vm rather than racing it.
+    so poll get_vm rather than racing it. The caller maps a False return to the
+    appropriate HTTP response.
     """
     deadline = asyncio.get_running_loop().time() + _CONFIDENTIAL_AWAITING_WAIT_SECONDS
     while True:
@@ -174,9 +176,9 @@ async def wait_for_awaiting_confidential_init(supervisor: Supervisor, vm_id: VmI
         except VmNotFoundError:
             info = None
         if info is not None and info.awaiting_confidential_init:
-            return
+            return True
         if asyncio.get_running_loop().time() >= deadline:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_id}")
+            return False
         await asyncio.sleep(_CONFIDENTIAL_AWAITING_POLL_INTERVAL)
 
 
@@ -446,9 +448,12 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
         # The owner's init-session call can land before create_vm has finished
         # building the controller config and started the VM into the awaiting
         # state. initialize_confidential fails if the VM is not awaiting-ready,
-        # so wait for that state (bounded) before uploading the session files.
+        # so wait for that state (bounded) before uploading the session files. A
+        # VM that never reaches it (timeout, or one the supervisor never
+        # registers) is reported as not found.
         if info is None or not info.awaiting_confidential_init:
-            await wait_for_awaiting_confidential_init(supervisor, vm_id)
+            if not await wait_for_awaiting_confidential_init(supervisor, vm_id):
+                raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
 
         post = await request.post()
 
