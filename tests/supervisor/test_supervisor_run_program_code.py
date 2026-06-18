@@ -10,8 +10,8 @@ import pytest
 
 from aleph.vm.contract.abc import LifecycleOps, Supervisor
 from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import VmId
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 def test_run_program_code_is_abstract():

@@ -45,7 +45,6 @@ import pytest
 import pytest_asyncio
 
 from aleph.vm.contract.errors import SupervisorError
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
@@ -56,6 +55,7 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]

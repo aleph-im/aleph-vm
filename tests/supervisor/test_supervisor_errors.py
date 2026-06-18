@@ -10,8 +10,8 @@ from aleph.vm.contract.errors import (
     NotImplementedSupervisorError,
     SupervisorError,
 )
-from aleph.vm.supervisor.error_mapping import translate_exception, translating_errors
 from aleph.vm.contract.types import ErrorCode
+from aleph.vm.supervisor.error_mapping import translate_exception, translating_errors
 
 
 def test_supervisor_error_carries_code():

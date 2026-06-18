@@ -4,16 +4,10 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool
 
-from aleph.vm.orchestrator import run as run_module
 from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.contract.types import GuestPort, HostPort, PortForwardSpec, Protocol, VmId
+from aleph.vm.orchestrator import run as run_module
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.contract.types import (
-    GuestPort,
-    HostPort,
-    PortForwardSpec,
-    Protocol,
-    VmId,
-)
 
 
 def make_execution_with_ports(mapped_ports=None):

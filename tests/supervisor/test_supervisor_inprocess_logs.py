@@ -7,8 +7,8 @@ import pytest
 from test_supervisor_inprocess_query import FakePool
 
 from aleph.vm.contract.errors import InternalSupervisorError
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import LogChunk, LogSource, VmId
+from aleph.vm.supervisor.local import LocalSupervisor
 
 VM_ID = VmId("vm1")
 

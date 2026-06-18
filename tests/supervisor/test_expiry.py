@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.contract.types import VmId
+from aleph.vm.orchestrator.expiry import ExpiryManager
 
 # Cap on every wait for a timer that is expected to fire: generous enough for a
 # loaded CI worker, only ever reached on an actual failure.

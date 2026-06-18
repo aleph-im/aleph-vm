@@ -4,8 +4,8 @@ from pathlib import Path
 from aleph_message.models import ItemHash
 from conftest import make_spec
 
-from aleph.vm.models import VmExecution
 from aleph.vm.contract.types import DirectoryPath, TeeBackend, TeeConfig
+from aleph.vm.models import VmExecution
 
 VM_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 

@@ -15,9 +15,7 @@ from aleph.vm.contract.configuration import (
     HypervisorType,
     QemuVMConfiguration,
 )
-from aleph.vm.sizes import MiB
 from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.supervisor.qemu_build import build_qemu_configuration
 from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
@@ -29,6 +27,8 @@ from aleph.vm.contract.types import (
     PciAddress,
     VmId,
 )
+from aleph.vm.sizes import MiB
+from aleph.vm.supervisor.qemu_build import build_qemu_configuration
 
 # ---------------------------------------------------------------------------
 # Helpers

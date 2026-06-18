@@ -27,6 +27,9 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.conf import settings
+from aleph.vm.contract.abc import Supervisor
+from aleph.vm.contract.errors import VmNotFoundError
+from aleph.vm.contract.types import ConfidentialMode, VmId, VmInfo, VmStatus
 from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
 from aleph.vm.orchestrator.metrics import delete_port_mappings
 from aleph.vm.orchestrator.run import reconcile_port_forwards
@@ -37,9 +40,6 @@ from aleph.vm.orchestrator.utils import (
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import ConfidentialMode, VmId, VmInfo, VmStatus
 from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.

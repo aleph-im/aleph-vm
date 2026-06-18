@@ -14,10 +14,10 @@ from aleph.vm.contract.configuration import (
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
-from aleph.vm.sizes import MiB
 from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.supervisor.qemu_build import spec_from_controller_configuration
 from aleph.vm.contract.types import Backend, DiskRole
+from aleph.vm.sizes import MiB
+from aleph.vm.supervisor.qemu_build import spec_from_controller_configuration
 
 _HASH = "deadbeef" * 8
 

@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.controllers.qemu import backup as backup_module
 from aleph.vm.contract.errors import (
     BackupNotFoundError,
     InternalSupervisorError,
@@ -20,8 +19,9 @@ from aleph.vm.contract.errors import (
     NotImplementedSupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import BackupId, BackupStatus, VmId, VmStatus
+from aleph.vm.controllers.qemu import backup as backup_module
+from aleph.vm.supervisor.local import LocalSupervisor
 
 VM_ID = VmId("itemhash123")
 

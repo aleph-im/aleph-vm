@@ -24,8 +24,6 @@ import pytest
 import pytest_asyncio
 
 from aleph.vm.contract.abc import Supervisor
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.grpc_server import serve_unix
 from aleph.vm.contract.types import (
     Backend,
     DirectoryPath,
@@ -37,6 +35,8 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
+from aleph.vm.supervisor.grpc_server import serve_unix
 
 _ASYNC_METHODS = (
     "health",

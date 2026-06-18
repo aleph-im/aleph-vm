@@ -19,21 +19,6 @@ from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.backup import (
-    download_volume_by_ref,
-    get_backup_directory,
-)
-from aleph.vm.orchestrator import metrics
-from aleph.vm.orchestrator.cache import AsyncTTLCache
-from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
-from aleph.vm.orchestrator.expiry import ExpiryManager
-from aleph.vm.orchestrator.http import get_session
-from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
-from aleph.vm.orchestrator.views.authentication import (
-    authenticate_websocket_message,
-    require_jwk_authentication,
-)
-from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.contract.abc import Supervisor
 from aleph.vm.contract.errors import (
     BackupNotFoundError,
@@ -49,6 +34,21 @@ from aleph.vm.contract.types import (
     VmId,
     VmStatus,
 )
+from aleph.vm.controllers.qemu.backup import (
+    download_volume_by_ref,
+    get_backup_directory,
+)
+from aleph.vm.orchestrator import metrics
+from aleph.vm.orchestrator.cache import AsyncTTLCache
+from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
+from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.http import get_session
+from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
+from aleph.vm.orchestrator.views.authentication import (
+    authenticate_websocket_message,
+    require_jwk_authentication,
+)
+from aleph.vm.orchestrator.vm_registry import AgentVmRecord
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,

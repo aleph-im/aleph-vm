@@ -103,7 +103,7 @@ dependencies = [
   "pytest-mock==3.14.0",
   "pytest-asyncio==0.23.7",
   "pytest-aiohttp==1.0.5",
-  "import-linter>=2,<3", # enforces the agent/supervisor/contract import boundary
+  "import-linter>=2,<3",      # enforces the agent/supervisor/contract import boundary
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"

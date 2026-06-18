@@ -21,6 +21,8 @@ from pathlib import Path
 
 from aleph_message.models import ItemHash
 
+from aleph.vm.contract.errors import InvalidBackendError
+from aleph.vm.contract.types import CreateVmSpec, DiskRole, DiskSpec, HardwareResources
 from aleph.vm.hypervisors.firecracker.config import (
     BootSource,
     Drive,
@@ -31,13 +33,6 @@ from aleph.vm.hypervisors.firecracker.config import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.contract.types import (
-    CreateVmSpec,
-    DiskRole,
-    DiskSpec,
-    HardwareResources,
-)
 
 from .executable import AlephFirecrackerExecutable
 

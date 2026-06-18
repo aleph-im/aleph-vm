@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 
 from aleph_message.models import ItemHash
 
+from aleph.vm.contract.types import HardwareResources
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.controllers.qemu.instance import AlephQemuResources, ConfigurationType
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import get_existing_file
-from aleph.vm.contract.types import HardwareResources
 
 if TYPE_CHECKING:
     from aleph.vm.contract.types import CreateVmSpec

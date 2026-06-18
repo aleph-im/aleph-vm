@@ -19,6 +19,7 @@ from aleph.vm.contract.configuration import (
     VMConfiguration,
     save_controller_configuration,
 )
+from aleph.vm.contract.types import HardwareResources
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.resources import (
@@ -31,7 +32,6 @@ from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman
-from aleph.vm.contract.types import HardwareResources
 
 try:
     import psutil  # type: ignore [no-redef]

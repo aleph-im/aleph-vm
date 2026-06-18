@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from aleph.vm.supervisor import proto_convert as conv
 from aleph.vm.contract.types import (
     Backend,
     BackupChunk,
@@ -41,6 +40,7 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
+from aleph.vm.supervisor import proto_convert as conv
 
 FULL_SPEC = CreateVmSpec(
     vm_id=VmId("cafe" * 16),

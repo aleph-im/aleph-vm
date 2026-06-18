@@ -3,14 +3,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, make_execution
 
-from aleph.vm.resources import (
-    InsufficientResourcesError as InternalInsufficientResources,
-)
 from aleph.vm.contract.errors import (
     InsufficientResourcesError as SupInsufficientResources,
 )
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import ErrorCode, VmId
+from aleph.vm.resources import (
+    InsufficientResourcesError as InternalInsufficientResources,
+)
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 @pytest.mark.asyncio

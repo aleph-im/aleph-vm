@@ -23,8 +23,6 @@ from aleph.vm.contract.configuration import (
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
-from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
-from aleph.vm.sizes import MiB
 from aleph.vm.contract.errors import InvalidBackendError
 from aleph.vm.contract.types import (
     Backend,
@@ -37,6 +35,8 @@ from aleph.vm.contract.types import (
     PciAddress,
     VmId,
 )
+from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
+from aleph.vm.sizes import MiB
 
 if TYPE_CHECKING:
     from aleph.vm.network.interfaces import TapInterface

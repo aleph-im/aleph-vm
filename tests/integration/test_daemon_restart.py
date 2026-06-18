@@ -14,8 +14,8 @@ from conftest import (
     wait_for_tcp_banner,
 )
 
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.contract.types import VmStatus
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 
 pytestmark = pytest.mark.asyncio
 

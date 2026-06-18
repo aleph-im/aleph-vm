@@ -5,8 +5,8 @@ import pytest
 
 from aleph.vm.conf import settings
 from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import ConfidentialMode, TeeBackend, VmId
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 class FakePool:

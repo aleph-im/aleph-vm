@@ -18,10 +18,6 @@ from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
 
 from aleph.vm.conf import settings
-from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.pool import VmPool
-from aleph.vm.sevclient import SevClient
 from aleph.vm.contract.types import (
     DirectoryPath,
     IpAssignment,
@@ -29,6 +25,10 @@ from aleph.vm.contract.types import (
     TeeConfig,
     VmId,
 )
+from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.pool import VmPool
+from aleph.vm.sevclient import SevClient
 
 
 def _views_tee() -> TeeConfig:
@@ -1244,8 +1244,8 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
     """
     import aiohttp
 
-    from aleph.vm.orchestrator.views import operator
     from aleph.vm.contract.errors import InvalidBackendError
+    from aleph.vm.orchestrator.views import operator
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     from aleph.vm.storage import get_message

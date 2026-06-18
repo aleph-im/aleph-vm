@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.models import VmExecution
 from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.contract.types import VmId
+from aleph.vm.models import VmExecution
+from aleph.vm.supervisor.local import LocalSupervisor
 
 VM_ID = VmId("itemhash123")
 

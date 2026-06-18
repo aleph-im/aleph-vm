@@ -16,10 +16,10 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
+from aleph.vm.contract.abc import Supervisor
 from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
 from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
-from aleph.vm.contract.abc import Supervisor
 
 
 @pytest.fixture(autouse=True)

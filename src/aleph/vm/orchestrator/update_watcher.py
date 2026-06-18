@@ -4,11 +4,11 @@ from collections.abc import Callable
 
 from aleph_message.models import ExecutableContent, InstanceContent, ItemHash
 
-from aleph.vm.orchestrator.pubsub import PubSub
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.contract.abc import Supervisor
 from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.contract.types import VmId
+from aleph.vm.orchestrator.pubsub import PubSub
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 
 logger = logging.getLogger(__name__)
 

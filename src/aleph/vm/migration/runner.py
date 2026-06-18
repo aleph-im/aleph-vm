@@ -14,6 +14,7 @@ from aleph_message.models import MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
+from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.migration.helpers import (
     compress_disk,
     compute_sha256,
@@ -32,9 +33,8 @@ from aleph.vm.migration.jobs import (
 from aleph.vm.models import MigrationState
 from aleph.vm.orchestrator.messages import load_updated_message
 from aleph.vm.orchestrator.run import finish_instance_create
-from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.orchestrator.translate import build_create_vm_spec
+from aleph.vm.storage import get_rootfs_base_path
 
 if TYPE_CHECKING:
     from aleph.vm.contract.abc import Supervisor

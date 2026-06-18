@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aleph.vm.controllers.qemu.instance import AlephQemuResources
 from aleph.vm.contract.types import (
     Backend,
     CreateVmSpec,
@@ -16,6 +15,7 @@ from aleph.vm.contract.types import (
     PciAddress,
     VmId,
 )
+from aleph.vm.controllers.qemu.instance import AlephQemuResources
 
 
 def _spec() -> CreateVmSpec:

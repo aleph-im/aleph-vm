@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from aleph.vm.conf import settings
+from aleph.vm.contract.types import Backend, CreateVmSpec, HardwareResources, VmId
 from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
 from aleph.vm.controllers.firecracker.program import AlephProgramResources
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
@@ -42,7 +43,6 @@ from aleph.vm.orchestrator.metrics import (
     save_port_mappings,
 )
 from aleph.vm.resources import HostGPU
-from aleph.vm.contract.types import Backend, CreateVmSpec, HardwareResources, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.utils import dumps_for_json
 

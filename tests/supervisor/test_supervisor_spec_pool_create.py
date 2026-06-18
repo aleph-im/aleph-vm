@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
-from aleph.vm.pool import VmPool
 from aleph.vm.contract.errors import InvalidBackendError
 from aleph.vm.contract.types import (
     Backend,
@@ -24,6 +23,7 @@ from aleph.vm.contract.types import (
     TeeConfig,
     VmId,
 )
+from aleph.vm.pool import VmPool
 
 _HASH = "deadbeef" * 8
 _DEVICE_ID = "10de:2504"
