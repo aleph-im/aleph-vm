@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from aleph_message.models import ItemHash
 
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor.controllers.qemu import AlephQemuInstance
 from aleph.vm.supervisor.controllers.qemu.instance import (
     AlephQemuResources,
@@ -24,20 +23,6 @@ logger = logging.getLogger(__name__)
 
 class AlephQemuConfidentialResources(AlephQemuResources):
     firmware_path: Path
-
-    async def download_firmware(self):
-        # Message path only: the spec path resolves the firmware before create
-        # and uses from_spec (no download).
-        assert self.message_content is not None
-        firmware = self.message_content.environment.trusted_execution.firmware
-        self.firmware_path = await get_existing_file(firmware)
-
-    async def download_all(self):
-        await asyncio.gather(
-            self.download_runtime(),
-            self.download_firmware(),
-            self.download_volumes(),
-        )
 
     @classmethod
     def from_spec(cls, spec: "CreateVmSpec", namespace: str) -> "AlephQemuConfidentialResources":

@@ -45,7 +45,7 @@ def _fake_resources(tmp_path: Path):
 @pytest.mark.parametrize("persistent", [True, False])
 async def test_program_spec_threads_persistence(monkeypatch, tmp_path, persistent):
     resources = _fake_resources(tmp_path)
-    monkeypatch.setattr(translate, "AlephProgramResources", lambda *a, **k: resources)
+    monkeypatch.setattr(translate, "ProgramDownloader", lambda *a, **k: resources)
 
     spec, returned = await translate.build_program_create_vm_spec(_VM_HASH, _program_message(persistent=persistent))
 

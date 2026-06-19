@@ -16,11 +16,9 @@ from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import HypervisorType
 from aleph_message.models.execution.instance import InstanceContent
 
+from aleph.vm.agent.vm.downloader import ProgramDownloader, QemuDownloader
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
-from aleph.vm.supervisor.controllers.firecracker.program import AlephProgramResources
-from aleph.vm.supervisor.controllers.qemu.cloudinit import get_hostname_from_hash
-from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -38,6 +36,7 @@ from aleph.vm.supervisor_interface.types import (
     TeeConfig,
     VmId,
 )
+from aleph.vm.utils import get_hostname_from_hash
 from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 
 
@@ -97,7 +96,7 @@ async def build_create_vm_spec(
 
     # --- Materialise resources ---
 
-    resources = AlephQemuResources(message, namespace=str(vm_hash))
+    resources = QemuDownloader(message, namespace=str(vm_hash))
     await resources.download_all()
 
     # --- Confidential (TEE) ---
@@ -170,7 +169,7 @@ async def build_create_vm_spec(
 async def build_program_create_vm_spec(
     vm_hash: ItemHash,
     message: ExecutableContent,
-) -> tuple[CreateVmSpec, AlephProgramResources]:
+) -> tuple[CreateVmSpec, ProgramDownloader]:
     """Translate a program message into a CreateVmSpec, downloading resources.
 
     The agent half of the program create: code/runtime/data/volumes are
@@ -185,7 +184,7 @@ async def build_program_create_vm_spec(
     if not isinstance(message, ProgramContent):
         raise InvalidBackendError(f"Expected ProgramContent, got {type(message).__name__}")
 
-    resources = AlephProgramResources(message, namespace=str(vm_hash))
+    resources = ProgramDownloader(message, namespace=str(vm_hash))
     await resources.download_all()
 
     # The runtime image is the program's root filesystem: plain ROOTFS on the

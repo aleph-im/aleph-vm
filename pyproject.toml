@@ -302,6 +302,7 @@ type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.agent" ]
 forbidden_modules = [
+  "aleph.vm.supervisor.controllers",
   "aleph.vm.supervisor.local",
   "aleph.vm.supervisor.grpc_server",
   "aleph.vm.supervisor.grpc_client",
@@ -312,8 +313,11 @@ forbidden_modules = [
   "aleph.vm.supervisor.qemu_build",
 ]
 # Composition root only: the agent entrypoints pick a concrete Supervisor impl.
-# Agent->supervisor.controllers (Resources, controller exception types, cloudinit)
-# remains a documented residual removed by PR-2 (the controller split).
+# The PR-1 agent->supervisor.controllers residuals (Resources downloaders,
+# controller exception types, cloudinit, the QEMU backup utils) were removed by
+# PR-2 (the controller split): the downloaders live agent-side, the wire-error
+# vocabulary is the contract's SupervisorError set, and the shared host-volume /
+# program-config / backup-staging / hostname helpers moved to neutral modules.
 ignore_imports = [
   "aleph.vm.agent.cli -> aleph.vm.supervisor.local",
   "aleph.vm.agent.supervisor -> aleph.vm.supervisor.local",
