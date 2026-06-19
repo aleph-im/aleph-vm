@@ -1,10 +1,9 @@
 from alembic import context
 from sqlalchemy import create_engine
 
-from aleph.vm.conf import make_sync_db_url
-
 # Auto-generate migrations
-from aleph.vm.orchestrator.metrics import Base
+from aleph.vm.agent.metrics import Base
+from aleph.vm.conf import make_sync_db_url
 
 # # this is the Alembic Config object, which provides
 # # access to the values within the .ini file in use.

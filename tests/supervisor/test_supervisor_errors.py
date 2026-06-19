@@ -37,7 +37,7 @@ def test_translate_known_internal_exceptions():
 
 
 def test_translate_file_too_large():
-    from aleph.vm.controllers.firecracker.program import FileTooLargeError
+    from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
 
     translated = translate_exception(FileTooLargeError("too big"))
     assert isinstance(translated, SupFileTooLargeError)

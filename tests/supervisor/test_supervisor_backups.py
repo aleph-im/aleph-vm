@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.controllers.qemu import backup as backup_module
+from aleph.vm.supervisor.controllers.qemu import backup as backup_module
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,

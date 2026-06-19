@@ -34,7 +34,7 @@ def default_socket_path() -> Path:
 async def run_daemon(socket_path: Path) -> None:
     # Local imports: pulling the pool imports the controller/networking stack,
     # which must happen after settings.setup().
-    from aleph.vm.orchestrator import metrics
+    from aleph.vm.agent import metrics
     from aleph.vm.pool import VmPool
     from aleph.vm.supervisor.grpc_server import serve_unix
     from aleph.vm.supervisor.local import LocalSupervisor

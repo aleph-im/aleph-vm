@@ -8,7 +8,7 @@ The factory's only job is the dev/test-vs-production split: with
 
 from types import SimpleNamespace
 
-from aleph.vm.orchestrator.supervisor import build_supervisor
+from aleph.vm.agent.supervisor import build_supervisor
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.local import LocalSupervisor
 

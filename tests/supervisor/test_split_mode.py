@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from aleph.vm.agent.supervisor import setup_webapp, stop_all_vms
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.supervisor import setup_webapp, stop_all_vms
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.local import LocalSupervisor
 
@@ -23,7 +23,7 @@ def test_split_mode_wires_grpc_supervisor(mocker):
 
 
 def test_build_supervisor_factory_selects_path(mocker):
-    from aleph.vm.orchestrator.supervisor import build_supervisor
+    from aleph.vm.agent.supervisor import build_supervisor
 
     mocker.patch.object(settings, "SUPERVISOR_GRPC_SOCKET", None)
     pool = SimpleNamespace(executions={})

@@ -16,12 +16,12 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
+from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.update_watcher import UpdateWatcher
+from aleph.vm.agent.vm.program_client import ProgramGuestClient
+from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
-from aleph.vm.orchestrator.expiry import ExpiryManager
-from aleph.vm.orchestrator.update_watcher import UpdateWatcher
-from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
@@ -404,7 +404,7 @@ async def _rehydrate_vm_registry(app: web.Application) -> None:
 def run():
     """Run the VM Supervisor."""
     settings.check()
-    from aleph.vm.orchestrator.views.allocation_auth import log_allocation_auth_config
+    from aleph.vm.agent.views.allocation_auth import log_allocation_auth_config
 
     log_allocation_auth_config()
 
@@ -466,7 +466,7 @@ def run():
         app.on_cleanup.append(stop_program_client)
         app.on_cleanup.append(stop_all_vms)
 
-        from aleph.vm.orchestrator.http import close_session, reset_session
+        from aleph.vm.agent.http import close_session, reset_session
 
         app.on_cleanup.append(close_session)
 

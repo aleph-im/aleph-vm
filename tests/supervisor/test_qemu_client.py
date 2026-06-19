@@ -2,7 +2,7 @@
 
 import pytest
 
-from aleph.vm.controllers.qemu.client import VmRunStatus, VmStatus
+from aleph.vm.supervisor.controllers.qemu.client import VmRunStatus, VmStatus
 
 
 class TestVmRunStatus:
@@ -150,11 +150,11 @@ class TestQemuVmClientMocked:
         mock_vm = _make_mock_vm(mocker)
 
         mocker.patch(
-            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            "aleph.vm.supervisor.controllers.qemu.client.qmp.QEMUMonitorProtocol",
             return_value=mock_qmp,
         )
 
-        from aleph.vm.controllers.qemu.client import QemuVmClient
+        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
         client = QemuVmClient(mock_vm)
         status = client.query_status()
@@ -169,11 +169,11 @@ class TestQemuVmClientMocked:
         mock_vm = _make_mock_vm(mocker)
 
         mocker.patch(
-            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            "aleph.vm.supervisor.controllers.qemu.client.qmp.QEMUMonitorProtocol",
             return_value=mock_qmp,
         )
 
-        from aleph.vm.controllers.qemu.client import QemuVmClient
+        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
         client = QemuVmClient(mock_vm)
         client.system_powerdown()
@@ -186,11 +186,11 @@ class TestQemuVmClientMocked:
         mock_vm = _make_mock_vm(mocker)
 
         mocker.patch(
-            "aleph.vm.controllers.qemu.client.qmp.QEMUMonitorProtocol",
+            "aleph.vm.supervisor.controllers.qemu.client.qmp.QEMUMonitorProtocol",
             return_value=mock_qmp,
         )
 
-        from aleph.vm.controllers.qemu.client import QemuVmClient
+        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
         client = QemuVmClient(mock_vm)
         client.close()
@@ -203,7 +203,7 @@ class TestQemuVmClientMocked:
         mock_vm.qmp_socket_path = mocker.Mock()
         mock_vm.qmp_socket_path.exists.return_value = False
 
-        from aleph.vm.controllers.qemu.client import QemuVmClient
+        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
         with pytest.raises(Exception, match="VM is not running"):
             QemuVmClient(mock_vm)

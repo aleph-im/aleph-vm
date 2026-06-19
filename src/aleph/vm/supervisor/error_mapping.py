@@ -32,20 +32,20 @@ def translate_exception(exc: BaseException) -> SupervisorError:
     if isinstance(exc, SupervisorError):
         return exc
 
-    from aleph.vm.controllers.firecracker.executable import (
-        ResourceDownloadError as _ResourceDownloadError,
-    )
-    from aleph.vm.controllers.firecracker.executable import (
-        VmSetupError as _VmSetupError,
-    )
-    from aleph.vm.controllers.firecracker.program import (
-        FileTooLargeError as _FileTooLargeError,
-    )
     from aleph.vm.hypervisors.firecracker.microvm import (
         MicroVMFailedInitError as _MicroVMFailedInitError,
     )
     from aleph.vm.resources import (
         InsufficientResourcesError as _InsufficientResourcesError,
+    )
+    from aleph.vm.supervisor.controllers.firecracker.executable import (
+        ResourceDownloadError as _ResourceDownloadError,
+    )
+    from aleph.vm.supervisor.controllers.firecracker.executable import (
+        VmSetupError as _VmSetupError,
+    )
+    from aleph.vm.supervisor.controllers.firecracker.program import (
+        FileTooLargeError as _FileTooLargeError,
     )
     from aleph.vm.utils import HostNotFoundError as _HostNotFoundError
 

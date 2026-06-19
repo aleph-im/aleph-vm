@@ -11,9 +11,9 @@ import pytest
 from aleph_message.models import ItemHash
 from conftest import make_spec
 
+from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.supervisor import setup_webapp
 
 FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 

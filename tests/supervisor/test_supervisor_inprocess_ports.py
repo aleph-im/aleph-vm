@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool
 
-from aleph.vm.orchestrator import run as run_module
+from aleph.vm.agent import run as run_module
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (

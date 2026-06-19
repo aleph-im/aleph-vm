@@ -306,7 +306,7 @@ async def test_unary_calls_carry_a_deadline(monkeypatch):
 async def test_backup_surface_round_trips_over_the_wire(tmp_path, monkeypatch):
     """Status, listing, download stream and delete against a real archive on
     disk, through the real server and client."""
-    from aleph.vm.controllers.qemu import backup as backup_module
+    from aleph.vm.supervisor.controllers.qemu import backup as backup_module
     from aleph.vm.supervisor_interface.errors import BackupNotFoundError
     from aleph.vm.supervisor_interface.types import BackupId, BackupStatus
 

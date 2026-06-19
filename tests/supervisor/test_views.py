@@ -17,9 +17,9 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
 
+from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.types import (
@@ -95,7 +95,7 @@ async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
 @pytest.mark.asyncio
 async def test_system_usage(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints responds. No auth needed"""
-    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     client = await aiohttp_client(await mock_app_with_pool)
     response: web.Response = await client.get("/about/usage/system")
@@ -261,7 +261,7 @@ MOCK_SYSTEM_INFO = {
 async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
     """Test that the usage system endpoints response value. No auth needed"""
 
-    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -285,10 +285,10 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 @pytest.mark.asyncio
 async def test_system_capability_mock(aiohttp_client, mocker):
     """Test that the capability system endpoints response value. No auth needed"""
-    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
-    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_supported", return_value=True)
-    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_es_supported", return_value=True)
-    mocker.patch("aleph.vm.orchestrator.resources.check_amd_sev_snp_supported", return_value=False)
+    mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.agent.resources.check_amd_sev_supported", return_value=True)
+    mocker.patch("aleph.vm.agent.resources.check_amd_sev_es_supported", return_value=True)
+    mocker.patch("aleph.vm.agent.resources.check_amd_sev_snp_supported", return_value=False)
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -669,7 +669,7 @@ async def test_about_certificates(aiohttp_client):
 @pytest.fixture
 def mock_aggregate_settings(mocker: MockerFixture):
     mocker.patch(
-        "aleph.vm.orchestrator.utils.fetch_aggregate_settings",
+        "aleph.vm.agent.utils.fetch_aggregate_settings",
         return_value={
             "compatible_gpus": [
                 {"name": "AD102GL [L40S]", "model": "L40S", "vendor": "NVIDIA", "device_id": "10de:26b9"},
@@ -762,7 +762,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
 async def test_system_usage_gpu_ressources(aiohttp_client, mocker, mock_app_with_pool):
     """Test gpu are properly listed"""
     client = await aiohttp_client(await mock_app_with_pool)
-    mocker.patch("aleph.vm.orchestrator.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
 
     response: web.Response = await client.get("/about/usage/system")
     assert response.status == 200
@@ -803,7 +803,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
 
     # Disable auth
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=sender,
     )
     instance_content = {
@@ -871,7 +871,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     # another user try to reserve, should return an error
     other_user = "other_user"
     with mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=other_user,
     ):
         response3: web.Response = await client.post("/control/reserve_resources", json=instance_content)
@@ -909,7 +909,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
 
     # Disable auth
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=sender,
     )
     instance_content = {
@@ -1020,7 +1020,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
     from aleph.vm.supervisor_interface.types import Backend, VmId, VmInfo, VmStatus
 
     reconcile_mock = AsyncMock()
-    mocker.patch("aleph.vm.orchestrator.views.reconcile_port_forwards", reconcile_mock)
+    mocker.patch("aleph.vm.agent.views.reconcile_port_forwards", reconcile_mock)
 
     # Register in registry so the endpoint can find it.
     web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
@@ -1039,7 +1039,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
         )
     )
     web_app["supervisor"] = fake_sup
-    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=AsyncMock())
+    mocker.patch("aleph.vm.agent.views.sync_domain_mappings", new=AsyncMock())
 
     response: web.Response = await client.post(f"/control/machine/{vm_hash}/update")
     assert response.status == 200, await response.text()
@@ -1080,7 +1080,7 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
     web_app = await mock_app_with_pool
 
     # Mock the agent-side HAProxy sync to avoid actual HAProxy operations.
-    sync = mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True))
+    sync = mocker.patch("aleph.vm.agent.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1100,7 +1100,7 @@ async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_a
     web_app = await mock_app_with_pool
 
     # Sync returns False (socket not found): endpoint still reports success.
-    mocker.patch("aleph.vm.orchestrator.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=False))
+    mocker.patch("aleph.vm.agent.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=False))
 
     client = await aiohttp_client(web_app)
     response: web.Response = await client.post(
@@ -1119,7 +1119,7 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
     web_app = await mock_app_with_pool
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.sync_domain_mappings",
+        "aleph.vm.agent.views.sync_domain_mappings",
         new=mocker.AsyncMock(side_effect=Exception("HAProxy connection failed")),
     )
 
@@ -1155,7 +1155,7 @@ def _make_aleph_eip191_v1_header(account, *, method="POST", path="/control/alloc
 
 @pytest.fixture(autouse=True)
 def _reset_replay_cache_between_views_tests():
-    from aleph.vm.orchestrator.views.allocation_auth import _accepted_payloads
+    from aleph.vm.agent.views.allocation_auth import _accepted_payloads
 
     _accepted_payloads.clear()
     yield
@@ -1244,7 +1244,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
     """
     import aiohttp
 
-    from aleph.vm.orchestrator.views import operator
+    from aleph.vm.agent.views import operator
     from aleph.vm.supervisor_interface.errors import InvalidBackendError
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
@@ -1253,7 +1253,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
@@ -1341,7 +1341,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
@@ -1578,7 +1578,7 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
@@ -1692,7 +1692,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     app = _make_app_with_supervisor(fake_supervisor)
     app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
     response = await client.post(
@@ -1784,7 +1784,7 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, descripti
     if not registry_kwargs.get("no_record"):
         app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
 
-    mocker.patch("aleph.vm.orchestrator.views.delete_port_mappings", new_callable=AsyncMock)
+    mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
     response = await client.post(

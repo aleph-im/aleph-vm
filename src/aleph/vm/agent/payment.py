@@ -8,9 +8,9 @@ from eth_typing import HexAddress
 from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
+from aleph.vm.agent.cache import AsyncTTLCache
+from aleph.vm.agent.http import get_session
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.cache import AsyncTTLCache
-from aleph.vm.orchestrator.http import get_session
 from aleph.vm.utils import to_normalized_address
 
 from .chain import ChainInfo, InvalidChainError, get_chain
