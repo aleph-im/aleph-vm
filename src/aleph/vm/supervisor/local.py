@@ -147,21 +147,21 @@ def _running_states(pool) -> dict[str, bool]:
     persistent VMs instead of one call each.
     """
     persistent_services: dict[str, str] = {}
-    for vm_hash, execution in pool.executions.items():
+    for vm_id, execution in pool.executions.items():
         if execution.persistent and getattr(execution, "systemd_manager", None):
-            persistent_services[execution.controller_service] = str(vm_hash)
+            persistent_services[execution.controller_service] = str(vm_id)
 
     service_states: dict[str, bool] = {}
     if persistent_services and getattr(pool, "systemd_manager", None):
         service_states = pool.systemd_manager.get_services_active_states(list(persistent_services.keys()))
 
     states: dict[str, bool] = {}
-    for vm_hash, execution in pool.executions.items():
+    for vm_id, execution in pool.executions.items():
         if execution.persistent and getattr(execution, "systemd_manager", None):
-            states[str(vm_hash)] = service_states.get(execution.controller_service, False)
+            states[str(vm_id)] = service_states.get(execution.controller_service, False)
         else:
             times = execution.times
-            states[str(vm_hash)] = bool(times.starting_at and not times.stopping_at)
+            states[str(vm_id)] = bool(times.starting_at and not times.stopping_at)
     return states
 
 
@@ -240,7 +240,7 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
         gateway=str(tap.host_ipv6.ip) if tap and getattr(tap, "host_ipv6", None) else "",
     )
     return VmInfo(
-        vm_id=VmId(str(execution.vm_hash)),
+        vm_id=VmId(str(execution.vm_id)),
         status=_status_of(execution, running),
         ipv4=ipv4,
         ipv6=ipv6,
@@ -448,9 +448,7 @@ class LocalSupervisor(Supervisor):
             # the duration of that call. Mirrors main's monitor_payments fix
             # (aleph-vm#963), and applies it to the list endpoints too.
             running = await asyncio.to_thread(_running_states, self.pool)
-            return [
-                _to_vm_info(execution, running[str(vm_hash)]) for vm_hash, execution in self.pool.executions.items()
-            ]
+            return [_to_vm_info(execution, running[str(vm_id)]) for vm_id, execution in self.pool.executions.items()]
 
     def _require(self, vm_id: VmId):
         execution = self.pool.executions.get(vm_id)
@@ -473,7 +471,7 @@ class LocalSupervisor(Supervisor):
             old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-            if execution.vm_hash in self.pool.executions:
+            if execution.vm_id in self.pool.executions:
                 # Routine: the pool's _schedule_forget_on_stop task has usually
                 # not run yet by the time stop_vm returns, so delete_vm wins
                 # this race on most reaps.
@@ -487,7 +485,7 @@ class LocalSupervisor(Supervisor):
                 # port mappings (persistent VMs keep them across stops) and
                 # writable data volumes go; the rootfs stays.
                 if execution.persistent:
-                    await delete_port_mappings(execution.vm_hash)
+                    await delete_port_mappings(execution.vm_id)
                 execution.erase_volumes()
 
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
@@ -502,7 +500,7 @@ class LocalSupervisor(Supervisor):
             # (STOPPED) and start_vm has a handle. A fresh stop_event defuses
             # the pool's forget-on-stop task (same trick as reinstall).
             execution.stop_event = asyncio.Event()
-            self.pool.executions[execution.vm_hash] = execution
+            self.pool.executions[execution.vm_id] = execution
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             return _to_vm_info(execution, running=False)
 
@@ -538,7 +536,7 @@ class LocalSupervisor(Supervisor):
                 return info
             spec = execution.vm_spec
             await self.pool.stop_vm(vm_id)
-            if execution.vm_hash in self.pool.executions:
+            if execution.vm_id in self.pool.executions:
                 self.pool.forget_vm(vm_id)
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if spec is not None:
@@ -566,14 +564,14 @@ class LocalSupervisor(Supervisor):
                 # re-registers the execution again after prepare(); the duplicate
                 # write is intentional.
                 execution.stop_event = asyncio.Event()
-                self.pool.executions[execution.vm_hash] = execution
+                self.pool.executions[execution.vm_id] = execution
                 execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
                 execution.resources = None
                 await execution.prepare()
                 await self.pool.restart_persistent_vm(execution)
             else:
-                if execution.vm_hash in self.pool.executions:
-                    self.pool.forget_vm(execution.vm_hash)
+                if execution.vm_id in self.pool.executions:
+                    self.pool.forget_vm(execution.vm_id)
                 execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
                 # The agent re-creates non-persistent VMs through the create
                 # path (it owns the message); we return the stopped state.
@@ -610,7 +608,7 @@ class LocalSupervisor(Supervisor):
                 if mapping.get(proto.value):
                     infos.append(
                         PortForwardInfo(
-                            vm_id=VmId(str(execution.vm_hash)),
+                            vm_id=VmId(str(execution.vm_id)),
                             host_port=HostPort(int(mapping["host"])),
                             vm_port=GuestPort(int(vm_port)),
                             protocol=proto,
@@ -698,7 +696,7 @@ class LocalSupervisor(Supervisor):
         resources = getattr(execution.vm, "resources", None) if execution.vm else None
         rootfs_path = getattr(resources, "rootfs_path", None)
         if not rootfs_path:
-            msg = f"VM {execution.vm_hash} has no rootfs disk image"
+            msg = f"VM {execution.vm_id} has no rootfs disk image"
             raise InternalSupervisorError(msg)
         return Path(rootfs_path)
 
@@ -829,10 +827,10 @@ class LocalSupervisor(Supervisor):
         try:
             client = QemuVmClient(execution.vm)
             frozen = await asyncio.wait_for(client.guest_fsfreeze_freeze(), timeout=30)
-            logger.info("Froze %s filesystem(s) for %s", frozen, execution.vm_hash)
+            logger.info("Froze %s filesystem(s) for %s", frozen, execution.vm_id)
             return client, True
         except Exception as exc:
-            logger.warning("fsfreeze unavailable for %s, proceeding without: %s", execution.vm_hash, exc)
+            logger.warning("fsfreeze unavailable for %s, proceeding without: %s", execution.vm_id, exc)
             return None, False
 
     async def _try_fsthaw(self, client, vm_id: VmId) -> None:
@@ -922,7 +920,7 @@ class LocalSupervisor(Supervisor):
                         # task; the VM stays registered through the swap (same
                         # trick as stop_vm and reinstall_vm).
                         execution.stop_event = asyncio.Event()
-                        self.pool.executions[execution.vm_hash] = execution
+                        self.pool.executions[execution.vm_id] = execution
                         self._emit_event(vm_id, old_status, VmStatus.STOPPED)
                     await restore_rootfs(staging, rootfs_path)
                     await self.pool.restart_persistent_vm(execution)
@@ -975,7 +973,7 @@ class LocalSupervisor(Supervisor):
                     # Fresh stop_event defuses the pool's forget-on-stop task;
                     # the VM stays registered through the swap.
                     execution.stop_event = asyncio.Event()
-                    self.pool.executions[execution.vm_hash] = execution
+                    self.pool.executions[execution.vm_id] = execution
                     self._emit_event(vm_id, old_status, VmStatus.STOPPED)
                 await restore_rootfs(image, rootfs_path)
                 await self.pool.restart_persistent_vm(execution)
@@ -1066,17 +1064,17 @@ class LocalSupervisor(Supervisor):
 
         # Step 1: Collect all running VMs and their network configuration
         running_vms = []
-        for vm_hash, execution in self.pool.executions.items():
+        for vm_id, execution in self.pool.executions.items():
             if execution.is_running and execution.vm and execution.vm.tap_interface:
                 running_vms.append(
                     {
-                        "vm_hash": vm_hash,
-                        "vm_id": execution.vm.vm_id,
+                        "vm_hash": vm_id,
+                        "vm_id": execution.vm.vm_index,
                         "tap_interface": execution.vm.tap_interface,
                         "execution": execution,
                     }
                 )
-                logger.debug(f"Found running VM {vm_hash} with vm_id={execution.vm.vm_id}")
+                logger.debug(f"Found running VM {vm_id} with vm_id={execution.vm.vm_index}")
 
         logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
 

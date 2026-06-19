@@ -105,7 +105,7 @@ ConfigurationType = TypeVar("ConfigurationType")
 
 
 class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerInterface):
-    vm_id: int
+    vm_index: int
     vm_hash: ItemHash
     resources: AlephFirecrackerResources
     enable_console: bool
@@ -127,7 +127,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
     def __init__(
         self,
-        vm_id: int,
+        vm_index: int,
         vm_hash: ItemHash,
         resources: AlephFirecrackerResources,
         enable_networking: bool = False,
@@ -137,7 +137,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         persistent: bool = False,
         prepare_jailer: bool = True,
     ):
-        self.vm_id = vm_id
+        self.vm_index = vm_index
         self.vm_hash = vm_hash
         self.resources = resources
         if enable_console is None:
@@ -149,7 +149,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         self.persistent = persistent
 
         self.fvm = MicroVM(
-            vm_id=self.vm_id,
+            vm_index=self.vm_index,
             vm_hash=vm_hash,
             firecracker_bin_path=settings.FIRECRACKER_PATH,
             jailer_base_directory=settings.JAILER_BASE_DIR,
@@ -200,7 +200,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         raise NotImplementedError()
 
     async def start(self):
-        logger.debug(f"Starting VM={self.vm_id}")
+        logger.debug(f"Starting VM={self.vm_index}")
 
         if not self.fvm:
             msg = "No VM found. Call setup() before start()"
@@ -218,13 +218,13 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             # Stop the VM and clear network interfaces in case any error prevented the start of the virtual machine.
             logger.error("VM startup failed, cleaning up network")
             await self.fvm.teardown()
-            teardown_nftables_for_vm(self.vm_id)
+            teardown_nftables_for_vm(self.vm_index)
             if self.tap_interface:
                 await self.tap_interface.delete()
             raise
 
         await self.wait_for_init()
-        logger.debug(f"started fvm {self.vm_id}")
+        logger.debug(f"started fvm {self.vm_index}")
         await self.load_configuration()
 
     async def wait_for_init(self) -> None:
@@ -245,7 +245,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             )
 
             configuration = Configuration(
-                vm_id=self.vm_id,
+                vm_index=self.vm_index,
                 vm_hash=self.vm_hash,
                 settings=settings,
                 vm_configuration=vm_configuration,
@@ -262,7 +262,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
 
         # Ensure that the directory where the VSOCK socket will be created exists
         vsock_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"starting guest API for {self.vm_id} on {vsock_path}")
+        logger.debug(f"starting guest API for {self.vm_index} on {vsock_path}")
 
         vm_hash = self.vm_hash
         self.guest_api_process = Process(
@@ -273,7 +273,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
         while not exists(vsock_path):
             await asyncio.sleep(0.01)
         await chown_to_jailman(Path(vsock_path))
-        logger.debug(f"started guest API for {self.vm_id}")
+        logger.debug(f"started guest API for {self.vm_index}")
 
     async def stop_guest_api(self):
         if self.guest_api_process and self.guest_api_process.is_alive():
@@ -285,7 +285,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     async def teardown(self):
         if self.fvm:
             await self.fvm.teardown()
-            teardown_nftables_for_vm(self.vm_id)
+            teardown_nftables_for_vm(self.vm_index)
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()

@@ -62,7 +62,7 @@ async def execute_persistent_vm(config: Configuration):
     if config.hypervisor == HypervisorType.firecracker:
         assert isinstance(config.vm_configuration, VMConfiguration)
         execution = MicroVM(
-            vm_id=config.vm_id,
+            vm_index=config.vm_id,
             vm_hash=config.vm_hash,
             firecracker_bin_path=config.vm_configuration.firecracker_bin_path,
             jailer_base_directory=config.settings.JAILER_BASE_DIR,

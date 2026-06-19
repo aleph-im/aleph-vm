@@ -62,7 +62,7 @@ def _qemu_execution(tmp_path, *, running=True, persistent=True, volumes=None):
 
 def _pool_for(execution, *, running=True):
     return FakePool(
-        executions={str(execution.vm_hash): execution},
+        executions={str(execution.vm_id): execution},
         systemd=FakeSystemd({execution.controller_service: running}),
     )
 

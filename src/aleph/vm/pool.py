@@ -278,7 +278,7 @@ class VmPool:
             if not execution.resources:
                 continue
             delta = execution.resources.get_disk_usage_delta()
-            logger.debug("Disk usage delta: %d for %s", delta, execution.vm_hash)
+            logger.debug("Disk usage delta: %d for %s", delta, execution.vm_id)
             total_delta += delta
         available_space = free_space + total_delta
 
@@ -302,9 +302,9 @@ class VmPool:
         if spec.backend is Backend.FIRECRACKER:
             return await self._create_firecracker_from_spec(spec)
 
-        vm_hash = spec.vm_id
+        vm_id = spec.vm_id
         async with self.creation_lock:
-            current_execution = self.executions.get(vm_hash)
+            current_execution = self.executions.get(vm_id)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
@@ -354,20 +354,20 @@ class VmPool:
             # Attach the resolved GPUs so uses_gpu() holds them against other
             # creates and _to_vm_info reports them, exactly like the message path.
             execution.gpus = resolved_host_gpus
-            self.executions[vm_hash] = execution
+            self.executions[vm_id] = execution
 
             tap_interface = None
-            vm_id = None
+            vm_index = None
             try:
                 await execution.prepare()  # builds resources from the spec; no download
 
-                vm_id = self.get_unique_vm_id()
+                vm_index = self.get_unique_vm_index()
 
                 if self.network:
-                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, VmType.instance)
-                    if self.network.interface_exists(vm_id):
+                    tap_interface = await self.network.prepare_tap(vm_index, vm_id, VmType.instance)
+                    if self.network.interface_exists(vm_index):
                         await tap_interface.delete()
-                    await self.network.create_tap(vm_id, tap_interface)
+                    await self.network.create_tap(vm_index, tap_interface)
 
                 # Confidential VMs get a QemuConfidentialVMConfiguration; the
                 # GPU resolution above already rewrote spec.gpus with concrete
@@ -377,12 +377,12 @@ class VmPool:
                 # to the plain QemuVMConfiguration, which would boot the VM
                 # unprotected.
                 if spec.tee is not None:
-                    config = await build_qemu_confidential_configuration(spec, vm_id, tap_interface)
+                    config = await build_qemu_confidential_configuration(spec, vm_index, tap_interface)
                 else:
-                    config = await build_qemu_configuration(spec, vm_id, tap_interface)
+                    config = await build_qemu_configuration(spec, vm_index, tap_interface)
                 save_controller_configuration(spec.vm_id, config)
 
-                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                execution.create(vm_index=vm_index, tap_interface=tap_interface)
                 # start(write_config=False): the controller config was just
                 # written above. For a confidential VM, VmExecution.start leaves
                 # it in awaiting_confidential_init (is_confidential is True, so
@@ -392,16 +392,16 @@ class VmPool:
                 # Reuse persisted host ports across restarts. The agent then
                 # reconciles the aggregate settings through add_port_forward,
                 # which merges with these preloaded mappings.
-                execution.mapped_ports = await get_port_mappings(vm_hash)
+                execution.mapped_ports = await get_port_mappings(vm_id)
                 if execution.mapped_ports:
                     await execution.recreate_port_redirect_rules()
             except Exception:
                 if execution.vm:
                     await execution.vm.teardown()
-                elif tap_interface and vm_id is not None:
-                    teardown_nftables_for_vm(vm_id)
+                elif tap_interface and vm_index is not None:
+                    teardown_nftables_for_vm(vm_index)
                     await tap_interface.delete()
-                self.forget_vm(vm_hash)
+                self.forget_vm(vm_id)
                 raise
 
             self._schedule_forget_on_stop(execution)
@@ -422,9 +422,9 @@ class VmPool:
             msg = "Firecracker spec VMs require a guest_channel"
             raise InvalidBackendError(msg)
 
-        vm_hash = spec.vm_id
+        vm_id = spec.vm_id
         async with self.creation_lock:
-            current_execution = self.executions.get(vm_hash)
+            current_execution = self.executions.get(vm_id)
             if current_execution and current_execution.is_running and not current_execution.is_stopping:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
@@ -439,22 +439,22 @@ class VmPool:
                 snapshot_manager=self.snapshot_manager,
                 systemd_manager=self.systemd_manager,
             )
-            self.executions[vm_hash] = execution
+            self.executions[vm_id] = execution
 
             tap_interface = None
-            vm_id = None
+            vm_index = None
             try:
                 await execution.prepare()  # resolves resources from the spec; no download
 
-                vm_id = self.get_unique_vm_id()
+                vm_index = self.get_unique_vm_index()
 
                 if self.network and spec.network.internet_access:
-                    tap_interface = await self.network.prepare_tap(vm_id, vm_hash, VmType.microvm)
-                    if self.network.interface_exists(vm_id):
+                    tap_interface = await self.network.prepare_tap(vm_index, vm_id, VmType.microvm)
+                    if self.network.interface_exists(vm_index):
                         await tap_interface.delete()
-                    await self.network.create_tap(vm_id, tap_interface)
+                    await self.network.create_tap(vm_index, tap_interface)
 
-                execution.create(vm_id=vm_id, tap_interface=tap_interface)
+                execution.create(vm_index=vm_index, tap_interface=tap_interface)
                 # start() boots the program: ephemeral programs run the VMM
                 # directly and block through the init-ready handshake;
                 # persistent programs save the controller config and boot under
@@ -464,10 +464,10 @@ class VmPool:
             except Exception:
                 if execution.vm:
                     await execution.vm.teardown()
-                elif tap_interface and vm_id is not None:
-                    teardown_nftables_for_vm(vm_id)
+                elif tap_interface and vm_index is not None:
+                    teardown_nftables_for_vm(vm_index)
                     await tap_interface.delete()
-                self.forget_vm(vm_hash)
+                self.forget_vm(vm_id)
                 raise
 
             self._schedule_forget_on_stop(execution)
@@ -476,52 +476,52 @@ class VmPool:
     @staticmethod
     def _require_same_spec(current_execution: VmExecution, spec: CreateVmSpec) -> None:
         """CreateVm idempotency: a retry with the identical spec returns the
-        live VM; a different spec for a live vm_id is a conflict (also covers
+        live VM; a different spec for a live vm_index is a conflict (also covers
         colliding with a message-built execution, whose vm_spec is None)."""
         if current_execution.vm_spec != spec:
             msg = f"VM {spec.vm_id} already exists with a different spec"
             raise VmAlreadyExistsError(msg)
 
-    def get_unique_vm_id(self) -> int:
+    def get_unique_vm_index(self) -> int:
         """Get a unique identifier for the VM.
 
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
         # Take the first id that is not already taken
-        currently_used_vm_ids = {execution.vm_id for execution in self.executions.values()}
+        currently_used_vm_ids = {execution.vm_index for execution in self.executions.values()}
         for i in range(settings.START_ID_INDEX, 255**2):
             if i not in currently_used_vm_ids:
                 return i
-        msg = "No available value for vm_id."
+        msg = "No available value for vm_index."
         raise ValueError(msg)
 
-    def get_running_or_starting_vm(self, vm_hash: VmId) -> VmExecution | None:
+    def get_running_or_starting_vm(self, vm_id: VmId) -> VmExecution | None:
         """Return a running VM or None."""
-        execution = self.executions.get(vm_hash)
+        execution = self.executions.get(vm_id)
         if execution and execution.is_running and not execution.is_stopping:
             return execution
         else:
             return None
 
-    def get_running_vm(self, vm_hash: VmId) -> VmExecution | None:
+    def get_running_vm(self, vm_id: VmId) -> VmExecution | None:
         """Return a running VM or None."""
-        execution = self.executions.get(vm_hash)
+        execution = self.executions.get(vm_id)
         if execution and execution.is_running and not execution.is_stopping:
             return execution
         else:
             return None
 
-    async def stop_vm(self, vm_hash: VmId) -> VmExecution | None:
+    async def stop_vm(self, vm_id: VmId) -> VmExecution | None:
         """Stop a VM."""
-        execution = self.executions.get(vm_hash)
+        execution = self.executions.get(vm_id)
         if not execution:
-            logger.info("stop_vm No execution found for %s", vm_hash)
+            logger.info("stop_vm No execution found for %s", vm_id)
             return None
         await execution.stop()
         return execution
 
-    def forget_vm(self, vm_hash: VmId) -> None:
+    def forget_vm(self, vm_id: VmId) -> None:
         """Remove a VM from the executions pool.
 
         Used after VM creation raised an error in order to completely
@@ -529,7 +529,7 @@ class VmPool:
         attempted again.
         """
         try:
-            del self.executions[vm_hash]
+            del self.executions[vm_id]
         except KeyError:
             pass
 
@@ -538,21 +538,21 @@ class VmPool:
 
         Re-registers the execution in the pool immediately (before any async
         work) so the periodic allocation loop cannot create a duplicate
-        execution with a new vm_id.
+        execution with a new vm_index.
         """
         execution.times.stopping_at = None
         execution.times.stopped_at = None
         execution.stop_event = asyncio.Event()
-        self.executions[execution.vm_hash] = execution
+        self.executions[execution.vm_id] = execution
         self._schedule_forget_on_stop(execution)
 
         if self.network and execution.vm:
-            if not self.network.interface_exists(execution.vm.vm_id):
-                await self.network.create_tap(execution.vm.vm_id, execution.vm.tap_interface)
+            if not self.network.interface_exists(execution.vm.vm_index):
+                await self.network.create_tap(execution.vm.vm_index, execution.vm.tap_interface)
             else:
                 # Interface exists but nftables rules may have been flushed —
                 # always re-apply them.
-                setup_nftables_for_vm(execution.vm.vm_id, interface=execution.vm.tap_interface)
+                setup_nftables_for_vm(execution.vm.vm_index, interface=execution.vm.tap_interface)
         self.systemd_manager.restart(execution.controller_service)
         # RestartUnit only queues a job: wait until the unit is confirmed
         # active (with the crash-loop re-check) so callers get a truthful
@@ -561,7 +561,7 @@ class VmPool:
         execution.times.started_at = datetime.now(tz=timezone.utc)
         # Reload port mappings from DB — stop() clears them in memory
         # but the DB retains them for persistent VMs.
-        execution.mapped_ports = await get_port_mappings(execution.vm_hash)
+        execution.mapped_ports = await get_port_mappings(execution.vm_id)
         if execution.mapped_ports:
             await execution.recreate_port_redirect_rules()
 
@@ -574,12 +574,12 @@ class VmPool:
             # (e.g. reinstall/restore), this old task should not remove it.
             if execution.stop_event is not stop_event:
                 return
-            # Forget by identity, not by hash: the same vm_id may already be
+            # Forget by identity, not by hash: the same vm_index may already be
             # a new execution (reboot and delete+create recreate it while
             # this task races the old stop); only this task's own execution
             # may be removed.
-            if self.executions.get(execution.vm_hash) is execution:
-                self.forget_vm(execution.vm_hash)
+            if self.executions.get(execution.vm_id) is execution:
+                self.forget_vm(execution.vm_id)
 
         execution._forget_task = asyncio.create_task(forget_on_stop(stop_event=execution.stop_event))
 
@@ -601,10 +601,10 @@ class VmPool:
 
         configs: list[Configuration] = []
         for config_path in config_paths:
-            vm_hash = config_path.name[: -len("-controller.json")]
-            if VmId(vm_hash) in self.executions:
+            vm_id = config_path.name[: -len("-controller.json")]
+            if VmId(vm_id) in self.executions:
                 continue
-            config = load_controller_configuration(vm_hash)
+            config = load_controller_configuration(vm_id)
             if config is None:
                 continue
             configs.append(config)
@@ -614,13 +614,13 @@ class VmPool:
         service_active_states = self.systemd_manager.get_services_active_states(all_services)
 
         # Track claimed vm_ids to detect duplicates across configs. A stale
-        # config can reuse a vm_id; only the first active one is restored to
+        # config can reuse a vm_index; only the first active one is restored to
         # avoid two VMs sharing a tap interface.
         claimed_vm_ids: set[int] = set()
 
         for config in configs:
-            vm_hash = VmId(str(config.vm_hash))
-            vm_id = config.vm_id
+            vm_id = VmId(str(config.vm_hash))
+            vm_index = config.vm_id
             service_name = f"aleph-vm-controller@{config.vm_hash}.service"
             is_active = service_active_states.get(service_name, False)
 
@@ -628,36 +628,36 @@ class VmPool:
                 await self._handle_dead_controller(config)
                 continue
 
-            if vm_id in claimed_vm_ids:
+            if vm_index in claimed_vm_ids:
                 logger.warning(
-                    "Skipping reattach of %s: vm_id %d already claimed by another config",
-                    vm_hash,
+                    "Skipping reattach of %s: vm_index %d already claimed by another config",
                     vm_id,
+                    vm_index,
                 )
                 await self._handle_dead_controller(config)
                 continue
 
-            logger.info("Reattaching execution %s for VM %d", vm_hash, vm_id)
-            claimed_vm_ids.add(vm_id)
-            await self._restore_running_execution_from_config(config, vm_id, vm_hash)
+            logger.info("Reattaching execution %s for VM %d", vm_id, vm_index)
+            claimed_vm_ids.add(vm_index)
+            await self._restore_running_execution_from_config(config, vm_index, vm_id)
 
         self._cleanup_orphan_resources()
 
         logger.info("Loaded %d executions", len(self.executions))
 
-    async def _restore_network(self, vm_id: int, vm_hash: VmId) -> TapInterface | None:
+    async def _restore_network(self, vm_index: int, vm_id: VmId) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
         if not self.network:
             return None
 
         # Reattach is QEMU-instance only; the message is gone by design.
         vm_type = VmType.instance
-        tap_interface = await self.network.prepare_tap(vm_id, vm_hash, vm_type)
+        tap_interface = await self.network.prepare_tap(vm_index, vm_id, vm_type)
 
-        if not self.network.interface_exists(vm_id):
-            await self.network.create_tap(vm_id, tap_interface)
+        if not self.network.interface_exists(vm_index):
+            await self.network.create_tap(vm_index, tap_interface)
 
-        if self.network.ndp_proxy and self.network.interface_exists(vm_id):
+        if self.network.ndp_proxy and self.network.interface_exists(vm_index):
             await self.network.ndp_proxy.add_range(
                 interface=tap_interface.device_name,
                 address_range=tap_interface.host_ipv6.network,
@@ -665,10 +665,10 @@ class VmPool:
             )
             logger.debug("Re-added ndp_proxy rule for existing interface %s", tap_interface.device_name)
 
-        setup_nftables_for_vm(vm_id, interface=tap_interface)
+        setup_nftables_for_vm(vm_index, interface=tap_interface)
         return tap_interface
 
-    async def _restore_running_execution_from_config(self, config: Configuration, vm_id: int, vm_hash: VmId) -> None:
+    async def _restore_running_execution_from_config(self, config: Configuration, vm_index: int, vm_id: VmId) -> None:
         """Rebuild in-memory state for a VM whose controller is still active.
 
         Sourced entirely from the on-disk controller config -- message-free.
@@ -680,13 +680,13 @@ class VmPool:
             systemd_manager=self.systemd_manager,
         )
 
-        execution.mapped_ports = await get_port_mappings(vm_hash)
+        execution.mapped_ports = await get_port_mappings(vm_id)
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
 
         await execution.prepare()  # builds resources from the spec; no download
-        tap_interface = await self._restore_network(vm_id, vm_hash)
+        tap_interface = await self._restore_network(vm_index, vm_id)
 
-        vm = execution.create(vm_id=vm_id, tap_interface=tap_interface, prepare=False)
+        vm = execution.create(vm_index=vm_index, tap_interface=tap_interface, prepare=False)
         await vm.start_guest_api()
         execution.ready_event.set()
         execution.times.started_at = datetime.now(tz=timezone.utc)
@@ -699,7 +699,7 @@ class VmPool:
         if execution.mapped_ports:
             await execution.recreate_port_redirect_rules()
 
-        self.executions[vm_hash] = execution
+        self.executions[vm_id] = execution
 
     async def _handle_dead_controller(self, config: Configuration) -> None:
         """Stop the stale controller service for a VM that is no longer active.
@@ -721,8 +721,8 @@ class VmPool:
         and removes anything that doesn't belong to a running VM.
         Fetches the nftables ruleset once and passes it to both nft cleanup methods.
         """
-        active_vm_ids = {execution.vm_id for execution in self.executions.values() if execution.vm_id is not None}
-        active_vm_hashes = {str(vm_hash) for vm_hash in self.executions}
+        active_vm_ids = {execution.vm_index for execution in self.executions.values() if execution.vm_index is not None}
+        active_vm_hashes = {str(vm_id) for vm_id in self.executions}
 
         nft_ruleset = get_existing_nftables_ruleset()
         self._cleanup_orphan_port_redirects(nft_ruleset)
@@ -752,10 +752,10 @@ class VmPool:
 
         removed = 0
         for config_path in config_files:
-            vm_hash = config_path.name[: -len("-controller.json")]
-            if vm_hash in active_vm_hashes:
+            vm_id = config_path.name[: -len("-controller.json")]
+            if vm_id in active_vm_hashes:
                 continue
-            service_name = f"aleph-vm-controller@{vm_hash}.service"
+            service_name = f"aleph-vm-controller@{vm_id}.service"
             try:
                 self.systemd_manager.stop_and_disable(service_name)
             except Exception:
@@ -790,20 +790,20 @@ class VmPool:
             logger.info("Removed %d orphan port redirect rules", removed)
 
     def _cleanup_orphan_nft_chains(self, active_vm_ids: set[int], nft_ruleset: list[dict]):
-        """Remove per-VM nft chains whose vm_id is not in any active execution."""
+        """Remove per-VM nft chains whose vm_index is not in any active execution."""
         try:
             orphan_vm_ids = get_orphan_vm_chain_ids(active_vm_ids, nft_ruleset=nft_ruleset)
-            for vm_id in orphan_vm_ids:
+            for vm_index in orphan_vm_ids:
                 try:
-                    teardown_nftables_for_vm(vm_id)
-                    logger.info("Removed orphan nft chains for vm_id=%d", vm_id)
+                    teardown_nftables_for_vm(vm_index)
+                    logger.info("Removed orphan nft chains for vm_index=%d", vm_index)
                 except Exception:
-                    logger.warning("Failed to remove orphan nft chains for vm_id=%d", vm_id, exc_info=True)
+                    logger.warning("Failed to remove orphan nft chains for vm_index=%d", vm_index, exc_info=True)
         except Exception:
             logger.warning("Failed to query nftables for orphan chains", exc_info=True)
 
     def _cleanup_orphan_tap_interfaces(self, active_vm_ids: set[int]):
-        """Remove vmtap interfaces whose vm_id is not in any active execution."""
+        """Remove vmtap interfaces whose vm_index is not in any active execution."""
         if not self.network:
             return
         try:

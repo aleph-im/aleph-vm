@@ -21,7 +21,7 @@ def _running_instance_execution():
     execution = MagicMock()
     execution.is_running = True
     execution.is_instance = True
-    execution.vm = SimpleNamespace(vm_id=7, tap_interface="tap7")
+    execution.vm = SimpleNamespace(vm_index=7, tap_interface="tap7")
     execution.spec = object()  # not a MessageSpec; persisted mappings authoritative
     execution.mapped_ports = {}
     execution.recreate_port_redirect_rules = AsyncMock()

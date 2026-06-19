@@ -19,7 +19,7 @@ def _execution(*, confidential=False, policy=0, gpus=()):
     )
     vm = SimpleNamespace(tap_interface=None, confidential_policy=policy) if policy else None
     return SimpleNamespace(
-        vm_hash="abc",
+        vm_id="abc",
         vm=vm,
         times=times,
         is_program=False,

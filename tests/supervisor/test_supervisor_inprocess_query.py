@@ -17,7 +17,7 @@ from aleph.vm.supervisor_interface.types import (
 
 def make_execution(
     *,
-    vm_hash="itemhash123",
+    vm_id="itemhash123",
     running=True,
     confidential=False,
     hypervisor=HypervisorType.qemu,
@@ -42,10 +42,10 @@ def make_execution(
     )
     vm = SimpleNamespace(tap_interface=tap if with_ip else None)
     return SimpleNamespace(
-        vm_hash=vm_hash,
+        vm_id=vm_id,
         times=times,
         persistent=True,
-        controller_service=f"aleph-vm-controller@{vm_hash}.service",
+        controller_service=f"aleph-vm-controller@{vm_id}.service",
         systemd_manager=object(),
         is_program=is_program,
         is_instance=not is_program,
@@ -98,7 +98,7 @@ async def test_vm_info_has_no_is_instance_field():
     """The instance/program distinction is agent vocabulary: the wire must not
     carry it. The agent derives it from its registry (or from the guest
     channel's presence as a registry-miss fallback)."""
-    execution = make_execution(vm_hash="i", is_program=True)
+    execution = make_execution(vm_id="i", is_program=True)
     sup = LocalSupervisor(pool=FakePool(executions={"i": execution}))
     info = await sup.get_vm(VmId("i"))
     assert not hasattr(info, "is_instance")
@@ -131,8 +131,8 @@ async def test_confidential_instance_reports_qemu_backend_and_tee_mode():
 async def test_list_vms_returns_one_info_per_execution():
     pool = FakePool(
         executions={
-            "a": make_execution(vm_hash="hash-a"),
-            "b": make_execution(vm_hash="hash-b", running=False),
+            "a": make_execution(vm_id="hash-a"),
+            "b": make_execution(vm_id="hash-b", running=False),
         },
         systemd=FakeSystemd(
             {
@@ -194,7 +194,7 @@ async def test_list_vms_batches_the_systemd_query():
             return super().get_services_active_states(services)
 
     pool = FakePool(
-        executions={"hash-a": make_execution(vm_hash="hash-a"), "hash-b": make_execution(vm_hash="hash-b")},
+        executions={"hash-a": make_execution(vm_id="hash-a"), "hash-b": make_execution(vm_id="hash-b")},
         systemd=CountingSystemd({"aleph-vm-controller@hash-a.service": True}),
     )
     sup = LocalSupervisor(pool=pool)

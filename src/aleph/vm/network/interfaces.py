@@ -98,7 +98,7 @@ def delete_tap_interface(ipr: IPRoute, device_name: str):
 
 
 def get_orphan_tap_vm_ids(active_vm_ids: set[int]) -> list[tuple[int, str]]:
-    """Return (vm_id, ifname) pairs for vmtap interfaces not in active_vm_ids."""
+    """Return (vm_index, ifname) pairs for vmtap interfaces not in active_vm_ids."""
     orphans: list[tuple[int, str]] = []
     with IPRoute() as ipr:
         for link in ipr.get_links():
@@ -107,16 +107,16 @@ def get_orphan_tap_vm_ids(active_vm_ids: set[int]) -> list[tuple[int, str]]:
             if not ifname.startswith("vmtap"):
                 continue
             try:
-                vm_id = int(ifname[5:])
+                vm_index = int(ifname[5:])
             except ValueError:
                 continue
-            if vm_id not in active_vm_ids:
-                orphans.append((vm_id, ifname))
+            if vm_index not in active_vm_ids:
+                orphans.append((vm_index, ifname))
     return orphans
 
 
 def remove_orphan_tap_interfaces(active_vm_ids: set[int]) -> int:
-    """Remove tap interfaces whose vm_id is not in active_vm_ids.
+    """Remove tap interfaces whose vm_index is not in active_vm_ids.
 
     Returns the number of interfaces removed.
     """
