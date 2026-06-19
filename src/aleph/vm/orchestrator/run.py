@@ -265,29 +265,29 @@ async def create_vm_execution(
         return None
 
     if _is_spec_eligible(content):
-        # The spec carries the owner address (build_create_vm_spec reads it from
-        # message.address), so the engine consumes this owner's own GPU
-        # reservation and skips other users' valid reservations during create.
-        # The agent does not touch reservations at all.
-        spec = await build_create_vm_spec(vm_hash, content)
-        # Agent territory: record the message in the agent's own cache *before*
-        # create_vm, mirroring 1.13 where the VM entered the pool at the start of
-        # create. create_vm takes ~20s while the scheduler exposes placement
-        # earlier, so a confidential owner's one-shot init-session call can land
-        # before create returns. Recording the owner identity up front lets the
-        # operator API answer owner-auth immediately (get_agent_record_or_404)
-        # instead of polling for the record; the endpoint still waits for the VM
-        # to reach the awaiting-init state before initializing it. The supervisor
-        # machinery that creates the VM never reads this record.
-        # Spec-eligible VMs are QEMU instances, which are always persistent.
+        # Record the owner identity up front — BEFORE build_create_vm_spec (which
+        # downloads the confidential rootfs/firmware, several seconds) and before
+        # create_vm (~20s). The scheduler exposes placement earlier, so a
+        # confidential owner's one-shot init-session call can land anywhere in that
+        # download+create window. Recording here lets the operator API answer
+        # owner-auth immediately via get_agent_record_or_404; otherwise that lookup
+        # 404s before the awaiting-init wait can even run, the owner's single call
+        # is lost, and the test forgets the instance (which the reconcile then
+        # reaps). The endpoint still waits for the VM to reach the awaiting-init
+        # state before initializing it; the supervisor machinery never reads this
+        # record. (build_create_vm_spec reads the owner address from
+        # message.address for the engine's own GPU-reservation handling; the agent
+        # touches no reservations.) Spec-eligible VMs are QEMU instances, always
+        # persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
+            spec = await build_create_vm_spec(vm_hash, content)
             info = await supervisor.create_vm(spec)
         except Exception:
-            # create_vm failed: drop the early record so a failed create never
-            # leaves a dangling owner-identity entry behind (a record with no VM
-            # the supervisor knows about). Nothing is persisted yet, so forgetting
-            # the in-memory entry is sufficient.
+            # build or create failed: drop the early record so a failed create
+            # never leaves a dangling owner-identity entry behind (a record with no
+            # VM the supervisor knows about). Nothing is persisted yet, so
+            # forgetting the in-memory entry is sufficient.
             registry.forget(vm_hash)
             raise
         if info.awaiting_confidential_init:

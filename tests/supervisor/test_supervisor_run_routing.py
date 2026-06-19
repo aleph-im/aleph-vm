@@ -128,6 +128,45 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_owner_record_recorded_before_resource_download(monkeypatch):
+    """Regression: the owner record must reach the registry BEFORE
+    build_create_vm_spec runs (it downloads the confidential rootfs/firmware,
+    several seconds, then create_vm takes ~20s more). A confidential owner's
+    one-shot init-session can land anywhere in that window; if the record is not
+    yet present, get_agent_record_or_404 404s, the single call is lost, and the
+    instance is forgotten/reaped. So owner-auth must resolve from the moment
+    create begins, not only after the download completes.
+    """
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
+
+    seen = {}
+
+    async def fake_build(vm_hash, _content):
+        # build_create_vm_spec is where the download happens; the owner record
+        # must already be queryable here.
+        seen["record_present_at_build"] = registry.get(vm_hash) is not None
+        return _spec()
+
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=fake_build))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+
+    await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+
+    assert (
+        seen.get("record_present_at_build") is True
+    ), "owner record must be recorded before build_create_vm_spec downloads resources"
+
+
+@pytest.mark.asyncio
 async def test_eligible_instance_timeout_tears_down(monkeypatch):
     content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
