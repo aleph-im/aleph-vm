@@ -397,7 +397,7 @@ async def test_notify_over_capacity_returns_503(aiohttp_client, mocker):
     (the engine's atomic admission), notify_allocation returns 503."""
     from aleph_message.models import PaymentType
 
-    from aleph.vm.contract.errors import InsufficientResourcesError
+    from aleph.vm.supervisor_interface.errors import InsufficientResourcesError
 
     app = _make_notify_app(node_hash="my_node_hash_123")
     # notify_allocation reads these out of the app before reaching the create

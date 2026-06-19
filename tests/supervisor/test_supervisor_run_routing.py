@@ -18,8 +18,10 @@ from aleph_message.models.execution.environment import (
 )
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.contract.errors import InvalidBackendError, VmNotFoundError
-from aleph.vm.contract.types import (
+from aleph.vm.orchestrator import run as run_module
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor_interface.errors import InvalidBackendError, VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -33,8 +35,6 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
-from aleph.vm.orchestrator import run as run_module
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 
 _HASH = ItemHash("deadbeef" * 8)
 

@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from aleph.vm.contract.types import (
+from aleph.vm.pool import VmPool
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -18,7 +19,6 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
-from aleph.vm.pool import VmPool
 
 _HASH = "feed" * 16
 

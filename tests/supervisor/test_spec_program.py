@@ -4,8 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.contract.types import (
+from aleph.vm.controllers.firecracker.spec_program import (
+    SpecFirecrackerProgram,
+    SpecProgramResources,
+)
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -14,10 +18,6 @@ from aleph.vm.contract.types import (
     GuestChannelSpec,
     NetworkConfig,
     VmId,
-)
-from aleph.vm.controllers.firecracker.spec_program import (
-    SpecFirecrackerProgram,
-    SpecProgramResources,
 )
 
 VM_HASH = "feed" * 16

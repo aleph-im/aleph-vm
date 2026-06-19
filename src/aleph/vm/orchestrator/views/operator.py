@@ -19,21 +19,6 @@ from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import (
-    BackupNotFoundError,
-    InsufficientResourcesError,
-    InvalidBackendError,
-    VmNotFoundError,
-)
-from aleph.vm.contract.types import (
-    BackupId,
-    BackupInfo,
-    BackupStatus,
-    ConfidentialMode,
-    VmId,
-    VmStatus,
-)
 from aleph.vm.controllers.qemu.backup import (
     download_volume_by_ref,
     get_backup_directory,
@@ -49,6 +34,21 @@ from aleph.vm.orchestrator.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import (
+    BackupNotFoundError,
+    InsufficientResourcesError,
+    InvalidBackendError,
+    VmNotFoundError,
+)
+from aleph.vm.supervisor_interface.types import (
+    BackupId,
+    BackupInfo,
+    BackupStatus,
+    ConfidentialMode,
+    VmId,
+    VmStatus,
+)
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,

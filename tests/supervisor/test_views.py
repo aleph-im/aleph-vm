@@ -18,17 +18,17 @@ from eth_account.messages import encode_defunct
 from pytest_mock import MockerFixture
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import (
+from aleph.vm.models import VmExecution
+from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.pool import VmPool
+from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor_interface.types import (
     DirectoryPath,
     IpAssignment,
     TeeBackend,
     TeeConfig,
     VmId,
 )
-from aleph.vm.models import VmExecution
-from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.pool import VmPool
-from aleph.vm.sevclient import SevClient
 
 
 def _views_tee() -> TeeConfig:
@@ -981,7 +981,7 @@ async def test_operate_not_started(aiohttp_client, mock_app_with_pool, mock_inst
 
     from unittest.mock import AsyncMock, MagicMock
 
-    from aleph.vm.contract.types import Backend, VmId, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import Backend, VmId, VmInfo, VmStatus
 
     # Register in registry so the endpoint can find it.
     web_app["vm_registry"].record(vm_hash, message=message, original=message, persistent=False)
@@ -1017,7 +1017,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
 
     from unittest.mock import AsyncMock, MagicMock
 
-    from aleph.vm.contract.types import Backend, VmId, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import Backend, VmId, VmInfo, VmStatus
 
     reconcile_mock = AsyncMock()
     mocker.patch("aleph.vm.orchestrator.views.reconcile_port_forwards", reconcile_mock)
@@ -1244,8 +1244,8 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
     """
     import aiohttp
 
-    from aleph.vm.contract.errors import InvalidBackendError
     from aleph.vm.orchestrator.views import operator
+    from aleph.vm.supervisor_interface.errors import InvalidBackendError
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     from aleph.vm.storage import get_message
@@ -1285,7 +1285,12 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     It must NOT call pool.stop_vm or pool.forget_vm directly.
     Status is read from supervisor.list_vms() (VmInfo); persistence from the registry.
     """
-    from aleph.vm.contract.types import Backend, ConfidentialMode, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import (
+        Backend,
+        ConfidentialMode,
+        VmInfo,
+        VmStatus,
+    )
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     # Use a non-stream, non-credit payment type so the stop-loop condition is satisfied
@@ -1470,7 +1475,12 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     """A stream-paid registry record must be spared by the stop loop even when absent
     from the allocation (the restored-PAYG case).
     Status is read from supervisor.list_vms(); payment tier from the registry."""
-    from aleph.vm.contract.types import Backend, ConfidentialMode, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import (
+        Backend,
+        ConfidentialMode,
+        VmInfo,
+        VmStatus,
+    )
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     instance_content = {
@@ -1538,7 +1548,12 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
     """A VM with no registry record is not scheduler-managed and must NOT be stopped
     by the stop-loop; it is left to the idle-expiry path instead.
     Status is read from supervisor.list_vms(); a missing record means skip entirely."""
-    from aleph.vm.contract.types import Backend, ConfidentialMode, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import (
+        Backend,
+        ConfidentialMode,
+        VmInfo,
+        VmStatus,
+    )
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -1635,7 +1650,12 @@ def _running_vm_info(
     confidential_mode=None,
     gpus=None,
 ):
-    from aleph.vm.contract.types import Backend, ConfidentialMode, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import (
+        Backend,
+        ConfidentialMode,
+        VmInfo,
+        VmStatus,
+    )
 
     if confidential_mode is None:
         confidential_mode = ConfidentialMode.NONE
@@ -1696,7 +1716,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
             "GPU-bearing VM is not stopped",
             {
                 "gpus": [
-                    # GpuDevice from aleph.vm.contract.types
+                    # GpuDevice from aleph.vm.supervisor_interface.types
                     None  # placeholder — real object built in test body
                 ]
             },
@@ -1729,7 +1749,11 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, descripti
     """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
     must NOT be stopped by the stop-loop.
     """
-    from aleph.vm.contract.types import ConfidentialMode, GpuDevice, PciAddress
+    from aleph.vm.supervisor_interface.types import (
+        ConfidentialMode,
+        GpuDevice,
+        PciAddress,
+    )
 
     # Build the real VmInfo kwargs — resolve placeholders.
     resolved_kwargs = dict(vm_info_kwargs)

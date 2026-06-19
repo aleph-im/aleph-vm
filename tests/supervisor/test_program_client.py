@@ -9,11 +9,17 @@ from aleph_message.models import ProgramContent
 from aleph_message.models.execution.base import Encoding
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
 from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.orchestrator.vm.program_client import (
     build_code_and_volumes,
     build_program_configuration,
+)
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
 )
 
 VM_HASH = "feed" * 16

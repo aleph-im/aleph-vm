@@ -5,7 +5,9 @@ from aleph_message.models import Chain, InstanceContent, ItemHash, PaymentType
 from aleph_message.status import MessageStatus
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import (
+from aleph.vm.orchestrator.tasks import _group_executions_by_payment, check_payment
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
     IpAssignment,
@@ -13,8 +15,6 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
-from aleph.vm.orchestrator.tasks import _group_executions_by_payment, check_payment
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 
 
 @pytest.fixture()

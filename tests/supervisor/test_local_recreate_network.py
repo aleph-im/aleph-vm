@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from aleph.vm.contract.errors import InternalSupervisorError
 from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.errors import InternalSupervisorError
 
 _VM_HASH = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 

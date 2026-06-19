@@ -9,8 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
 from aleph.vm.orchestrator import haproxy_sync
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 LOCAL_HASH = "747b52c712e16642b498f16c4c6e68d5fb00ddbaf8d2a0dc7bd298d33abb9124"
 OTHER_HASH = "cefb9373558927d70365746900a410f01e1340ecff0dda93deb672f55bb70ac8"

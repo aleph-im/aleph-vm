@@ -27,8 +27,12 @@ import grpc
 import msgpack
 from google.protobuf.message import Message
 
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import (
+from aleph.vm.supervisor import proto_convert as conv
+from aleph.vm.supervisor._pb import supervisor_pb2 as pb
+from aleph.vm.supervisor._pb import supervisor_pb2_grpc
+from aleph.vm.supervisor.grpc_server import ERROR_TRAILER_KEY
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
     FileTooLargeError,
     HostNotFoundError,
@@ -47,7 +51,7 @@ from aleph.vm.contract.errors import (
     VmNotFoundError,
     VmSetupError,
 )
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor_interface.types import (
     BackupChunk,
     BackupId,
     BackupInfo,
@@ -67,10 +71,6 @@ from aleph.vm.contract.types import (
     VmId,
     VmInfo,
 )
-from aleph.vm.supervisor import proto_convert as conv
-from aleph.vm.supervisor._pb import supervisor_pb2 as pb
-from aleph.vm.supervisor._pb import supervisor_pb2_grpc
-from aleph.vm.supervisor.grpc_server import ERROR_TRAILER_KEY
 
 logger = logging.getLogger(__name__)
 

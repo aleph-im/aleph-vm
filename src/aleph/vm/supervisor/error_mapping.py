@@ -1,7 +1,7 @@
 """Map internal backend exceptions onto the closed Supervisor vocabulary.
 
 This is supervisor-side, not contract: it imports controller and hypervisor
-exception types (locally) to translate them into ``aleph.vm.contract.errors``.
+exception types (locally) to translate them into ``aleph.vm.supervisor_interface.errors``.
 Keeping the mapping here lets the contract layer stay free of any backend
 dependency.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 
-from aleph.vm.contract.errors import (
+from aleph.vm.supervisor_interface.errors import (
     FileTooLargeError,
     HostNotFoundError,
     InsufficientResourcesError,

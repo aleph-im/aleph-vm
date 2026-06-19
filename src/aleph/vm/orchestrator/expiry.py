@@ -2,9 +2,9 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import VmId
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import VmId
 
 logger = logging.getLogger(__name__)
 

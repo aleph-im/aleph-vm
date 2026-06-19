@@ -20,7 +20,7 @@ from conftest import (
     wait_for_tcp_banner,
 )
 
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HostPort,
     PortForwardSpec,

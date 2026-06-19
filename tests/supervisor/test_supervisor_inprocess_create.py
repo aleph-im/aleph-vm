@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
-from aleph.vm.contract.errors import (
+from aleph.vm.resources import InsufficientResourcesError as ResourcesInsufficientError
+from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError as BoundaryInsufficientResourcesError,
 )
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -21,8 +23,6 @@ from aleph.vm.contract.types import (
     VmId,
     VmStatus,
 )
-from aleph.vm.resources import InsufficientResourcesError as ResourcesInsufficientError
-from aleph.vm.supervisor.local import LocalSupervisor
 
 _HASH = "itemhash123"
 

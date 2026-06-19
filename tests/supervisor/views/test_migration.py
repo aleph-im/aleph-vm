@@ -9,8 +9,10 @@ from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import (
+from aleph.vm.models import MigrationState
+from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
     IpAssignment,
@@ -18,8 +20,6 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
-from aleph.vm.models import MigrationState
-from aleph.vm.orchestrator.supervisor import setup_webapp
 
 
 def _vm_info(

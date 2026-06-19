@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.contract.types import (
+from aleph.vm.models import VmExecution
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -15,7 +16,6 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
-from aleph.vm.models import VmExecution
 
 _HASH = "deadbeef" * 8
 

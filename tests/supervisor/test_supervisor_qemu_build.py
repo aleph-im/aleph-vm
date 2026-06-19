@@ -10,13 +10,15 @@ from typing import cast
 
 import pytest
 
-from aleph.vm.contract.configuration import (
+from aleph.vm.sizes import MiB
+from aleph.vm.supervisor.qemu_build import build_qemu_configuration
+from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,
     QemuVMConfiguration,
 )
-from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -27,8 +29,6 @@ from aleph.vm.contract.types import (
     PciAddress,
     VmId,
 )
-from aleph.vm.sizes import MiB
-from aleph.vm.supervisor.qemu_build import build_qemu_configuration
 
 # ---------------------------------------------------------------------------
 # Helpers

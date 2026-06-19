@@ -15,7 +15,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from aleph.vm.contract.types import (
+from aleph.vm.pool import Reservation, VmPool
+from aleph.vm.resources import GpuDevice as ResourceGpuDevice
+from aleph.vm.resources import GpuDeviceClass, InsufficientResourcesError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -26,9 +29,6 @@ from aleph.vm.contract.types import (
     PciAddress,
     VmId,
 )
-from aleph.vm.pool import Reservation, VmPool
-from aleph.vm.resources import GpuDevice as ResourceGpuDevice
-from aleph.vm.resources import GpuDeviceClass, InsufficientResourcesError
 
 _HASH = "deadbeef" * 8
 _DEVICE_ID = "10de:2504"

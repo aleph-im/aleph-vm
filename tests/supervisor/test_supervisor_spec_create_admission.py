@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import (
+from aleph.vm.pool import VmPool
+from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -20,8 +22,6 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
-from aleph.vm.pool import VmPool
-from aleph.vm.resources import InsufficientResourcesError
 
 _HASH = "deadbeef" * 8
 

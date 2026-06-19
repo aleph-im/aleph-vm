@@ -4,12 +4,12 @@ from collections.abc import Coroutine
 from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
-from aleph.vm.contract.abc import Supervisor
 from aleph.vm.orchestrator.expiry import ExpiryManager
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
 
 from .pubsub import PubSub

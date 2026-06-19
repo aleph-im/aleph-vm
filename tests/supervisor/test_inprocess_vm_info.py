@@ -2,9 +2,9 @@
 
 from types import SimpleNamespace
 
-from aleph.vm.contract.types import ConfidentialMode
 from aleph.vm.resources import HostGPU
 from aleph.vm.supervisor.local import _to_vm_info
+from aleph.vm.supervisor_interface.types import ConfidentialMode
 
 
 def _execution(*, confidential=False, policy=0, gpus=()):

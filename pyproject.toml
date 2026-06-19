@@ -275,10 +275,10 @@ root_package = "aleph"
 # Grimp counts TYPE_CHECKING imports too, so type-only edges also appear here.
 
 [[tool.importlinter.contracts]]
-name = "contract layer depends on neither side"
+name = "supervisor_interface layer depends on neither side"
 type = "forbidden"
 allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.contract" ]
+source_modules = [ "aleph.vm.supervisor_interface" ]
 forbidden_modules = [
   "aleph.vm.orchestrator",
   "aleph.vm.supervisor",
@@ -304,7 +304,7 @@ allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.orchestrator" ]
 forbidden_modules = [ "aleph.vm.supervisor" ]
 # Composition root only: the agent entrypoints pick a concrete Supervisor impl
-# at startup. All other agent code goes through aleph.vm.contract.abc.Supervisor.
+# at startup. All other agent code goes through aleph.vm.supervisor_interface.abc.Supervisor.
 ignore_imports = [
   "aleph.vm.orchestrator.cli -> aleph.vm.supervisor.local",
   "aleph.vm.orchestrator.supervisor -> aleph.vm.supervisor.local",

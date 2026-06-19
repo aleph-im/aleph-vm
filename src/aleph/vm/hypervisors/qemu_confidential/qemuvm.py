@@ -8,8 +8,8 @@ from aleph_message.models.execution.environment import AMDSEVPolicy
 from cpuid.features import secure_encryption_info
 from systemd import journal
 
-from aleph.vm.contract.configuration import QemuConfidentialVMConfiguration
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
+from aleph.vm.supervisor_interface.configuration import QemuConfidentialVMConfiguration
 
 logger = logging.getLogger(__name__)
 

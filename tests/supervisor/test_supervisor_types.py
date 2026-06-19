@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
     CreateVmSpec,

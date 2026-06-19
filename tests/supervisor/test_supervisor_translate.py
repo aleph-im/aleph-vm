@@ -18,14 +18,14 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
-from aleph.vm.contract.errors import InvalidBackendError
-from aleph.vm.contract.types import Backend, DiskRole
 from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
 from aleph.vm.controllers.resources import HostVolume
 from aleph.vm.orchestrator.translate import (
     build_create_vm_spec,
     build_reservation_request,
 )
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import Backend, DiskRole
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -255,7 +255,7 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     from aleph_message.models.execution.environment import AMDSEVPolicy
 
     from aleph.vm.conf import settings
-    from aleph.vm.contract.types import TeeBackend
+    from aleph.vm.supervisor_interface.types import TeeBackend
 
     firmware_path = Path("/data/firmware.fd")
 

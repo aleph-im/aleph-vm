@@ -10,8 +10,8 @@ import pytest
 from aleph_message.models import ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
 
-from aleph.vm.contract.types import Backend
 from aleph.vm.orchestrator import translate
+from aleph.vm.supervisor_interface.types import Backend
 
 _VM_HASH = ItemHash("deadbeef" * 8)
 

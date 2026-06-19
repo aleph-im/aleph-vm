@@ -12,7 +12,7 @@ This module is part of the shared contract: it carries no backend dependency
 
 from __future__ import annotations
 
-from aleph.vm.contract.types import ErrorCode
+from aleph.vm.supervisor_interface.types import ErrorCode
 
 
 class SupervisorError(Exception):

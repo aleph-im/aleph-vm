@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.contract.types import (
+from aleph.vm.orchestrator import run as run_module
+from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HostPort,
     PortForwardInfo,
@@ -18,7 +19,6 @@ from aleph.vm.contract.types import (
     VmId,
     VmStatus,
 )
-from aleph.vm.orchestrator import run as run_module
 
 _HASH = ItemHash("deadbeef" * 8)
 _VM_ID = VmId(str(_HASH))

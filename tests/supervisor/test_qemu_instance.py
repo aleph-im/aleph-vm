@@ -8,7 +8,6 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.configuration import save_controller_configuration
 from aleph.vm.controllers.__main__ import configuration_from_file, execute_persistent_vm
 from aleph.vm.controllers.qemu import AlephQemuInstance
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
@@ -18,6 +17,7 @@ from aleph.vm.orchestrator import metrics
 from aleph.vm.orchestrator.translate import build_create_vm_spec
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor.qemu_build import build_qemu_configuration
+from aleph.vm.supervisor_interface.configuration import save_controller_configuration
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 

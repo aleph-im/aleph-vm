@@ -5,9 +5,14 @@ from unittest.mock import AsyncMock
 import pytest
 from aleph_message.models.execution.environment import HypervisorType
 
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import Backend, ConfidentialMode, VmId, VmStatus
 from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    ConfidentialMode,
+    VmId,
+    VmStatus,
+)
 
 
 def make_execution(

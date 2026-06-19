@@ -9,8 +9,13 @@ import pytest
 from aiohttp import web
 from aleph_message.models import ItemHash, ProgramContent
 
-from aleph.vm.contract.errors import InsufficientResourcesError, VmNotFoundError
-from aleph.vm.contract.types import (
+from aleph.vm.orchestrator import run as run_module
+from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor_interface.errors import (
+    InsufficientResourcesError,
+    VmNotFoundError,
+)
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     GuestChannelSpec,
@@ -20,8 +25,6 @@ from aleph.vm.contract.types import (
     VmInfo,
     VmStatus,
 )
-from aleph.vm.orchestrator import run as run_module
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 
 VM_HASH = ItemHash("feed" * 16)
 VM_ID = VmId(str(VM_HASH))

@@ -44,8 +44,9 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from aleph.vm.contract.errors import SupervisorError
-from aleph.vm.contract.types import (
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
+from aleph.vm.supervisor_interface.errors import SupervisorError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -55,7 +56,6 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]

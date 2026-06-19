@@ -8,8 +8,8 @@ from typing import BinaryIO, TextIO
 import qmp
 from systemd import journal
 
-from aleph.vm.contract.configuration import QemuGPU, QemuVMConfiguration
 from aleph.vm.sizes import MiB
+from aleph.vm.supervisor_interface.configuration import QemuGPU, QemuVMConfiguration
 
 logger = logging.getLogger(__name__)
 

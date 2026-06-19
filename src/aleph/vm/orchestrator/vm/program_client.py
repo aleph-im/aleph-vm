@@ -32,7 +32,6 @@ from aleph_message.models import ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.types import VmId, VmInfo
 from aleph.vm.controllers.firecracker.executable import (
     VmInitNotConnectedError,
     VmSetupError,
@@ -49,6 +48,7 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
 from aleph.vm.storage import chown_to_jailman
+from aleph.vm.supervisor_interface.types import VmId, VmInfo
 from aleph.vm.utils.runtime_channel import GUEST_API_PORT, RUNTIME_CONTROL_PORT
 
 logger = logging.getLogger(__name__)

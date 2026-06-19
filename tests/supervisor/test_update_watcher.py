@@ -6,10 +6,10 @@ import pytest
 # Import the existing instance-message builder (instance branch of update_refs).
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import VmId
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher, update_refs
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import VmId
 from aleph.vm.utils import get_message_executable_content
 
 

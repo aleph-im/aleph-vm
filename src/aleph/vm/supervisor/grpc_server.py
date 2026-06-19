@@ -20,13 +20,22 @@ from typing import TypeVar
 import grpc
 import msgpack
 
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import NotImplementedSupervisorError, SupervisorError
-from aleph.vm.contract.types import BackupId, DirectoryPath, ErrorCode, HostPort, VmId
 from aleph.vm.supervisor import proto_convert as conv
 from aleph.vm.supervisor._pb import supervisor_pb2 as pb
 from aleph.vm.supervisor._pb import supervisor_pb2_grpc
 from aleph.vm.supervisor.error_mapping import translate_exception
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import (
+    NotImplementedSupervisorError,
+    SupervisorError,
+)
+from aleph.vm.supervisor_interface.types import (
+    BackupId,
+    DirectoryPath,
+    ErrorCode,
+    HostPort,
+    VmId,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.contract.types import (
+from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
+from aleph.vm.models import VmExecution
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,
@@ -17,8 +19,6 @@ from aleph.vm.contract.types import (
     NetworkConfig,
     VmId,
 )
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
-from aleph.vm.models import VmExecution
 
 _HASH = "deadbeef" * 8
 

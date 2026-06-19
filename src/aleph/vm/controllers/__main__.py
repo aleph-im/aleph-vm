@@ -8,17 +8,17 @@ from asyncio.subprocess import Process
 from pathlib import Path
 from time import sleep
 
-from aleph.vm.contract.configuration import (
+from aleph.vm.hypervisors.firecracker.microvm import MicroVM
+from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
+from aleph.vm.hypervisors.qemu_confidential.qemuvm import QemuConfidentialVM
+from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
+from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,
     QemuConfidentialVMConfiguration,
     QemuVMConfiguration,
     VMConfiguration,
 )
-from aleph.vm.hypervisors.firecracker.microvm import MicroVM
-from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
-from aleph.vm.hypervisors.qemu_confidential.qemuvm import QemuConfidentialVM
-from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 
 logger = logging.getLogger(__name__)
 

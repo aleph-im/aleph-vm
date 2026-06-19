@@ -17,18 +17,6 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.conf import settings
-from aleph.vm.contract import errors as supervisor_errors
-from aleph.vm.contract.abc import Supervisor
-from aleph.vm.contract.errors import VmNotFoundError
-from aleph.vm.contract.types import (
-    GuestPort,
-    HostPort,
-    PortForwardSpec,
-    Protocol,
-    VmId,
-    VmInfo,
-    VmStatus,
-)
 from aleph.vm.controllers.firecracker.executable import (
     ResourceDownloadError,
     VmSetupError,
@@ -45,6 +33,18 @@ from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor_interface import errors as supervisor_errors
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
+    GuestPort,
+    HostPort,
+    PortForwardSpec,
+    Protocol,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils import HostNotFoundError
 from aleph.vm.utils.aggregate import get_user_settings
 

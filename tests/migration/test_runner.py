@@ -11,10 +11,10 @@ from aleph_message.models import ItemHash, MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.conf import settings
-from aleph.vm.contract.errors import VmNotFoundError
 from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
 from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
 
 @pytest.fixture(autouse=True)
