@@ -15,8 +15,11 @@ import pytest
 import pytest_asyncio
 from conformance import STUB_METHODS
 
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import (
+from aleph.vm.supervisor.grpc_client import GrpcSupervisor
+from aleph.vm.supervisor.grpc_server import serve_unix
+from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import (
     FileTooLargeError,
     InsufficientResourcesError,
     InternalSupervisorError,
@@ -28,10 +31,7 @@ from aleph.vm.supervisor.errors import (
     VmNotFoundError,
     VmSetupError,
 )
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.grpc_server import serve_unix
-from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HealthStatus,
     HostPort,
@@ -248,7 +248,7 @@ async def test_get_vm_spec_round_trips_over_the_wire():
     from pathlib import Path
     from types import SimpleNamespace
 
-    from aleph.vm.supervisor.types import (
+    from aleph.vm.supervisor_interface.types import (
         Backend,
         CreateVmSpec,
         DiskFormat,
@@ -289,7 +289,7 @@ async def test_unary_calls_carry_a_deadline(monkeypatch):
     """A wedged supervisor must not hang the agent: unary RPCs time out."""
     import asyncio as aio
 
-    from aleph.vm.supervisor.errors import InternalSupervisorError
+    from aleph.vm.supervisor_interface.errors import InternalSupervisorError
 
     class _WedgedSupervisor(LocalSupervisor):
         async def health(self):
@@ -307,8 +307,8 @@ async def test_backup_surface_round_trips_over_the_wire(tmp_path, monkeypatch):
     """Status, listing, download stream and delete against a real archive on
     disk, through the real server and client."""
     from aleph.vm.controllers.qemu import backup as backup_module
-    from aleph.vm.supervisor.errors import BackupNotFoundError
-    from aleph.vm.supervisor.types import BackupId, BackupStatus
+    from aleph.vm.supervisor_interface.errors import BackupNotFoundError
+    from aleph.vm.supervisor_interface.types import BackupId, BackupStatus
 
     backups = tmp_path / "backups"
     backups.mkdir()

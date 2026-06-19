@@ -14,7 +14,12 @@ import pytest
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, NetworkConfig, VmId
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    CreateVmSpec,
+    NetworkConfig,
+    VmId,
+)
 
 
 def _spec(*, vcpus: int, memory_mib: int, backend: Backend = Backend.QEMU) -> CreateVmSpec:

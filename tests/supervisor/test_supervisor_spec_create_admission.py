@@ -13,7 +13,7 @@ import pytest
 from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

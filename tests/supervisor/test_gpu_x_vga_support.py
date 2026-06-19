@@ -2,9 +2,9 @@ from unittest import mock
 
 import pytest
 
-from aleph.vm.controllers.configuration import QemuGPU
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.resources import GpuDevice, GpuDeviceClass
+from aleph.vm.supervisor_interface.configuration import QemuGPU
 
 
 class TestGpuXVgaSupport:

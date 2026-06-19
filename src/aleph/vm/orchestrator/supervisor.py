@@ -171,8 +171,8 @@ async def watch_supervisor_events(app: web.Application) -> None:
     mark) and cancel pending idle-teardown timers. Reconnects on stream
     failure; exits if the supervisor does not implement WatchEvents.
     """
-    from aleph.vm.supervisor.errors import NotImplementedSupervisorError
-    from aleph.vm.supervisor.types import VmStatus
+    from aleph.vm.supervisor_interface.errors import NotImplementedSupervisorError
+    from aleph.vm.supervisor_interface.types import VmStatus
 
     supervisor = app["supervisor"]
     while True:

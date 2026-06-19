@@ -9,11 +9,11 @@ import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
 from aleph.vm.resources import InsufficientResourcesError as ResourcesInsufficientError
-from aleph.vm.supervisor.errors import (
+from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError as BoundaryInsufficientResourcesError,
 )
-from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

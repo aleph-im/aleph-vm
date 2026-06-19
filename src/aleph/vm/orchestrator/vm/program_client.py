@@ -48,7 +48,7 @@ from aleph.vm.controllers.firecracker.program import (
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
 from aleph.vm.storage import chown_to_jailman
-from aleph.vm.supervisor.types import VmId, VmInfo
+from aleph.vm.supervisor_interface.types import VmId, VmInfo
 from aleph.vm.utils.runtime_channel import GUEST_API_PORT, RUNTIME_CONTROL_PORT
 
 logger = logging.getLogger(__name__)

@@ -5,12 +5,12 @@ calls must not corrupt the supervisor's state for subsequent ones."""
 import pytest
 from conftest import fc_program_spec, fresh_vm_id, requires_fc
 
-from aleph.vm.supervisor.errors import (
+from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
     NotImplementedSupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.types import (
     BackupId,
     GuestPort,
     HostPort,

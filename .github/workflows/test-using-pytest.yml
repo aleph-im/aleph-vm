@@ -49,6 +49,14 @@ jobs:
         run: |
           hatch run linting:typing
 
+      - name: Check the agent/supervisor/contract import boundary
+        # Runs in the testing env (import-linter needs the project importable).
+        # sudo so it shares the root testing env with the proto-check / unit-test
+        # steps below, matching their comment about env races.
+        run: |
+          sudo python3 -m pip install --upgrade --ignore-installed hatch hatch-vcs coverage "virtualenv<21"
+          sudo hatch run testing:imports
+
       - name: Download and build required files for running tests. Copied from packaging/Makefile.
         run: |
           sudo useradd jailman

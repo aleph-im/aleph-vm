@@ -2,7 +2,7 @@ import inspect
 
 import pytest
 
-from aleph.vm.supervisor.abc import (
+from aleph.vm.supervisor_interface.abc import (
     BackupOps,
     ConfidentialOps,
     EventsOps,

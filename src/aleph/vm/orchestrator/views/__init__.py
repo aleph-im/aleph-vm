@@ -49,6 +49,7 @@ from aleph.vm.orchestrator.run import (
     start_persistent_vm,
 )
 from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
+from aleph.vm.orchestrator.translate import build_reservation_request
 from aleph.vm.orchestrator.utils import (
     format_cost,
     get_community_wallet_address,
@@ -70,17 +71,16 @@ from aleph.vm.orchestrator.views.host_status import (
 from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
 from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import (
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError as BoundaryInsufficientResourcesError,
 )
-from aleph.vm.supervisor.errors import (
+from aleph.vm.supervisor_interface.errors import (
     InternalSupervisorError,
     SupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor.translate import build_reservation_request
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.types import (
     ConfidentialMode,
     PortForwardInfo,
     VmId,

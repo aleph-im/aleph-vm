@@ -31,9 +31,14 @@ from aleph.vm.migration.jobs import (
 )
 from aleph.vm.migration.runner import run_export, run_import
 from aleph.vm.models import MigrationState
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.types import Backend, ConfidentialMode, VmId, VmStatus
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    ConfidentialMode,
+    VmId,
+    VmStatus,
+)
 from aleph.vm.utils import cors_allow_all, create_task_log_exceptions, dumps_for_json
 
 from .allocation_auth import requires_allocation_auth

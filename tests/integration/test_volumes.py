@@ -15,7 +15,7 @@ from conftest import (
     wait_for_tcp_banner,
 )
 
-from aleph.vm.supervisor.types import DiskFormat, DiskRole, DiskSpec, VmStatus
+from aleph.vm.supervisor_interface.types import DiskFormat, DiskRole, DiskSpec, VmStatus
 
 pytestmark = pytest.mark.asyncio
 

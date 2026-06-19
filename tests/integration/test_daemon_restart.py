@@ -15,7 +15,7 @@ from conftest import (
 )
 
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.types import VmStatus
+from aleph.vm.supervisor_interface.types import VmStatus
 
 pytestmark = pytest.mark.asyncio
 
