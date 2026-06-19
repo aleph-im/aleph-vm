@@ -4,9 +4,9 @@ import pytest
 from aleph_message.models import Chain, InstanceContent, ItemHash, PaymentType
 from aleph_message.status import MessageStatus
 
+from aleph.vm.agent.tasks import _group_executions_by_payment, check_payment
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.tasks import _group_executions_by_payment, check_payment
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
@@ -85,17 +85,17 @@ async def test_enough_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
-    mocker.patch("aleph.vm.orchestrator.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=True)
 
     registry = _make_registry()
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=400, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
 
     async def compute_required_flow(vm_hashes):
         return 500 * len(list(vm_hashes))
 
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", compute_required_flow)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", compute_required_flow)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -125,17 +125,17 @@ async def test_enough_flow_not_community(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
-    mocker.patch("aleph.vm.orchestrator.tasks.is_after_community_wallet_start", return_value=False)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=False)
 
     registry = _make_registry()
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=500, autospec=True)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=500, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
 
     async def compute_required_flow(vm_hashes):
         return 500 * len(list(vm_hashes))
 
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", compute_required_flow)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", compute_required_flow)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -156,12 +156,12 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
 
     registry = _make_registry()
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=2, autospec=True)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=2, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -195,10 +195,10 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
         elif receiver == settings.PAYMENT_RECEIVER_ADDRESS:
             return 10
 
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", new=get_stream)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", new=get_stream)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -225,10 +225,10 @@ async def test_message_removing_status(mocker, fake_instance_content):
     registry = _make_registry()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVING)
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=400, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.REMOVING)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
@@ -254,13 +254,11 @@ async def test_removed_message_status(mocker, fake_instance_content):
     registry = _make_registry()
     mock_community_wallet_address = "0x23C7A99d7AbebeD245d044685F1893aeA4b5Da90"
 
-    mocker.patch("aleph.vm.orchestrator.tasks.get_stream", return_value=400, autospec=True)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
-    mocker.patch("aleph.vm.orchestrator.tasks.get_message_status", return_value=MessageStatus.REMOVED)
-    mocker.patch("aleph.vm.orchestrator.tasks.compute_required_flow", return_value=5)
-    mock_delete_port_mappings = mocker.patch(
-        "aleph.vm.orchestrator.tasks.delete_port_mappings", new_callable=mocker.AsyncMock
-    )
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=400, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.REMOVED)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.tasks.delete_port_mappings", new_callable=mocker.AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"

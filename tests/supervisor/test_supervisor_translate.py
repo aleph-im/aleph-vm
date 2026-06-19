@@ -1,4 +1,4 @@
-"""Tests for aleph.vm.orchestrator.translate.build_create_vm_spec."""
+"""Tests for aleph.vm.agent.translate.build_create_vm_spec."""
 
 from __future__ import annotations
 
@@ -18,12 +18,9 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
-from aleph.vm.controllers.qemu.cloudinit import get_hostname_from_hash
-from aleph.vm.controllers.resources import HostVolume
-from aleph.vm.orchestrator.translate import (
-    build_create_vm_spec,
-    build_reservation_request,
-)
+from aleph.vm.agent.translate import build_create_vm_spec, build_reservation_request
+from aleph.vm.supervisor.controllers.qemu.cloudinit import get_hostname_from_hash
+from aleph.vm.supervisor.controllers.resources import HostVolume
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
 from aleph.vm.supervisor_interface.types import Backend, DiskRole
 
@@ -85,7 +82,7 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
         self.rootfs_path = rootfs
         self.volumes = [vol]
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
 
@@ -149,7 +146,7 @@ async def test_build_create_vm_spec_maps_gpu_requirements(monkeypatch: pytest.Mo
         self.rootfs_path = Path("/data/rootfs.qcow2")
         self.volumes = []
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
 
@@ -184,7 +181,7 @@ async def test_authorized_keys_none_becomes_empty_list(monkeypatch: pytest.Monke
         self.rootfs_path = Path("/data/rootfs.qcow2")
         self.volumes = []
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
 
@@ -216,7 +213,7 @@ async def test_non_instance_message_raises(monkeypatch: pytest.MonkeyPatch) -> N
         authorized_keys=None,
     )
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", should_not_be_called)
 
@@ -235,7 +232,7 @@ async def test_firecracker_hypervisor_raises(monkeypatch: pytest.MonkeyPatch) ->
         nonlocal download_called
         download_called = True
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", should_not_be_called)
 
@@ -266,10 +263,10 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     async def fake_get_existing_file(ref: Any) -> Path:
         return firmware_path
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
-    monkeypatch.setattr("aleph.vm.orchestrator.translate.get_existing_file", fake_get_existing_file)
+    monkeypatch.setattr("aleph.vm.agent.translate.get_existing_file", fake_get_existing_file)
 
     # The message requests a non-default policy: the spec must carry that
     # requested policy verbatim (the supervisor holds no opinion; the schema
@@ -303,7 +300,7 @@ async def test_hypervisor_none_defaults_to_qemu(monkeypatch: pytest.MonkeyPatch)
         self.rootfs_path = rootfs
         self.volumes = []
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", fake_download_all)
     monkeypatch.setattr("aleph.vm.conf.settings.INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.qemu)
@@ -326,7 +323,7 @@ async def test_hypervisor_none_defaults_to_firecracker_raises(monkeypatch: pytes
         nonlocal download_called
         download_called = True
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     monkeypatch.setattr(AlephQemuResources, "download_all", should_not_be_called)
     monkeypatch.setattr("aleph.vm.conf.settings.INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.firecracker)

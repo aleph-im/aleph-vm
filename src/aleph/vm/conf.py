@@ -18,7 +18,7 @@ from eth_utils import is_checksum_address
 from pydantic import Field, HttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aleph.vm.orchestrator.chain import STREAM_CHAINS
+from aleph.vm.agent.chain import STREAM_CHAINS
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,
@@ -382,7 +382,7 @@ class Settings(BaseSettings):
     and DEFAULT_ALLOCATION_SIGNERS are ignored — giving operators an immediate,
     network-independent way to rotate or revoke a scheduler key. When empty (the
     default), signers are resolved from the network, then the built-in default.
-    See aleph.vm.orchestrator.utils.get_authorized_allocation_signers for the
+    See aleph.vm.agent.utils.get_authorized_allocation_signers for the
     full precedence (override > aggregate > default).
 
     Each entry must be a checksummed ETH address (e.g. 0xAbC...). Validated at

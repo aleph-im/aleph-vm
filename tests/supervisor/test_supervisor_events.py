@@ -97,7 +97,7 @@ async def test_closing_the_stream_unsubscribes():
 async def test_agent_watcher_drops_program_state_on_stop_event():
     """The split-mode agent watcher cancels timers and forgets guest state
     when the supervisor reports a VM going down."""
-    from aleph.vm.orchestrator.supervisor import watch_supervisor_events
+    from aleph.vm.agent.supervisor import watch_supervisor_events
 
     stop_event = VmEvent(vm_id=VM_ID, old_status=VmStatus.RUNNING, new_status=VmStatus.STOPPED, timestamp_ns=1)
     boot_event = VmEvent(vm_id=VM_ID, old_status=VmStatus.DEFINED, new_status=VmStatus.RUNNING, timestamp_ns=2)

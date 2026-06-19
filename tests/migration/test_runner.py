@@ -665,7 +665,7 @@ async def test_import_spec_build_reuses_staged_overlay(tmp_path, monkeypatch):
     """
     from aleph_message.models.execution.volume import VolumePersistence
 
-    from aleph.vm.controllers.qemu.instance import AlephQemuResources
+    from aleph.vm.supervisor.controllers.qemu.instance import AlephQemuResources
 
     namespace = str(ItemHash(settings.FAKE_INSTANCE_ID))
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
@@ -688,10 +688,10 @@ async def test_import_spec_build_reuses_staged_overlay(tmp_path, monkeypatch):
         return b'{"format": "qcow2"}'
 
     monkeypatch.setattr(
-        "aleph.vm.controllers.qemu.instance.run_in_subprocess",
+        "aleph.vm.supervisor.controllers.qemu.instance.run_in_subprocess",
         fake_run_in_subprocess,
     )
-    monkeypatch.setattr("aleph.vm.controllers.qemu.instance.shutil.which", lambda _: "/usr/bin/qemu-img")
+    monkeypatch.setattr("aleph.vm.supervisor.controllers.qemu.instance.shutil.which", lambda _: "/usr/bin/qemu-img")
 
     # RootfsVolume is not a PersistentVolume, so volume_name resolves to "rootfs".
     from aleph_message.models.execution.instance import RootfsVolume

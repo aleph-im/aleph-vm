@@ -10,7 +10,7 @@ PrivateTmp=yes
 NoNewPrivileges=true
 WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
-ExecStart=/usr/bin/python3 -m aleph.vm.controllers --config=/var/lib/aleph/vm/%i-controller.json
+ExecStart=/usr/bin/python3 -m aleph.vm.supervisor.controllers --config=/var/lib/aleph/vm/%i-controller.json
 Restart=on-failure
 # KillMode=Mixed is used so initially only the Python controller process receives the SIGTERM signal.
 # The controller catches it and sends an ACPI powerdown to the Guest VM, giving it time to shut down

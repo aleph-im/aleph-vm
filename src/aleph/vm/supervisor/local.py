@@ -22,8 +22,14 @@ from typing import TYPE_CHECKING
 import psutil
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
+from aleph.vm.agent.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.backup import (
+from aleph.vm.network.firewall import (
+    initialize_nftables,
+    recreate_network_for_vms,
+    remove_all_aleph_chains,
+)
+from aleph.vm.supervisor.controllers.qemu.backup import (
     InsufficientDiskSpaceError,
     backup_metadata,
     check_disk_space_for_multiple,
@@ -36,13 +42,7 @@ from aleph.vm.controllers.qemu.backup import (
     restore_rootfs,
     verify_qemu_disk,
 )
-from aleph.vm.controllers.qemu.client import QemuVmClient
-from aleph.vm.network.firewall import (
-    initialize_nftables,
-    recreate_network_for_vms,
-    remove_all_aleph_chains,
-)
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_port_mappings
+from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 from aleph.vm.supervisor.error_mapping import translating_errors
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.configuration import remove_controller_configuration
@@ -205,8 +205,10 @@ async def _run_code_over_channel(channel_path: str, scope: dict, *, timeout: flo
     from the supervisor process which owns the VM's guest channel UDS. Used by
     persistent programs (the agent cannot reach the channel across the boundary).
     """
-    from aleph.vm.controllers.firecracker.executable import VmInitNotConnectedError
-    from aleph.vm.controllers.firecracker.program import RunCodePayload
+    from aleph.vm.supervisor.controllers.firecracker.executable import (
+        VmInitNotConnectedError,
+    )
+    from aleph.vm.supervisor.controllers.firecracker.program import RunCodePayload
     from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 
     async def communicate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
@@ -825,7 +827,7 @@ class LocalSupervisor(Supervisor):
     async def _try_fsfreeze(self, execution):
         """Best-effort guest fs-freeze through the QEMU guest agent; the
         backup proceeds unfrozen when the agent is unavailable."""
-        from aleph.vm.controllers.qemu.client import QemuVmClient
+        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
         try:
             client = QemuVmClient(execution.vm)

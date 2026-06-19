@@ -12,18 +12,18 @@ from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import VmSetupError
-from aleph.vm.controllers.interface import AlephVmControllerInterface
-from aleph.vm.controllers.resources import (
+from aleph.vm.network.firewall import teardown_nftables_for_vm
+from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.resources import HostGPU
+from aleph.vm.storage import get_rootfs_base_path
+from aleph.vm.supervisor.controllers.firecracker.executable import VmSetupError
+from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
+from aleph.vm.supervisor.controllers.resources import (
     HostVolume,
     VmResources,
     disk_usage_delta,
     host_volumes_from_message,
 )
-from aleph.vm.network.firewall import teardown_nftables_for_vm
-from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.resources import HostGPU
-from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.supervisor_interface.types import HardwareResources
 from aleph.vm.utils import run_in_subprocess
 

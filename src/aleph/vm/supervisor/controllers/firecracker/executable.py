@@ -14,18 +14,20 @@ from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
-from aleph.vm.controllers.interface import AlephVmControllerInterface
-from aleph.vm.controllers.resources import (
-    VmResources,
-    disk_usage_delta,
-    host_volumes_from_message,
-)
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman
+from aleph.vm.supervisor.controllers.firecracker.snapshots import (
+    CompressedDiskVolumeSnapshot,
+)
+from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
+from aleph.vm.supervisor.controllers.resources import (
+    VmResources,
+    disk_usage_delta,
+    host_volumes_from_message,
+)
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     VMConfiguration,

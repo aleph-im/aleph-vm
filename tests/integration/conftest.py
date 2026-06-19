@@ -183,7 +183,7 @@ def _install_controller_unit(exec_root: Path, python_path: str) -> list[Path]:
         f"Environment=PYTHONPATH={python_path}\n"
         f"WorkingDirectory={REPO_ROOT}\n"
         "ExecStart=\n"
-        f"ExecStart={sys.executable} -m aleph.vm.controllers --config={exec_root}/%i-controller.json\n"
+        f"ExecStart={sys.executable} -m aleph.vm.supervisor.controllers --config={exec_root}/%i-controller.json\n"
     )
     created.append(_CONTROLLER_DROPIN)
     subprocess.run(["systemctl", "daemon-reload"], check=True)

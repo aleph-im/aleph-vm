@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 

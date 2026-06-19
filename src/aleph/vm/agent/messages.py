@@ -6,9 +6,9 @@ from aiohttp.web_exceptions import HTTPNotFound, HTTPServiceUnavailable
 from aleph_message.models import ExecutableMessage, ItemHash, MessageType
 from aleph_message.status import MessageStatus
 
+from aleph.vm.agent.cache import AsyncTTLCache
+from aleph.vm.agent.http import get_session
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.cache import AsyncTTLCache
-from aleph.vm.orchestrator.http import get_session
 from aleph.vm.storage import get_latest_amend, get_message
 
 _message_status_cache = AsyncTTLCache(ttl_seconds=settings.CACHE_TTL_MESSAGE_STATUS)

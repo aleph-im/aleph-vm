@@ -157,7 +157,7 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
     resolved firmware as ovmf_path and the converted SEV policy, creates the
     execution, and leaves it awaiting_confidential_init: the controller service
     is NOT enabled/started (only the owner starts it via initialize)."""
-    from aleph.vm.controllers.qemu_confidential.instance import (
+    from aleph.vm.supervisor.controllers.qemu_confidential.instance import (
         AlephQemuConfidentialInstance,
     )
     from aleph.vm.supervisor_interface.configuration import (
@@ -198,7 +198,7 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
 async def test_create_vm_from_spec_confidential_applies_requested_policy(monkeypatch):
     """The requested SEV policy on spec.tee flows through verbatim to the engine
     configuration: the supervisor neither defaults nor clamps it."""
-    from aleph.vm.controllers.qemu_confidential.instance import (
+    from aleph.vm.supervisor.controllers.qemu_confidential.instance import (
         AlephQemuConfidentialInstance,
     )
     from aleph.vm.supervisor_interface.configuration import (

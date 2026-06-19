@@ -8,9 +8,9 @@ import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
-from aleph.vm.orchestrator.supervisor import setup_webapp
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -83,10 +83,10 @@ def mock_scheduler_auth(mocker):
 
     The migration handlers wrap themselves with @requires_allocation_auth, which
     looks up authenticate_api_request in its own module
-    (aleph.vm.orchestrator.views.allocation_auth) — patch there.
+    (aleph.vm.agent.views.allocation_auth) — patch there.
     """
     mocker.patch(
-        "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+        "aleph.vm.agent.views.allocation_auth.authenticate_api_request",
         new_callable=AsyncMock,
         return_value=True,
     )
@@ -125,7 +125,7 @@ class TestMigrationExportEndpoint:
     async def test_export_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            "aleph.vm.agent.views.allocation_auth.authenticate_api_request",
             new_callable=AsyncMock,
             return_value=False,
         )
@@ -340,7 +340,7 @@ class TestMigrationImportEndpoint:
     async def test_import_unauthorized(self, aiohttp_client, mocker):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            "aleph.vm.agent.views.allocation_auth.authenticate_api_request",
             new_callable=AsyncMock,
             return_value=False,
         )
@@ -627,7 +627,7 @@ class TestMigrationCleanupEndpoint:
     async def test_cleanup_unauthorized(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that unauthorized requests are rejected."""
         mocker.patch(
-            "aleph.vm.orchestrator.views.allocation_auth.authenticate_api_request",
+            "aleph.vm.agent.views.allocation_auth.authenticate_api_request",
             new_callable=AsyncMock,
             return_value=False,
         )
@@ -907,8 +907,8 @@ class TestImportRequestSourceHostValidation:
     def test_rejects_unsafe_hosts(self, bad_host):
         from pydantic import ValidationError
 
+        from aleph.vm.agent.views.migration import ColdMigrationImportRequest
         from aleph.vm.migration.jobs import DiskFileInfo
-        from aleph.vm.orchestrator.views.migration import ColdMigrationImportRequest
 
         with pytest.raises(ValidationError):
             ColdMigrationImportRequest(
@@ -929,8 +929,8 @@ class TestImportRequestSourceHostValidation:
         ],
     )
     def test_accepts_routable_or_hostname(self, good_host):
+        from aleph.vm.agent.views.migration import ColdMigrationImportRequest
         from aleph.vm.migration.jobs import DiskFileInfo
-        from aleph.vm.orchestrator.views.migration import ColdMigrationImportRequest
 
         ColdMigrationImportRequest(
             vm_hash="0" * 64,
@@ -975,7 +975,7 @@ class TestMigrationEndpointsDoNotTouchThePool:
     def test_endpoints_have_no_pool_references(self):
         import inspect
 
-        from aleph.vm.orchestrator.views import migration as migration_views
+        from aleph.vm.agent.views import migration as migration_views
 
         forbidden = ("require_vm_pool", "vm_pool", "pool.create_a_vm", "pool.executions")
         for endpoint in (
