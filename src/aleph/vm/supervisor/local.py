@@ -1069,12 +1069,12 @@ class LocalSupervisor(Supervisor):
                 running_vms.append(
                     {
                         "vm_hash": vm_id,
-                        "vm_id": execution.vm.vm_index,
+                        "vm_index": execution.vm.vm_index,
                         "tap_interface": execution.vm.tap_interface,
                         "execution": execution,
                     }
                 )
-                logger.debug(f"Found running VM {vm_id} with vm_id={execution.vm.vm_index}")
+                logger.debug(f"Found running VM {vm_id} with vm_index={execution.vm.vm_index}")
 
         logger.info(f"Found {len(running_vms)} running VMs to recreate network rules for")
 

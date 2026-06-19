@@ -1347,8 +1347,8 @@ def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], 
 
     Example:
         vms = [
-            {"vm_id": 1, "tap_interface": tap1, "vm_hash": hash1},
-            {"vm_id": 2, "tap_interface": tap2, "vm_hash": hash2},
+            {"vm_index": 1, "tap_interface": tap1, "vm_hash": hash1},
+            {"vm_index": 2, "tap_interface": tap2, "vm_hash": hash2},
         ]
         recreated, failed = recreate_network_for_vms(vms)
     """
@@ -1357,7 +1357,7 @@ def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], 
     failed_vms = []
 
     for vm_config in vm_configurations:
-        vm_index = vm_config["vm_id"]
+        vm_index = vm_config["vm_index"]
         tap_interface = vm_config["tap_interface"]
         vm_hash = vm_config["vm_hash"]
 

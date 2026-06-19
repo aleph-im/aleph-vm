@@ -62,11 +62,11 @@ async def test_recreate_network_returns_summary_and_calls_helpers(mocker):
     }
     remove_mock.assert_called_once()
     init_mock.assert_called_once()
-    # recreate_network_for_vms gets the execution's vm_id and tap_interface.
+    # recreate_network_for_vms gets the execution's vm_index and tap_interface.
     recreate_mock.assert_called_once()
     (running_vms,) = recreate_mock.call_args.args
     assert len(running_vms) == 1
-    assert running_vms[0]["vm_id"] == 7
+    assert running_vms[0]["vm_index"] == 7
     assert running_vms[0]["tap_interface"] == "tap7"
     assert running_vms[0]["vm_hash"] == _VM_HASH
 
