@@ -73,13 +73,16 @@ def test_from_spec_sets_spec():
 async def test_prepare_builds_resources_without_download(monkeypatch):
     execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
 
-    # download_all must never be called on the spec path.
+    # The agent downloader must never be invoked on the spec path (the holder
+    # is built from the spec via from_spec; download lives agent-side now).
+    from aleph.vm.agent.vm.downloader import QemuDownloader
+
     called = {"download": False}
 
     async def fail_download(_self):  # type: ignore[no-untyped-def]
         called["download"] = True
 
-    monkeypatch.setattr(AlephQemuResources, "download_all", fail_download)
+    monkeypatch.setattr(QemuDownloader, "download_all", fail_download)
 
     await execution.prepare()
 

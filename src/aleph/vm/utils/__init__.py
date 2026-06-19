@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from base64 import b16encode, b32decode
+from base64 import b16decode, b16encode, b32decode, b32encode
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
@@ -16,11 +16,26 @@ from typing import Any, Optional
 import aiodns
 import msgpack
 from aiohttp_cors import ResourceOptions, custom_cors
-from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
+from aleph_message.models import (
+    ExecutableContent,
+    InstanceContent,
+    ItemHash,
+    ProgramContent,
+)
 from eth_typing import HexAddress, HexStr
 from eth_utils import hexstr_if_str, is_address, to_hex
 
 logger = logging.getLogger(__name__)
+
+
+def get_hostname_from_hash(vm_hash: ItemHash) -> str:
+    """Aleph's VM hostname convention: the base32 of the item hash.
+
+    Neutral vocabulary shared by the agent (CreateVmSpec.hostname) and the QEMU
+    cloud-init builder; defined here so neither side imports the other.
+    """
+    item_hash_binary: bytes = b16decode(vm_hash.encode().upper())
+    return b32encode(item_hash_binary).decode().strip("=").lower()
 
 
 def get_message_executable_content(message_dict: dict) -> ExecutableContent:

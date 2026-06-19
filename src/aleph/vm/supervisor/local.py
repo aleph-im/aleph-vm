@@ -205,10 +205,7 @@ async def _run_code_over_channel(channel_path: str, scope: dict, *, timeout: flo
     from the supervisor process which owns the VM's guest channel UDS. Used by
     persistent programs (the agent cannot reach the channel across the boundary).
     """
-    from aleph.vm.supervisor.controllers.firecracker.executable import (
-        VmInitNotConnectedError,
-    )
-    from aleph.vm.supervisor.controllers.firecracker.program import RunCodePayload
+    from aleph.vm.program_config import RunCodePayload, VmInitNotConnectedError
     from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 
     async def communicate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:

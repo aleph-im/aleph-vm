@@ -14,48 +14,22 @@ message contract without one inheriting the other's assumptions.
 """
 
 import logging
-from dataclasses import dataclass
 from os.path import isfile
 from pathlib import Path
 
 from aleph_message.models import ExecutableContent
-from aleph_message.models.execution.volume import MachineVolume, PersistentVolume
 
 from aleph.vm.conf import settings
-from aleph.vm.storage import get_volume_path
+
+# HostVolume and the message->host-path resolver are shared, neutral vocabulary
+# (agent download path and supervisor spec path both build them). They live in
+# the neutral foundation module; re-exported here for the controllers that
+# already import them from this module.
+from aleph.vm.host_volumes import HostVolume, host_volumes_from_message
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class HostVolume:
-    mount: str
-    path_on_host: Path
-    read_only: bool
-    size_mib: int | None
-
-
-async def host_volumes_from_message(message_content: ExecutableContent, namespace: str) -> list[HostVolume]:
-    """Resolve the extra (non-rootfs) volumes declared in a message to on-host paths."""
-    volumes = []
-    # TODO: Download in parallel and prevent duplicated volume names
-    volume: MachineVolume
-    for i, volume in enumerate(message_content.volumes):
-        # only persistent volume has name and mount
-        if isinstance(volume, PersistentVolume):
-            if not volume.name:
-                volume.name = f"unamed_volume_{i}"
-            if not volume.mount:
-                volume.mount = f"/mnt/{volume.name}"
-        volumes.append(
-            HostVolume(
-                mount=volume.mount,
-                path_on_host=(await get_volume_path(volume=volume, namespace=namespace)),
-                read_only=volume.is_read_only(),
-                size_mib=getattr(volume, "size_mib", None),
-            )
-        )
-    return volumes
+__all__ = ["HostVolume", "host_volumes_from_message", "disk_usage_delta", "VmResources"]
 
 
 def disk_usage_delta(message_content: ExecutableContent | None, rootfs_path: Path, volumes: list[HostVolume]) -> int:
