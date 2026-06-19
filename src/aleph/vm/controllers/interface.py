@@ -9,7 +9,7 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.supervisor.types import HardwareResources
+from aleph.vm.supervisor_interface.types import HardwareResources
 from aleph.vm.utils.logs import get_past_vm_logs, make_logs_queue
 
 logger = logging.getLogger(__name__)

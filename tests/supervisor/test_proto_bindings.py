@@ -309,7 +309,7 @@ def test_log_source_has_stderr():
 
     assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
 
-    from aleph.vm.supervisor.types import IpAssignment, LogSource
+    from aleph.vm.supervisor_interface.types import IpAssignment, LogSource
 
     assert LogSource.STDERR.value == "stderr"
 
@@ -389,7 +389,13 @@ def test_host_info_host_ipv4_defaults_empty():
 
 
 def test_vm_info_dataclass_new_fields_default():
-    from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
+    from aleph.vm.supervisor_interface.types import (
+        Backend,
+        IpAssignment,
+        VmId,
+        VmInfo,
+        VmStatus,
+    )
 
     info = VmInfo(
         vm_id=VmId("x"),
@@ -410,6 +416,6 @@ def test_vm_info_dataclass_new_fields_default():
 
 
 def test_host_info_dataclass_host_ipv4_defaults_empty():
-    from aleph.vm.supervisor.types import HostInfo
+    from aleph.vm.supervisor_interface.types import HostInfo
 
     assert HostInfo().host_ipv4 == ""

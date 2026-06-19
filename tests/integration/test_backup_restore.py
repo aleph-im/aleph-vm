@@ -25,8 +25,11 @@ from conftest import (
     wait_for_tcp_banner,
 )
 
-from aleph.vm.supervisor.errors import BackupNotFoundError, InvalidBackendError
-from aleph.vm.supervisor.types import BackupStatus, VmStatus
+from aleph.vm.supervisor_interface.errors import (
+    BackupNotFoundError,
+    InvalidBackendError,
+)
+from aleph.vm.supervisor_interface.types import BackupStatus, VmStatus
 
 pytestmark = pytest.mark.asyncio
 

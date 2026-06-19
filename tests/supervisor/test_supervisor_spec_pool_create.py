@@ -9,8 +9,8 @@ import pytest
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
 from aleph.vm.pool import VmPool
-from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DirectoryPath,
@@ -157,9 +157,11 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
     resolved firmware as ovmf_path and the converted SEV policy, creates the
     execution, and leaves it awaiting_confidential_init: the controller service
     is NOT enabled/started (only the owner starts it via initialize)."""
-    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
     from aleph.vm.controllers.qemu_confidential.instance import (
         AlephQemuConfidentialInstance,
+    )
+    from aleph.vm.supervisor_interface.configuration import (
+        QemuConfidentialVMConfiguration,
     )
 
     pool = _bare_pool()
@@ -196,9 +198,11 @@ async def test_create_vm_from_spec_confidential_builds_confidential_config(monke
 async def test_create_vm_from_spec_confidential_applies_requested_policy(monkeypatch):
     """The requested SEV policy on spec.tee flows through verbatim to the engine
     configuration: the supervisor neither defaults nor clamps it."""
-    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
     from aleph.vm.controllers.qemu_confidential.instance import (
         AlephQemuConfidentialInstance,
+    )
+    from aleph.vm.supervisor_interface.configuration import (
+        QemuConfidentialVMConfiguration,
     )
 
     requested_policy = int(AMDSEVPolicy.NO_DBG | AMDSEVPolicy.SEV_ES)
@@ -241,9 +245,11 @@ async def test_create_vm_from_spec_confidential_without_firmware_raises_no_plain
 async def test_create_vm_from_spec_confidential_with_gpu_carries_resolved_gpu(monkeypatch):
     """Confidential + GPU compose: the GPU request is resolved to a concrete
     host card and that pci_host lands in the confidential configuration."""
-    from aleph.vm.controllers.configuration import QemuConfidentialVMConfiguration
     from aleph.vm.resources import GpuDevice as ResourceGpuDevice
     from aleph.vm.resources import GpuDeviceClass
+    from aleph.vm.supervisor_interface.configuration import (
+        QemuConfidentialVMConfiguration,
+    )
 
     gpu = ResourceGpuDevice(
         vendor="NVIDIA",
@@ -294,7 +300,7 @@ async def test_create_vm_from_spec_conflicting_spec_raises_already_exists():
 
     from aleph_message.models import ItemHash
 
-    from aleph.vm.supervisor.errors import VmAlreadyExistsError
+    from aleph.vm.supervisor_interface.errors import VmAlreadyExistsError
 
     pool = _bare_pool()
     spec = _spec()
@@ -313,7 +319,7 @@ async def test_create_vm_from_spec_collision_with_message_built_vm_raises():
 
     from aleph_message.models import ItemHash
 
-    from aleph.vm.supervisor.errors import VmAlreadyExistsError
+    from aleph.vm.supervisor_interface.errors import VmAlreadyExistsError
 
     pool = _bare_pool()
     live = SimpleNamespace(is_running=True, is_stopping=False, vm_spec=None)

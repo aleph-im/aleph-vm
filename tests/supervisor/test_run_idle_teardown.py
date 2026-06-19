@@ -22,7 +22,13 @@ from aleph_message.models import ItemHash, ProgramContent
 from aleph.vm.conf import settings
 from aleph.vm.orchestrator.run import run_code_on_event, run_code_on_request
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
-from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 VM_HASH = ItemHash(settings.FAKE_INSTANCE_ID)
 REUSE_TIMEOUT = 42.0

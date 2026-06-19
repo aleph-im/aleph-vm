@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from aleph.vm.supervisor.abc import Supervisor
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.grpc_server import serve_unix
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.types import (
     Backend,
     DirectoryPath,
     GpuSpec,

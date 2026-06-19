@@ -14,7 +14,13 @@ from aleph.vm.orchestrator.vm.program_client import (
     build_code_and_volumes,
     build_program_configuration,
 )
-from aleph.vm.supervisor.types import Backend, IpAssignment, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    IpAssignment,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 
 VM_HASH = "feed" * 16
 

@@ -10,7 +10,7 @@ import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
 
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import VmEvent, VmId, VmStatus
+from aleph.vm.supervisor_interface.types import VmEvent, VmId, VmStatus
 
 VM_ID = VmId("itemhash123")
 

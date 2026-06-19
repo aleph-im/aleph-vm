@@ -25,18 +25,18 @@ from aleph.vm.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.orchestrator.expiry import ExpiryManager
+from aleph.vm.orchestrator.translate import (
+    build_create_vm_spec,
+    build_program_create_vm_spec,
+)
 from aleph.vm.orchestrator.update_watcher import UpdateWatcher
 from aleph.vm.orchestrator.vm.program_client import ProgramGuestClient
 from aleph.vm.orchestrator.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor import errors as supervisor_errors
-from aleph.vm.supervisor.abc import Supervisor
-from aleph.vm.supervisor.errors import VmNotFoundError
-from aleph.vm.supervisor.translate import (
-    build_create_vm_spec,
-    build_program_create_vm_spec,
-)
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface import errors as supervisor_errors
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HostPort,
     PortForwardSpec,
