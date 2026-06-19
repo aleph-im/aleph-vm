@@ -29,11 +29,8 @@ from aleph.vm.agent.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.backup_staging import download_volume_by_ref, get_backup_directory
 from aleph.vm.conf import settings
-from aleph.vm.supervisor.controllers.qemu.backup import (
-    download_volume_by_ref,
-    get_backup_directory,
-)
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,

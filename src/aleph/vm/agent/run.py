@@ -25,14 +25,14 @@ from aleph.vm.conf import settings
 from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.controllers.firecracker.executable import (
-    ResourceDownloadError,
-    VmSetupError,
-)
-from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.errors import (
+    FileTooLargeError,
+    ResourceDownloadError,
+    VmNotFoundError,
+    VmSetupError,
+)
 from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HostPort,
@@ -383,11 +383,11 @@ async def _resolve_program_content(vm_hash: ItemHash, registry: AgentVmRegistry)
 def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
     """Map program create/setup failures to HTTP responses.
 
-    Two vocabularies meet here: the agent-side download phase raises the
-    controller-internal exceptions (ResourceDownloadError, FileTooLargeError),
-    while the supervisor boundary raises the closed SupervisorError set.
+    Both the agent-side download phase and the supervisor boundary now raise the
+    closed ``supervisor_interface.errors.SupervisorError`` vocabulary, so the
+    branches below match a single error hierarchy.
     """
-    if isinstance(error, (ResourceDownloadError, supervisor_errors.ResourceDownloadError)):
+    if isinstance(error, ResourceDownloadError):
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
     if isinstance(error, (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError)):
@@ -396,9 +396,9 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
             reason="Insufficient capacity",
             text="This CRN cannot host the requested workload at this time.",
         ) from error
-    if isinstance(error, (FileTooLargeError, supervisor_errors.FileTooLargeError)):
+    if isinstance(error, FileTooLargeError):
         raise HTTPInternalServerError(reason=str(error) or "File too large") from error
-    if isinstance(error, (VmSetupError, supervisor_errors.VmSetupError)):
+    if isinstance(error, VmSetupError):
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
     if isinstance(error, (MicroVMFailedInitError, supervisor_errors.MicroVMInitError)):

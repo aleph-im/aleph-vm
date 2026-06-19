@@ -1,31 +1,22 @@
-import asyncio
-import json
 import logging
-import shutil
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 import psutil
 from aleph_message.models import InstanceContent, ItemHash
-from aleph_message.models.execution.instance import RootfsVolume
-from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
 from aleph.vm.conf import settings
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.resources import HostGPU
-from aleph.vm.storage import get_rootfs_base_path
-from aleph.vm.supervisor.controllers.firecracker.executable import VmSetupError
 from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
 from aleph.vm.supervisor.controllers.resources import (
     HostVolume,
     VmResources,
     disk_usage_delta,
-    host_volumes_from_message,
 )
 from aleph.vm.supervisor_interface.types import HardwareResources
-from aleph.vm.utils import run_in_subprocess
 
 if TYPE_CHECKING:
     from aleph.vm.supervisor_interface.types import CreateVmSpec
@@ -57,69 +48,6 @@ class AlephQemuResources(VmResources):
         # spec-built volumes carry no size_mib, so nothing is counted. Spec VMs
         # do not reserve disk through the pool; the agent sizes them upfront.
         return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
-
-    async def download_runtime(self) -> None:
-        if self.message_content is None:
-            msg = "download_runtime called on a spec-built resources holder (no message to download from)"
-            raise VmSetupError(msg)
-        volume = self.message_content.rootfs
-        parent_image_path = await get_rootfs_base_path(volume.parent.ref)
-        self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
-
-    async def download_volumes(self) -> None:
-        if self.message_content is None:
-            return
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
-
-    async def download_all(self):
-        await asyncio.gather(
-            self.download_runtime(),
-            self.download_volumes(),
-        )
-
-    async def make_writable_volume(self, parent_image_path, volume: PersistentVolume | RootfsVolume):
-        """Create a new qcow2 image file based on the passed one, that we give to the VM to write onto"""
-        qemu_img_path: str | None = shutil.which("qemu-img")
-        if not qemu_img_path:
-            msg = "qemu-img not found in PATH"
-            raise VmSetupError(msg)
-
-        volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
-
-        # detect the image format
-        out_json = await run_in_subprocess([qemu_img_path, "info", str(parent_image_path), "--output=json"])
-        out = json.loads(out_json)
-        parent_format = out.get("format", None)
-        if parent_format is None:
-            msg = f"Failed to detect format for {volume}: {out_json}"
-            raise VmSetupError(msg)
-        if parent_format not in ("qcow2", "raw"):
-            msg = f"Format {parent_format} for {volume} unhandled by QEMU hypervisor"
-            raise VmSetupError(msg)
-
-        dest_path = settings.PERSISTENT_VOLUMES_DIR / self.namespace / f"{volume_name}.qcow2"
-        # Do not override if user asked for host persistence.
-        if dest_path.exists() and volume.persistence == VolumePersistence.host:
-            return dest_path
-
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        size_in_bytes = int(volume.size_mib * 1024 * 1024)
-
-        await run_in_subprocess(
-            [
-                qemu_img_path,
-                "create",
-                "-f",  # Format
-                "qcow2",
-                "-F",
-                parent_format,
-                "-b",
-                str(parent_image_path),
-                str(dest_path),
-                str(size_in_bytes),
-            ]
-        )
-        return dest_path
 
     @classmethod
     def from_spec(cls, spec: "CreateVmSpec", namespace: str) -> "AlephQemuResources":

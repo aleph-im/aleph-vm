@@ -31,23 +31,20 @@ import msgpack
 from aleph_message.models import ItemHash, ProgramContent
 from aleph_message.models.execution.base import Encoding
 
+from aleph.vm.agent.vm.downloader import ProgramDownloader
 from aleph.vm.conf import settings
 from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
-from aleph.vm.storage import chown_to_jailman
-from aleph.vm.supervisor.controllers.firecracker.executable import (
-    VmInitNotConnectedError,
-    VmSetupError,
-    Volume,
-)
-from aleph.vm.supervisor.controllers.firecracker.program import (
-    AlephProgramResources,
+from aleph.vm.program_config import (
     ConfigurationResponse,
-    FileTooLargeError,
     ProgramConfiguration,
     RunCodePayload,
+    VmInitNotConnectedError,
+    Volume,
     read_input_data,
 )
+from aleph.vm.storage import chown_to_jailman
+from aleph.vm.supervisor_interface.errors import FileTooLargeError, VmSetupError
 from aleph.vm.supervisor_interface.types import VmId, VmInfo
 from aleph.vm.utils.runtime_channel import GUEST_API_PORT, RUNTIME_CONTROL_PORT
 
@@ -64,7 +61,7 @@ def _device_name(index: int) -> str:
     return f"vd{ascii_lowercase[index + 1]}"
 
 
-def build_code_and_volumes(resources: AlephProgramResources) -> tuple[bytes | None, list[Volume]]:
+def build_code_and_volumes(resources: ProgramDownloader) -> tuple[bytes | None, list[Volume]]:
     """The agent half of the old get_volumes_for_program: code bytes (inline
     encodings) or a CODE drive mount (squashfs), plus guest volume mappings."""
     if resources.code_encoding == Encoding.squashfs:
@@ -100,7 +97,7 @@ def runtime_config_from_ready_payload(payload: bytes) -> RuntimeConfiguration:
 
 
 def build_program_configuration(
-    info: VmInfo, message: ProgramContent, resources: AlephProgramResources
+    info: VmInfo, message: ProgramContent, resources: ProgramDownloader
 ) -> ProgramConfiguration:
     code, volumes = build_code_and_volumes(resources)
     input_data = read_input_data(resources.data_path)
@@ -167,7 +164,7 @@ class ProgramGuestClient:
         """True when this agent process configured the VM (safe to run code)."""
         return vm_id in self._configured
 
-    async def setup_program(self, info: VmInfo, message: ProgramContent, resources: AlephProgramResources) -> None:
+    async def setup_program(self, info: VmInfo, message: ProgramContent, resources: ProgramDownloader) -> None:
         """Bring a freshly-booted program VM to serving state: guest API up,
         configuration pushed. Must run exactly once per VM boot."""
         if not info.guest_channel_path:

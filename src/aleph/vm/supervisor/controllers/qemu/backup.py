@@ -8,7 +8,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aleph.vm.conf import settings
+# Neutral staging helpers shared with the agent; re-exported here for the
+# supervisor backup paths (and tests) that import them from this module.
+from aleph.vm.backup_staging import (  # noqa: F401
+    download_volume_by_ref,
+    get_backup_directory,
+)
 from aleph.vm.utils import run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -26,13 +31,6 @@ def _require_qemu_img() -> str:
     if not path:
         msg = "qemu-img not found in PATH"
         raise FileNotFoundError(msg)
-    return path
-
-
-def get_backup_directory() -> Path:
-    """Return the directory used to store VM disk backups."""
-    path = settings.BACKUP_DIRECTORY or (settings.EXECUTION_ROOT / "backups")
-    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -275,27 +273,6 @@ def backup_metadata(tar_path: Path) -> dict:
             meta["source_sizes"] = stored["source_sizes"]
 
     return meta
-
-
-async def download_volume_by_ref(
-    item_hash: str,
-    destination: Path,
-) -> Path:
-    """Download a volume from the aleph network by item hash.
-
-    Args:
-        item_hash: The aleph message item hash of the volume.
-        destination: Directory to save the downloaded file.
-
-    Returns:
-        Path to the downloaded file.
-    """
-    from aleph.vm.storage import _get_content_url, download_file
-
-    dest_path = destination / f"{item_hash}.qcow2"
-    url = await _get_content_url(item_hash)
-    await download_file(url, dest_path)
-    return dest_path
 
 
 def _restore_rootfs_sync(new_rootfs: Path, current_rootfs: Path) -> Path:

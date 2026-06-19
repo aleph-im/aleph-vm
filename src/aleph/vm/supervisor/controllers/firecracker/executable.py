@@ -18,16 +18,13 @@ from aleph.vm.guest_api.__main__ import run_guest_api
 from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
+from aleph.vm.program_config import Volume
 from aleph.vm.storage import chown_to_jailman
 from aleph.vm.supervisor.controllers.firecracker.snapshots import (
     CompressedDiskVolumeSnapshot,
 )
 from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
-from aleph.vm.supervisor.controllers.resources import (
-    VmResources,
-    disk_usage_delta,
-    host_volumes_from_message,
-)
+from aleph.vm.supervisor.controllers.resources import VmResources, disk_usage_delta
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     VMConfiguration,
@@ -66,13 +63,6 @@ class ResourceDownloadError(ClientResponseError):
 
 
 @dataclass
-class Volume:
-    mount: str
-    device: str
-    read_only: bool
-
-
-@dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
     ip: str | None = None
@@ -106,21 +96,8 @@ class AlephFirecrackerResources(VmResources):
     def get_disk_usage_delta(self) -> int:
         return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
 
-    async def download_volumes(self):
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
-
-    async def download_all(self):
-        await asyncio.gather(
-            self.download_kernel(),
-            self.download_volumes(),
-        )
-
 
 class VmSetupError(Exception):
-    pass
-
-
-class VmInitNotConnectedError(Exception):
     pass
 
 

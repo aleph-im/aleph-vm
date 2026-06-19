@@ -13,7 +13,7 @@ from aleph.vm.agent.vm.program_client import (
     build_program_configuration,
 )
 from aleph.vm.conf import settings
-from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
+from aleph.vm.supervisor_interface.errors import FileTooLargeError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     IpAssignment,

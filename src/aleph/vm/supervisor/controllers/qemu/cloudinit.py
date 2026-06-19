@@ -13,19 +13,16 @@ https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html
 See also the cloud-localds  man page (1)
 """
 
-import base64
 import json
 from tempfile import NamedTemporaryFile
 
 import yaml
-from aleph_message.models import ItemHash
 
-from aleph.vm.utils import run_in_subprocess
+# get_hostname_from_hash is the Aleph hostname convention, shared, neutral
+# vocabulary; re-exported here for the cloud-init builder that uses it.
+from aleph.vm.utils import get_hostname_from_hash, run_in_subprocess
 
-
-def get_hostname_from_hash(vm_hash: ItemHash) -> str:
-    item_hash_binary: bytes = base64.b16decode(vm_hash.encode().upper())
-    return base64.b32encode(item_hash_binary).decode().strip("=").lower()
+__all__ = ["get_hostname_from_hash", "encode_user_data"]
 
 
 def encode_user_data(
