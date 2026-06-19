@@ -140,6 +140,42 @@ to `QemuConfidentialDownloader`; `from_spec` runtime holder stays). The SEV
 runtime path is exercised by unit tests with mocks; full validation needs the
 testnet #27 SEV run before merge (same gate as the confidential-init work).
 
+## 3b. Verified execution notes (code-confirmed 2026-06-19)
+
+Turnkey details confirmed by reading the code, so execution is mechanical:
+
+- **Download is agent-only.** The only external callers of `download_all` are
+  `agent/translate.py:101` (qemu) and `:189` (program). No controller / pool /
+  models code downloads. => the controller runtime holders
+  (`AlephQemuResources`, `AlephFirecrackerResources`, `AlephProgramResources`,
+  `AlephQemuConfidentialResources`) can drop `download_*` / `make_writable_volume`
+  outright once `translate.py` uses the agent downloaders.
+- **Shared-type relocations** (the slice-1 tax, used by both sides):
+  `HostVolume` (dataclass) and `host_volumes_from_message` move from
+  `supervisor/controllers/resources.py` to the neutral foundation
+  `aleph.vm.resources` (already imported by both agent and controllers; holds
+  `HostGPU`). `disk_usage_delta` stays with the runtime holder (controller-side
+  accounting). `VmResources` base stays in `controllers/resources.py`; the agent
+  downloaders **compose** (own `rootfs_path`/`volumes`/`code_*`), they do NOT
+  subclass it (subclassing would re-introduce the `agent -> controllers` import).
+- **Downloader error vocabulary:** the agent downloaders raise
+  `supervisor_interface.errors.{VmSetupError,ResourceDownloadError,FileTooLargeError}`
+  (contract), not the controller exception classes.
+- **Transitional view state (why it stays green per backend):** as each backend
+  migrates, `views/__init__.py` `vm_creation_exceptions` catches BOTH the
+  contract error and the not-yet-migrated controller error. The controller
+  exception imports are dropped and the import-linter residuals removed only in
+  the FINAL slice, after all four backends use agent downloaders. Tests stay
+  green at every backend step; only the linter-tightening is end-loaded.
+- **Test touchpoints:** `tests/supervisor/test_supervisor_translate.py:23,74`
+  (imports `HostVolume`; mocks `AlephQemuResources.download_all` -> retarget to
+  the agent downloader), `test_supervisor_translate_program.py` (same for
+  program), `tests/migration/test_runner.py:699,703` (constructs resources +
+  calls `make_writable_volume` -> retarget to agent downloader),
+  `test_supervisor_spec_resources.py` (uses `from_spec` on the controller holder
+  -> unchanged), `src/aleph/vm/hypervisors/qemu/qemuvm.py:63` (uses `HostVolume`
+  -> update import to `aleph.vm.resources`).
+
 ## 4. Risk / why this is gated on tests, not "moves only"
 
 It splits a class and changes which exceptions the views catch. The step-2
