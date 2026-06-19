@@ -245,7 +245,7 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             )
 
             configuration = Configuration(
-                vm_index=self.vm_index,
+                vm_id=self.vm_index,
                 vm_hash=self.vm_hash,
                 settings=settings,
                 vm_configuration=vm_configuration,
