@@ -122,14 +122,6 @@ class QemuDownloader:
         )
 
 
-class QemuConfidentialDownloader(QemuDownloader):
-    """A confidential QEMU instance downloader.
-
-    Firmware is resolved in ``translate.py`` (like the other TEE fields), so this
-    subclass adds no extra download step beyond the QEMU runtime + volumes.
-    """
-
-
 class ProgramDownloader:
     """Resolve a Firecracker program message's resources to on-host paths.
 

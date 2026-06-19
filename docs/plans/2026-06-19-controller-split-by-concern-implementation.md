@@ -140,6 +140,12 @@ to `QemuConfidentialDownloader`; `from_spec` runtime holder stays). The SEV
 runtime path is exercised by unit tests with mocks; full validation needs the
 testnet #27 SEV run before merge (same gate as the confidential-init work).
 
+> **As-built:** no separate `QemuConfidentialDownloader` was needed. Confidential
+> QEMU instances use the plain `QemuDownloader` (runtime + volumes); firmware is
+> resolved inline in `translate.py` alongside the other TEE fields rather than as
+> an agent-side download step, so a confidential subclass would have added no
+> behavior. It was dropped to avoid carrying dead code.
+
 ## 3b. Verified execution notes (code-confirmed 2026-06-19)
 
 Turnkey details confirmed by reading the code, so execution is mechanical:
