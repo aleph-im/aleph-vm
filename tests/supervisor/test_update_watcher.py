@@ -6,8 +6,8 @@ import pytest
 # Import the existing instance-message builder (instance branch of update_refs).
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.orchestrator.update_watcher import UpdateWatcher, update_refs
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.agent.update_watcher import UpdateWatcher, update_refs
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 from aleph.vm.utils import get_message_executable_content
@@ -199,7 +199,7 @@ async def test_watch_again_after_completion_rewatches():
 @pytest.mark.asyncio
 async def test_expiry_reap_cancels_update_watch():
     # Regression: an idle-expired VM must not leak its update-watch subscription.
-    from aleph.vm.orchestrator.expiry import ExpiryManager
+    from aleph.vm.agent.expiry import ExpiryManager
 
     sup = FakeSupervisor()
     registry = _registry_with(_HASH, _make_qemu_instance_message())

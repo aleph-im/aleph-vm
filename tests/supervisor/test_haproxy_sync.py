@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from aleph.vm.agent import haproxy_sync
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator import haproxy_sync
 from aleph.vm.supervisor_interface.types import (
     Backend,
     IpAssignment,

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.orchestrator import run as run_module
+from aleph.vm.agent import run as run_module
 from aleph.vm.supervisor_interface.types import (
     GuestPort,
     HostPort,

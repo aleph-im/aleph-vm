@@ -18,7 +18,7 @@ GRACEFUL_SHUTDOWN_TIMEOUT = 30
 
 async def graceful_shutdown(execution: VmExecution, timeout: int = GRACEFUL_SHUTDOWN_TIMEOUT) -> None:
     """Gracefully shut down a QEMU VM via QMP system_powerdown, with fallback to systemd stop."""
-    from aleph.vm.controllers.qemu.client import QemuVmClient
+    from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 
     vm = execution.vm
     if not vm:

@@ -5,14 +5,14 @@ import pytest
 from aiohttp import web
 from aleph_message.models import MessageType
 
-from aleph.vm.conf import Settings
-from aleph.vm.orchestrator.node_identity import (
+from aleph.vm.agent.node_identity import (
     NodeIdentity,
     discover_node_hash,
     start_node_hash_discovery,
     stop_node_hash_discovery,
 )
-from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.agent.supervisor import setup_webapp
+from aleph.vm.conf import Settings
 
 
 def test_node_hash_setting():
@@ -350,11 +350,11 @@ async def test_notify_rejects_wrong_node_hash(aiohttp_client, mocker):
     mock_message.type = MessageType.instance
     mock_message.content.requirements.node.node_hash = "other_node_hash"
     mocker.patch(
-        "aleph.vm.orchestrator.views.try_get_message",
+        "aleph.vm.agent.views.try_get_message",
         return_value=mock_message,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.update_aggregate_settings",
+        "aleph.vm.agent.views.update_aggregate_settings",
     )
 
     response = await client.post(
@@ -377,11 +377,11 @@ async def test_notify_rejects_when_hash_unknown(aiohttp_client, mocker):
     mock_message.type = MessageType.instance
     mock_message.content.requirements.node.node_hash = "some_node_hash"
     mocker.patch(
-        "aleph.vm.orchestrator.views.try_get_message",
+        "aleph.vm.agent.views.try_get_message",
         return_value=mock_message,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.update_aggregate_settings",
+        "aleph.vm.agent.views.update_aggregate_settings",
     )
 
     response = await client.post(
@@ -416,12 +416,12 @@ async def test_notify_over_capacity_returns_503(aiohttp_client, mocker):
     mock_message.content.requirements.gpu = None
     mock_message.content.environment.trusted_execution = mocker.Mock()
     mock_message.content.payment.type = PaymentType.hold
-    mocker.patch("aleph.vm.orchestrator.views.try_get_message", return_value=mock_message)
-    mocker.patch("aleph.vm.orchestrator.views.update_aggregate_settings")
-    mocker.patch("aleph.vm.orchestrator.views.payment.fetch_balance_of_address", return_value=10_000)
-    mocker.patch("aleph.vm.orchestrator.views.payment.fetch_execution_price", return_value=1)
+    mocker.patch("aleph.vm.agent.views.try_get_message", return_value=mock_message)
+    mocker.patch("aleph.vm.agent.views.update_aggregate_settings")
+    mocker.patch("aleph.vm.agent.views.payment.fetch_balance_of_address", return_value=10_000)
+    mocker.patch("aleph.vm.agent.views.payment.fetch_execution_price", return_value=1)
     mocker.patch(
-        "aleph.vm.orchestrator.views.start_persistent_vm",
+        "aleph.vm.agent.views.start_persistent_vm",
         side_effect=InsufficientResourcesError("over capacity"),
     )
 

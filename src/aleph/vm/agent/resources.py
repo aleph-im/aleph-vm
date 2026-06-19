@@ -7,12 +7,8 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
+from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_info
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.machine import (
-    get_cpu_info,
-    get_hardware_info,
-    get_memory_info,
-)
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.utils import (

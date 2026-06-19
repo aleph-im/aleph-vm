@@ -18,8 +18,8 @@ from aiohttp import web
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
+from aleph.vm.agent.utils import get_authorized_allocation_signers
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.utils import get_authorized_allocation_signers
 
 logger = logging.getLogger(__name__)
 

@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
 from aleph.vm.sizes import MiB
+from aleph.vm.supervisor.controllers.qemu.cloudinit import create_cloud_init_drive_image
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,

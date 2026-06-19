@@ -20,45 +20,38 @@ from aleph_message.models import InstanceContent, ItemHash, MessageType, Payment
 from pydantic import ValidationError
 
 from aleph.vm import haproxy
-from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import (
-    ResourceDownloadError,
-    VmSetupError,
-)
-from aleph.vm.controllers.firecracker.program import FileTooLargeError
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
-from aleph.vm.orchestrator import payment, status
-from aleph.vm.orchestrator.chain import STREAM_CHAINS
-from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
-from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
-from aleph.vm.orchestrator.messages import try_get_message
-from aleph.vm.orchestrator.metrics import delete_port_mappings, get_execution_records
-from aleph.vm.orchestrator.node_identity import NodeIdentity
-from aleph.vm.orchestrator.payment import (
+from aleph.vm.agent import payment, status
+from aleph.vm.agent.chain import STREAM_CHAINS
+from aleph.vm.agent.custom_logs import set_vm_for_logging
+from aleph.vm.agent.haproxy_sync import sync_domain_mappings
+from aleph.vm.agent.messages import try_get_message
+from aleph.vm.agent.metrics import delete_port_mappings, get_execution_records
+from aleph.vm.agent.node_identity import NodeIdentity
+from aleph.vm.agent.payment import (
     InvalidAddressError,
     InvalidChainError,
     fetch_credit_balance_of_address,
     fetch_execution_price,
     get_stream,
 )
-from aleph.vm.orchestrator.pubsub import PubSub
-from aleph.vm.orchestrator.resources import Allocation, VMNotification
-from aleph.vm.orchestrator.run import (
+from aleph.vm.agent.pubsub import PubSub
+from aleph.vm.agent.resources import Allocation, VMNotification
+from aleph.vm.agent.run import (
     reconcile_port_forwards,
     run_code_on_request,
     start_persistent_vm,
 )
-from aleph.vm.orchestrator.tasks import COMMUNITY_STREAM_RATIO
-from aleph.vm.orchestrator.translate import build_reservation_request
-from aleph.vm.orchestrator.utils import (
+from aleph.vm.agent.tasks import COMMUNITY_STREAM_RATIO
+from aleph.vm.agent.translate import build_reservation_request
+from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
     update_aggregate_settings,
 )
-from aleph.vm.orchestrator.views.allocation_auth import authenticate_api_request
-from aleph.vm.orchestrator.views.authentication import require_jwk_authentication
-from aleph.vm.orchestrator.views.host_status import (
+from aleph.vm.agent.views.allocation_auth import authenticate_api_request
+from aleph.vm.agent.views.authentication import require_jwk_authentication
+from aleph.vm.agent.views.host_status import (
     check_dns_ipv4,
     check_dns_ipv6,
     check_domain_resolution_ipv4,
@@ -68,9 +61,16 @@ from aleph.vm.orchestrator.views.host_status import (
     check_host_http_ipv4,
     check_host_http_ipv6,
 )
-from aleph.vm.orchestrator.views.operator import get_itemhash_or_400
-from aleph.vm.orchestrator.vm_registry import AgentVmRecord, AgentVmRegistry
+from aleph.vm.agent.views.operator import get_itemhash_or_400
+from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
+from aleph.vm.conf import settings
+from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.supervisor.controllers.firecracker.executable import (
+    ResourceDownloadError,
+    VmSetupError,
+)
+from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError as BoundaryInsufficientResourcesError,
@@ -555,7 +555,7 @@ async def update_allocations(request: web.Request):
     - `Authorization: Aleph-EIP191-V1 sig=...,payload=...` (recommended)
     - `X-Auth-Signature` matching `settings.ALLOCATION_TOKEN_HASH` (DEPRECATED)
 
-    See :mod:`aleph.vm.orchestrator.views.allocation_auth` for the dispatcher.
+    See :mod:`aleph.vm.agent.views.allocation_auth` for the dispatcher.
     Receive a list of vm and instance that should be present and then match
     that state by stopping and launching VMs.
     """

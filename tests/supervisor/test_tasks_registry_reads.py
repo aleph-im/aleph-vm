@@ -8,12 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import Chain, ItemHash, Payment, PaymentType
 
+from aleph.vm.agent.tasks import _group_executions_by_payment, _handle_domains_aggregate
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.tasks import (
-    _group_executions_by_payment,
-    _handle_domains_aggregate,
-)
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
@@ -94,7 +91,7 @@ def test_grouping_skips_stopped_and_diagnostic_executions():
 async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker):
     """A message-less (spec-built / restored) instance must still trigger the
     HAProxy domain-mapping refresh when its registry record matches the owner."""
-    sync = mocker.patch("aleph.vm.orchestrator.tasks.sync_domain_mappings", new=AsyncMock())
+    sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
     execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
@@ -108,7 +105,7 @@ async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker)
 
 @pytest.mark.asyncio
 async def test_domains_aggregate_ignores_unrelated_address(mocker):
-    sync = mocker.patch("aleph.vm.orchestrator.tasks.sync_domain_mappings", new=AsyncMock())
+    sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
     execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
@@ -123,7 +120,7 @@ async def test_domains_aggregate_ignores_unrelated_address(mocker):
 async def test_domains_aggregate_ignores_unrecorded_execution(mocker):
     """A matching-owner instance the agent has no record for must NOT trigger a
     refresh (no registry record -> short-circuits before the address compare)."""
-    sync = mocker.patch("aleph.vm.orchestrator.tasks.sync_domain_mappings", new=AsyncMock())
+    sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
@@ -136,7 +133,7 @@ async def test_domains_aggregate_ignores_unrecorded_execution(mocker):
 @pytest.mark.asyncio
 async def test_domains_aggregate_ignores_non_instance(mocker):
     """A program (not an instance) owned by the address must NOT trigger a refresh."""
-    sync = mocker.patch("aleph.vm.orchestrator.tasks.sync_domain_mappings", new=AsyncMock())
+    sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
     execution = SimpleNamespace(vm_hash=_HASH, is_instance=False, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
@@ -162,7 +159,7 @@ def test_payment_grouping_has_no_pool_status_reads():
     """check_payment / grouping must read VM status from VmInfo, not pool executions."""
     import inspect
 
-    from aleph.vm.orchestrator import tasks
+    from aleph.vm.agent import tasks
 
     for fn in (tasks._group_executions_by_payment, tasks.check_payment):
         source = inspect.getsource(fn)

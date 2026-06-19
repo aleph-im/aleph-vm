@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.orchestrator.metrics import ExecutionRecord
-from aleph.vm.orchestrator.vm_registry import (
+from aleph.vm.agent.metrics import ExecutionRecord
+from aleph.vm.agent.vm_registry import (
     AgentVmRecord,
     AgentVmRegistry,
     persist_record,
@@ -69,12 +69,12 @@ async def test_rehydrate_registry_from_db(monkeypatch):
         persistent=True,
     )
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        "aleph.vm.agent.vm_registry.get_execution_records",
         AsyncMock(return_value=[db_record]),
     )
     parsed = MagicMock()
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_message_executable_content",
+        "aleph.vm.agent.vm_registry.get_message_executable_content",
         MagicMock(return_value=parsed),
     )
     registry = AgentVmRegistry()
@@ -92,12 +92,12 @@ async def test_rehydrate_skips_messageless_and_duplicate_records(monkeypatch):
     older = SimpleNamespace(vm_hash=str(_HASH), message='{"k": 2}', original_message=None, persistent=False)
     no_message = SimpleNamespace(vm_hash="ee" * 32, message=None, original_message=None, persistent=True)
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        "aleph.vm.agent.vm_registry.get_execution_records",
         AsyncMock(return_value=[newest, older, no_message]),  # newest-first, as get_execution_records orders
     )
     parsed_newest = MagicMock()
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_message_executable_content",
+        "aleph.vm.agent.vm_registry.get_message_executable_content",
         MagicMock(side_effect=[parsed_newest]),
     )
     registry = AgentVmRegistry()
@@ -118,11 +118,11 @@ async def test_rehydrate_skips_unparseable_message(monkeypatch):
         persistent=False,
     )
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        "aleph.vm.agent.vm_registry.get_execution_records",
         AsyncMock(return_value=[db_record]),
     )
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_message_executable_content",
+        "aleph.vm.agent.vm_registry.get_message_executable_content",
         MagicMock(side_effect=ValueError("bad message")),
     )
     registry = AgentVmRegistry()
@@ -136,7 +136,7 @@ async def test_rehydrate_skips_unparseable_message(monkeypatch):
 @pytest.mark.asyncio
 async def test_rehydrate_propagates_db_error(monkeypatch):
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        "aleph.vm.agent.vm_registry.get_execution_records",
         AsyncMock(side_effect=RuntimeError("DB unavailable")),
     )
     with pytest.raises(RuntimeError, match="DB unavailable"):
@@ -163,7 +163,7 @@ def test_record_payment_helpers():
 async def test_persist_record_writes_agent_fields(monkeypatch):
     saved: list[ExecutionRecord] = []
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.save_record",
+        "aleph.vm.agent.vm_registry.save_record",
         AsyncMock(side_effect=saved.append),
     )
     message = MagicMock()
@@ -193,7 +193,7 @@ async def test_persist_then_rehydrate_round_trip(monkeypatch):
     """What persist_record writes is exactly what rehydrate_registry needs."""
     saved: list[ExecutionRecord] = []
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.save_record",
+        "aleph.vm.agent.vm_registry.save_record",
         AsyncMock(side_effect=saved.append),
     )
     message = MagicMock()
@@ -205,12 +205,12 @@ async def test_persist_then_rehydrate_round_trip(monkeypatch):
     await persist_record(_HASH, AgentVmRecord(message=message, original=original, persistent=True))
 
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_execution_records",
+        "aleph.vm.agent.vm_registry.get_execution_records",
         AsyncMock(return_value=saved),
     )
     parsed = MagicMock()
     monkeypatch.setattr(
-        "aleph.vm.orchestrator.vm_registry.get_message_executable_content",
+        "aleph.vm.agent.vm_registry.get_message_executable_content",
         MagicMock(return_value=parsed),
     )
     registry = AgentVmRegistry()

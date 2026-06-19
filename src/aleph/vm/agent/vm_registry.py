@@ -18,11 +18,7 @@ from uuid import uuid4
 
 from aleph_message.models import ExecutableContent, ItemHash
 
-from aleph.vm.orchestrator.metrics import (
-    ExecutionRecord,
-    get_execution_records,
-    save_record,
-)
+from aleph.vm.agent.metrics import ExecutionRecord, get_execution_records, save_record
 from aleph.vm.utils import get_message_executable_content
 
 logger = logging.getLogger(__name__)

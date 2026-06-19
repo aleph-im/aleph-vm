@@ -6,20 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
+from aleph.vm.agent.metrics import (
+    delete_port_mappings,
+    delete_record,
+    save_execution_data,
+    save_port_mappings,
+)
 from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.executable import AlephFirecrackerExecutable
-from aleph.vm.controllers.firecracker.program import AlephProgramResources
-from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
-from aleph.vm.controllers.firecracker.spec_program import (
-    SpecFirecrackerProgram,
-    SpecProgramResources,
-)
-from aleph.vm.controllers.interface import AlephVmControllerInterface
-from aleph.vm.controllers.qemu.instance import AlephQemuInstance, AlephQemuResources
-from aleph.vm.controllers.qemu_confidential.instance import (
-    AlephQemuConfidentialInstance,
-    AlephQemuConfidentialResources,
-)
 from aleph.vm.network.firewall import (
     add_entities_if_not_present,
     add_port_redirect_rule,
@@ -35,13 +28,25 @@ from aleph.vm.network.port_availability_checker import (
     fast_get_available_host_port,
     is_host_port_available,
 )
-from aleph.vm.orchestrator.metrics import (
-    delete_port_mappings,
-    delete_record,
-    save_execution_data,
-    save_port_mappings,
-)
 from aleph.vm.resources import HostGPU
+from aleph.vm.supervisor.controllers.firecracker.executable import (
+    AlephFirecrackerExecutable,
+)
+from aleph.vm.supervisor.controllers.firecracker.program import AlephProgramResources
+from aleph.vm.supervisor.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.supervisor.controllers.firecracker.spec_program import (
+    SpecFirecrackerProgram,
+    SpecProgramResources,
+)
+from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
+from aleph.vm.supervisor.controllers.qemu.instance import (
+    AlephQemuInstance,
+    AlephQemuResources,
+)
+from aleph.vm.supervisor.controllers.qemu_confidential.instance import (
+    AlephQemuConfidentialInstance,
+    AlephQemuConfidentialResources,
+)
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,

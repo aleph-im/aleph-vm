@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.orchestrator.status import check_internet
-from aleph.vm.orchestrator.views.host_status import (
+from aleph.vm.agent.status import check_internet
+from aleph.vm.agent.views.host_status import (
     check_dns_ipv4,
     check_dns_ipv6,
     check_host_http_ipv4,
@@ -42,9 +42,9 @@ async def test_fallback_stops_at_first_success():
         return url == "http://first.example/"
 
     with (
-        patch("aleph.vm.orchestrator.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.ClientSession") as mock_session_cls,
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.TCPConnector"),
+        patch("aleph.vm.agent.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
+        patch("aleph.vm.agent.views.host_status.aiohttp.ClientSession") as mock_session_cls,
+        patch("aleph.vm.agent.views.host_status.aiohttp.TCPConnector"),
     ):
         mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -66,9 +66,9 @@ async def test_fallback_tries_all_urls_on_failure():
         return False
 
     with (
-        patch("aleph.vm.orchestrator.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.ClientSession") as mock_session_cls,
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.TCPConnector"),
+        patch("aleph.vm.agent.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
+        patch("aleph.vm.agent.views.host_status.aiohttp.ClientSession") as mock_session_cls,
+        patch("aleph.vm.agent.views.host_status.aiohttp.TCPConnector"),
     ):
         mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -90,9 +90,9 @@ async def test_fallback_stops_at_second_url():
         return url == "http://second.example/"
 
     with (
-        patch("aleph.vm.orchestrator.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.ClientSession") as mock_session_cls,
-        patch("aleph.vm.orchestrator.views.host_status.aiohttp.TCPConnector"),
+        patch("aleph.vm.agent.views.host_status.check_http_endpoint", side_effect=mock_endpoint),
+        patch("aleph.vm.agent.views.host_status.aiohttp.ClientSession") as mock_session_cls,
+        patch("aleph.vm.agent.views.host_status.aiohttp.TCPConnector"),
     ):
         mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -108,7 +108,7 @@ async def test_fallback_stops_at_second_url():
 async def test_check_host_http_ipv4_returns_false_on_timeout():
     """@return_false_on_timeout catches TimeoutError and returns False."""
     with patch(
-        "aleph.vm.orchestrator.views.host_status.check_http_connectivity_with_fallback",
+        "aleph.vm.agent.views.host_status.check_http_connectivity_with_fallback",
         side_effect=TimeoutError,
     ):
         result = await check_host_http_ipv4()
@@ -118,7 +118,7 @@ async def test_check_host_http_ipv4_returns_false_on_timeout():
 @pytest.mark.asyncio
 async def test_check_host_http_ipv6_returns_false_on_timeout():
     with patch(
-        "aleph.vm.orchestrator.views.host_status.check_http_connectivity_with_fallback",
+        "aleph.vm.agent.views.host_status.check_http_connectivity_with_fallback",
         side_effect=TimeoutError,
     ):
         result = await check_host_http_ipv6()
@@ -130,8 +130,8 @@ async def test_check_dns_ipv4_passes_on_first_host():
     """The first hostname that resolves an IPv4 address wins; later hosts are not tried."""
     resolve = AsyncMock(side_effect=[("1.1.1.1", "2606:4700:4700::1111")])
     with (
-        patch("aleph.vm.orchestrator.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
-        patch("aleph.vm.orchestrator.views.host_status.resolve_dns", resolve),
+        patch("aleph.vm.agent.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
+        patch("aleph.vm.agent.views.host_status.resolve_dns", resolve),
     ):
         assert await check_dns_ipv4() is True
     assert resolve.await_count == 1  # fallback host not consulted
@@ -142,8 +142,8 @@ async def test_check_dns_ipv4_falls_back_when_first_host_has_no_ipv4():
     """A host that resolves no IPv4 address falls through to the next host."""
     resolve = AsyncMock(side_effect=[(None, "2606:4700:4700::1111"), ("8.8.8.8", None)])
     with (
-        patch("aleph.vm.orchestrator.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
-        patch("aleph.vm.orchestrator.views.host_status.resolve_dns", resolve),
+        patch("aleph.vm.agent.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
+        patch("aleph.vm.agent.views.host_status.resolve_dns", resolve),
     ):
         assert await check_dns_ipv4() is True
     assert resolve.await_count == 2
@@ -154,8 +154,8 @@ async def test_check_dns_ipv4_falls_back_when_first_host_raises():
     """A DNS error on one host does not fail the check; the next host is tried."""
     resolve = AsyncMock(side_effect=[socket.gaierror("boom"), ("8.8.8.8", None)])
     with (
-        patch("aleph.vm.orchestrator.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
-        patch("aleph.vm.orchestrator.views.host_status.resolve_dns", resolve),
+        patch("aleph.vm.agent.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
+        patch("aleph.vm.agent.views.host_status.resolve_dns", resolve),
     ):
         assert await check_dns_ipv4() is True
     assert resolve.await_count == 2
@@ -166,8 +166,8 @@ async def test_check_dns_ipv4_false_when_no_host_resolves():
     """All hosts failing (no address / error) yields False, not an exception."""
     resolve = AsyncMock(side_effect=[(None, None), socket.gaierror("boom")])
     with (
-        patch("aleph.vm.orchestrator.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
-        patch("aleph.vm.orchestrator.views.host_status.resolve_dns", resolve),
+        patch("aleph.vm.agent.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
+        patch("aleph.vm.agent.views.host_status.resolve_dns", resolve),
     ):
         assert await check_dns_ipv4() is False
     assert resolve.await_count == 2
@@ -178,8 +178,8 @@ async def test_check_dns_ipv6_falls_back_to_second_host():
     """IPv6 check uses the same first-success fallback across hosts."""
     resolve = AsyncMock(side_effect=[("1.1.1.1", None), ("8.8.8.8", "2001:4860:4860::8888")])
     with (
-        patch("aleph.vm.orchestrator.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
-        patch("aleph.vm.orchestrator.views.host_status.resolve_dns", resolve),
+        patch("aleph.vm.agent.views.host_status.settings.CONNECTIVITY_DNS_HOSTNAMES", ["primary", "fallback"]),
+        patch("aleph.vm.agent.views.host_status.resolve_dns", resolve),
     ):
         assert await check_dns_ipv6() is True
     assert resolve.await_count == 2
