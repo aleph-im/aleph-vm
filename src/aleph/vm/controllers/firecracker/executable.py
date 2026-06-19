@@ -14,11 +14,6 @@ from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
-    Configuration,
-    VMConfiguration,
-    save_controller_configuration,
-)
 from aleph.vm.controllers.firecracker.snapshots import CompressedDiskVolumeSnapshot
 from aleph.vm.controllers.interface import AlephVmControllerInterface
 from aleph.vm.controllers.resources import (
@@ -31,7 +26,12 @@ from aleph.vm.hypervisors.firecracker.microvm import FirecrackerConfig, MicroVM
 from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.storage import chown_to_jailman
-from aleph.vm.supervisor.types import HardwareResources
+from aleph.vm.supervisor_interface.configuration import (
+    Configuration,
+    VMConfiguration,
+    save_controller_configuration,
+)
+from aleph.vm.supervisor_interface.types import HardwareResources
 
 try:
     import psutil  # type: ignore [no-redef]

@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aleph.vm.conf import settings
-from aleph.vm.supervisor.errors import VmNotFoundError
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor.types import ConfidentialMode, TeeBackend, VmId
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import ConfidentialMode, TeeBackend, VmId
 
 
 class FakePool:
@@ -187,7 +187,11 @@ async def test_reserve_resources_runs_capacity_then_reserves_gpus():
     never parses an Aleph message."""
     from datetime import datetime, timezone
 
-    from aleph.vm.supervisor.types import GpuSpec, PciAddress, ReservationRequest
+    from aleph.vm.supervisor_interface.types import (
+        GpuSpec,
+        PciAddress,
+        ReservationRequest,
+    )
 
     expiry = datetime(2030, 1, 1, tzinfo=timezone.utc)
     pool = FakePool()

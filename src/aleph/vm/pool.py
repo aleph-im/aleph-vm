@@ -11,11 +11,6 @@ from typing import Any
 import psutil
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
-    Configuration,
-    load_controller_configuration,
-    save_controller_configuration,
-)
 from aleph.vm.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
@@ -27,13 +22,27 @@ from aleph.vm.resources import (
     InsufficientResourcesError,
     get_gpu_devices,
 )
-from aleph.vm.supervisor.errors import InvalidBackendError, VmAlreadyExistsError
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_confidential_configuration,
     build_qemu_configuration,
     spec_from_controller_configuration,
 )
-from aleph.vm.supervisor.types import Backend, CreateVmSpec, GpuSpec, PciAddress, VmId
+from aleph.vm.supervisor_interface.configuration import (
+    Configuration,
+    load_controller_configuration,
+    save_controller_configuration,
+)
+from aleph.vm.supervisor_interface.errors import (
+    InvalidBackendError,
+    VmAlreadyExistsError,
+)
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    CreateVmSpec,
+    GpuSpec,
+    PciAddress,
+    VmId,
+)
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 

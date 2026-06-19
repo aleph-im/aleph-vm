@@ -31,3 +31,4 @@ node_modules
 /kernels/linux-*.tar
 /kernels/linux-*.tar.sign
 /.worktrees/
+.import_linter_cache/

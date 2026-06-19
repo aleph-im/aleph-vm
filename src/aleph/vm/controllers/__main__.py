@@ -12,8 +12,7 @@ from aleph.vm.hypervisors.firecracker.microvm import MicroVM
 from aleph.vm.hypervisors.qemu.qemuvm import QemuVM
 from aleph.vm.hypervisors.qemu_confidential.qemuvm import QemuConfidentialVM
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
-
-from .configuration import (
+from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,
     QemuConfidentialVMConfiguration,

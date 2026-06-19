@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph.vm.conf import settings
-from aleph.vm.controllers.configuration import (
+from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
+from aleph.vm.sizes import MiB
+from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,
     QemuConfidentialVMConfiguration,
@@ -23,10 +25,8 @@ from aleph.vm.controllers.configuration import (
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
-from aleph.vm.controllers.qemu.cloudinit import create_cloud_init_drive_image
-from aleph.vm.sizes import MiB
-from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
     DiskFormat,

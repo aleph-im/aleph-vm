@@ -103,9 +103,11 @@ dependencies = [
   "pytest-mock==3.14.0",
   "pytest-asyncio==0.23.7",
   "pytest-aiohttp==1.0.5",
+  "import-linter>=2,<3",      # enforces the agent/supervisor/contract import boundary
 ]
 [tool.hatch.envs.testing.scripts]
 test = "pytest {args:tests}"
+imports = "lint-imports"
 test-cov = "pytest --durations=10 --cov  {args:tests}"
 cov-report = [
   "- coverage combine",
@@ -267,3 +269,61 @@ sequence_style = "keep_style"
 preserve_quotes = true
 whitelines = 1
 section_whitelines = 2
+
+[tool.importlinter]
+root_package = "aleph"
+# Grimp counts TYPE_CHECKING imports too, so type-only edges also appear here.
+
+[[tool.importlinter.contracts]]
+name = "supervisor_interface layer depends on neither side"
+type = "forbidden"
+allow_indirect_imports = "true"
+source_modules = [ "aleph.vm.supervisor_interface" ]
+forbidden_modules = [
+  "aleph.vm.orchestrator",
+  "aleph.vm.supervisor",
+  "aleph.vm.controllers",
+  "aleph.vm.pool",
+  "aleph.vm.models",
+  "aleph.vm.network",
+  "aleph.vm.migration",
+  "aleph.vm.hypervisors",
+]
+
+[[tool.importlinter.contracts]]
+name = "controllers are a supervisor worker, not the agent or the daemon"
+type = "forbidden"
+allow_indirect_imports = "true"
+source_modules = [ "aleph.vm.controllers" ]
+forbidden_modules = [ "aleph.vm.orchestrator", "aleph.vm.supervisor" ]
+
+[[tool.importlinter.contracts]]
+name = "the agent does not reach into the supervisor implementation"
+type = "forbidden"
+allow_indirect_imports = "true"
+source_modules = [ "aleph.vm.orchestrator" ]
+forbidden_modules = [ "aleph.vm.supervisor" ]
+# Composition root only: the agent entrypoints pick a concrete Supervisor impl
+# at startup. All other agent code goes through aleph.vm.supervisor_interface.abc.Supervisor.
+ignore_imports = [
+  "aleph.vm.orchestrator.cli -> aleph.vm.supervisor.local",
+  "aleph.vm.orchestrator.supervisor -> aleph.vm.supervisor.local",
+  "aleph.vm.orchestrator.supervisor -> aleph.vm.supervisor.grpc_client",
+]
+
+[[tool.importlinter.contracts]]
+name = "the supervisor does not import the agent"
+type = "forbidden"
+allow_indirect_imports = "true"
+source_modules = [ "aleph.vm.supervisor", "aleph.vm.pool", "aleph.vm.models" ]
+forbidden_modules = [ "aleph.vm.orchestrator" ]
+# Residuals to be removed by the VmExecution/VmPool cleave + DB-layer extraction
+# (docs/plans/2026-05-28 section 4): the shared port-mappings persistence and the
+# aggregate-settings cache still live under orchestrator today.
+ignore_imports = [
+  "aleph.vm.models -> aleph.vm.orchestrator.metrics",
+  "aleph.vm.pool -> aleph.vm.orchestrator.metrics",
+  "aleph.vm.pool -> aleph.vm.orchestrator.utils",
+  "aleph.vm.supervisor.daemon -> aleph.vm.orchestrator.metrics",
+  "aleph.vm.supervisor.local -> aleph.vm.orchestrator.metrics",
+]

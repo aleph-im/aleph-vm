@@ -31,8 +31,8 @@ from aleph.vm.hypervisors.firecracker.config import (
 )
 from aleph.vm.hypervisors.firecracker.microvm import setfacl
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.supervisor.errors import InvalidBackendError
-from aleph.vm.supervisor.types import (
+from aleph.vm.supervisor_interface.errors import InvalidBackendError
+from aleph.vm.supervisor_interface.types import (
     CreateVmSpec,
     DiskRole,
     DiskSpec,

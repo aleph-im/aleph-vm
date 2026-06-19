@@ -19,7 +19,7 @@ from aleph.vm.conf import settings
 from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
 from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
-from aleph.vm.supervisor.abc import Supervisor
+from aleph.vm.supervisor_interface.abc import Supervisor
 
 
 @pytest.fixture(autouse=True)
