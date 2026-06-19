@@ -64,13 +64,7 @@ from aleph.vm.agent.views.host_status import (
 from aleph.vm.agent.views.operator import get_itemhash_or_400
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.controllers.firecracker.executable import (
-    ResourceDownloadError,
-    VmSetupError,
-)
-from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError as BoundaryInsufficientResourcesError,
@@ -614,19 +608,18 @@ async def update_allocations(request: web.Request):
 
         # Second start persistent VMs and instances sequentially to limit resource usage.
 
-        # Exceptions that can be raised when starting a VM:
+        # Exceptions that can be raised when starting a VM. The create path now
+        # raises a single vocabulary: the agent download phase and the
+        # supervisor boundary both surface contract SupervisorError subclasses
+        # (ResourceDownloadError, FileTooLargeError, VmSetupError,
+        # MicroVMInitError, InsufficientResourcesError); SupervisorError catches
+        # them all. The remaining entries are agent-side foundation/HTTP errors.
         vm_creation_exceptions = (
             UnknownHashError,
-            ResourceDownloadError,
-            FileTooLargeError,
-            VmSetupError,
-            MicroVMFailedInitError,
+            SupervisorError,
             HostNotFoundError,
             HTTPNotFound,
             InsufficientResourcesError,
-            # The spec create path surfaces the boundary error (the engine's
-            # atomic admission, translated by LocalSupervisor.create_vm).
-            BoundaryInsufficientResourcesError,
         )
 
         scheduling_errors: dict[ItemHash, Exception] = {}
@@ -942,18 +935,14 @@ async def notify_allocation(request: web.Request):
     else:
         return web.HTTPBadRequest(reason="Invalid payment method")
 
-    # Exceptions that can be raised when starting a VM:
+    # Exceptions that can be raised when starting a VM. SupervisorError covers
+    # the full create-failure contract vocabulary (download, setup, init,
+    # capacity); see the matching tuple in update_allocations above.
     vm_creation_exceptions = (
         UnknownHashError,
-        ResourceDownloadError,
-        FileTooLargeError,
-        VmSetupError,
-        MicroVMFailedInitError,
+        SupervisorError,
         HostNotFoundError,
         InsufficientResourcesError,
-        # The spec create path surfaces the boundary error (the engine's
-        # atomic admission, translated by LocalSupervisor.create_vm).
-        BoundaryInsufficientResourcesError,
     )
 
     scheduling_errors: dict[ItemHash, Exception] = {}
