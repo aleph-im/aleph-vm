@@ -26,16 +26,16 @@ from aleph_message.models import (
 from aleph_message.status import MessageStatus
 from yarl import URL
 
-from aleph.vm.conf import settings
-from aleph.vm.orchestrator.haproxy_sync import sync_domain_mappings
-from aleph.vm.orchestrator.metrics import delete_port_mappings
-from aleph.vm.orchestrator.run import reconcile_port_forwards
-from aleph.vm.orchestrator.utils import (
+from aleph.vm.agent.haproxy_sync import sync_domain_mappings
+from aleph.vm.agent.metrics import delete_port_mappings
+from aleph.vm.agent.run import reconcile_port_forwards
+from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
 )
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -116,7 +116,7 @@ async def retry_generator(
 
 async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
     logger.debug("subscribe_via_ws()")
-    from aleph.vm.orchestrator.http import get_session
+    from aleph.vm.agent.http import get_session
 
     session = get_session()
     async with session.ws_connect(

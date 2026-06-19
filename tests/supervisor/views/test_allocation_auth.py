@@ -11,17 +11,17 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from pydantic import ValidationError
 
-from aleph.vm.conf import Settings, settings
-from aleph.vm.orchestrator import utils as orchestrator_utils
-from aleph.vm.orchestrator.utils import get_authorized_allocation_signers
-from aleph.vm.orchestrator.views import allocation_auth
-from aleph.vm.orchestrator.views.allocation_auth import (
+from aleph.vm.agent import utils as orchestrator_utils
+from aleph.vm.agent.utils import get_authorized_allocation_signers
+from aleph.vm.agent.views import allocation_auth
+from aleph.vm.agent.views.allocation_auth import (
     MAX_SIGNED_REQUEST_BODY_BYTES,
     _accepted_payloads,
     _parse_auth_params,
     _verify_aleph_signature,
     log_allocation_auth_config,
 )
+from aleph.vm.conf import Settings, settings
 
 
 @pytest.fixture(autouse=True)
@@ -639,7 +639,7 @@ async def test_verify_failure_logs_at_warning(mock_request, caplog):
     auth = "Aleph-EIP191-V1 sig=notHex,payload=0xbeef"
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
 
-    with caplog.at_level("WARNING", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("WARNING", logger="aleph.vm.agent.views.allocation_auth"):
         assert await _verify_aleph_signature(request, auth) is False
     assert any("Aleph-EIP191-V1 verification failed" in r.message for r in caplog.records)
 
@@ -652,7 +652,7 @@ def test_log_allocation_auth_config_signature_path_only(caplog, monkeypatch):
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
-    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()
     assert any("Aleph-EIP191-V1 enabled" in r.message for r in caplog.records)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
@@ -664,7 +664,7 @@ def test_log_allocation_auth_config_both_enabled_warns(caplog, monkeypatch):
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
 
-    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any("legacy X-Auth-Signature path is still enabled" in m for m in warnings)
@@ -679,7 +679,7 @@ def test_log_allocation_auth_config_legacy_still_enabled_warns(caplog, monkeypat
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
 
-    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()
     assert any("legacy X-Auth-Signature path is still enabled" in r.message for r in caplog.records)
 
@@ -691,7 +691,7 @@ def test_log_allocation_auth_config_aggregate_sourced_when_local_empty(caplog, m
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
     monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
-    with caplog.at_level("INFO", logger="aleph.vm.orchestrator.views.allocation_auth"):
+    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()
     assert any("settings aggregate" in r.message for r in caplog.records)
     assert not [r for r in caplog.records if r.levelname == "WARNING"]

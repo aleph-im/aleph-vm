@@ -4,8 +4,8 @@ from collections.abc import Callable
 
 from aleph_message.models import ExecutableContent, InstanceContent, ItemHash
 
-from aleph.vm.orchestrator.pubsub import PubSub
-from aleph.vm.orchestrator.vm_registry import AgentVmRegistry
+from aleph.vm.agent.pubsub import PubSub
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId

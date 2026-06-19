@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.controllers.firecracker.spec_program import (
+from aleph.vm.supervisor.controllers.firecracker.spec_program import (
     SpecFirecrackerProgram,
     SpecProgramResources,
 )
@@ -91,7 +91,7 @@ async def test_setup_builds_firecracker_config(tmp_path, mocker):
 
     mocker.patch.object(settings, "USE_JAILER", False)
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
-    mocker.patch("aleph.vm.controllers.firecracker.spec_program.setfacl")
+    mocker.patch("aleph.vm.supervisor.controllers.firecracker.spec_program.setfacl")
 
     spec = make_spec(tmp_path, code=True, extra=2)
     vm = SpecFirecrackerProgram(

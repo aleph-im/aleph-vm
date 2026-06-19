@@ -9,10 +9,10 @@ import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.metrics import ExecutionRecord
+from aleph.vm.agent.supervisor import setup_webapp
+from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.metrics import ExecutionRecord
-from aleph.vm.orchestrator.supervisor import setup_webapp
-from aleph.vm.orchestrator.views.operator import _security_aggregate_cache
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
@@ -175,11 +175,11 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
         executions: dict = {}
 
     with mock.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="",
     ):
         with mock.patch(
-            "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+            "aleph.vm.agent.views.operator.is_sender_authorized",
             return_value=False,
         ) as is_sender_authorized_mock:
             app = setup_webapp(pool=FakeVmPool())
@@ -214,7 +214,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
 
     # Disable auth
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -258,7 +258,7 @@ async def test_operator_stop(aiohttp_client, mocker):
 
     # Disable auth
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -295,7 +295,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
 
     # Disable auth
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -344,7 +344,7 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
         form_data.add_field("godh", open(temp_file.name, "rb"), filename="godh.b64")
 
         with mock.patch(
-            "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+            "aleph.vm.agent.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
             app = setup_webapp(pool=mocker.AsyncMock(executions={}))
@@ -388,7 +388,7 @@ async def test_operator_confidential_initialize_waits_for_awaiting(aiohttp_clien
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
     settings.setup()
     # Don't sleep between polls in the test.
-    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
+    mocker.patch("aleph.vm.agent.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
@@ -401,7 +401,7 @@ async def test_operator_confidential_initialize_waits_for_awaiting(aiohttp_clien
         form_data.add_field("godh", open(temp_file.name, "rb"), filename="godh.b64")
 
         with mock.patch(
-            "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+            "aleph.vm.agent.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
             app = setup_webapp(pool=mocker.AsyncMock(executions={}))
@@ -452,14 +452,14 @@ async def test_operator_confidential_initialize_times_out(aiohttp_client, mocker
     settings.ENABLE_CONFIDENTIAL_COMPUTING = True
     settings.setup()
     # Deadline has already passed on the first loop check: no real wait.
-    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_WAIT_SECONDS", 0)
-    mocker.patch("aleph.vm.orchestrator.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
+    mocker.patch("aleph.vm.agent.views.operator._CONFIDENTIAL_AWAITING_WAIT_SECONDS", 0)
+    mocker.patch("aleph.vm.agent.views.operator._CONFIDENTIAL_AWAITING_POLL_INTERVAL", 0)
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
     with mock.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     ):
         app = setup_webapp(pool=mocker.AsyncMock(executions={}))
@@ -488,7 +488,7 @@ async def test_reboot_ok(aiohttp_client, mocker):
     mock_address = "mock_address"
     mock_hash = _FAKE_HASH
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=mock_address,
     )
 
@@ -630,11 +630,11 @@ async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
     mock_address = "0x40684b43B88356F62DCc56017547B6A7AC68780B"
     mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=mock_address,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.metrics.get_last_record_for_vm",
+        "aleph.vm.agent.metrics.get_last_record_for_vm",
         return_value=ExecutionRecord(
             message="""{
   "address": "0x40684b43B88356F62DCc56017547B6A7AC68780B",
@@ -741,7 +741,7 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
 
     # Mock authentication to return the delegated address
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -765,7 +765,7 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -800,7 +800,7 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
 
     # Mock authentication to return an unauthorized address
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=unauthorized_address,
     )
 
@@ -824,7 +824,7 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -858,7 +858,7 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -882,7 +882,7 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["pubsub"] = mocker.Mock()
@@ -916,7 +916,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -940,7 +940,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -974,17 +974,17 @@ async def test_operator_backup_status_authorized_reads_registry(aiohttp_client, 
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
     # get_backup_directory() mkdirs under settings.EXECUTION_ROOT; patch the
     # operator-local name to a tmp dir.
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.get_backup_directory",
+        "aleph.vm.agent.views.operator.get_backup_directory",
         return_value=tmp_path,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -1013,11 +1013,11 @@ async def test_operator_backup_status_unauthorized_reads_registry(aiohttp_client
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="0xstranger",
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -1043,15 +1043,15 @@ async def test_operator_backup_delete_authorized_reads_registry(aiohttp_client, 
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.get_backup_directory",
+        "aleph.vm.agent.views.operator.get_backup_directory",
         return_value=tmp_path,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -1081,12 +1081,12 @@ async def test_operator_reinstall(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
     mock_create_vm = mocker.patch(
-        "aleph.vm.orchestrator.views.operator.create_vm_execution_or_raise_http_error",
+        "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
         new=AsyncMock(),
     )
 
@@ -1122,12 +1122,12 @@ async def test_operator_reinstall_unauthorized(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="unauthorized_address",
     )
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
 
@@ -1163,7 +1163,7 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -1174,7 +1174,7 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -1207,7 +1207,7 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -1231,7 +1231,7 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -1265,7 +1265,7 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address_lower,
     )
 
@@ -1289,7 +1289,7 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -1323,7 +1323,7 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -1333,7 +1333,7 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -1366,7 +1366,7 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=delegated_address,
     )
 
@@ -1390,7 +1390,7 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
 
     mock_session = mocker.AsyncMock()
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("aleph.vm.orchestrator.views.operator.get_session", return_value=mock_session)
+    mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
@@ -1423,7 +1423,7 @@ async def test_operator_stop_already_stopped(aiohttp_client, mocker):
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1453,12 +1453,12 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
     mock_create_vm = mocker.patch(
-        "aleph.vm.orchestrator.views.operator.create_vm_execution_or_raise_http_error",
+        "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
         new=AsyncMock(),
     )
 
@@ -1493,7 +1493,7 @@ async def test_operator_stop_unknown_vm_hash_registry_empty(aiohttp_client, mock
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="some_sender",
     )
 
@@ -1514,7 +1514,7 @@ async def test_operator_stop_registry_exists_but_supervisor_not_found(aiohttp_cl
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1546,7 +1546,7 @@ async def test_operator_reboot_registry_exists_but_supervisor_not_found(aiohttp_
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1578,7 +1578,7 @@ async def test_operator_stop_booting_vm_is_stopped(aiohttp_client, mocker):
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1614,7 +1614,7 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1645,12 +1645,12 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
     mock_create_vm = mocker.patch(
-        "aleph.vm.orchestrator.views.operator.create_vm_execution_or_raise_http_error",
+        "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
         new=AsyncMock(),
     )
 
@@ -1683,7 +1683,7 @@ async def test_operator_erase_unknown_vm_404(aiohttp_client, mocker):
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="some_sender",
     )
 
@@ -1707,7 +1707,7 @@ async def test_operator_erase_supervisor_not_found_404(aiohttp_client, mocker):
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1745,12 +1745,12 @@ async def test_operator_erase_unauthorized(aiohttp_client, mocker):
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="unauthorized_address",
     )
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
 
@@ -1780,7 +1780,7 @@ async def test_operator_reinstall_supervisor_not_found_404(aiohttp_client, mocke
     instance_message = await get_message(ref=vm_hash)
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
 
@@ -1906,11 +1906,11 @@ async def test_operate_logs_json_unknown_vm_404(aiohttp_client, mocker):
     mock_hash = _FAKE_HASH
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=mock_address,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.metrics.get_last_record_for_vm",
+        "aleph.vm.agent.metrics.get_last_record_for_vm",
         return_value=None,
     )
 
@@ -1938,7 +1938,7 @@ async def test_websocket_logs_db_fallback_auth(aiohttp_client, mocker, patch_dat
     # Do NOT seed the registry; test DB fallback
     # Mock metrics.get_last_record_for_vm to return a record with message that parses to same content
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.metrics.get_last_record_for_vm",
+        "aleph.vm.agent.views.operator.metrics.get_last_record_for_vm",
         return_value=ExecutionRecord(
             message=f"""{{
   "address": "{mock_address}",
@@ -2029,7 +2029,7 @@ async def test_operate_update_reconciles_when_running(aiohttp_client, mocker):
 
     reconcile_mock = AsyncMock()
     mocker.patch(
-        "aleph.vm.orchestrator.views.reconcile_port_forwards",
+        "aleph.vm.agent.views.reconcile_port_forwards",
         reconcile_mock,
     )
 
@@ -2062,7 +2062,7 @@ async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, m
 
     reconcile_mock = AsyncMock()
     mocker.patch(
-        "aleph.vm.orchestrator.views.reconcile_port_forwards",
+        "aleph.vm.agent.views.reconcile_port_forwards",
         reconcile_mock,
     )
 
@@ -2087,7 +2087,7 @@ async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, m
 
 def test_dead_websocket_auth_helper_is_removed():
     """authenticate_websocket_for_vm_or_403 had no callers; it must be gone."""
-    from aleph.vm.orchestrator.views import operator
+    from aleph.vm.agent.views import operator
 
     assert not hasattr(operator, "authenticate_websocket_for_vm_or_403")
 
@@ -2103,11 +2103,11 @@ async def test_operator_confidential_measurement_unauthorized_reads_registry(aio
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="0xstranger",
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -2133,11 +2133,11 @@ async def test_operator_confidential_inject_secret_unauthorized_reads_registry(a
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="0xstranger",
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -2170,11 +2170,11 @@ async def test_operator_confidential_measurement_delegates_and_preserves_respons
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -2219,16 +2219,16 @@ async def test_operator_confidential_inject_secret_delegates(aiohttp_client, moc
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
     # After injecting the secret the endpoint reconciles the now-running VM's
     # port forwards; that path is covered by the run helper's own tests.
-    mocker.patch("aleph.vm.orchestrator.run.reconcile_port_forwards", AsyncMock())
+    mocker.patch("aleph.vm.agent.run.reconcile_port_forwards", AsyncMock())
     app = setup_webapp(pool=fake_vm_pool)
     app["vm_registry"].record(
         vm_hash,
@@ -2258,11 +2258,11 @@ async def test_operator_backup_unauthorized_reads_registry(aiohttp_client, mocke
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="0xstranger",
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -2287,11 +2287,11 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
     fake_vm_pool = mocker.AsyncMock(executions={})
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value="0xstranger",
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
     app = setup_webapp(pool=fake_vm_pool)
@@ -2333,11 +2333,11 @@ async def _seed_authorized_backup_app(aiohttp_client, mocker, **supervisor_overr
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
     mocker.patch(
-        "aleph.vm.orchestrator.views.authentication.authenticate_jwk",
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
     mocker.patch(
-        "aleph.vm.orchestrator.views.operator.is_sender_authorized",
+        "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
     app = setup_webapp(pool=mocker.AsyncMock(executions={}))
@@ -2461,7 +2461,7 @@ async def test_operator_backup_download_streams_with_sidecar_headers(aiohttp_cli
     Content-Length, X-Backup-Checksum and X-Source-Size from BackupInfo."""
     import dataclasses
 
-    from aleph.vm.orchestrator.views.operator import _sign_backup_url
+    from aleph.vm.agent.views.operator import _sign_backup_url
 
     chunks = [b"AAAA", b"BBBB"]
     # Content-Length is sourced from BackupInfo.size_bytes, which is the tar
@@ -2528,7 +2528,7 @@ async def test_operator_restore_volume_ref_stages_and_restores(aiohttp_client, m
     """A {"volume_ref": ...} body downloads the volume to a temp path, then the
     engine restore_from_image runs; success returns {"status": "restored"}."""
     staged = mocker.AsyncMock(return_value=tmp_path / "restore-staged.qcow2")
-    mocker.patch("aleph.vm.orchestrator.views.operator.download_volume_by_ref", staged)
+    mocker.patch("aleph.vm.agent.views.operator.download_volume_by_ref", staged)
     client, vm_hash, fake_sup = await _seed_authorized_backup_app(aiohttp_client, mocker)
 
     response = await client.post(
@@ -2577,7 +2577,7 @@ def test_operator_backup_endpoints_have_no_pool_references():
     get_execution_or_404 anywhere in their source."""
     import inspect
 
-    from aleph.vm.orchestrator.views import operator
+    from aleph.vm.agent.views import operator
 
     targets = [
         operator.operate_backup,
@@ -2599,7 +2599,7 @@ def test_operator_module_does_not_read_execution_message():
     """Owner-auth and content reads must come from the registry, not the pool execution."""
     import inspect
 
-    from aleph.vm.orchestrator.views import operator
+    from aleph.vm.agent.views import operator
 
     source = inspect.getsource(operator)
     assert "execution.message" not in source, (
@@ -2617,7 +2617,7 @@ def test_operator_module_does_not_read_execution_message():
 async def test_recreate_network_delegates_to_supervisor(aiohttp_client, mocker):
     """The endpoint delegates to supervisor.recreate_network and never reads the pool."""
     mocker.patch(
-        "aleph.vm.orchestrator.views.authenticate_api_request",
+        "aleph.vm.agent.views.authenticate_api_request",
         new=AsyncMock(return_value=True),
     )
 
@@ -2643,7 +2643,7 @@ async def test_recreate_network_delegates_to_supervisor(aiohttp_client, mocker):
 async def test_recreate_network_partial_failure_returns_207(aiohttp_client, mocker):
     """A summary with success=False maps to HTTP 207 (partial)."""
     mocker.patch(
-        "aleph.vm.orchestrator.views.authenticate_api_request",
+        "aleph.vm.agent.views.authenticate_api_request",
         new=AsyncMock(return_value=True),
     )
     partial = dict(_RECREATE_NETWORK_SUMMARY, success=False, failed_count=1, failed_vms=[{"vm_hash": "x"}])
@@ -2666,7 +2666,7 @@ async def test_recreate_network_internal_error_returns_500(aiohttp_client, mocke
     from aleph.vm.supervisor_interface.errors import InternalSupervisorError
 
     mocker.patch(
-        "aleph.vm.orchestrator.views.authenticate_api_request",
+        "aleph.vm.agent.views.authenticate_api_request",
         new=AsyncMock(return_value=True),
     )
 

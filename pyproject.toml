@@ -69,7 +69,7 @@ urls.Discussions = "https://community.aleph.im/"
 urls.Documentation = "https://docs.aleph.cloud/nodes/compute/introduction/"
 urls.Issues = "https://github.com/aleph-im/aleph-vm/issues"
 urls.Source = "https://github.com/aleph-im/aleph-vm"
-scripts.aleph-vm = "aleph.vm.orchestrator.cli:main"
+scripts.aleph-vm = "aleph.vm.agent.cli:main"
 
 [tool.hatch.version]
 source = "vcs"
@@ -280,9 +280,8 @@ type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor_interface" ]
 forbidden_modules = [
-  "aleph.vm.orchestrator",
+  "aleph.vm.agent",
   "aleph.vm.supervisor",
-  "aleph.vm.controllers",
   "aleph.vm.pool",
   "aleph.vm.models",
   "aleph.vm.network",
@@ -291,24 +290,34 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "controllers are a supervisor worker, not the agent or the daemon"
+name = "controllers do not import the agent"
 type = "forbidden"
 allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.controllers" ]
-forbidden_modules = [ "aleph.vm.orchestrator", "aleph.vm.supervisor" ]
+source_modules = [ "aleph.vm.supervisor.controllers" ]
+forbidden_modules = [ "aleph.vm.agent" ]
 
 [[tool.importlinter.contracts]]
-name = "the agent does not reach into the supervisor implementation"
+name = "the agent does not reach into the supervisor daemon"
 type = "forbidden"
 allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.orchestrator" ]
-forbidden_modules = [ "aleph.vm.supervisor" ]
-# Composition root only: the agent entrypoints pick a concrete Supervisor impl
-# at startup. All other agent code goes through aleph.vm.supervisor_interface.abc.Supervisor.
+source_modules = [ "aleph.vm.agent" ]
+forbidden_modules = [
+  "aleph.vm.supervisor.local",
+  "aleph.vm.supervisor.grpc_server",
+  "aleph.vm.supervisor.grpc_client",
+  "aleph.vm.supervisor.daemon",
+  "aleph.vm.supervisor.proto_convert",
+  "aleph.vm.supervisor._pb",
+  "aleph.vm.supervisor.error_mapping",
+  "aleph.vm.supervisor.qemu_build",
+]
+# Composition root only: the agent entrypoints pick a concrete Supervisor impl.
+# Agent->supervisor.controllers (Resources, controller exception types, cloudinit)
+# remains a documented residual removed by PR-2 (the controller split).
 ignore_imports = [
-  "aleph.vm.orchestrator.cli -> aleph.vm.supervisor.local",
-  "aleph.vm.orchestrator.supervisor -> aleph.vm.supervisor.local",
-  "aleph.vm.orchestrator.supervisor -> aleph.vm.supervisor.grpc_client",
+  "aleph.vm.agent.cli -> aleph.vm.supervisor.local",
+  "aleph.vm.agent.supervisor -> aleph.vm.supervisor.local",
+  "aleph.vm.agent.supervisor -> aleph.vm.supervisor.grpc_client",
 ]
 
 [[tool.importlinter.contracts]]
@@ -316,14 +325,12 @@ name = "the supervisor does not import the agent"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor", "aleph.vm.pool", "aleph.vm.models" ]
-forbidden_modules = [ "aleph.vm.orchestrator" ]
-# Residuals to be removed by the VmExecution/VmPool cleave + DB-layer extraction
-# (docs/plans/2026-05-28 section 4): the shared port-mappings persistence and the
-# aggregate-settings cache still live under orchestrator today.
+forbidden_modules = [ "aleph.vm.agent" ]
+# Residuals removed by the VmExecution/VmPool cleave + DB-layer extraction.
 ignore_imports = [
-  "aleph.vm.models -> aleph.vm.orchestrator.metrics",
-  "aleph.vm.pool -> aleph.vm.orchestrator.metrics",
-  "aleph.vm.pool -> aleph.vm.orchestrator.utils",
-  "aleph.vm.supervisor.daemon -> aleph.vm.orchestrator.metrics",
-  "aleph.vm.supervisor.local -> aleph.vm.orchestrator.metrics",
+  "aleph.vm.models -> aleph.vm.agent.metrics",
+  "aleph.vm.pool -> aleph.vm.agent.metrics",
+  "aleph.vm.pool -> aleph.vm.agent.utils",
+  "aleph.vm.supervisor.daemon -> aleph.vm.agent.metrics",
+  "aleph.vm.supervisor.local -> aleph.vm.agent.metrics",
 ]

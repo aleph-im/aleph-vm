@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from aleph.vm.orchestrator.metrics import Base, save_port_mappings
+from aleph.vm.agent.metrics import Base, save_port_mappings
 
 
 @pytest_asyncio.fixture
@@ -24,7 +24,7 @@ async def async_session():
 @pytest_asyncio.fixture
 async def _patch_session_maker(async_session, monkeypatch):
     """Redirect AsyncSessionMaker in metrics module to the in-memory DB."""
-    import aleph.vm.orchestrator.metrics as metrics_mod
+    import aleph.vm.agent.metrics as metrics_mod
 
     # raising=False: AsyncSessionMaker is a bare module annotation until
     # setup_engine() binds it, so whether the attribute already exists depends

@@ -4,7 +4,7 @@ from enum import Enum
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, ConfigDict, Field
 
-from aleph.vm.orchestrator.utils import get_compatible_gpus
+from aleph.vm.agent.utils import get_compatible_gpus
 
 
 class InsufficientResourcesError(Exception):

@@ -3,9 +3,9 @@ from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
 from typing import Any, TypedDict
 
+from aleph.vm.agent.cache import AsyncTTLCache
+from aleph.vm.agent.http import get_session
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.cache import AsyncTTLCache
-from aleph.vm.orchestrator.http import get_session
 
 logger = getLogger(__name__)
 

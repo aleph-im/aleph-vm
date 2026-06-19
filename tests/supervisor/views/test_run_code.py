@@ -5,8 +5,8 @@ from aiohttp.web_exceptions import HTTPBadRequest
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.views import run_code_from_path
 from aleph.vm.conf import settings
-from aleph.vm.orchestrator.views import run_code_from_path
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 """Tests for Interface.from_entrypoint() method."""
 
-from aleph.vm.controllers.firecracker.program import Interface
+from aleph.vm.supervisor.controllers.firecracker.program import Interface
 
 
 class TestInterfaceFromEntrypoint:

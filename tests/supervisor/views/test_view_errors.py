@@ -1,7 +1,7 @@
 import pytest
 from aiohttp.test_utils import TestClient
 
-from aleph.vm.orchestrator.supervisor import setup_webapp
+from aleph.vm.agent.supervisor import setup_webapp
 
 
 @pytest.mark.asyncio

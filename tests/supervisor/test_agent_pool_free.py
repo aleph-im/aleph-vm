@@ -17,9 +17,9 @@ import inspect
 
 import pytest
 
-import aleph.vm.orchestrator.views as views_init
-from aleph.vm.orchestrator import resources, run
-from aleph.vm.orchestrator.views import migration, operator
+import aleph.vm.agent.views as views_init
+from aleph.vm.agent import resources, run
+from aleph.vm.agent.views import migration, operator
 
 _FORBIDDEN = (
     "require_vm_pool",

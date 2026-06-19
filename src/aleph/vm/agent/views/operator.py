@@ -18,22 +18,22 @@ from aleph_message.models import ItemHash, MessageType
 from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
-from aleph.vm.conf import settings
-from aleph.vm.controllers.qemu.backup import (
-    download_volume_by_ref,
-    get_backup_directory,
-)
-from aleph.vm.orchestrator import metrics
-from aleph.vm.orchestrator.cache import AsyncTTLCache
-from aleph.vm.orchestrator.custom_logs import set_vm_for_logging
-from aleph.vm.orchestrator.expiry import ExpiryManager
-from aleph.vm.orchestrator.http import get_session
-from aleph.vm.orchestrator.run import create_vm_execution_or_raise_http_error
-from aleph.vm.orchestrator.views.authentication import (
+from aleph.vm.agent import metrics
+from aleph.vm.agent.cache import AsyncTTLCache
+from aleph.vm.agent.custom_logs import set_vm_for_logging
+from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.http import get_session
+from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
+from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
-from aleph.vm.orchestrator.vm_registry import AgentVmRecord
+from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.conf import settings
+from aleph.vm.supervisor.controllers.qemu.backup import (
+    download_volume_by_ref,
+    get_backup_directory,
+)
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
@@ -626,7 +626,7 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
         # forwards (SSH/22 + the owner's aggregate) now that it is running, like
         # a normal instance gets at create. Without this the VM has no mapped
         # port 22 and is unreachable.
-        from aleph.vm.orchestrator.run import reconcile_port_forwards
+        from aleph.vm.agent.run import reconcile_port_forwards
 
         await reconcile_port_forwards(supervisor, vm_id, record.message)
 

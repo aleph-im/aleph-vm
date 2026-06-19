@@ -8,12 +8,12 @@ import pytest
 from aleph_message.models import ProgramContent
 from aleph_message.models.execution.base import Encoding
 
-from aleph.vm.conf import settings
-from aleph.vm.controllers.firecracker.program import FileTooLargeError
-from aleph.vm.orchestrator.vm.program_client import (
+from aleph.vm.agent.vm.program_client import (
     build_code_and_volumes,
     build_program_configuration,
 )
+from aleph.vm.conf import settings
+from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     IpAssignment,
@@ -133,9 +133,7 @@ def test_configuration_requires_dns_when_networked(tmp_path, mocker):
 def test_ready_payload_parsing():
     import msgpack
 
-    from aleph.vm.orchestrator.vm.program_client import (
-        runtime_config_from_ready_payload,
-    )
+    from aleph.vm.agent.vm.program_client import runtime_config_from_ready_payload
 
     # The Aleph runtime sends a msgpack version handshake with its ready signal.
     config = runtime_config_from_ready_payload(msgpack.dumps({"version": "2.0.0"}))
