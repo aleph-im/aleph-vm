@@ -403,10 +403,16 @@ async def stop_program_client(app: web.Application) -> None:
 
 
 async def _run_migration_reaper(app: web.Application) -> None:
-    """on_startup hook: clean up orphan migration files left from a prior supervisor run."""
-    pool = app.get("_engine_pool")
-    if pool is not None:
-        await reap_orphan_migration_files(pool)
+    """on_startup hook: clean up orphan migration files from a prior agent run.
+
+    Cold migration staging is agent-owned, so this runs agent-side in both modes.
+    The live-VM set comes from the supervisor over the ABC (works in split mode,
+    where there is no in-process pool); it only guards against deleting a running
+    VM's volume directory.
+    """
+    supervisor = app["supervisor"]
+    known_vm_ids = {str(info.vm_id) for info in await supervisor.list_vms()}
+    await reap_orphan_migration_files(known_vm_ids)
 
 
 async def _rehydrate_vm_registry(app: web.Application) -> None:
