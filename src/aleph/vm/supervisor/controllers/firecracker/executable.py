@@ -10,7 +10,6 @@ from os.path import exists
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from aiohttp import ClientResponseError
 from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.conf import settings
@@ -49,19 +48,6 @@ except RuntimeError as error:
         raise error
 
 
-class ResourceDownloadError(ClientResponseError):
-    """An error occurred while downloading a VM resource file"""
-
-    def __init__(self, error: ClientResponseError):
-        super().__init__(
-            request_info=error.request_info,
-            history=error.history,
-            status=error.status,
-            message=error.message,
-            headers=error.headers,
-        )
-
-
 @dataclass
 class BaseConfiguration:
     vm_hash: ItemHash
@@ -95,10 +81,6 @@ class AlephFirecrackerResources(VmResources):
 
     def get_disk_usage_delta(self) -> int:
         return disk_usage_delta(self.message_content, self.rootfs_path, self.volumes)
-
-
-class VmSetupError(Exception):
-    pass
 
 
 ConfigurationType = TypeVar("ConfigurationType")
