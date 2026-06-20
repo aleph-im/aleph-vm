@@ -8,7 +8,6 @@ from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry
-from aleph.vm.pool import VmPool
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
 
@@ -45,7 +44,6 @@ def subscription_matches(subscription: Subscription, message: AlephMessage) -> b
 
 class Reactor:
     pubsub: PubSub
-    pool: VmPool
     supervisor: Supervisor
     expiry: ExpiryManager
     update_watcher: UpdateWatcher
@@ -55,7 +53,6 @@ class Reactor:
     def __init__(
         self,
         pubsub: PubSub,
-        pool: VmPool,
         supervisor: Supervisor,
         expiry: ExpiryManager,
         update_watcher: UpdateWatcher,
@@ -63,7 +60,6 @@ class Reactor:
         program_client: ProgramGuestClient,
     ):
         self.pubsub = pubsub
-        self.pool = pool
         self.supervisor = supervisor
         self.expiry = expiry
         self.update_watcher = update_watcher

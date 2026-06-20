@@ -36,7 +36,6 @@ from aleph.vm.agent.utils import (
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.pool import VmPool
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
@@ -181,9 +180,7 @@ async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
                 break
 
 
-async def watch_for_messages(
-    dispatcher: PubSub, reactor: Reactor, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
-):
+async def watch_for_messages(dispatcher: PubSub, reactor: Reactor, supervisor: Supervisor, registry: AgentVmRegistry):
     """Watch for new Aleph messages"""
     logger.debug("watch_for_messages()")
     url = URL(f"{settings.API_SERVER}/api/ws0/messages").with_query({"startDate": math.floor(time.time())})
@@ -280,13 +277,9 @@ async def _handle_domains_aggregate(message: AggregateMessage, supervisor: Super
 async def start_watch_for_messages_task(app: web.Application):
     logger.debug("start_watch_for_messages_task()")
     pubsub = PubSub()
-    # Process-lifecycle wiring (not an agent request handler): the message
-    # listener and reactor are built once at startup and legitimately hold the
-    # embedded pool, like the daemon and CLI. None in split mode.
-    pool: VmPool | None = app.get("_engine_pool")
     supervisor = app["supervisor"]
     registry = app["vm_registry"]
-    reactor = Reactor(pubsub, pool, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])
+    reactor = Reactor(pubsub, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
@@ -299,9 +292,7 @@ async def start_watch_for_messages_task(app: web.Application):
 
     app["pubsub"] = pubsub
     app["reactor"] = reactor
-    app["messages_listener"] = create_task_log_exceptions(
-        watch_for_messages(pubsub, reactor, pool, supervisor, registry)
-    )
+    app["messages_listener"] = create_task_log_exceptions(watch_for_messages(pubsub, reactor, supervisor, registry))
 
 
 async def stop_watch_for_messages_task(app: web.Application):
