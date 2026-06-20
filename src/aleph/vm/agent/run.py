@@ -353,9 +353,6 @@ async def create_vm_execution_or_raise_http_error(
     except VmSetupError as error:
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except MicroVMFailedInitError as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     except HostNotFoundError as error:
         logger.exception(error)
         raise HTTPInternalServerError(reason="Host did not respond to ping") from error

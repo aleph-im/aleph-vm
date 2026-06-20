@@ -17,9 +17,7 @@ from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError,
     InternalSupervisorError,
     MicroVMInitError,
-    ResourceDownloadError,
     SupervisorError,
-    VmSetupError,
 )
 
 
@@ -38,12 +36,6 @@ def translate_exception(exc: BaseException) -> SupervisorError:
     from aleph.vm.resources import (
         InsufficientResourcesError as _InsufficientResourcesError,
     )
-    from aleph.vm.supervisor.controllers.firecracker.executable import (
-        ResourceDownloadError as _ResourceDownloadError,
-    )
-    from aleph.vm.supervisor.controllers.firecracker.executable import (
-        VmSetupError as _VmSetupError,
-    )
     from aleph.vm.supervisor.controllers.firecracker.program import (
         FileTooLargeError as _FileTooLargeError,
     )
@@ -52,12 +44,8 @@ def translate_exception(exc: BaseException) -> SupervisorError:
     message = str(exc)
     if isinstance(exc, _InsufficientResourcesError):
         return InsufficientResourcesError(message)
-    if isinstance(exc, _ResourceDownloadError):
-        return ResourceDownloadError(message)
     if isinstance(exc, _FileTooLargeError):
         return FileTooLargeError(message)
-    if isinstance(exc, _VmSetupError):
-        return VmSetupError(message)
     if isinstance(exc, _MicroVMFailedInitError):
         return MicroVMInitError(message)
     if isinstance(exc, _HostNotFoundError):
