@@ -18,7 +18,7 @@ from aleph.vm.supervisor_interface.types import (
 
 def make_execution_with_ports(mapped_ports=None):
     execution = SimpleNamespace(
-        vm_hash="vm1",
+        vm_id="vm1",
         mapped_ports=mapped_ports if mapped_ports is not None else {},
     )
     execution.update_port_redirects = AsyncMock()
@@ -65,9 +65,9 @@ async def test_list_port_forwards_for_one_vm():
 @pytest.mark.asyncio
 async def test_list_port_forwards_all_vms():
     e1 = make_execution_with_ports({8080: {"host": 34000, "tcp": True, "udp": False}})
-    e1.vm_hash = "vm1"
+    e1.vm_id = "vm1"
     e2 = make_execution_with_ports({53: {"host": 34001, "tcp": False, "udp": True}})
-    e2.vm_hash = "vm2"
+    e2.vm_id = "vm2"
     pool = FakePool(executions={"vm1": e1, "vm2": e2})
     sup = LocalSupervisor(pool=pool)
 

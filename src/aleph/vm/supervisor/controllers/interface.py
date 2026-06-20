@@ -21,7 +21,7 @@ class AlephVmControllerInterface(ABC):
     log_queues: list[asyncio.Queue] = []
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
 
-    vm_id: int
+    vm_index: int
     """id in the VMPool, attributed at execution"""
     vm_hash: ItemHash
     """identifier for the VM definition, linked to an Aleph Message"""

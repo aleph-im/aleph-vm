@@ -111,26 +111,26 @@ async def test_create_qemu_instance(mocker):
     execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
-    vm_id = 3
+    vm_index = 3
 
     # Mirror the production spec path (VmPool.create_vm_from_spec): write the
     # controller config from the spec, then start with write_config=False. The
     # legacy in-process configure() reads message_content, which is None here.
-    config = await build_qemu_configuration(spec, vm_id, None)
+    config = await build_qemu_configuration(spec, vm_index, None)
     save_controller_configuration(spec.vm_id, config)
 
-    vm = execution.create(vm_id=vm_id, tap_interface=None)
+    vm = execution.create(vm_index=vm_index, tap_interface=None)
 
     # Test that the VM is created correctly. It is not started yet.
     assert isinstance(vm, AlephQemuInstance)
-    assert vm.vm_id == vm_id
+    assert vm.vm_index == vm_index
 
     await execution.start(write_config=False)
     qemu_execution, process = await mock_systemd_manager.enable_and_start(execution.controller_service)
     assert isinstance(qemu_execution, QemuVM)
     assert qemu_execution.qemu_process is not None
     await asyncio.sleep(30)
-    await mock_systemd_manager.stop_and_disable(execution.vm_hash)
+    await mock_systemd_manager.stop_and_disable(execution.vm_id)
     await qemu_execution.qemu_process.wait()
     assert qemu_execution.qemu_process.returncode is not None
     await execution.stop()
@@ -201,22 +201,22 @@ async def test_create_qemu_instance_online(mocker):
     execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=mock_systemd_manager)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
-    vm_id = 3
+    vm_index = 3
 
     vm_type = VmType.from_message_content(message.content)
-    tap_interface = await network.prepare_tap(vm_id, vm_hash, vm_type)
-    await network.create_tap(vm_id, tap_interface)
+    tap_interface = await network.prepare_tap(vm_index, vm_hash, vm_type)
+    await network.create_tap(vm_index, tap_interface)
 
     # Mirror the production spec path (VmPool.create_vm_from_spec): write the
     # controller config from the spec, then start with write_config=False.
-    config = await build_qemu_configuration(spec, vm_id, tap_interface)
+    config = await build_qemu_configuration(spec, vm_index, tap_interface)
     save_controller_configuration(spec.vm_id, config)
 
-    vm = execution.create(vm_id=vm_id, tap_interface=tap_interface)
+    vm = execution.create(vm_index=vm_index, tap_interface=tap_interface)
 
     # Test that the VM is created correctly. It is not started yet.
     assert isinstance(vm, AlephQemuInstance)
-    assert vm.vm_id == vm_id
+    assert vm.vm_index == vm_index
 
     await execution.start(write_config=False)
     qemu_execution = mock_systemd_manager.execution
@@ -224,7 +224,7 @@ async def test_create_qemu_instance_online(mocker):
     assert qemu_execution.qemu_process is not None
     # Boot is now awaited inside start(), so init_task is no longer used.
     assert execution.times.started_at is not None, "VM failed to start"
-    qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_hash)
+    qemu_execution, process = await mock_systemd_manager.stop_and_disable(execution.vm_id)
     await execution.stop()
     assert qemu_execution is None
 

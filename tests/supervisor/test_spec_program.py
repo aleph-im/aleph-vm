@@ -95,7 +95,7 @@ async def test_setup_builds_firecracker_config(tmp_path, mocker):
 
     spec = make_spec(tmp_path, code=True, extra=2)
     vm = SpecFirecrackerProgram(
-        vm_id=3,
+        vm_index=3,
         vm_hash=spec.vm_id,
         spec=spec,
         resources=SpecProgramResources.from_spec(spec),
@@ -127,7 +127,7 @@ async def test_ready_timeout_from_spec_overrides_supervisor_default(tmp_path, mo
     spec = make_spec(tmp_path)
     spec = replace(spec, guest_channel=GuestChannelSpec(ready_port=52, ready_timeout_secs=90))
     vm = SpecFirecrackerProgram(
-        vm_id=3,
+        vm_index=3,
         vm_hash=spec.vm_id,
         spec=spec,
         resources=SpecProgramResources.from_spec(spec),
@@ -139,7 +139,7 @@ async def test_ready_timeout_from_spec_overrides_supervisor_default(tmp_path, mo
     # 0 (unset) keeps the supervisor's default.
     spec_default = replace(spec, guest_channel=GuestChannelSpec(ready_port=52))
     vm_default = SpecFirecrackerProgram(
-        vm_id=4,
+        vm_index=4,
         vm_hash=spec_default.vm_id,
         spec=spec_default,
         resources=SpecProgramResources.from_spec(spec_default),
@@ -156,7 +156,7 @@ async def test_guest_api_is_agent_owned(tmp_path, mocker):
     mocker.patch.object(settings, "USE_JAILER", False)
     spec = make_spec(tmp_path)
     vm = SpecFirecrackerProgram(
-        vm_id=3,
+        vm_index=3,
         vm_hash=spec.vm_id,
         spec=spec,
         resources=SpecProgramResources.from_spec(spec),

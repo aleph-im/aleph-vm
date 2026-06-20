@@ -93,7 +93,7 @@ async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker)
     HAProxy domain-mapping refresh when its registry record matches the owner."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
     supervisor = object()
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
@@ -107,7 +107,7 @@ async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker)
 async def test_domains_aggregate_ignores_unrelated_address(mocker):
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xsomeoneelse"))
 
@@ -121,7 +121,7 @@ async def test_domains_aggregate_ignores_unrecorded_execution(mocker):
     """A matching-owner instance the agent has no record for must NOT trigger a
     refresh (no registry record -> short-circuits before the address compare)."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
-    execution = SimpleNamespace(vm_hash=_HASH, is_instance=True, vm=object())
+    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
 
@@ -135,7 +135,7 @@ async def test_domains_aggregate_ignores_non_instance(mocker):
     """A program (not an instance) owned by the address must NOT trigger a refresh."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_hash=_HASH, is_instance=False, vm=object())
+    execution = SimpleNamespace(vm_id=_HASH, is_instance=False, vm=object())
     pool = SimpleNamespace(executions={_HASH: execution})
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
 

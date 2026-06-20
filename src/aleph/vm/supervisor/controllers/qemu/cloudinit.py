@@ -89,10 +89,10 @@ def encode_user_data(
     return content
 
 
-def create_metadata_file(hostname, vm_id) -> bytes:
+def create_metadata_file(hostname, vm_index) -> bytes:
     """Creates metadata configuration file for cloud-init tool"""
     metadata = {
-        "instance-id": f"iid-instance-{vm_id}",
+        "instance-id": f"iid-instance-{vm_index}",
         "local-hostname": hostname,
     }
     return json.dumps(metadata).encode()
@@ -126,7 +126,7 @@ def create_network_file(ip, ipv6, ipv6_gateway, nameservers, route) -> bytes:
 async def create_cloud_init_drive_image(
     disk_image_path,
     hostname,
-    vm_id,
+    vm_index,
     ip,
     ipv6,
     ipv6_gateway,
@@ -155,7 +155,7 @@ async def create_cloud_init_drive_image(
         network_config_file.write(network_config)
         network_config_file.flush()
 
-        metadata_config = create_metadata_file(hostname, vm_id)
+        metadata_config = create_metadata_file(hostname, vm_index)
         metadata_config_file.write(metadata_config)
         metadata_config_file.flush()
 

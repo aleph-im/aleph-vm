@@ -30,16 +30,16 @@ async def graceful_shutdown(execution: VmExecution, timeout: int = GRACEFUL_SHUT
         client.system_powerdown()
         client.close()
     except Exception as e:
-        logger.warning("Failed to send system_powerdown for %s: %s", execution.vm_hash, e)
+        logger.warning("Failed to send system_powerdown for %s: %s", execution.vm_id, e)
 
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         if execution.systemd_manager and not execution.systemd_manager.is_service_active(execution.controller_service):
-            logger.info("VM %s shut down gracefully", execution.vm_hash)
+            logger.info("VM %s shut down gracefully", execution.vm_id)
             return
         await asyncio.sleep(1)
 
-    logger.warning("VM %s did not shut down within %ds, forcing stop", execution.vm_hash, timeout)
+    logger.warning("VM %s did not shut down within %ds, forcing stop", execution.vm_id, timeout)
     if execution.systemd_manager:
         execution.systemd_manager.stop_and_disable(execution.controller_service)
 

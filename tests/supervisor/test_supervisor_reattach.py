@@ -79,7 +79,7 @@ async def test_restore_running_execution_from_config_registers_execution(monkeyp
     fake_vm = SimpleNamespace(support_snapshot=False, start_guest_api=AsyncMock())
     monkeypatch.setattr(VmExecution, "create", MagicMock(return_value=fake_vm))
 
-    await pool._restore_running_execution_from_config(config, vm_id=7, vm_hash=_HASH)
+    await pool._restore_running_execution_from_config(config, vm_index=7, vm_id=_HASH)
 
     assert _HASH in pool.executions
     execution = pool.executions[_HASH]

@@ -63,7 +63,7 @@ def test_from_spec_sets_spec():
 
     assert execution.spec is not None
     assert execution.vm_spec is execution.spec
-    assert execution.vm_hash == ItemHash(_HASH)
+    assert execution.vm_id == ItemHash(_HASH)
     assert execution.persistent is True
     assert execution.resources is None
     assert execution.vm is None
@@ -101,10 +101,10 @@ async def test_create_builds_qemu_instance_from_spec():
     )
     await execution.prepare()
 
-    vm = execution.create(vm_id=7, tap_interface=None)
+    vm = execution.create(vm_index=7, tap_interface=None)
 
     assert isinstance(vm, AlephQemuInstance)
-    assert vm.vm_id == 7
+    assert vm.vm_index == 7
     assert vm.hardware_resources.vcpus == 3
     assert vm.hardware_resources.memory == 1024
     assert vm.enable_networking is False
@@ -116,7 +116,7 @@ async def test_start_skips_configure_for_spec(monkeypatch):
     systemd.enable_and_start = AsyncMock()
     execution = VmExecution.from_spec(make_spec(internet=False), snapshot_manager=None, systemd_manager=systemd)
     await execution.prepare()
-    execution.create(vm_id=7, tap_interface=None)
+    execution.create(vm_index=7, tap_interface=None)
 
     # configure() is message-coupled (cloud-init reads resources.message_content)
     # and must NOT be called on the spec path.

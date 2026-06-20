@@ -257,7 +257,7 @@ async def _handle_domains_aggregate(
     has_local_instance = any(
         execution.is_instance
         and execution.vm
-        and (record := registry.get(execution.vm_hash)) is not None
+        and (record := registry.get(execution.vm_id)) is not None
         and record.message.address == address
         for execution in pool.executions.values()
     )

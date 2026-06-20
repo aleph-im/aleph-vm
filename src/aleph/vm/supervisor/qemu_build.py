@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 async def build_cloud_init_drive(
     vm_hash: str,
-    vm_id: int,
+    vm_index: int,
     tap_interface: TapInterface | None,
     ssh_authorized_keys: list[str],
     hostname: str,
@@ -84,7 +84,7 @@ async def build_cloud_init_drive(
     await create_cloud_init_drive_image(
         disk_image_path,
         hostname,
-        vm_id,
+        vm_index,
         ip,
         ipv6,
         ipv6_gateway,
@@ -101,7 +101,7 @@ async def build_cloud_init_drive(
 
 async def build_qemu_configuration(
     spec: CreateVmSpec,
-    vm_id: int,
+    vm_index: int,
     tap_interface: TapInterface | None,
 ) -> Configuration:
     """Build a controller Configuration from a CreateVmSpec.
@@ -143,7 +143,7 @@ async def build_qemu_configuration(
 
     cloud_init_path = await build_cloud_init_drive(
         vm_hash=spec.vm_id,
-        vm_id=vm_id,
+        vm_index=vm_index,
         tap_interface=tap_interface,
         ssh_authorized_keys=spec.ssh_authorized_keys,
         hostname=spec.hostname,
@@ -167,7 +167,7 @@ async def build_qemu_configuration(
     )
 
     return Configuration(
-        vm_id=vm_id,
+        vm_id=vm_index,
         vm_hash=spec.vm_id,
         settings=settings,
         vm_configuration=vm_configuration,
@@ -177,7 +177,7 @@ async def build_qemu_configuration(
 
 async def build_qemu_confidential_configuration(
     spec: CreateVmSpec,
-    vm_id: int,
+    vm_index: int,
     tap_interface: TapInterface | None,
 ) -> Configuration:
     """Build a confidential controller Configuration from a CreateVmSpec.
@@ -242,7 +242,7 @@ async def build_qemu_confidential_configuration(
     # install_guest_agent=False in configure()).
     cloud_init_path = await build_cloud_init_drive(
         vm_hash=spec.vm_id,
-        vm_id=vm_id,
+        vm_index=vm_index,
         tap_interface=tap_interface,
         ssh_authorized_keys=spec.ssh_authorized_keys,
         hostname=spec.hostname,
@@ -271,7 +271,7 @@ async def build_qemu_confidential_configuration(
     )
 
     return Configuration(
-        vm_id=vm_id,
+        vm_id=vm_index,
         vm_hash=spec.vm_id,
         settings=settings,
         vm_configuration=vm_configuration,
