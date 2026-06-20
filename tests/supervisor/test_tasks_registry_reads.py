@@ -11,6 +11,7 @@ from aleph_message.models import Chain, ItemHash, Payment, PaymentType
 from aleph.vm.agent.tasks import _group_executions_by_payment, _handle_domains_aggregate
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
@@ -23,14 +24,14 @@ from aleph.vm.supervisor_interface.types import (
 _HASH = ItemHash("deadbeef" * 8)
 
 
-def _info(vm_hash: ItemHash, *, running: bool = True, confidential=False) -> VmInfo:
+def _info(vm_hash: ItemHash, *, running: bool = True, confidential=False, backend: Backend = Backend.QEMU) -> VmInfo:
     return VmInfo(
         vm_id=VmId(str(vm_hash)),
         status=VmStatus.RUNNING if running else VmStatus.STOPPED,
         ipv4=IpAssignment(),
         ipv6=IpAssignment(),
         uptime_secs=0,
-        backend=Backend.QEMU,
+        backend=backend,
         numa_node=None,
         status_message="",
         confidential_mode=ConfidentialMode.SEV if confidential else ConfidentialMode.NONE,
@@ -87,18 +88,31 @@ def test_grouping_skips_stopped_and_diagnostic_executions():
     assert _group_executions_by_payment(infos, registry, PaymentType.hold) == {}
 
 
+def _supervisor_returning(*infos: VmInfo):
+    """A supervisor stub whose get_vm answers from the given VmInfos by vm_id,
+    raising VmNotFoundError for anything else. No in-process pool involved, so
+    this exercises the split-mode path (the daemon owns the VMs)."""
+    by_id = {info.vm_id: info for info in infos}
+
+    async def get_vm(vm_id):
+        if vm_id in by_id:
+            return by_id[vm_id]
+        raise VmNotFoundError(str(vm_id))
+
+    return SimpleNamespace(get_vm=get_vm)
+
+
 @pytest.mark.asyncio
 async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker):
     """A message-less (spec-built / restored) instance must still trigger the
-    HAProxy domain-mapping refresh when its registry record matches the owner."""
+    HAProxy domain-mapping refresh when its registry record matches the owner,
+    sourced through the supervisor (works in split mode, no pool)."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
-    pool = SimpleNamespace(executions={_HASH: execution})
-    supervisor = object()
+    supervisor = _supervisor_returning(_info(_HASH))
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
 
-    await _handle_domains_aggregate(aggregate, pool, supervisor, registry)
+    await _handle_domains_aggregate(aggregate, supervisor, registry)
 
     sync.assert_awaited_once_with(supervisor)
 
@@ -107,11 +121,10 @@ async def test_domains_aggregate_triggers_for_registry_recorded_instance(mocker)
 async def test_domains_aggregate_ignores_unrelated_address(mocker):
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
-    pool = SimpleNamespace(executions={_HASH: execution})
+    supervisor = _supervisor_returning(_info(_HASH))
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xsomeoneelse"))
 
-    await _handle_domains_aggregate(aggregate, pool, object(), registry)
+    await _handle_domains_aggregate(aggregate, supervisor, registry)
 
     sync.assert_not_awaited()
 
@@ -121,25 +134,38 @@ async def test_domains_aggregate_ignores_unrecorded_execution(mocker):
     """A matching-owner instance the agent has no record for must NOT trigger a
     refresh (no registry record -> short-circuits before the address compare)."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
-    execution = SimpleNamespace(vm_id=_HASH, is_instance=True, vm=object())
-    pool = SimpleNamespace(executions={_HASH: execution})
+    supervisor = _supervisor_returning(_info(_HASH))
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
 
-    await _handle_domains_aggregate(aggregate, pool, object(), AgentVmRegistry())
+    await _handle_domains_aggregate(aggregate, supervisor, AgentVmRegistry())
 
     sync.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_domains_aggregate_ignores_non_instance(mocker):
-    """A program (not an instance) owned by the address must NOT trigger a refresh."""
+    """A program (FIRECRACKER, not a QEMU instance) owned by the address must
+    NOT trigger a refresh."""
     sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
     registry = _registry_with(_HASH, payment=None, address="0xowner")
-    execution = SimpleNamespace(vm_id=_HASH, is_instance=False, vm=object())
-    pool = SimpleNamespace(executions={_HASH: execution})
+    supervisor = _supervisor_returning(_info(_HASH, backend=Backend.FIRECRACKER))
     aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
 
-    await _handle_domains_aggregate(aggregate, pool, object(), registry)
+    await _handle_domains_aggregate(aggregate, supervisor, registry)
+
+    sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_domains_aggregate_ignores_owner_instance_absent_from_supervisor(mocker):
+    """An owner-matching registry record whose VM the supervisor does not know
+    (deleted, never created) must NOT trigger a refresh."""
+    sync = mocker.patch("aleph.vm.agent.tasks.sync_domain_mappings", new=AsyncMock())
+    registry = _registry_with(_HASH, payment=None, address="0xowner")
+    supervisor = _supervisor_returning()  # get_vm always raises VmNotFoundError
+    aggregate = SimpleNamespace(content=SimpleNamespace(address="0xowner"))
+
+    await _handle_domains_aggregate(aggregate, supervisor, registry)
 
     sync.assert_not_awaited()
 
