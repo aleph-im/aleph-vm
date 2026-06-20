@@ -33,7 +33,7 @@ def get_ipv6_forwarding_state() -> int:
 
 
 class IPv6Allocator(Protocol):
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network: ...
+    def allocate_vm_ipv6_subnet(self, vm_index: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network: ...
 
 
 class StaticIPv6Allocator(IPv6Allocator):
@@ -64,7 +64,7 @@ class StaticIPv6Allocator(IPv6Allocator):
         self.ipv6_range = ipv6_range
         self.subnet_prefix = subnet_prefix
 
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_index: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network:
         ipv6_elems = self.ipv6_range.exploded.split(":")[:4]
         ipv6_elems += [self.VM_TYPE_PREFIX[vm_type]]
 
@@ -92,7 +92,7 @@ class DynamicIPv6Allocator(IPv6Allocator):
         # Assume the first subnet is reserved for the host
         _ = next(self.subnets_generator)
 
-    def allocate_vm_ipv6_subnet(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network:
+    def allocate_vm_ipv6_subnet(self, vm_index: int, vm_hash: ItemHash, vm_type: VmType) -> IPv6Network:
         return next(self.subnets_generator)
 
 
@@ -166,9 +166,9 @@ class Network:
         initialize_nftables()
         logger.debug("Network setup complete")
 
-    def get_network_for_tap(self, vm_id: int) -> IPv4NetworkWithInterfaces:
+    def get_network_for_tap(self, vm_index: int) -> IPv4NetworkWithInterfaces:
         subnets = list(self.ipv4_address_pool.subnets(new_prefix=self.network_size))
-        return subnets[vm_id]
+        return subnets[vm_index]
 
     def enable_ipv4_forwarding(self) -> None:
         """Saves the hosts IPv4 forwarding state, and if it was disabled, enables it"""
@@ -207,13 +207,13 @@ class Network:
         self.reset_ipv4_forwarding_state()
         self.reset_ipv6_forwarding_state()
 
-    async def prepare_tap(self, vm_id: int, vm_hash: ItemHash, vm_type: VmType) -> TapInterface:
+    async def prepare_tap(self, vm_index: int, vm_hash: ItemHash, vm_type: VmType) -> TapInterface:
         """Prepare TAP interface to be used by VM"""
         interface = TapInterface(
-            f"vmtap{vm_id}",
-            ip_network=self.get_network_for_tap(vm_id),
+            f"vmtap{vm_index}",
+            ip_network=self.get_network_for_tap(vm_index),
             ipv6_network=self.ipv6_allocator.allocate_vm_ipv6_subnet(
-                vm_id=vm_id,
+                vm_index=vm_index,
                 vm_hash=vm_hash,
                 vm_type=vm_type,
             ),
@@ -221,11 +221,11 @@ class Network:
         )
         return interface
 
-    async def create_tap(self, vm_id: int, interface: TapInterface):
+    async def create_tap(self, vm_index: int, interface: TapInterface):
         """Create TAP interface to be used by VM"""
         await interface.create()
-        setup_nftables_for_vm(vm_id, interface)
+        setup_nftables_for_vm(vm_index, interface)
 
-    def interface_exists(self, vm_id: int) -> bool:
-        interface_name = f"vmtap{vm_id}"
+    def interface_exists(self, vm_index: int) -> bool:
+        interface_name = f"vmtap{vm_index}"
         return self.ndb.interfaces.exists(interface_name)

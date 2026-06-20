@@ -61,11 +61,11 @@ def _bare_pool() -> VmPool:
 async def test_create_firecracker_from_spec_boots_program(monkeypatch, persistent):
     pool = _bare_pool()
     monkeypatch.setattr(pool, "check_spec_admission", MagicMock())
-    monkeypatch.setattr(pool, "get_unique_vm_id", MagicMock(return_value=7))
+    monkeypatch.setattr(pool, "get_unique_vm_index", MagicMock(return_value=7))
     monkeypatch.setattr(pool, "_schedule_forget_on_stop", MagicMock())
 
     execution = MagicMock()
-    execution.vm_hash = VmId(_HASH)
+    execution.vm_id = VmId(_HASH)
     execution.vm = None
     execution.prepare = AsyncMock()
     execution.create = MagicMock()
@@ -78,4 +78,4 @@ async def test_create_firecracker_from_spec_boots_program(monkeypatch, persisten
     assert result is execution
     execution.start.assert_awaited_once()
     # No InvalidBackendError raised for persistent: the guard is gone.
-    assert pool.executions[execution.vm_hash] is execution
+    assert pool.executions[execution.vm_id] is execution

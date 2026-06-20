@@ -130,7 +130,7 @@ async def test_delete_vm_wipe_erases_data_volumes_and_port_mappings(monkeypatch)
     await supervisor.delete_vm(VM_ID, wipe=True)
 
     pool.stop_vm.assert_awaited_once_with(VM_ID)
-    deleted.assert_awaited_once_with(execution.vm_hash)
+    deleted.assert_awaited_once_with(execution.vm_id)
     erased.assert_called_once_with()
 
 
@@ -220,7 +220,7 @@ async def test_reboot_ephemeral_spec_vm_recreates_from_held_spec():
     spec = _spec_for("itemhash123")
     execution = _make_execution(persistent=False)
     execution.vm_spec = spec
-    recreated = make_execution(vm_hash="itemhash123", running=True)
+    recreated = make_execution(vm_id="itemhash123", running=True)
     pool = _make_pool(executions={"itemhash123": execution})
     pool.create_vm_from_spec = AsyncMock(return_value=recreated)
     sup = LocalSupervisor(pool=pool)

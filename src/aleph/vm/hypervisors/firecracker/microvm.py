@@ -78,7 +78,7 @@ class RuntimeConfiguration:
 
 
 class MicroVM:
-    vm_id: int
+    vm_index: int
     use_jailer: bool
     firecracker_bin_path: Path
     jailer_bin_path: Path | None
@@ -96,15 +96,15 @@ class MicroVM:
     journal_stderr: BinaryIO | int | None = None
 
     def __repr__(self):
-        return f"<MicroVM {self.vm_id}>"
+        return f"<MicroVM {self.vm_index}>"
 
     def __str__(self):
-        return f"vm-{self.vm_id}"
+        return f"vm-{self.vm_index}"
 
     @property
     def namespace_path(self) -> str:
         firecracker_bin_name = os.path.basename(self.firecracker_bin_path)
-        return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_id))
+        return str(self.jailer_base_directory / firecracker_bin_name / str(self.vm_index))
 
     @property
     def jailer_path(self) -> str:
@@ -115,7 +115,7 @@ class MicroVM:
         if self.use_jailer:
             return f"{self.jailer_path}/run/firecracker.socket"
         else:
-            return f"/tmp/firecracker-{self.vm_id}.socket"
+            return f"/tmp/firecracker-{self.vm_index}.socket"
 
     @property
     def vsock_path(self) -> str:
@@ -126,7 +126,7 @@ class MicroVM:
 
     def __init__(
         self,
-        vm_id: int,
+        vm_index: int,
         vm_hash: ItemHash,
         firecracker_bin_path: Path,
         jailer_base_directory: Path,
@@ -135,7 +135,7 @@ class MicroVM:
         init_timeout: float = 5.0,
         enable_log: bool = True,
     ):
-        self.vm_id = vm_id
+        self.vm_index = vm_index
         self.vm_hash = vm_hash
         self.use_jailer = use_jailer
         self.jailer_base_directory = jailer_base_directory
@@ -263,7 +263,7 @@ class MicroVM:
         options = (
             str(self.jailer_bin_path),
             "--id",
-            str(self.vm_id),
+            str(self.vm_index),
             "--exec-file",
             str(self.firecracker_bin_path),
             "--uid",
@@ -433,7 +433,7 @@ class MicroVM:
             raise MicroVMFailedInitError() from error
 
     async def shutdown(self) -> None:
-        logger.debug(f"Shutdown vm={self.vm_id}")
+        logger.debug(f"Shutdown vm={self.vm_index}")
         try:
             reader, writer = await asyncio.open_unix_connection(path=self.vsock_path)
         except (
@@ -441,7 +441,7 @@ class MicroVM:
             ConnectionResetError,
             ConnectionRefusedError,
         ) as error:
-            logger.warning(f"VM={self.vm_id} cannot receive shutdown signal: {error.args}")
+            logger.warning(f"VM={self.vm_index} cannot receive shutdown signal: {error.args}")
             return
 
         try:
@@ -462,7 +462,7 @@ class MicroVM:
             if msg2 != b"STOPZ\n":
                 logger.warning(f"Unexpected response from VM: {msg2[:20]!r}")
         except ConnectionResetError as error:
-            logger.warning(f"ConnectionResetError in shutdown of {self.vm_id}: {error.args}")
+            logger.warning(f"ConnectionResetError in shutdown of {self.vm_index}: {error.args}")
 
     async def stop(self):
         if self.proc:
@@ -481,7 +481,7 @@ class MicroVM:
         try:
             await asyncio.wait_for(self.shutdown(), timeout=5)
         except asyncio.TimeoutError:
-            logger.exception(f"Timeout during VM shutdown vm={self.vm_id}")
+            logger.exception(f"Timeout during VM shutdown vm={self.vm_index}")
         logger.debug("Waiting for one second for the process to shutdown")
         await asyncio.sleep(1)
         await self.stop()

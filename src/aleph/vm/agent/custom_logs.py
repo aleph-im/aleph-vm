@@ -29,7 +29,7 @@ class InjectingFilter(logging.Filter):
         if not vm_hash:
             vm_execution: VmExecution | None = ctx_current_execution.get(None)
             if vm_execution:
-                vm_hash = vm_execution.vm_hash
+                vm_hash = vm_execution.vm_id
 
         if not vm_hash:
             return False

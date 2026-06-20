@@ -95,7 +95,7 @@ class VmExecution:
     """
 
     uuid: uuid.UUID  # Unique identifier of this execution
-    vm_hash: VmId
+    vm_id: VmId
     # The message-free description this execution is built from.
     spec: CreateVmSpec
     resources: (
@@ -144,7 +144,7 @@ class VmExecution:
 
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if target[protocol]:
-                    add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                    add_port_redirect_rule(self.vm.vm_index, interface, host_port, vm_port, protocol)
             self.mapped_ports[int(vm_port)] = {"host": host_port, **target}
             changed = True
 
@@ -155,7 +155,7 @@ class VmExecution:
             for protocol in SUPPORTED_PROTOCOL_FOR_REDIRECT:
                 if current[protocol] != target[protocol]:
                     if target[protocol]:
-                        add_port_redirect_rule(self.vm.vm_id, interface, host_port, vm_port, protocol)
+                        add_port_redirect_rule(self.vm.vm_index, interface, host_port, vm_port, protocol)
                     else:
                         remove_port_redirect_rule(interface, host_port, vm_port, protocol)
                     changed = True
@@ -164,7 +164,7 @@ class VmExecution:
 
         # Persist port mappings to dedicated table if anything changed
         if changed:
-            await save_port_mappings(self.vm_hash, self.mapped_ports)
+            await save_port_mappings(self.vm_id, self.mapped_ports)
 
     async def recreate_port_redirect_rules(self) -> None:
         """Recreate nftables port redirect rules from saved mapped_ports after restart.
@@ -215,7 +215,7 @@ class VmExecution:
                     host_port,
                     new_host_port,
                     vm_port,
-                    self.vm_hash,
+                    self.vm_id,
                 )
                 host_port = new_host_port
                 mapping["host"] = new_host_port
@@ -223,7 +223,7 @@ class VmExecution:
 
             for protocol in protocols_to_create:
                 all_entities += build_port_redirect_entities(
-                    self.vm.vm_id,
+                    self.vm.vm_index,
                     interface,
                     host_port,
                     vm_port,
@@ -242,11 +242,11 @@ class VmExecution:
                     protocol,
                     host_port,
                     vm_port,
-                    self.vm_hash,
+                    self.vm_id,
                 )
 
         if port_changed:
-            await save_port_mappings(self.vm_hash, self.mapped_ports)
+            await save_port_mappings(self.vm_id, self.mapped_ports)
 
     async def removed_all_ports_redirection(self):
         if not self.vm:
@@ -323,12 +323,12 @@ class VmExecution:
         return self.ready_event.wait
 
     @property
-    def vm_id(self) -> int | None:
-        return self.vm.vm_id if self.vm else None
+    def vm_index(self) -> int | None:
+        return self.vm.vm_index if self.vm else None
 
     @property
     def controller_service(self) -> str:
-        return f"aleph-vm-controller@{self.vm_hash}.service"
+        return f"aleph-vm-controller@{self.vm_id}.service"
 
     @property
     def allocated_memory_mib(self) -> int:
@@ -349,11 +349,11 @@ class VmExecution:
             return True
 
     def __repr__(self):
-        return f"<VMExecution {type(self.vm).__name__} {self.vm_hash} {self.times.started_at}>"
+        return f"<VMExecution {type(self.vm).__name__} {self.vm_id} {self.times.started_at}>"
 
     def __init__(
         self,
-        vm_hash: VmId,
+        vm_id: VmId,
         vm_spec: CreateVmSpec,
         snapshot_manager: SnapshotManager | None = None,
         systemd_manager: SystemDManager | None = None,
@@ -361,7 +361,7 @@ class VmExecution:
     ):
         self.init_task = None
         self.uuid = uuid.uuid1()  # uuid1() includes the hardware address and timestamp
-        self.vm_hash = vm_hash
+        self.vm_id = vm_id
         self.spec = vm_spec
         self.times = VmExecutionTimes(defined_at=datetime.now(tz=timezone.utc))
         self.ready_event = asyncio.Event()
@@ -390,7 +390,7 @@ class VmExecution:
         The supervisor's machinery (prepare/create/start) reads only the spec.
         """
         return cls(
-            vm_hash=spec.vm_id,
+            vm_id=spec.vm_id,
             vm_spec=spec,
             snapshot_manager=snapshot_manager,
             systemd_manager=systemd_manager,
@@ -416,9 +416,9 @@ class VmExecution:
             if self.spec.backend is Backend.FIRECRACKER:
                 self.resources = SpecProgramResources.from_spec(self.spec)
             elif self.spec.tee is not None:
-                self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_hash))
+                self.resources = AlephQemuConfidentialResources.from_spec(self.spec, namespace=str(self.vm_id))
             else:
-                self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_hash))
+                self.resources = AlephQemuResources.from_spec(self.spec, namespace=str(self.vm_id))
             self.times.prepared_at = datetime.now(tz=timezone.utc)
 
     def uses_gpu(self, pci_host: str) -> bool:
@@ -429,7 +429,7 @@ class VmExecution:
         return False
 
     def create(
-        self, vm_id: int, tap_interface: TapInterface | None = None, prepare: bool = True
+        self, vm_index: int, tap_interface: TapInterface | None = None, prepare: bool = True
     ) -> AlephVmControllerInterface:
         if not self.resources:
             msg = "Execution resources must be configured first"
@@ -439,8 +439,8 @@ class VmExecution:
         if self.spec.backend is Backend.FIRECRACKER:
             assert isinstance(self.resources, SpecProgramResources)
             self.vm = vm = SpecFirecrackerProgram(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
+                vm_index=vm_index,
+                vm_hash=self.vm_id,
                 spec=self.spec,
                 resources=self.resources,
                 tap_interface=tap_interface,
@@ -454,8 +454,8 @@ class VmExecution:
             # SAFETY-CRITICAL: never fall through to the plain AlephQemuInstance.
             assert isinstance(self.resources, AlephQemuConfidentialResources)
             self.vm = vm = AlephQemuConfidentialInstance(
-                vm_id=vm_id,
-                vm_hash=self.vm_hash,
+                vm_index=vm_index,
+                vm_hash=self.vm_id,
                 resources=self.resources,
                 enable_networking=self.spec.network.internet_access,
                 confidential_policy=int(self.spec.tee.policy, 0),
@@ -465,8 +465,8 @@ class VmExecution:
             return vm
         assert isinstance(self.resources, AlephQemuResources)
         self.vm = vm = AlephQemuInstance(
-            vm_id=vm_id,
-            vm_hash=self.vm_hash,
+            vm_index=vm_index,
+            vm_hash=self.vm_id,
             resources=self.resources,
             enable_networking=self.spec.network.internet_access,
             hardware_resources=hardware_resources,
@@ -639,7 +639,7 @@ class VmExecution:
         # Prevent concurrent calls to stop() using a Lock
         async with self.stop_pending_lock:
             if self.times.stopped_at is not None:
-                logger.debug(f"VM={self.vm.vm_id} already stopped")
+                logger.debug(f"VM={self.vm.vm_index} already stopped")
                 return
             if self.persistent and self.systemd_manager:
                 self.systemd_manager.stop_and_disable(self.controller_service)
@@ -655,7 +655,7 @@ class VmExecution:
             self.times.stopped_at = datetime.now(tz=timezone.utc)
 
             if self.vm.support_snapshot and self.snapshot_manager:
-                await self.snapshot_manager.stop_for(self.vm_hash)
+                await self.snapshot_manager.stop_for(self.vm_id)
             self.stop_event.set()
             logger.info("%s stopped", self)
 
@@ -695,6 +695,6 @@ class VmExecution:
         await delete_record(execution_uuid=str(self.uuid))
         # Non-persistent VMs won't restart, so clean up their port mappings
         if not self.persistent:
-            await delete_port_mappings(self.vm_hash)
+            await delete_port_mappings(self.vm_id)
         if settings.EXECUTION_LOG_ENABLED:
             await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
