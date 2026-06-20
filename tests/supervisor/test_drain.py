@@ -24,20 +24,13 @@ def _make_execution(persistent: bool = False) -> VmExecution:
     return VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
 
 
-class _DrainablePool:
-    """Minimal pool that supports drain state for middleware tests.
-
-    Uses only the attributes the drain middleware inspects, avoiding
-    the full VmPool constructor (which needs network/systemd).
-    """
-
-    def __init__(self, draining: bool = False):
-        self._draining = draining
-        self.executions: dict = {}
-
-    @property
-    def is_draining(self) -> bool:
-        return self._draining
+def _draining_app(draining: bool = True):
+    """A webapp with no in-process pool (split mode) and the agent-owned drain
+    flag set. The middleware reads app["draining"], not the pool, so this proves
+    drain works without an embedded pool."""
+    app = setup_webapp(pool=None)
+    app["draining"] = draining
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -50,8 +43,7 @@ class TestDrainMiddleware:
 
     @pytest.mark.asyncio
     async def test_vm_path_blocked_while_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=True))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=True))
 
         response = await client.get("/vm/abc123/some/path")
         assert response.status == 503
@@ -60,8 +52,7 @@ class TestDrainMiddleware:
 
     @pytest.mark.asyncio
     async def test_vm_path_allowed_when_not_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=False))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=False))
 
         response = await client.get("/vm/abc123/")
         # Will fail downstream (no real VM) but must NOT be 503
@@ -69,15 +60,14 @@ class TestDrainMiddleware:
 
     @pytest.mark.asyncio
     async def test_status_allowed_while_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=True))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=True))
 
         response = await client.get("/status/config")
         assert response.status == 200
 
     @pytest.mark.asyncio
     async def test_about_allowed_while_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=True))
+        app = _draining_app(draining=True)
         app["secret_token"] = "test-token"
         client = await aiohttp_client(app)
 
@@ -86,8 +76,7 @@ class TestDrainMiddleware:
 
     @pytest.mark.asyncio
     async def test_control_allowed_while_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=True))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=True))
 
         response = await client.get("/control/nonexistent")
         # Unknown path → 404, but NOT 503
@@ -95,8 +84,7 @@ class TestDrainMiddleware:
 
     @pytest.mark.asyncio
     async def test_hostname_routing_blocked_while_draining(self, aiohttp_client):
-        app = setup_webapp(pool=_DrainablePool(draining=True))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=True))
 
         with patch.object(settings, "DOMAIN_NAME", "supervisor.local"):
             response = await client.get("/", headers={"Host": "somevmhash.example.com"})
@@ -105,12 +93,41 @@ class TestDrainMiddleware:
     @pytest.mark.asyncio
     async def test_root_on_supervisor_domain_allowed(self, aiohttp_client):
         """Root path on the supervisor's own domain is NOT a VM request."""
-        app = setup_webapp(pool=_DrainablePool(draining=True))
-        client = await aiohttp_client(app)
+        client = await aiohttp_client(_draining_app(draining=True))
 
         with patch.object(settings, "DOMAIN_NAME", "127.0.0.1"):
             response = await client.get("/")
             assert response.status != 503
+
+
+# ---------------------------------------------------------------------------
+# drain_in_flight_requests — the on_shutdown hook, both modes
+# ---------------------------------------------------------------------------
+
+
+class TestDrainShutdownHook:
+    @pytest.mark.asyncio
+    async def test_split_mode_flips_flag_without_pool(self):
+        """Split mode (no embedded pool): the hook flips the flag and returns;
+        the daemon owns the pool and keeps VMs running across its own restart."""
+        from aleph.vm.agent.supervisor import drain_in_flight_requests
+
+        app = {"_engine_pool": None, "draining": False}
+        await drain_in_flight_requests(app)
+        assert app["draining"] is True
+
+    @pytest.mark.asyncio
+    async def test_in_process_flips_flag_and_drains_pool(self):
+        """In-process: the hook flips the flag AND drains the embedded pool."""
+        from unittest.mock import AsyncMock
+
+        from aleph.vm.agent.supervisor import drain_in_flight_requests
+
+        pool = AsyncMock()
+        app = {"_engine_pool": pool, "draining": False}
+        await drain_in_flight_requests(app)
+        assert app["draining"] is True
+        pool.drain.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
