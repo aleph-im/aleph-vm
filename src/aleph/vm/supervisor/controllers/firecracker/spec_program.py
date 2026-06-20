@@ -90,7 +90,7 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
 
     def __init__(
         self,
-        vm_id: int,
+        vm_index: int,
         vm_hash: ItemHash,
         spec: CreateVmSpec,
         resources: SpecProgramResources,
@@ -98,7 +98,7 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
         prepare_jailer: bool = True,
     ):
         super().__init__(
-            vm_id=vm_id,
+            vm_index=vm_index,
             vm_hash=vm_hash,
             resources=resources,  # type: ignore[arg-type]
             enable_networking=spec.network.internet_access,
@@ -115,7 +115,7 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
             self.fvm.init_timeout = float(spec.guest_channel.ready_timeout_secs)
 
     async def setup(self) -> None:
-        logger.debug("Setup started for spec program VM=%s", self.vm_id)
+        logger.debug("Setup started for spec program VM=%s", self.vm_index)
         await setfacl()
 
         extra_disks = self.resources.extra_disks

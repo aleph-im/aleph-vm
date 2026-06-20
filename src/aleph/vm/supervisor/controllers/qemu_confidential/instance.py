@@ -47,7 +47,7 @@ class AlephQemuConfidentialResources(AlephQemuResources):
 
 
 class AlephQemuConfidentialInstance(AlephQemuInstance):
-    vm_id: int
+    vm_index: int
     vm_hash: ItemHash
     resources: AlephQemuConfidentialResources
     enable_console: bool
@@ -63,14 +63,14 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     confidential_policy: int
 
     def __repr__(self):
-        return f"<AlephQemuInstance {self.vm_id}>"
+        return f"<AlephQemuInstance {self.vm_index}>"
 
     def __str__(self):
-        return f"vm-{self.vm_id}"
+        return f"vm-{self.vm_index}"
 
     def __init__(
         self,
-        vm_id: int,
+        vm_index: int,
         vm_hash: ItemHash,
         resources: AlephQemuConfidentialResources,
         confidential_policy: int,
@@ -78,7 +78,7 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
         hardware_resources: HardwareResources = HardwareResources(),
         tap_interface: TapInterface | None = None,
     ):
-        super().__init__(vm_id, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
+        super().__init__(vm_index, vm_hash, resources, enable_networking, hardware_resources, tap_interface)
         self.confidential_policy = confidential_policy
 
     async def setup(self):

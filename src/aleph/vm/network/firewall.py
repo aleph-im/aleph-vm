@@ -581,7 +581,7 @@ def add_forward_chain(chain_name: str, family: str = "ip") -> dict:
     )
 
 
-def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
+def add_masquerading_rule(vm_index: int, interface: TapInterface) -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic to be masqueraded (NAT)
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("postrouting")
@@ -591,7 +591,7 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
                 "rule": {
                     "family": "ip",
                     "table": table,
-                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_index}",
                     "expr": [
                         {
                             "match": {
@@ -615,7 +615,7 @@ def add_masquerading_rule(vm_id: int, interface: TapInterface) -> dict:
     )
 
 
-def add_forward_rule_to_external(vm_id: int, interface: TapInterface, family: str = "ip") -> dict:
+def add_forward_rule_to_external(vm_index: int, interface: TapInterface, family: str = "ip") -> dict:
     """Creates a rule for the VM with the specified id to allow outbound traffic
     Returns the exit code from executing the nftables commands"""
     table = get_table_for_hook("forward", family=family)
@@ -625,7 +625,7 @@ def add_forward_rule_to_external(vm_id: int, interface: TapInterface, family: st
                 "rule": {
                     "family": family,
                     "table": table,
-                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}",
                     "expr": [
                         {
                             "match": {
@@ -681,12 +681,12 @@ def add_or_get_prerouting_chain() -> dict:
 
 
 def add_port_redirect_rule(
-    vm_id, interface: TapInterface, host_port: int, vm_port: int, protocol: Literal["tcp"] | Literal["udp"] = "tcp"
+    vm_index, interface: TapInterface, host_port: int, vm_port: int, protocol: Literal["tcp"] | Literal["udp"] = "tcp"
 ) -> dict:
     """Creates a rule to redirect traffic from a host port to a VM port.
 
     Args:
-        vm_id: The ID of the VM
+        vm_index: The ID of the VM
         interface: The TapInterface instance for the VM
         host_port: The port number on the host to listen on
         vm_port: The port number to forward to on the VM
@@ -732,7 +732,7 @@ def add_port_redirect_rule(
                 "rule": {
                     "family": "ip",
                     "table": forward_table,
-                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                    "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}",
                     "expr": [
                         {
                             "match": {
@@ -776,9 +776,9 @@ def remove_port_redirect_rule(interface: TapInterface, host_port: int, vm_port: 
     prerouting_table = get_table_for_hook("prerouting")
     forward_table = get_table_for_hook("forward")
 
-    # Extract vm_id from device_name (e.g. "vmtap4" -> 4)
-    vm_id = interface.device_name.removeprefix("vmtap")
-    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}"
+    # Extract vm_index from device_name (e.g. "vmtap4" -> 4)
+    vm_index = interface.device_name.removeprefix("vmtap")
+    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}"
 
     commands = []
 
@@ -963,14 +963,14 @@ def build_forward_chain_entities(table: str, chain_name: str, family: str = "ip"
     ]
 
 
-def build_masquerading_rule_entities(table: str, vm_id: int, interface: TapInterface) -> list[dict]:
+def build_masquerading_rule_entities(table: str, vm_index: int, interface: TapInterface) -> list[dict]:
     """Return entities for a masquerading (NAT) rule."""
     return [
         {
             "rule": {
                 "family": "ip",
                 "table": table,
-                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}",
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_index}",
                 "expr": [
                     {
                         "match": {
@@ -993,14 +993,14 @@ def build_masquerading_rule_entities(table: str, vm_id: int, interface: TapInter
     ]
 
 
-def build_forward_rule_entities(table: str, vm_id: int, interface: TapInterface, family: str = "ip") -> list[dict]:
+def build_forward_rule_entities(table: str, vm_index: int, interface: TapInterface, family: str = "ip") -> list[dict]:
     """Return entities for a forward-to-external rule."""
     return [
         {
             "rule": {
                 "family": family,
                 "table": table,
-                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}",
                 "expr": [
                     {
                         "match": {
@@ -1024,7 +1024,7 @@ def build_forward_rule_entities(table: str, vm_id: int, interface: TapInterface,
 
 
 def build_port_redirect_entities(
-    vm_id: int,
+    vm_index: int,
     interface: TapInterface,
     host_port: int,
     vm_port: int,
@@ -1065,7 +1065,7 @@ def build_port_redirect_entities(
             "rule": {
                 "family": "ip",
                 "table": forward_table,
-                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}",
+                "chain": f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}",
                 "expr": [
                     {
                         "match": {
@@ -1088,7 +1088,7 @@ def build_port_redirect_entities(
     ]
 
 
-def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
+def setup_nftables_for_vm(vm_index: int, interface: TapInterface) -> None:
     """Sets up chains for filter and nat purposes specific to this VM.
 
     Fetches the nftables ruleset once, builds all needed entities,
@@ -1099,28 +1099,28 @@ def setup_nftables_for_vm(vm_id: int, interface: TapInterface) -> None:
     post_table = get_table_for_hook("postrouting", nft_ruleset=nft_ruleset)
     fwd_table = get_table_for_hook("forward", nft_ruleset=nft_ruleset)
 
-    nat_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}"
-    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}"
+    nat_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_index}"
+    filter_chain = f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}"
 
     entities: list[dict] = []
     entities += build_postrouting_chain_entities(post_table, nat_chain)
     entities += build_forward_chain_entities(fwd_table, filter_chain)
-    entities += build_masquerading_rule_entities(post_table, vm_id, interface)
-    entities += build_forward_rule_entities(fwd_table, vm_id, interface)
+    entities += build_masquerading_rule_entities(post_table, vm_index, interface)
+    entities += build_forward_rule_entities(fwd_table, vm_index, interface)
 
     if settings.IPV6_FORWARDING_ENABLED:
         ip6_fwd_table = get_table_for_hook("forward", family="ip6", nft_ruleset=nft_ruleset)
         entities += build_forward_chain_entities(ip6_fwd_table, filter_chain, family="ip6")
-        entities += build_forward_rule_entities(ip6_fwd_table, vm_id, interface, family="ip6")
+        entities += build_forward_rule_entities(ip6_fwd_table, vm_index, interface, family="ip6")
 
     commands = add_entities_if_not_present(nft_ruleset, entities)
     execute_json_nft_commands(commands)
 
 
-def teardown_nftables_for_vm(vm_id: int) -> None:
+def teardown_nftables_for_vm(vm_index: int) -> None:
     """Remove all nftables rules related to the specified VM"""
-    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_id}")
-    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_id}")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-nat-{vm_index}")
+    remove_chain(f"{settings.NFTABLES_CHAIN_PREFIX}-vm-filter-{vm_index}")
 
 
 def get_orphan_vm_chain_ids(active_vm_ids: set[int], nft_ruleset: list[dict] | None = None) -> set[int]:
@@ -1136,11 +1136,11 @@ def get_orphan_vm_chain_ids(active_vm_ids: set[int], nft_ruleset: list[dict] | N
         if len(parts) != 2:
             continue
         try:
-            vm_id = int(parts[1])
+            vm_index = int(parts[1])
         except ValueError:
             continue
-        if vm_id not in active_vm_ids:
-            orphan_ids.add(vm_id)
+        if vm_index not in active_vm_ids:
+            orphan_ids.add(vm_index)
     return orphan_ids
 
 
@@ -1335,7 +1335,7 @@ def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], 
 
     Args:
         vm_configurations: List of dictionaries, each containing:
-            - vm_id: Integer ID of the VM
+            - vm_index: Integer ID of the VM
             - tap_interface: TapInterface object for the VM
             - vm_hash: ItemHash of the VM (for logging)
 
@@ -1347,8 +1347,8 @@ def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], 
 
     Example:
         vms = [
-            {"vm_id": 1, "tap_interface": tap1, "vm_hash": hash1},
-            {"vm_id": 2, "tap_interface": tap2, "vm_hash": hash2},
+            {"vm_index": 1, "tap_interface": tap1, "vm_hash": hash1},
+            {"vm_index": 2, "tap_interface": tap2, "vm_hash": hash2},
         ]
         recreated, failed = recreate_network_for_vms(vms)
     """
@@ -1357,15 +1357,15 @@ def recreate_network_for_vms(vm_configurations: list[dict]) -> tuple[list[str], 
     failed_vms = []
 
     for vm_config in vm_configurations:
-        vm_id = vm_config["vm_id"]
+        vm_index = vm_config["vm_index"]
         tap_interface = vm_config["tap_interface"]
         vm_hash = vm_config["vm_hash"]
 
         try:
             # Recreate the basic VM network chains and rules
-            setup_nftables_for_vm(vm_id, tap_interface)
+            setup_nftables_for_vm(vm_index, tap_interface)
             recreated_vms.append(str(vm_hash))
-            logger.debug(f"Recreated nftables for VM {vm_hash} (vm_id={vm_id})")
+            logger.debug(f"Recreated nftables for VM {vm_hash} (vm_index={vm_index})")
         except Exception as e:
             error_msg = str(e)
             failed_vms.append({"vm_hash": str(vm_hash), "error": error_msg})

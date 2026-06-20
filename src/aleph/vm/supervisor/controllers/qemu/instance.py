@@ -81,7 +81,7 @@ ConfigurationType = TypeVar("ConfigurationType")
 
 
 class AlephQemuInstance(Generic[ConfigurationType], AlephVmControllerInterface):
-    vm_id: int
+    vm_index: int
     vm_hash: ItemHash
     resources: AlephQemuResources
     enable_networking: bool
@@ -94,21 +94,21 @@ class AlephQemuInstance(Generic[ConfigurationType], AlephVmControllerInterface):
     persistent = True
 
     def __repr__(self):
-        return f"<AlephQemuInstance {self.vm_id}>"
+        return f"<AlephQemuInstance {self.vm_index}>"
 
     def __str__(self):
-        return f"vm-{self.vm_id}"
+        return f"vm-{self.vm_index}"
 
     def __init__(
         self,
-        vm_id: int,
+        vm_index: int,
         vm_hash: ItemHash,
         resources: AlephQemuResources,
         enable_networking: bool = False,
         hardware_resources: HardwareResources = HardwareResources(),
         tap_interface: TapInterface | None = None,
     ):
-        self.vm_id = vm_id
+        self.vm_index = vm_index
         self.vm_hash = vm_hash
         self.resources = resources
         self.enable_networking = enable_networking and settings.ALLOW_VM_NETWORKING
@@ -169,7 +169,7 @@ class AlephQemuInstance(Generic[ConfigurationType], AlephVmControllerInterface):
 
     async def teardown(self):
         if self.enable_networking:
-            teardown_nftables_for_vm(self.vm_id)
+            teardown_nftables_for_vm(self.vm_index)
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()

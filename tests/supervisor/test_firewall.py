@@ -952,7 +952,7 @@ def create_mock_execution(mocker, fake_instance_content):
     mock_interface = mocker.MagicMock()
     mock_interface.guest_ip.ip = "172.16.0.2"
     execution.vm = mocker.MagicMock()
-    execution.vm.vm_id = 1
+    execution.vm.vm_index = 1
     execution.vm.tap_interface = mock_interface
 
     return execution

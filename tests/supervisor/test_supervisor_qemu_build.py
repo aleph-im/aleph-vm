@@ -140,7 +140,7 @@ async def test_build_qemu_configuration_happy_path(monkeypatch: pytest.MonkeyPat
     fake_tap = _make_fake_tap()
     tap = cast(TapInterface, fake_tap)
 
-    config = await build_qemu_configuration(spec, vm_id=7, tap_interface=tap)
+    config = await build_qemu_configuration(spec, vm_index=7, tap_interface=tap)
 
     # Top-level config
     assert config.hypervisor is HypervisorType.qemu
@@ -201,7 +201,7 @@ async def test_empty_hostname_falls_back_to_vm_id_truncation(monkeypatch: pytest
     )
 
     spec = replace(_make_spec(), hostname="")
-    await build_qemu_configuration(spec, vm_id=7, tap_interface=None)
+    await build_qemu_configuration(spec, vm_index=7, tap_interface=None)
 
     assert captured["hostname"] == spec.vm_id[:63]
 
@@ -222,7 +222,7 @@ async def test_memory_mib_passed_correctly(monkeypatch: pytest.MonkeyPatch) -> N
     from aleph.vm.network.interfaces import TapInterface
 
     tap = cast(TapInterface, _make_fake_tap())
-    config = await build_qemu_configuration(spec, vm_id=1, tap_interface=tap)
+    config = await build_qemu_configuration(spec, vm_index=1, tap_interface=tap)
 
     assert isinstance(config.vm_configuration, QemuVMConfiguration)
     assert config.vm_configuration.mem_size_mb == MiB(2048)
@@ -245,7 +245,7 @@ async def test_gpu_spec_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
     from aleph.vm.network.interfaces import TapInterface
 
     tap = cast(TapInterface, _make_fake_tap())
-    config = await build_qemu_configuration(spec, vm_id=2, tap_interface=tap)
+    config = await build_qemu_configuration(spec, vm_index=2, tap_interface=tap)
 
     assert isinstance(config.vm_configuration, QemuVMConfiguration)
     assert len(config.vm_configuration.gpus) == 1
@@ -266,7 +266,7 @@ async def test_no_tap_interface(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     spec = _make_spec()
-    config = await build_qemu_configuration(spec, vm_id=3, tap_interface=None)
+    config = await build_qemu_configuration(spec, vm_index=3, tap_interface=None)
 
     assert isinstance(config.vm_configuration, QemuVMConfiguration)
     assert config.vm_configuration.interface_name is None
@@ -283,7 +283,7 @@ async def test_no_rootfs_disk_raises() -> None:
     spec = _make_spec(include_rootfs=False, include_extra_disk=True)
 
     with pytest.raises(InvalidBackendError, match="ROOTFS"):
-        await build_qemu_configuration(spec, vm_id=9, tap_interface=None)
+        await build_qemu_configuration(spec, vm_index=9, tap_interface=None)
 
 
 # ---------------------------------------------------------------------------

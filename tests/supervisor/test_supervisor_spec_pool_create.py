@@ -101,7 +101,7 @@ async def test_create_vm_from_spec_wires_into_pool(monkeypatch):
 
     execution = await pool.create_vm_from_spec(_spec())
 
-    assert pool.executions[execution.vm_hash] is execution
+    assert pool.executions[execution.vm_id] is execution
     assert execution.vm_spec is not None
     assert execution.vm is not None
     build_cfg.assert_awaited_once()
