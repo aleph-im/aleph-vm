@@ -39,7 +39,13 @@ from aleph.vm.conf import settings
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmId, VmInfo, VmStatus
+from aleph.vm.supervisor_interface.types import (
+    Backend,
+    ConfidentialMode,
+    VmId,
+    VmInfo,
+    VmStatus,
+)
 from aleph.vm.utils import create_task_log_exceptions
 
 # Terminal statuses that confirm a message is no longer valid.
@@ -201,7 +207,7 @@ async def watch_for_messages(
                 if key == "port-forwarding":
                     await _handle_port_forwarding_aggregate(message, supervisor, registry)
                 elif key == "domains":
-                    await _handle_domains_aggregate(message, pool, supervisor, registry)
+                    await _handle_domains_aggregate(message, supervisor, registry)
 
 
 async def _handle_port_forwarding_aggregate(
@@ -233,34 +239,34 @@ async def _handle_port_forwarding_aggregate(
             logger.exception("Failed to update port redirects for %s", vm_hash)
 
 
-async def _handle_domains_aggregate(
-    message: AggregateMessage, pool: VmPool, supervisor: Supervisor, registry: AgentVmRegistry
-):
+async def _handle_domains_aggregate(message: AggregateMessage, supervisor: Supervisor, registry: AgentVmRegistry):
     """Update HAProxy domain mapping when a domains aggregate changes.
 
     The aggregate content maps domain names to instance configs:
     {"testd.example.com": {"message_id": "<item_hash>", "type": "instance"}}
 
-    Only trigger if any referenced message_id matches a locally running instance.
+    Only trigger if the address owns an instance present on this node. The owner
+    address comes from the agent registry, not the hypervisor object: spec-built
+    and restored executions carry no message. Enumerating through the registry
+    and ``supervisor.get_vm`` (instead of the in-process pool's executions) keeps
+    this working in split mode, where the daemon owns the pool. This covers both
+    additions (new domain pointing to a local instance) and deletions (domain
+    removed, the map must be rebuilt).
     """
     address = message.content.address
 
-    # Trigger if the address owns any running instance on this node. The owner
-    # address comes from the agent registry, not the hypervisor object —
-    # spec-built and restored executions carry no message.
-    # This covers both additions (new domain pointing to local instance)
-    # and deletions (domain removed — need to clean up the map).
-    if pool is None:
-        # Split mode: the domains/HAProxy path still needs the in-process
-        # pool; deferred.
-        return
-    has_local_instance = any(
-        execution.is_instance
-        and execution.vm
-        and (record := registry.get(execution.vm_id)) is not None
-        and record.message.address == address
-        for execution in pool.executions.values()
-    )
+    has_local_instance = False
+    for vm_hash, record in registry.items():
+        if record.message.address != address:
+            continue
+        try:
+            info = await supervisor.get_vm(VmId(str(vm_hash)))
+        except VmNotFoundError:
+            continue
+        # QEMU is the instance backend (the old execution.is_instance check).
+        if info.backend is Backend.QEMU:
+            has_local_instance = True
+            break
     if not has_local_instance:
         return
 
