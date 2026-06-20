@@ -71,7 +71,7 @@ FULL_SPEC = CreateVmSpec(
     numa_node=1,
     persistent=True,
     ssh_authorized_keys=["ssh-ed25519 AAAA test@host"],
-    owner_address="0xOWNER",
+    owner_id="0xOWNER",
 )
 
 MINIMAL_SPEC = CreateVmSpec(
@@ -273,9 +273,9 @@ def _minimal_spec(**over):
     return CreateVmSpec(**base)
 
 
-def test_create_vm_spec_carries_owner_address():
-    spec = _minimal_spec(owner_address="0xOWNER")
-    assert conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec)).owner_address == "0xOWNER"
+def test_create_vm_spec_carries_owner_id():
+    spec = _minimal_spec(owner_id="0xOWNER")
+    assert conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec)).owner_id == "0xOWNER"
 
 
 def test_create_vm_spec_carries_tee_firmware_path():

@@ -46,7 +46,6 @@ ERROR_TRAILER_KEY = "aleph-supervisor-error-bin"
 STATUS_CODE_BY_ERROR = {
     ErrorCode.VM_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.BACKUP_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
-    ErrorCode.MIGRATION_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.HOST_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.VM_ALREADY_EXISTS: grpc.StatusCode.ALREADY_EXISTS,
     ErrorCode.INSUFFICIENT_RESOURCES: grpc.StatusCode.RESOURCE_EXHAUSTED,
@@ -54,7 +53,6 @@ STATUS_CODE_BY_ERROR = {
     ErrorCode.FILE_TOO_LARGE: grpc.StatusCode.INVALID_ARGUMENT,
     ErrorCode.PORT_UNAVAILABLE: grpc.StatusCode.FAILED_PRECONDITION,
     ErrorCode.TEE_UNAVAILABLE: grpc.StatusCode.FAILED_PRECONDITION,
-    ErrorCode.MIGRATION_IN_PROGRESS: grpc.StatusCode.FAILED_PRECONDITION,
     ErrorCode.RESOURCE_DOWNLOAD_FAILED: grpc.StatusCode.INTERNAL,
     ErrorCode.VM_SETUP_FAILED: grpc.StatusCode.INTERNAL,
     ErrorCode.MICROVM_INIT_FAILED: grpc.StatusCode.INTERNAL,
@@ -113,7 +111,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
 
     # ── Lifecycle ──
     @_translating
-    async def CreateVm(self, request: pb.CreateVmRequest, context) -> pb.VmInfo:
+    async def CreateVm(self, request: pb.VmSpec, context) -> pb.VmInfo:
         spec = conv.create_vm_spec_from_pb(request)
         return conv.vm_info_to_pb(await self._supervisor.create_vm(spec))
 
@@ -122,7 +120,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         return conv.vm_info_to_pb(await self._supervisor.get_vm(VmId(request.vm_id)))
 
     @_translating
-    async def GetVmSpec(self, request: pb.GetVmSpecRequest, context) -> pb.CreateVmRequest:
+    async def GetVmSpec(self, request: pb.GetVmSpecRequest, context) -> pb.VmSpec:
         spec = await self._supervisor.get_vm_spec(VmId(request.vm_id))
         return conv.create_vm_spec_to_pb(spec)
 
