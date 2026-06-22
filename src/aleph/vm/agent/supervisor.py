@@ -214,10 +214,10 @@ def setup_webapp(pool: VmPool | None):
 
     VmPool is None in two cases: tests that won't use it, and **split mode**
     (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set), where the supervisor daemon owns
-    the pool and the agent reaches it over gRPC. In split mode the endpoints
-    that still require the in-process pool (backups, restore, confidential,
-    migration, network recreation, GPU reservation, persistent programs)
-    respond 501.
+    the pool and the agent reaches it over gRPC. Request handlers never touch
+    the pool directly: every VM operation (backups, restore, confidential,
+    migration, network recreation, GPU reservation, persistent programs) goes
+    through the `Supervisor` interface, so it works identically in split mode.
     """
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
