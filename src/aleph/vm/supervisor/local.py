@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import shutil
+import subprocess
 import tarfile
 import time
 from collections.abc import AsyncIterator
@@ -953,9 +954,13 @@ class LocalSupervisor(Supervisor):
                 raise InternalSupervisorError(f"staged restore image {image} does not exist")
 
             # qemu-img rejects anything that is not a valid QCOW2 image with a
-            # non-zero exit code; let it bubble up (the agent maps the client
-            # error to a 400).
-            await verify_qemu_disk(image)
+            # non-zero exit code. That is a client error (a bad upload), so map
+            # it to InvalidBackendError; the agent turns that into a 400. A bare
+            # CalledProcessError would translate to InternalSupervisorError -> 500.
+            try:
+                await verify_qemu_disk(image)
+            except subprocess.CalledProcessError as exc:
+                raise InvalidBackendError(f"Restore image {image.name} is not a valid QCOW2 disk") from exc
             if max_virtual_size_bytes:
                 new_size = await get_qemu_disk_virtual_size(image)
                 if new_size > max_virtual_size_bytes:
