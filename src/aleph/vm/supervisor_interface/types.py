@@ -94,8 +94,6 @@ class ErrorCode(Enum):
     PORT_UNAVAILABLE = "port_unavailable"
     HOST_NOT_FOUND = "host_not_found"
     BACKUP_NOT_FOUND = "backup_not_found"
-    MIGRATION_IN_PROGRESS = "migration_in_progress"
-    MIGRATION_NOT_FOUND = "migration_not_found"
     INTERNAL = "internal"
 
 
@@ -189,11 +187,12 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
-    # The VM owner's Aleph address. The engine uses it to consume this owner's
-    # own GPU reservation (made via the reserve_resources endpoint) inside the
-    # create path, while skipping reservations held by OTHER users. Empty = no
-    # owner-scoped reservation handling (e.g. programs, migration).
-    owner_address: str = ""
+    # Opaque VM-owner id (the supervisor does not interpret it). The engine uses
+    # it to consume this owner's own GPU reservation (made via the
+    # reserve_resources endpoint) inside the create path, while skipping
+    # reservations held by OTHER owners. Empty = no owner-scoped reservation
+    # handling (e.g. programs, migration).
+    owner_id: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.
     hostname: str = ""
@@ -250,7 +249,7 @@ class ReservationRequest:
     A reservation precedes downloads, so this is not a CreateVmSpec (no resolved
     disk paths yet)."""
 
-    user_address: str
+    owner_id: str  # same opaque id as CreateVmSpec.owner_id
     vcpus: int
     memory_mib: int
     disk_mib: int

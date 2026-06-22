@@ -319,11 +319,11 @@ class VmPool:
             # resolved pci_host so build_qemu_configuration / from_spec see it.
             # The engine
             # owns reservation handling end to end: it consumes this OWNER's own
-            # reservation (spec.owner_address, made via reserve_resources) and
+            # reservation (spec.owner_id, made via reserve_resources) and
             # skips reservations still held by OTHER users.
             resolved_host_gpus: list[HostGPU] = []
             if spec.gpus:
-                resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_address)
+                resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_id)
                 spec = replace(
                     spec,
                     gpus=[
@@ -966,7 +966,7 @@ class VmPool:
         Matches
         each request by device_id against get_available_gpus() (cards not used by
         any current execution). The engine owns reservation handling end to end:
-        a reservation held by THIS owner (``owner`` == spec.owner_address, made
+        a reservation held by THIS owner (``owner`` == spec.owner_id, made
         via the reserve_resources endpoint) is consumed - the card is taken and
         its reservation dropped - while a reservation held by ANOTHER user blocks
         the card. get_valid_reservation drops expired reservations as a side

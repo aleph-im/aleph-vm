@@ -127,7 +127,7 @@ def test_protocol_enum_typed():
 def test_create_vm_request_shape():
     from aleph.vm.supervisor._pb import supervisor_pb2
 
-    fields = {f.name for f in supervisor_pb2.CreateVmRequest.DESCRIPTOR.fields}
+    fields = {f.name for f in supervisor_pb2.VmSpec.DESCRIPTOR.fields}
     expected = {
         "vm_id",
         "backend",
@@ -273,7 +273,6 @@ def test_error_code_enum_covers_design_doc_cases():
         "ERROR_CODE_TEE_UNAVAILABLE",
         "ERROR_CODE_PORT_UNAVAILABLE",
         "ERROR_CODE_BACKUP_NOT_FOUND",
-        "ERROR_CODE_MIGRATION_IN_PROGRESS",
         "ERROR_CODE_HOST_NOT_FOUND",
         "ERROR_CODE_INTERNAL",
     }

@@ -159,7 +159,7 @@ async def build_create_vm_spec(
         # The engine consumes this owner's own GPU reservation and skips other
         # users' valid reservations during create_vm_from_spec. This replaces the
         # agent-side release_user_reservations call.
-        owner_address=message.address,
+        owner_id=message.address,
         # Aleph's hostname convention (base32 of the item hash) is agent
         # vocabulary; the supervisor applies whatever name it is given.
         hostname=get_hostname_from_hash(vm_hash),
@@ -244,7 +244,7 @@ async def build_program_create_vm_spec(
     return spec, resources
 
 
-def build_reservation_request(content: ExecutableContent, user_address: str) -> ReservationRequest:
+def build_reservation_request(content: ExecutableContent, owner_id: str) -> ReservationRequest:
     """Extract the resources an Aleph message requests into a message-free DTO.
 
     Keeps message vocabulary on the agent side: the supervisor reserves against
@@ -269,7 +269,7 @@ def build_reservation_request(content: ExecutableContent, user_address: str) -> 
         for gpu in requested
     ]
     return ReservationRequest(
-        user_address=user_address,
+        owner_id=owner_id,
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
         disk_mib=disk_mib,

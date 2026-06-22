@@ -215,9 +215,7 @@ class _ErrorCodeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._Enum
     """Networking"""
     ERROR_CODE_HOST_NOT_FOUND: _ErrorCode.ValueType  # 11
     ERROR_CODE_BACKUP_NOT_FOUND: _ErrorCode.ValueType  # 12
-    """Backup / migration"""
-    ERROR_CODE_MIGRATION_IN_PROGRESS: _ErrorCode.ValueType  # 13
-    ERROR_CODE_MIGRATION_NOT_FOUND: _ErrorCode.ValueType  # 14
+    """Backup"""
     ERROR_CODE_INTERNAL: _ErrorCode.ValueType  # 99
     """Catch-all"""
 
@@ -249,9 +247,7 @@ ERROR_CODE_PORT_UNAVAILABLE: ErrorCode.ValueType  # 10
 """Networking"""
 ERROR_CODE_HOST_NOT_FOUND: ErrorCode.ValueType  # 11
 ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
-"""Backup / migration"""
-ERROR_CODE_MIGRATION_IN_PROGRESS: ErrorCode.ValueType  # 13
-ERROR_CODE_MIGRATION_NOT_FOUND: ErrorCode.ValueType  # 14
+"""Backup"""
 ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
 """Catch-all"""
 global___ErrorCode = ErrorCode
@@ -439,7 +435,13 @@ class GpuDevice(google.protobuf.message.Message):
 global___GpuDevice = GpuDevice
 
 @typing.final
-class CreateVmRequest(google.protobuf.message.Message):
+class VmSpec(google.protobuf.message.Message):
+    """The full definition of a VM the supervisor runs. Sent to CreateVm and
+    returned verbatim by GetVmSpec (so a restarted client can rebuild its
+    records). Named VmSpec, not CreateVmRequest, because it IS the spec, not a
+    one-shot RPC payload.
+    """
+
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
@@ -457,7 +459,7 @@ class CreateVmRequest(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
-    OWNER_ADDRESS_FIELD_NUMBER: builtins.int
+    OWNER_ID_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -475,8 +477,8 @@ class CreateVmRequest(google.protobuf.message.Message):
     """Guest hostname for provisioning (cloud-init). Naming is the client's
     business; empty falls back to a mechanical derivation from vm_id.
     """
-    owner_address: builtins.str
-    """VM owner's Aleph address; engine consumes this owner's GPU reservation"""
+    owner_id: builtins.str
+    """opaque VM-owner id (the supervisor does not interpret it); engine consumes this owner's GPU reservation"""
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -519,16 +521,16 @@ class CreateVmRequest(google.protobuf.message.Message):
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
         hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
-        owner_address: builtins.str = ...,
+        owner_id: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "owner_address", b"owner_address", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "owner_id", b"owner_id", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_numa_node", b"_numa_node"]) -> typing.Literal["numa_node"] | None: ...
 
-global___CreateVmRequest = CreateVmRequest
+global___VmSpec = VmSpec
 
 @typing.final
 class GuestChannel(google.protobuf.message.Message):
@@ -766,7 +768,7 @@ class VmInfo(google.protobuf.message.Message):
     """precise TEE mode; NONE for non-confidential VMs"""
     guest_channel_path: builtins.str
     """Host UDS endpoint of the guest control channel (see
-    CreateVmRequest.guest_channel). The client dials it for guest-level
+    VmSpec.guest_channel). The client dials it for guest-level
     protocols and binds `<path>_<port>` listeners for guest-initiated
     connections. Empty when the VM was created without a channel.
     """
@@ -1695,17 +1697,23 @@ class ReserveResourcesRequest(google.protobuf.message.Message):
 
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
-    USER_ADDRESS_FIELD_NUMBER: builtins.int
+    OWNER_ID_FIELD_NUMBER: builtins.int
     VCPUS_FIELD_NUMBER: builtins.int
     MEMORY_MIB_FIELD_NUMBER: builtins.int
     DISK_MIB_FIELD_NUMBER: builtins.int
     IS_INSTANCE_FIELD_NUMBER: builtins.int
     GPUS_FIELD_NUMBER: builtins.int
-    user_address: builtins.str
+    owner_id: builtins.str
+    """same opaque id as VmSpec.owner_id; the later CreateVm consumes THIS owner's reservation"""
     vcpus: builtins.int
     memory_mib: builtins.int
     disk_mib: builtins.int
     is_instance: builtins.bool
+    """Instance vs program memory bucket. Unlike VmInfo (where is_instance is
+    derivable client-side and was dropped), a reservation precedes the VM and
+    carries no Backend, so the bucket cannot be derived here: the client must
+    state it. The engine accounts instance and program memory separately.
+    """
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]:
         """request: matched by device_id"""
@@ -1713,14 +1721,14 @@ class ReserveResourcesRequest(google.protobuf.message.Message):
     def __init__(
         self,
         *,
-        user_address: builtins.str = ...,
+        owner_id: builtins.str = ...,
         vcpus: builtins.int = ...,
         memory_mib: builtins.int = ...,
         disk_mib: builtins.int = ...,
         is_instance: builtins.bool = ...,
         gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["disk_mib", b"disk_mib", "gpus", b"gpus", "is_instance", b"is_instance", "memory_mib", b"memory_mib", "user_address", b"user_address", "vcpus", b"vcpus"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["disk_mib", b"disk_mib", "gpus", b"gpus", "is_instance", b"is_instance", "memory_mib", b"memory_mib", "owner_id", b"owner_id", "vcpus", b"vcpus"]) -> None: ...
 
 global___ReserveResourcesRequest = ReserveResourcesRequest
 
