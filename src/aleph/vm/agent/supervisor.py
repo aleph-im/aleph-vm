@@ -95,14 +95,17 @@ logger = logging.getLogger(__name__)
 
 @web.middleware
 async def drain_middleware(request, handler) -> web.Response:
-    """Reject new VM execution requests while the pool is draining.
+    """Reject new VM execution requests while the agent is draining.
 
     Only blocks the paths that trigger on-demand VM creation
     (/vm/* and hostname-based routing). Status, control, and about
     endpoints remain accessible for monitoring and operations.
+
+    The draining flag is agent-owned (``app["draining"]``), so it works in split
+    mode where the in-process pool is absent: the agent fronts every request
+    regardless of which process owns the VMs.
     """
-    pool: VmPool | None = request.app.get("_engine_pool")
-    if pool and getattr(pool, "is_draining", False):
+    if request.app.get("draining"):
         path = request.path
         is_vm_request = path.startswith("/vm/") or (
             not path.startswith(("/about/", "/control/", "/status/", "/static/", "/debug/"))
@@ -223,6 +226,9 @@ def setup_webapp(pool: VmPool | None):
     # stop-all-on-shutdown, the migration reaper) still need the embedded pool;
     # they read this private key, which is None in split mode.
     app["_engine_pool"] = pool
+    # Agent-owned drain flag: drain_middleware rejects new VM requests when set.
+    # Works in both modes (no pool needed); flipped by drain_in_flight_requests.
+    app["draining"] = False
     app["supervisor"] = build_supervisor(settings, pool)
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
@@ -347,9 +353,17 @@ def setup_webapp(pool: VmPool | None):
 
 
 async def drain_in_flight_requests(app: web.Application):
-    """Drain in-flight requests before stopping VMs."""
+    """Stop accepting new VM requests, then wait for in-flight ones.
+
+    Setting the agent-owned draining flag makes drain_middleware reject new VM
+    requests in both modes. In-process, also drain the embedded pool (which waits
+    for in-flight ephemeral runs). In split mode the daemon owns the pool and
+    keeps VMs running across its own restart, so the agent only flips the flag and
+    lets aiohttp finish its in-flight handlers.
+    """
+    app["draining"] = True
     pool: VmPool | None = app.get("_engine_pool")
-    if pool:
+    if pool is not None:
         await pool.drain()
 
 
