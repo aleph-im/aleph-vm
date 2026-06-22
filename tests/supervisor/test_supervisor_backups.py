@@ -4,6 +4,7 @@ machinery, with the qemu-img calls stubbed out."""
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +22,13 @@ from aleph.vm.supervisor_interface.errors import (
     NotImplementedSupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor_interface.types import BackupId, BackupStatus, VmId, VmStatus
+from aleph.vm.supervisor_interface.types import (
+    BackupId,
+    BackupStatus,
+    ErrorCode,
+    VmId,
+    VmStatus,
+)
 
 VM_ID = VmId("itemhash123")
 
@@ -445,6 +452,30 @@ async def test_restore_from_image_rejects_oversized_disk(backup_dir, tmp_path, m
     with pytest.raises(InvalidBackendError):
         await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
 
+    pool.stop_vm.assert_not_awaited()
+    assert rootfs.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_restore_from_image_rejects_invalid_qcow2(backup_dir, tmp_path, monkeypatch):
+    """A non-QCOW2 upload makes qemu-img exit non-zero (CalledProcessError).
+    That must surface as InvalidBackendError (a client error -> agent 400),
+    not InternalSupervisorError (-> 500). Regression test for aleph-vm#948."""
+    sup, pool, execution = _restorable_supervisor(backup_dir, tmp_path, monkeypatch)
+    rootfs = Path(execution.vm.resources.rootfs_path)
+    original = rootfs.read_bytes()
+    staged = tmp_path / "staged-upload.qcow2"
+    staged.write_bytes(b"not-a-qcow2-image")
+
+    async def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["qemu-img", "check"])
+
+    monkeypatch.setattr("aleph.vm.supervisor.local.verify_qemu_disk", boom)
+
+    with pytest.raises(InvalidBackendError) as excinfo:
+        await sup.restore_from_image(VM_ID, staged, max_virtual_size_bytes=100)
+
+    assert excinfo.value.code is ErrorCode.INVALID_BACKEND
     pool.stop_vm.assert_not_awaited()
     assert rootfs.read_bytes() == original
 
