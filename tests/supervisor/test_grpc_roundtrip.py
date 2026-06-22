@@ -170,7 +170,7 @@ async def test_reserve_resources_roundtrip(grpc_pair):
     expiry = datetime(2030, 1, 1, tzinfo=timezone.utc)
     fake.reserve_resources.return_value = expiry
     req = ReservationRequest(
-        user_address="0xUSER",
+        owner_id="0xUSER",
         vcpus=2,
         memory_mib=2048,
         disk_mib=10,

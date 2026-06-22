@@ -145,8 +145,6 @@ ERROR_CODE_TO_PB = {
     ErrorCode.PORT_UNAVAILABLE: pb.ERROR_CODE_PORT_UNAVAILABLE,
     ErrorCode.HOST_NOT_FOUND: pb.ERROR_CODE_HOST_NOT_FOUND,
     ErrorCode.BACKUP_NOT_FOUND: pb.ERROR_CODE_BACKUP_NOT_FOUND,
-    ErrorCode.MIGRATION_IN_PROGRESS: pb.ERROR_CODE_MIGRATION_IN_PROGRESS,
-    ErrorCode.MIGRATION_NOT_FOUND: pb.ERROR_CODE_MIGRATION_NOT_FOUND,
     ErrorCode.INTERNAL: pb.ERROR_CODE_INTERNAL,
 }
 ERROR_CODE_FROM_PB = {v: k for k, v in ERROR_CODE_TO_PB.items()}
@@ -185,8 +183,8 @@ def disk_spec_from_pb(msg: pb.DiskConfig) -> DiskSpec:
     )
 
 
-def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
-    request = pb.CreateVmRequest(
+def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.VmSpec:
+    request = pb.VmSpec(
         vm_id=str(spec.vm_id),
         backend=BACKEND_TO_PB[spec.backend],
         kernel_path=path_to_wire(spec.kernel_path),
@@ -211,7 +209,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
         hostname=spec.hostname,
-        owner_address=spec.owner_address,
+        owner_id=spec.owner_id,
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(
@@ -234,7 +232,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.CreateVmRequest:
     return request
 
 
-def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
+def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
     tee: TeeConfig | None = None
     if msg.HasField("tee"):
         tee = TeeConfig(
@@ -270,7 +268,7 @@ def create_vm_spec_from_pb(msg: pb.CreateVmRequest) -> CreateVmSpec:
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
         hostname=msg.hostname,
-        owner_address=msg.owner_address,
+        owner_id=msg.owner_id,
         guest_channel=(
             GuestChannelSpec(
                 ready_port=msg.guest_channel.ready_port,
@@ -302,7 +300,7 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
 
 def reservation_request_to_pb(req: ReservationRequest) -> pb.ReserveResourcesRequest:
     return pb.ReserveResourcesRequest(
-        user_address=req.user_address,
+        owner_id=req.owner_id,
         vcpus=req.vcpus,
         memory_mib=req.memory_mib,
         disk_mib=req.disk_mib,
@@ -321,7 +319,7 @@ def reservation_request_to_pb(req: ReservationRequest) -> pb.ReserveResourcesReq
 
 def reservation_request_from_pb(msg: pb.ReserveResourcesRequest) -> ReservationRequest:
     return ReservationRequest(
-        user_address=msg.user_address,
+        owner_id=msg.owner_id,
         vcpus=msg.vcpus,
         memory_mib=msg.memory_mib,
         disk_mib=msg.disk_mib,

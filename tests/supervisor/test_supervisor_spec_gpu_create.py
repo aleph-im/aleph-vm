@@ -51,7 +51,7 @@ def _gpu_request(device_id: str = _DEVICE_ID) -> GpuSpec:
     return GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=device_id, model="")
 
 
-def _spec(gpus: list[GpuSpec], *, owner_address: str = "") -> CreateVmSpec:
+def _spec(gpus: list[GpuSpec], *, owner_id: str = "") -> CreateVmSpec:
     return CreateVmSpec(
         vm_id=VmId(_HASH),
         backend=Backend.QEMU,
@@ -72,7 +72,7 @@ def _spec(gpus: list[GpuSpec], *, owner_address: str = "") -> CreateVmSpec:
         gpus=gpus,
         numa_node=None,
         persistent=True,
-        owner_address=owner_address,
+        owner_id=owner_id,
     )
 
 
@@ -166,7 +166,7 @@ async def test_create_vm_from_spec_skips_gpu_reserved_by_other_user(monkeypatch)
     )
     _patch_boot(monkeypatch)
 
-    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_address="0xowner"))
+    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_id="0xowner"))
 
     # Skipped the reserved one, took the free one.
     assert execution.gpus[0].pci_host == "0000:02:00.0"
@@ -176,7 +176,7 @@ async def test_create_vm_from_spec_skips_gpu_reserved_by_other_user(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_create_vm_from_spec_consumes_owner_reservation(monkeypatch):
-    """A GPU reserved by THIS owner (spec.owner_address) is consumed by the
+    """A GPU reserved by THIS owner (spec.owner_id) is consumed by the
     engine: the card is taken even though it carries a valid reservation, and
     that reservation is dropped. This replaces the agent-side
     release_user_reservations call."""
@@ -189,7 +189,7 @@ async def test_create_vm_from_spec_consumes_owner_reservation(monkeypatch):
     )
     _patch_boot(monkeypatch)
 
-    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_address="0xowner"))
+    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_id="0xowner"))
 
     # The owner's own reservation did not block the create.
     assert execution.gpus[0].pci_host == "0000:01:00.0"
@@ -209,7 +209,7 @@ async def test_create_vm_from_spec_owner_reservation_does_not_unblock_other(monk
     pool.reservations[other_gpu] = Reservation(user="0xother", resource=other_gpu, expiration=now)
     _patch_boot(monkeypatch)
 
-    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_address="0xowner"))
+    execution = await pool.create_vm_from_spec(_spec([_gpu_request()], owner_id="0xowner"))
 
     # Took the owner's card (reservation consumed), skipped the other user's.
     assert execution.gpus[0].pci_host == "0000:01:00.0"

@@ -30,12 +30,12 @@ service Supervisor {
   // Idempotent on vm_id: re-sending the same spec for a live VM returns its
   // current VmInfo (safe retry after UNAVAILABLE / DEADLINE_EXCEEDED); a
   // different spec for a live vm_id fails ALREADY_EXISTS.
-  rpc CreateVm(CreateVmRequest) returns (VmInfo);
+  rpc CreateVm(VmSpec) returns (VmInfo);
   rpc GetVm(GetVmRequest) returns (VmInfo);
   // The spec a live VM was created from, as the supervisor holds it. Lets
   // the client rebuild its own records after a restart. UNIMPLEMENTED for
   // VMs created outside the spec path (legacy in-process executions).
-  rpc GetVmSpec(GetVmSpecRequest) returns (CreateVmRequest);
+  rpc GetVmSpec(GetVmSpecRequest) returns (VmSpec);
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
   rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse);
   // Stop a VM without releasing its definition: it stays listed (STOPPED)
@@ -185,7 +185,11 @@ enum VmStatus {
   VM_STATUS_FAILED = 6;
 }
 
-message CreateVmRequest {
+// The full definition of a VM the supervisor runs. Sent to CreateVm and
+// returned verbatim by GetVmSpec (so a restarted client can rebuild its
+// records). Named VmSpec, not CreateVmRequest, because it IS the spec, not a
+// one-shot RPC payload.
+message VmSpec {
   string vm_id = 1;                  // agent-issued id, opaque to supervisor
   Backend backend = 2;
   string kernel_path = 3;            // empty for disk-boot
@@ -209,7 +213,7 @@ message CreateVmRequest {
   // signal. What is spoken over the channel is the client's business, opaque
   // to the supervisor.
   optional GuestChannel guest_channel = 14;
-  string owner_address = 16;         // VM owner's Aleph address; engine consumes this owner's GPU reservation
+  string owner_id = 16;              // opaque VM-owner id (the supervisor does not interpret it); engine consumes this owner's GPU reservation
 }
 
 message GuestChannel {
@@ -322,7 +326,7 @@ message VmInfo {
   repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
 
   // Host UDS endpoint of the guest control channel (see
-  // CreateVmRequest.guest_channel). The client dials it for guest-level
+  // VmSpec.guest_channel). The client dials it for guest-level
   // protocols and binds `<path>_<port>` listeners for guest-initiated
   // connections. Empty when the VM was created without a channel.
   string guest_channel_path = 21;
@@ -553,10 +557,14 @@ message RecreateNetworkResponse {
 // ── Reservation ──────────────────────────────────────────────────────────
 
 message ReserveResourcesRequest {
-  string user_address = 1;
+  string owner_id = 1;               // same opaque id as VmSpec.owner_id; the later CreateVm consumes THIS owner's reservation
   uint32 vcpus = 2;
   uint64 memory_mib = 3;
   uint64 disk_mib = 4;
+  // Instance vs program memory bucket. Unlike VmInfo (where is_instance is
+  // derivable client-side and was dropped), a reservation precedes the VM and
+  // carries no Backend, so the bucket cannot be derived here: the client must
+  // state it. The engine accounts instance and program memory separately.
   bool is_instance = 5;
   repeated GpuConfig gpus = 6;        // request: matched by device_id
 }
@@ -595,10 +603,8 @@ enum ErrorCode {
   ERROR_CODE_PORT_UNAVAILABLE = 10;
   ERROR_CODE_HOST_NOT_FOUND = 11;
 
-  // Backup / migration
+  // Backup
   ERROR_CODE_BACKUP_NOT_FOUND = 12;
-  ERROR_CODE_MIGRATION_IN_PROGRESS = 13;
-  ERROR_CODE_MIGRATION_NOT_FOUND = 14;
 
   // Catch-all
   ERROR_CODE_INTERNAL = 99;

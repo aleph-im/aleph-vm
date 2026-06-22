@@ -1155,4 +1155,4 @@ class LocalSupervisor(Supervisor):
                 disk_mib=request.disk_mib,
                 is_instance=request.is_instance,
             )
-            return await self.pool.reserve_gpus(request.gpus, request.user_address)
+            return await self.pool.reserve_gpus(request.gpus, request.owner_id)
