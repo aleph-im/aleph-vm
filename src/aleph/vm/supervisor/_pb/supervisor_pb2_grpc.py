@@ -46,7 +46,7 @@ class SupervisorStub(object):
                 _registered_method=True)
         self.CreateVm = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/CreateVm',
-                request_serializer=supervisor__pb2.CreateVmRequest.SerializeToString,
+                request_serializer=supervisor__pb2.VmSpec.SerializeToString,
                 response_deserializer=supervisor__pb2.VmInfo.FromString,
                 _registered_method=True)
         self.GetVm = channel.unary_unary(
@@ -57,7 +57,7 @@ class SupervisorStub(object):
         self.GetVmSpec = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/GetVmSpec',
                 request_serializer=supervisor__pb2.GetVmSpecRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.CreateVmRequest.FromString,
+                response_deserializer=supervisor__pb2.VmSpec.FromString,
                 _registered_method=True)
         self.ListVms = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/ListVms',
@@ -408,7 +408,7 @@ def add_SupervisorServicer_to_server(servicer, server):
             ),
             'CreateVm': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateVm,
-                    request_deserializer=supervisor__pb2.CreateVmRequest.FromString,
+                    request_deserializer=supervisor__pb2.VmSpec.FromString,
                     response_serializer=supervisor__pb2.VmInfo.SerializeToString,
             ),
             'GetVm': grpc.unary_unary_rpc_method_handler(
@@ -419,7 +419,7 @@ def add_SupervisorServicer_to_server(servicer, server):
             'GetVmSpec': grpc.unary_unary_rpc_method_handler(
                     servicer.GetVmSpec,
                     request_deserializer=supervisor__pb2.GetVmSpecRequest.FromString,
-                    response_serializer=supervisor__pb2.CreateVmRequest.SerializeToString,
+                    response_serializer=supervisor__pb2.VmSpec.SerializeToString,
             ),
             'ListVms': grpc.unary_unary_rpc_method_handler(
                     servicer.ListVms,
@@ -626,7 +626,7 @@ class Supervisor(object):
             request,
             target,
             '/aleph.supervisor.v1.Supervisor/CreateVm',
-            supervisor__pb2.CreateVmRequest.SerializeToString,
+            supervisor__pb2.VmSpec.SerializeToString,
             supervisor__pb2.VmInfo.FromString,
             options,
             channel_credentials,
@@ -681,7 +681,7 @@ class Supervisor(object):
             target,
             '/aleph.supervisor.v1.Supervisor/GetVmSpec',
             supervisor__pb2.GetVmSpecRequest.SerializeToString,
-            supervisor__pb2.CreateVmRequest.FromString,
+            supervisor__pb2.VmSpec.FromString,
             options,
             channel_credentials,
             insecure,

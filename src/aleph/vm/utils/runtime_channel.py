@@ -1,7 +1,7 @@
 """The Aleph runtime's guest-channel conventions.
 
 Client-side vocabulary: the supervisor contract only carries an opaque
-channel (CreateVmRequest.guest_channel / VmInfo.guest_channel_path); what is
+channel (VmSpec.guest_channel / VmInfo.guest_channel_path); what is
 spoken over it — and on which port — is defined here, by the agent, to match
 the init shipped in the Aleph runtimes.
 """

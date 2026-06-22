@@ -353,7 +353,7 @@ def test_build_reservation_request_extracts_resources() -> None:
 
     req = build_reservation_request(message, "0xUSER")
 
-    assert (req.vcpus, req.memory_mib, req.is_instance, req.user_address) == (2, 2048, True, "0xUSER")
+    assert (req.vcpus, req.memory_mib, req.is_instance, req.owner_id) == (2, 2048, True, "0xUSER")
     assert [g.device_id for g in req.gpus] == ["10de:2504"]
     # rootfs size is summed into disk_mib (the message fixture sets size_mib=10000)
     assert req.disk_mib == 10000

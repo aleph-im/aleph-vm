@@ -201,7 +201,7 @@ async def test_reserve_resources_runs_capacity_then_reserves_gpus():
 
     gpu = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:2504", model="")
     request = ReservationRequest(
-        user_address="0xUSER",
+        owner_id="0xUSER",
         vcpus=2,
         memory_mib=2048,
         disk_mib=10,

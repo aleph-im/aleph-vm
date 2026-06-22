@@ -331,7 +331,7 @@ def test_gpu_instance_is_spec_eligible():
 @pytest.mark.asyncio
 async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     """GPU instances reach the spec path. The agent does not touch reservations:
-    it builds a spec carrying owner_address and drives create_vm. The engine
+    it builds a spec carrying owner_id and drives create_vm. The engine
     consumes this owner's own reservation and skips other users' reservations."""
     content = _make_qemu_instance_message().model_copy(
         update={
@@ -352,7 +352,7 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
     # The spec carries a GPU request and the owner address; the engine owns the
     # reservation handling, the agent does not.
-    spec = replace(_spec(), gpus=[_gpu_request()], owner_address=content.address)
+    spec = replace(_spec(), gpus=[_gpu_request()], owner_id=content.address)
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
@@ -365,7 +365,7 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
 
     # The spec the agent built carries the owner address for engine-side
     # reservation handling.
-    assert supervisor.create_vm.await_args.args[0].owner_address == content.address
+    assert supervisor.create_vm.await_args.args[0].owner_id == content.address
     supervisor.create_vm.assert_awaited_once_with(spec)
     assert execution is None
 
