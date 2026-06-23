@@ -492,7 +492,16 @@ def run():
 
         if pool is not None:
             logger.info("Loading existing executions ...")
-            asyncio.run(pool.load_persistent_executions())
+            try:
+                asyncio.run(pool.load_persistent_executions())
+            except Exception:
+                # Reattach must never keep the agent down: a failed recovery of
+                # a leftover execution should still leave the supervisor serving,
+                # with the live VMs untouched. Mirrors the gRPC daemon's reattach
+                # guard (supervisor/daemon.py). Without this, the only handler
+                # below is `except OSError` (web-server port), so any other error
+                # here would crash startup into a restart loop.
+                logger.exception("Reattaching previous executions failed; continuing with the executions loaded so far")
         # Each asyncio.run() creates and destroys its own event loop.
         # Discard any HTTP session created during setup/loading so it
         # doesn't hold a reference to the dead loop.
