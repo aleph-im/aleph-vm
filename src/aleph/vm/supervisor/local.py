@@ -460,11 +460,7 @@ class LocalSupervisor(Supervisor):
     async def get_vm_spec(self, vm_id: VmId) -> CreateVmSpec:
         with translating_errors():
             execution = self._require(vm_id)
-            spec = execution.vm_spec
-            if spec is None:
-                msg = f"VM {vm_id} was created outside the spec path (message-built); no spec is held"
-                raise NotImplementedSupervisorError(msg)
-            return spec
+            return execution.vm_spec
 
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
@@ -540,17 +536,13 @@ class LocalSupervisor(Supervisor):
             if execution.vm_id in self.pool.executions:
                 self.pool.forget_vm(vm_id)
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-            if spec is not None:
-                # A real reboot: the supervisor holds the spec, so it can
-                # recreate the VM itself instead of returning a stopped husk
-                # and expecting the client to know it must re-create.
-                new_execution = await self.pool.create_vm_from_spec(spec)
-                info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
-                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
-                return info
-            # Message-built (legacy) ephemeral VMs: the agent owns the
-            # message and re-creates through its own path.
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            # A real reboot: the supervisor holds the spec, so it can
+            # recreate the VM itself instead of returning a stopped husk
+            # and expecting the client to know it must re-create.
+            new_execution = await self.pool.create_vm_from_spec(spec)
+            info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
+            self._emit_event(vm_id, VmStatus.STOPPED, info.status)
+            return info
 
     async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
         with translating_errors():
