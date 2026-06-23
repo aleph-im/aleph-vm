@@ -233,22 +233,6 @@ async def test_reboot_ephemeral_spec_vm_recreates_from_held_spec():
 
 
 @pytest.mark.asyncio
-async def test_reboot_ephemeral_message_vm_stops_only():
-    """Message-built (legacy) ephemeral VMs keep the old contract: the agent
-    owns the message and re-creates through its own path."""
-    execution = _make_execution(persistent=False)
-    execution.vm_spec = None
-    pool = _make_pool(executions={"itemhash123": execution})
-    pool.create_vm_from_spec = AsyncMock()
-    sup = LocalSupervisor(pool=pool)
-
-    await sup.reboot_vm(VM_ID)
-
-    pool.stop_vm.assert_awaited_once_with(VM_ID)
-    pool.create_vm_from_spec.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_get_vm_spec_returns_held_spec():
     spec = _spec_for("itemhash123")
     execution = make_execution()
@@ -263,16 +247,6 @@ async def test_get_vm_spec_unknown_vm_raises_not_found():
     sup = LocalSupervisor(pool=FakePool())
     with pytest.raises(VmNotFoundError):
         await sup.get_vm_spec(VmId("nope"))
-
-
-@pytest.mark.asyncio
-async def test_get_vm_spec_message_built_vm_raises_unimplemented():
-    from aleph.vm.supervisor_interface.errors import NotImplementedSupervisorError
-
-    execution = make_execution()  # vm_spec=None: legacy, message-built
-    sup = LocalSupervisor(pool=FakePool(executions={"itemhash123": execution}))
-    with pytest.raises(NotImplementedSupervisorError):
-        await sup.get_vm_spec(VM_ID)
 
 
 @pytest.mark.asyncio

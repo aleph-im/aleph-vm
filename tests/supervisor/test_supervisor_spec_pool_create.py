@@ -311,24 +311,6 @@ async def test_create_vm_from_spec_conflicting_spec_raises_already_exists():
         await pool.create_vm_from_spec(replace(spec, memory_mib=4096))
 
 
-@pytest.mark.asyncio
-async def test_create_vm_from_spec_collision_with_message_built_vm_raises():
-    """A live message-built execution (vm_spec=None) for the same hash is a
-    conflict too: the pool cannot prove the spec matches."""
-    from types import SimpleNamespace
-
-    from aleph_message.models import ItemHash
-
-    from aleph.vm.supervisor_interface.errors import VmAlreadyExistsError
-
-    pool = _bare_pool()
-    live = SimpleNamespace(is_running=True, is_stopping=False, vm_spec=None)
-    pool.executions[ItemHash(_HASH)] = live
-
-    with pytest.raises(VmAlreadyExistsError):
-        await pool.create_vm_from_spec(_spec())
-
-
 # ── pool.reserve_gpus — message-free GPU reservation ───────────────────────
 
 

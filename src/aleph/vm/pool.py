@@ -476,8 +476,7 @@ class VmPool:
     @staticmethod
     def _require_same_spec(current_execution: VmExecution, spec: CreateVmSpec) -> None:
         """CreateVm idempotency: a retry with the identical spec returns the
-        live VM; a different spec for a live vm_index is a conflict (also covers
-        colliding with a message-built execution, whose vm_spec is None)."""
+        live VM; a different spec for a live vm_index is a conflict."""
         if current_execution.vm_spec != spec:
             msg = f"VM {spec.vm_id} already exists with a different spec"
             raise VmAlreadyExistsError(msg)
