@@ -29,12 +29,15 @@ from aleph.vm.supervisor_interface.errors import InvalidBackendError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
+    DirectoryPath,
     DiskFormat,
     DiskRole,
     DiskSpec,
     GpuSpec,
     NetworkConfig,
     PciAddress,
+    TeeBackend,
+    TeeConfig,
     VmId,
 )
 
@@ -282,13 +285,14 @@ async def build_qemu_confidential_configuration(
 def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
     """Reconstruct a CreateVmSpec from an on-disk controller Configuration.
 
-    The inverse of build_qemu_configuration, used by reboot-recovery to
-    reattach a running VM message-free. Only non-confidential QEMU configs
-    are supported (QemuConfidentialVMConfiguration is a separate type).
+    The inverse of build_qemu_configuration / build_qemu_confidential_configuration,
+    used by reboot-recovery to reattach a running VM message-free. Plain and
+    confidential (SEV) QEMU configs are both supported; the difference is the
+    reconstructed TeeConfig.
     """
     vm_cfg = config.vm_configuration
-    if not isinstance(vm_cfg, QemuVMConfiguration):
-        msg = f"Reattach supports QemuVMConfiguration only, got {type(vm_cfg).__name__}"
+    if not isinstance(vm_cfg, QemuVMConfiguration | QemuConfidentialVMConfiguration):
+        msg = f"Reattach supports QEMU configurations only, got {type(vm_cfg).__name__}"
         raise InvalidBackendError(msg)
 
     disks: list[DiskSpec] = [
@@ -310,6 +314,22 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
 
     gpus = [GpuSpec(pci_host=PciAddress(g.pci_host), supports_x_vga=g.supports_x_vga) for g in vm_cfg.gpus]
 
+    tee: TeeConfig | None = None
+    if isinstance(vm_cfg, QemuConfidentialVMConfiguration):
+        # Invert build_qemu_confidential_configuration: the on-disk OVMF path is
+        # the resolved firmware, the SEV policy crosses back as a hex string
+        # (matching the message path's hex(trusted_execution.policy)), and the
+        # session dir is where the owner's uploaded certs already live. Reattach
+        # only needs firmware_path (AlephQemuConfidentialResources.from_spec);
+        # the running controller already holds the measured launch -- we are not
+        # re-provisioning, so no fresh session upload is required.
+        tee = TeeConfig(
+            backend=TeeBackend.SEV,
+            policy=hex(vm_cfg.sev_policy),
+            session_dir=DirectoryPath(vm_cfg.sev_session_file.parent),
+            firmware_path=Path(vm_cfg.ovmf_path),
+        )
+
     return CreateVmSpec(
         vm_id=VmId(str(config.vm_hash)),
         backend=Backend.QEMU,
@@ -318,7 +338,7 @@ def spec_from_controller_configuration(config: Configuration) -> CreateVmSpec:
         disks=disks,
         vcpus=vm_cfg.vcpu_count,
         memory_mib=vm_cfg.mem_size_mb.count,
-        tee=None,
+        tee=tee,
         network=NetworkConfig(
             internet_access=bool(vm_cfg.interface_name),
             requested_ipv6="",
