@@ -617,6 +617,13 @@ class VmPool:
         # avoid two VMs sharing a tap interface.
         claimed_vm_ids: set[int] = set()
 
+        # A controller that is alive but whose in-memory reattach failed. Its
+        # vm_index/hash are protected from the orphan sweep below: the VM is
+        # still running, so stopping its service or deleting its config would
+        # destroy a live instance -- far worse than not tracking it this cycle.
+        failed_vm_ids: set[int] = set()
+        failed_vm_hashes: set[str] = set()
+
         for config in configs:
             vm_id = VmId(str(config.vm_hash))
             vm_index = config.vm_id
@@ -638,9 +645,24 @@ class VmPool:
 
             logger.info("Reattaching execution %s for VM %d", vm_id, vm_index)
             claimed_vm_ids.add(vm_index)
-            await self._restore_running_execution_from_config(config, vm_index, vm_id)
+            try:
+                await self._restore_running_execution_from_config(config, vm_index, vm_id)
+            except Exception:
+                # One VM's reattach must never deny reattach to the rest of the
+                # node (and, in-process, must never crash startup). The
+                # controller is alive and the VM is running; only our in-memory
+                # rebuild failed -- e.g. an unsupported config (confidential),
+                # or a transient prepare/network error. Leave the live VM and
+                # its on-disk artifacts untouched and carry on with the others.
+                logger.exception(
+                    "Failed to reattach %s (vm_index %d); leaving its controller running and untracked this cycle",
+                    vm_id,
+                    vm_index,
+                )
+                failed_vm_ids.add(vm_index)
+                failed_vm_hashes.add(str(config.vm_hash))
 
-        self._cleanup_orphan_resources()
+        self._cleanup_orphan_resources(protected_vm_ids=failed_vm_ids, protected_vm_hashes=failed_vm_hashes)
 
         logger.info("Loaded %d executions", len(self.executions))
 
@@ -713,15 +735,28 @@ class VmPool:
         except Exception:
             logger.warning("Failed to stop/disable stale controller %s", service_name, exc_info=True)
 
-    def _cleanup_orphan_resources(self):
+    def _cleanup_orphan_resources(
+        self,
+        protected_vm_ids: set[int] | None = None,
+        protected_vm_hashes: set[str] | None = None,
+    ):
         """Remove orphan nft rules, nft chains, tap interfaces, and controller configs.
 
         Compares host resources against active executions in the pool
         and removes anything that doesn't belong to a running VM.
         Fetches the nftables ruleset once and passes it to both nft cleanup methods.
+
+        ``protected_vm_ids``/``protected_vm_hashes`` are VMs whose controllers
+        are alive but which are not in ``self.executions`` (a reattach that
+        failed): they are treated as active so the sweep does not stop their
+        services, delete their configs, or tear down their networking.
         """
         active_vm_ids = {execution.vm_index for execution in self.executions.values() if execution.vm_index is not None}
         active_vm_hashes = {str(vm_id) for vm_id in self.executions}
+        if protected_vm_ids:
+            active_vm_ids |= protected_vm_ids
+        if protected_vm_hashes:
+            active_vm_hashes |= protected_vm_hashes
 
         nft_ruleset = get_existing_nftables_ruleset()
         self._cleanup_orphan_port_redirects(nft_ruleset)
