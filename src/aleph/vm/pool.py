@@ -309,6 +309,16 @@ class VmPool:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
 
+            # The VM may already be running without a pool entry: a prior
+            # reattach failed and was isolated (#1001), leaving the live
+            # controller protected but untracked. Re-adopt it rather than
+            # building a fresh VM on top -- a fresh create reuses the index/tap
+            # and control sockets the live qemu still holds (it never wipes the
+            # disks, but it bounces or collides with a running instance).
+            readopted = await self._readopt_live_controller(vm_id)
+            if readopted is not None:
+                return readopted
+
             # Authoritative capacity admission, folded into the create path so
             # the check and the registration below are atomic under the lock.
             self.check_spec_admission(spec)
@@ -406,6 +416,35 @@ class VmPool:
 
             self._schedule_forget_on_stop(execution)
             return execution
+
+    async def _readopt_live_controller(self, vm_id: VmId) -> VmExecution | None:
+        """Re-adopt a VM whose controller is still running but is absent from the
+        pool (a reattach that failed and was isolated by load_persistent_executions).
+
+        Returns the re-adopted execution, or None when there is nothing live to
+        adopt -- no on-disk config, or the controller is not active -- in which
+        case the caller proceeds with a normal create (an inactive controller is
+        a clean restart-from-disk, which is safe).
+
+        Called under ``creation_lock``. If re-adoption itself fails (the original
+        transient cause persists), the exception propagates: the caller must NOT
+        fall through to a fresh create over the live controller. The VM stays
+        untracked until the next attempt -- never clobbered.
+        """
+        config = load_controller_configuration(str(vm_id))
+        if config is None:
+            return None
+        service_name = f"aleph-vm-controller@{vm_id}.service"
+        if not self.systemd_manager.get_services_active_states([service_name]).get(service_name, False):
+            return None
+
+        logger.warning(
+            "create requested for %s but its controller is already running and untracked "
+            "(a previous reattach failed); re-adopting it instead of creating a duplicate",
+            vm_id,
+        )
+        await self._restore_running_execution_from_config(config, config.vm_id, vm_id)
+        return self.executions[vm_id]
 
     async def _create_firecracker_from_spec(self, spec: CreateVmSpec) -> VmExecution:
         """Message-free Firecracker boot.
