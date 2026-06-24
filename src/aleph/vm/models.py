@@ -6,11 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from aleph.vm.agent.metrics import (
-    delete_port_mappings,
-    save_execution_data,
-    save_port_mappings,
-)
+from aleph.vm.agent.metrics import save_execution_data
 from aleph.vm.conf import settings
 from aleph.vm.network.firewall import (
     add_entities_if_not_present,
@@ -46,6 +42,7 @@ from aleph.vm.supervisor.controllers.qemu_confidential.instance import (
     AlephQemuConfidentialInstance,
     AlephQemuConfidentialResources,
 )
+from aleph.vm.supervisor.networking_db import delete_port_mappings, save_port_mappings
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
