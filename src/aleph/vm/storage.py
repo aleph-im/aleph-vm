@@ -37,6 +37,12 @@ from aleph.vm.utils import fix_message_validation, run_in_subprocess
 logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
 
+# Runtimes and base images can be several hundred MiB and are sometimes served by slow
+# gateways (e.g. IPFS). We must not cap the *total* transfer time, or large-but-steady
+# downloads get killed mid-stream; instead guard against genuine stalls with sock timeouts.
+DOWNLOAD_SOCKET_CONNECT_TIMEOUT_SECONDS = 30
+DOWNLOAD_SOCKET_READ_TIMEOUT_SECONDS = 120
+
 
 class CorruptedFilesystemError(Exception):
     """Raised when a file containing a filesystem is corrupted."""
@@ -63,7 +69,14 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
 
 
 async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
-    async with aiohttp.ClientSession() as session:
+    # No total timeout: a 500+ MiB image over a slow gateway is a legitimate multi-minute
+    # download. sock_read makes the request fail fast only if the transfer truly stalls.
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=DOWNLOAD_SOCKET_CONNECT_TIMEOUT_SECONDS,
+        sock_read=DOWNLOAD_SOCKET_READ_TIMEOUT_SECONDS,
+    )
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         resp = await session.get(url)
         resp.raise_for_status()
 
@@ -126,6 +139,8 @@ async def download_file(url: str, local_path: Path) -> None:
             aiohttp.ClientConnectionError,
             aiohttp.ClientResponseError,
             aiohttp.ClientPayloadError,
+            # A stalled transfer raises asyncio.TimeoutError (sock_read); retry it too.
+            asyncio.TimeoutError,
         ) as error:
             if attempt < (download_attempts - 1):
                 logger.warning(f"Download failed, retrying attempt {attempt + 1}/{download_attempts}...")
