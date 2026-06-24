@@ -12,12 +12,13 @@ from aleph.vm.supervisor.qemu_build import spec_from_controller_configuration
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     HypervisorType,
+    QemuConfidentialVMConfiguration,
     QemuGPU,
     QemuVMConfiguration,
     QemuVMHostVolume,
 )
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
-from aleph.vm.supervisor_interface.types import Backend, DiskRole
+from aleph.vm.supervisor_interface.types import Backend, DiskRole, TeeBackend
 
 _HASH = "deadbeef" * 8
 
@@ -64,6 +65,54 @@ def test_spec_from_config_roundtrips_core_fields():
 def test_spec_from_config_no_interface_means_no_internet():
     spec = spec_from_controller_configuration(_config(interface_name=None))
     assert spec.network.internet_access is False
+
+
+def _confidential_config() -> Configuration:
+    vm_cfg = QemuConfidentialVMConfiguration(
+        qemu_bin_path="/usr/bin/qemu-system-x86_64",
+        image_path="/data/rootfs.qcow2",
+        monitor_socket_path=Path("/run/m.socket"),
+        qmp_socket_path=Path("/run/q.socket"),
+        vcpu_count=4,
+        mem_size_mb=MiB(2048),
+        interface_name="tap7",
+        host_volumes=[QemuVMHostVolume(mount="/mnt/data", path_on_host=Path("/data/extra.img"), read_only=True)],
+        gpus=[QemuGPU(pci_host="0000:01:00.0", supports_x_vga=True)],
+        ovmf_path=Path("/opt/ovmf/OVMF.fd"),
+        sev_session_file=Path(f"/var/lib/aleph/sessions/{_HASH}/vm_session.b64"),
+        sev_dh_cert_file=Path(f"/var/lib/aleph/sessions/{_HASH}/vm_godh.b64"),
+        sev_policy=1,
+    )
+    return Configuration(
+        vm_id=7,
+        vm_hash=_HASH,
+        settings=real_settings,
+        vm_configuration=vm_cfg,
+        hypervisor=HypervisorType.qemu,
+    )
+
+
+def test_spec_from_config_reconstructs_confidential_tee():
+    """A confidential (SEV) controller config must reattach, not raise: the
+    TeeConfig is rebuilt so the execution stays confidential and create() can
+    take the AlephQemuConfidentialInstance path."""
+    spec = spec_from_controller_configuration(_confidential_config())
+
+    assert spec.tee is not None
+    assert spec.tee.backend is TeeBackend.SEV
+    # firmware_path is the only field AlephQemuConfidentialResources.from_spec
+    # requires; it must be the on-disk OVMF blob.
+    assert spec.tee.firmware_path == Path("/opt/ovmf/OVMF.fd")
+    # Policy round-trips through int(.., 0) exactly (create() converts it back).
+    assert int(spec.tee.policy, 0) == 1
+    # Session dir is where the owner's already-uploaded certs live.
+    assert spec.tee.session_dir == Path(f"/var/lib/aleph/sessions/{_HASH}")
+    # Core fields still reconstruct, same as the plain path.
+    assert spec.backend is Backend.QEMU
+    assert spec.vcpus == 4
+    assert spec.memory_mib == 2048
+    rootfs = [d for d in spec.disks if d.role is DiskRole.ROOTFS]
+    assert rootfs[0].path == Path("/data/rootfs.qcow2")
 
 
 def test_spec_from_config_rejects_non_qemu():
