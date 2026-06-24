@@ -1,8 +1,10 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
-from aleph.vm.storage import get_latest_amend
+from aleph.vm.storage import download_file, download_file_in_chunks, get_latest_amend
 
 ORIGINAL_HASH = "a" * 64
 AMEND_HASH = "b" * 64
@@ -125,3 +127,74 @@ async def test_get_latest_amend_queries_by_owner_not_sender():
     amend_lookup_url = captured_urls[1]
     assert f"owners={OWNER}" in amend_lookup_url
     assert "addresses=" not in amend_lookup_url
+
+
+def _empty_body_session_mock() -> MagicMock:
+    """Mock aiohttp.ClientSession that serves an immediately-empty response body."""
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.content = MagicMock()
+    response.content.read = AsyncMock(return_value=b"")  # empty -> loop ends immediately
+    session.get = AsyncMock(return_value=response)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_download_file_in_chunks_does_not_cap_total_time(tmp_path):
+    """A large but steady download must not be killed by aiohttp's default total=300s timeout.
+
+    The session must be built with no total cap and a sock_read stall guard instead, so a
+    legitimately slow multi-hundred-MB download from a slow gateway can still complete.
+    """
+    captured_timeout: list = []
+
+    def _session_factory(**kwargs):
+        captured_timeout.append(kwargs.get("timeout"))
+        return _empty_body_session_mock()
+
+    with patch("aleph.vm.storage.aiohttp.ClientSession", side_effect=_session_factory):
+        await download_file_in_chunks("http://example.com/file", tmp_path / "out.part")
+
+    timeout = captured_timeout[0]
+    assert isinstance(timeout, aiohttp.ClientTimeout)
+    assert timeout.total is None, "total time must be uncapped for large downloads"
+    assert timeout.sock_read is not None, "a sock_read stall guard must be set"
+
+
+@pytest.mark.asyncio
+async def test_download_file_retries_on_timeout(tmp_path):
+    """A timed-out chunk download must be retried, not aborted on the first failure."""
+    local_path = tmp_path / "runtime"
+    calls = {"n": 0}
+
+    async def _flaky(_url, _target_path):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError
+        # success: download_file already created the .part file via touch()
+
+    with patch("aleph.vm.storage.download_file_in_chunks", side_effect=_flaky):
+        await download_file("http://example.com/runtime", local_path)
+
+    assert calls["n"] == 3
+    assert local_path.is_file()
+
+
+@pytest.mark.asyncio
+async def test_download_file_aborts_after_exhausting_retries_on_timeout(tmp_path):
+    """If every attempt times out, the error propagates after the retries are exhausted."""
+    local_path = tmp_path / "runtime"
+
+    async def _always_timeout(_url, _target_path):
+        raise TimeoutError
+
+    with patch("aleph.vm.storage.download_file_in_chunks", side_effect=_always_timeout):
+        with pytest.raises(asyncio.TimeoutError):
+            await download_file("http://example.com/runtime", local_path)
+
+    assert not local_path.is_file()
+    assert not (tmp_path / "runtime.part").exists()
