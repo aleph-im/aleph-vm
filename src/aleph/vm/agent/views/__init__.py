@@ -25,7 +25,7 @@ from aleph.vm.agent.chain import STREAM_CHAINS
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
-from aleph.vm.agent.metrics import delete_port_mappings, get_execution_records
+from aleph.vm.agent.metrics import get_execution_records
 from aleph.vm.agent.node_identity import NodeIdentity
 from aleph.vm.agent.payment import (
     InvalidAddressError,
@@ -600,9 +600,6 @@ async def update_allocations(request: web.Request):
                     await supervisor.delete_vm(VmId(str(vm_hash)))
                 except VmNotFoundError:
                     pass
-                # Residual direct DB call: mapping persistence moves fully
-                # hypervisor-side with the gRPC split.
-                await delete_port_mappings(vm_hash)
                 registry.forget(vm_hash)
                 stopped_vms.append(vm_hash)
 

@@ -477,12 +477,14 @@ class LocalSupervisor(Supervisor):
             # Delete releases the definition: the controller config and the
             # cloud-init seed go too (stop_vm keeps them for reattach).
             remove_controller_configuration(str(vm_id))
+            # The VM is gone, so its persisted port mappings go too. A mere stop
+            # keeps them (a persistent VM restarts with the same forwards); a
+            # delete is final. Port mappings are hypervisor-owned state, so this
+            # lives here rather than as a residual direct DB call agent-side.
+            await delete_port_mappings(execution.vm_id)
             if wipe:
-                # Mirrors the old operate_erase semantics exactly: persisted
-                # port mappings (persistent VMs keep them across stops) and
-                # writable data volumes go; the rootfs stays.
-                if execution.persistent:
-                    await delete_port_mappings(execution.vm_id)
+                # Mirrors the old operate_erase semantics: writable data volumes
+                # go, the rootfs stays.
                 execution.erase_volumes()
 
     async def stop_vm(self, vm_id: VmId) -> VmInfo:

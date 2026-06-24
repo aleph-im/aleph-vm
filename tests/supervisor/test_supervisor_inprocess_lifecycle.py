@@ -135,7 +135,7 @@ async def test_delete_vm_wipe_erases_data_volumes_and_port_mappings(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_delete_vm_without_wipe_keeps_data(monkeypatch):
+async def test_delete_vm_without_wipe_keeps_data_but_drops_port_mappings(monkeypatch):
     execution = make_execution()
     pool = FakePool(executions={VM_ID: execution})
     pool.stop_vm = AsyncMock()
@@ -149,7 +149,9 @@ async def test_delete_vm_without_wipe_keeps_data(monkeypatch):
 
     pool.stop_vm.assert_awaited_once_with(VM_ID)
     pool.forget_vm.assert_called_once_with(VM_ID)
-    deleted.assert_not_awaited()
+    # The VM is gone, so its port mappings go regardless of wipe ...
+    deleted.assert_awaited_once_with(execution.vm_id)
+    # ... but the data volumes are kept without wipe.
     execution.erase_volumes.assert_not_called()
 
 
