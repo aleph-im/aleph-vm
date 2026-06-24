@@ -285,3 +285,76 @@ async def test_create_vm_from_spec_readopt_failure_does_not_fall_through(monkeyp
     with pytest.raises(RuntimeError, match="reattach still failing"):
         await pool.create_vm_from_spec(_spec())
     pool.check_spec_admission.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_readopts_a_failed_vm(monkeypatch):
+    """A queued failed VM is dropped from the retry set once it re-adopts."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)}
+
+    async def fake_restore(_cfg, vm_index, vm_id):
+        pool.executions[vm_id] = SimpleNamespace(vm_index=vm_index)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", fake_restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    assert VmId(_HASH) in pool.executions
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausts_and_leaves_vm_running(monkeypatch):
+    """After MAX attempts the VM is exhausted, kept as unmanaged, and NOT
+    auto-stopped (Option B)."""
+    from aleph.vm.pool import REATTACH_RETRY_MAX_ATTEMPTS, _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+
+    async def always_fail(_cfg, _vm_index, _vm_id):
+        msg = "still broken"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", always_fail)
+
+    for _ in range(REATTACH_RETRY_MAX_ATTEMPTS):
+        await pool._retry_failed_reattachments_once()
+
+    assert state.exhausted is True
+    assert VmId(_HASH) in pool._failed_reattach
+    assert VmId(_HASH) in pool.unmanaged_vm_ids
+    pool.systemd_manager.stop_and_disable.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_drops_vm_adopted_elsewhere(monkeypatch):
+    """If the VM is already in the pool (adopted by an on-demand create), the
+    retry drops it without attempting another restore."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)}
+    pool.executions[VmId(_HASH)] = SimpleNamespace(vm_index=7)
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_loop_returns_immediately_without_failures():
+    """A clean startup (no failed reattachments) makes the loop a no-op."""
+    pool = _bare_pool()
+    pool._failed_reattach = {}
+    await pool.run_reattach_retry_loop()  # must not hang

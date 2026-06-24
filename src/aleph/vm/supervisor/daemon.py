@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import signal
 from pathlib import Path
@@ -60,6 +61,10 @@ async def run_daemon(socket_path: Path) -> None:
         # A previous daemon left its socket behind; a fresh bind needs it gone.
         socket_path.unlink()
 
+    # Retry VMs whose reattach failed above (e.g. host networking not ready yet);
+    # self-terminates once nothing is left to retry.
+    retry_task = asyncio.create_task(pool.run_reattach_retry_loop())
+
     supervisor = LocalSupervisor(pool)
     server = await serve_unix(supervisor, socket_path)
 
@@ -72,6 +77,9 @@ async def run_daemon(socket_path: Path) -> None:
     await stop_event.wait()
 
     logger.info("Stopping the supervisor gRPC server (VMs keep running) ...")
+    retry_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await retry_task
     await server.stop(grace=5)
     socket_path.unlink(missing_ok=True)
 
