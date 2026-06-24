@@ -46,13 +46,14 @@ async def run_daemon(socket_path: Path) -> None:
     await pool.setup()
 
     logger.info("Reattaching executions that survived a previous run ...")
-    try:
-        await pool.load_persistent_executions()
-    except Exception:
-        # Reattach must not keep the daemon down: a failed recovery of one
-        # leftover (or a host without the expected nftables base chains)
-        # should still leave the contract reachable for the agent.
-        logger.exception("Reattaching previous executions failed; continuing with an empty pool")
+    # No guard here on purpose (kept symmetric with the in-process agent path):
+    # per-VM reattach failures -- including a host missing the expected nftables
+    # base chains -- are isolated inside load_persistent_executions, which marks
+    # the VM failed and protects its live controller. Anything that still escapes
+    # is systemic (an unparseable controller config, or a broken systemd/D-Bus)
+    # and must abort startup rather than serve gRPC from a pool that does not
+    # reflect what is actually running.
+    await pool.load_persistent_executions()
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     if socket_path.exists():
