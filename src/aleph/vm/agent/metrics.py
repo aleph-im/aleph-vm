@@ -4,7 +4,17 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    delete,
+    select,
+)
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -108,3 +118,15 @@ async def get_last_record_for_vm(vm_hash) -> ExecutionRecord | None:
             select(ExecutionRecord).where(ExecutionRecord.vm_hash == vm_hash).limit(1)
         )  # Use execute for querying
         return result.scalar()
+
+
+async def delete_records_for_vm(vm_hash: str) -> None:
+    """Delete every execution record for a VM.
+
+    The on-disk sibling of AgentVmRegistry.forget: called when the agent
+    permanently drops a VM (terminal dealloc, allocation removal, operator
+    erase) so its records do not linger and get re-hydrated on the next restart.
+    """
+    async with AsyncSessionMaker() as session:
+        await session.execute(delete(ExecutionRecord).where(ExecutionRecord.vm_hash == vm_hash))
+        await session.commit()
