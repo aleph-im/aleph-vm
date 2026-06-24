@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -69,8 +69,6 @@ async def test_handle_dead_controller_stops_service():
 async def test_failed_reattach_does_not_abort_the_rest(tmp_path):
     """A single VM whose restore raises (e.g. an unsupported confidential
     config) must not stop the other active VMs from reattaching."""
-    from unittest.mock import patch
-
     hash_ok = "a" * 64
     hash_bad = "b" * 64
     pool = _bare_pool()
