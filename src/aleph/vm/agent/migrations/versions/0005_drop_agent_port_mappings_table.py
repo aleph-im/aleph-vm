@@ -13,8 +13,7 @@ the copy would destroy live VMs' host-port forwards. It is the second phase of
 a two-phase migration: copy in the split release, drop here in a later one.
 """
 
-import logging
-
+import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import create_engine
 from sqlalchemy.engine import reflection
@@ -26,8 +25,6 @@ down_revision = "a1b2c3d4e5f6"
 branch_labels = None
 depends_on = None
 
-logger = logging.getLogger(__name__)
-
 
 def upgrade() -> None:
     engine = create_engine(make_db_url())
@@ -35,7 +32,7 @@ def upgrade() -> None:
     if "port_mappings" not in inspector.get_table_names():
         return
     # The supervisor DB is the authority now; this agent-DB copy is unused.
-    op.drop_index("ix_port_mappings_host_port_active", table_name="port_mappings")
+    # No explicit drop_index: on SQLite, DROP TABLE also drops the table's indexes.
     op.drop_table("port_mappings")
 
 
@@ -44,18 +41,20 @@ def downgrade() -> None:
     inspector = reflection.Inspector.from_engine(engine)
     if "port_mappings" in inspector.get_table_names():
         return
-    op.execute(
-        "CREATE TABLE port_mappings ("
-        "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
-        "vm_hash VARCHAR NOT NULL, "
-        "vm_port INTEGER NOT NULL, "
-        "host_port INTEGER NOT NULL, "
-        "tcp BOOLEAN NOT NULL DEFAULT 0, "
-        "udp BOOLEAN NOT NULL DEFAULT 0, "
-        "created_at DATETIME NOT NULL, "
-        "deleted_at DATETIME)"
+    # Mirror the table creation from 0004_create_port_mappings_table.py exactly,
+    # so that upgrade then downgrade round-trips to the canonical schema.
+    op.create_table(
+        "port_mappings",
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("vm_hash", sa.String(), nullable=False, index=True),
+        sa.Column("vm_port", sa.Integer(), nullable=False),
+        sa.Column("host_port", sa.Integer(), nullable=False),
+        sa.Column("tcp", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("udp", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
-    op.create_index("ix_port_mappings_vm_hash", "port_mappings", ["vm_hash"])
+    # Unique host_port among active (non-deleted) rows only
     op.execute(
         "CREATE UNIQUE INDEX ix_port_mappings_host_port_active " "ON port_mappings (host_port) WHERE deleted_at IS NULL"
     )
