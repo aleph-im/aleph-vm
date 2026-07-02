@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-
 from sqlalchemy.orm import declarative_base
 
 from aleph.vm.conf import make_supervisor_db_url, settings
