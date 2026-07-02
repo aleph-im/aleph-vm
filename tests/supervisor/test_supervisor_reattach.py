@@ -406,6 +406,26 @@ async def test_retry_drops_vm_adopted_elsewhere(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retry_drops_exhausted_vm_adopted_elsewhere(monkeypatch):
+    """Even a given-up (exhausted) entry is dropped once another path tracks
+    the VM: the adopted-elsewhere cleanup runs before the exhausted skip."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7, exhausted=True)
+    pool._failed_reattach = {VmId(_HASH): state}
+    pool.executions[VmId(_HASH)] = SimpleNamespace(vm_index=7)
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discard_failed_reattach_stops_unit_and_removes_config():
     """Deleting a queued (here: even exhausted) failed-reattach VM stops its
     controller, removes its on-disk definition and dequeues it for good."""

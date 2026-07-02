@@ -841,13 +841,19 @@ class VmPool:
 
     async def _retry_failed_reattachments_once(self) -> None:
         for vm_id, state in list(self._failed_reattach.items()):
+            if vm_id in self.executions:
+                # Adopted in the meantime (e.g. by an on-demand create). Checked
+                # before the exhausted skip so even a given-up entry is dropped
+                # once another path tracks the VM.
+                del self._failed_reattach[vm_id]
+                continue
             if state.exhausted:
                 continue
             # Serialize with create_vm_from_spec so the two adoption paths never
             # rebuild the same VM concurrently.
             async with self.creation_lock:
                 if vm_id in self.executions:
-                    # Adopted in the meantime (e.g. by an on-demand create).
+                    # Adopted while we waited for the lock.
                     del self._failed_reattach[vm_id]
                     continue
                 # Liveness gate: the controller was alive at startup, but it may
@@ -897,7 +903,7 @@ class VmPool:
             )
         else:
             logger.warning(
-                "Reattach retry %d/%d for %s failed; will retry",
+                "Reattach attempt %d/%d for %s failed; will retry",
                 state.attempts,
                 REATTACH_RETRY_MAX_ATTEMPTS,
                 vm_id,

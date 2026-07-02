@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
@@ -63,8 +63,6 @@ async def test_delete_vm_queued_for_reattach_retry_stops_and_dequeues():
     Delete must honor the request: stop the controller and drop the entry
     instead of raising VmNotFoundError."""
     import asyncio
-
-    from unittest.mock import patch
 
     from aleph.vm.pool import VmPool, _FailedReattach
 

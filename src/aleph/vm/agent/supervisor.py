@@ -27,6 +27,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.utils import create_task_log_exceptions
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -377,7 +378,7 @@ async def start_reattach_retry_task(app: web.Application) -> None:
     pool: VmPool | None = app.get("_engine_pool")
     if pool is None:
         return
-    app["_reattach_retry_task"] = asyncio.create_task(pool.run_reattach_retry_loop())
+    app["_reattach_retry_task"] = create_task_log_exceptions(pool.run_reattach_retry_loop(), name="reattach-retry-loop")
 
 
 async def stop_reattach_retry_task(app: web.Application) -> None:
