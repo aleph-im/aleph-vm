@@ -436,6 +436,20 @@ async def test_discard_failed_reattach_without_entry_is_a_noop():
     pool.systemd_manager.stop_and_disable.assert_not_called()
 
 
+def test_get_unique_vm_index_skips_failed_reattach_indexes(monkeypatch):
+    """A queued/exhausted failed-reattach VM still owns its vm_index (tap,
+    nft chains): handing it to a fresh create would let that create tear
+    down the live VM's networking."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    monkeypatch.setattr("aleph.vm.pool.settings.START_ID_INDEX", 4, raising=False)
+    pool.executions = {VmId("a" * 64): SimpleNamespace(vm_index=4)}
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=5), vm_index=5)}
+
+    assert pool.get_unique_vm_index() == 6
+
+
 @pytest.mark.asyncio
 async def test_retry_loop_returns_immediately_without_failures():
     """A clean startup (no failed reattachments) makes the loop a no-op."""

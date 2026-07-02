@@ -598,8 +598,12 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
-        # Take the first id that is not already taken
+        # Take the first id that is not already taken. Failed-reattach VMs are
+        # not in self.executions but their live controllers still own their
+        # vm_index (tap interface, nft chains): handing one of those to a new
+        # create would let it delete the live VM's networking.
         currently_used_vm_ids = {execution.vm_index for execution in self.executions.values()}
+        currently_used_vm_ids |= {state.vm_index for state in self._failed_reattach.values()}
         for i in range(settings.START_ID_INDEX, 255**2):
             if i not in currently_used_vm_ids:
                 return i
