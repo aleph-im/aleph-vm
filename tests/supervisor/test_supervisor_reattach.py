@@ -57,6 +57,7 @@ def _bare_pool() -> VmPool:
     pool.network = None
     pool.snapshot_manager = None
     pool.systemd_manager = MagicMock()
+    pool._failed_reattach = {}
     return pool
 
 
