@@ -464,7 +464,18 @@ class LocalSupervisor(Supervisor):
 
     async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
         with translating_errors():
-            execution = self._require(vm_id)
+            execution = self.pool.executions.get(vm_id)
+            if execution is None:
+                # Not tracked, but possibly queued (or given up) for reattach
+                # retry: its controller is still running. Honor the delete by
+                # stopping that controller and dequeuing it; raising
+                # VmNotFoundError here would make the agent forget the VM
+                # while the retry loop resurrects it as an unmanageable,
+                # still-billed instance.
+                if await self.pool.discard_failed_reattach(vm_id):
+                    logger.info("Deleted queued failed-reattach VM %s (untracked controller stopped)", vm_id)
+                    return
+                raise VmNotFoundError(vm_id)
             old_status = self._status_snapshot(execution)
             await self.pool.stop_vm(vm_id)
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)

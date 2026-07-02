@@ -4,7 +4,7 @@ import asyncio
 import logging
 import shutil
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -31,6 +31,7 @@ from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     get_controller_configuration_path,
     load_controller_configuration,
+    remove_controller_configuration,
     save_controller_configuration,
 )
 from aleph.vm.supervisor_interface.errors import (
@@ -60,6 +61,27 @@ from .network.interfaces import remove_orphan_tap_interfaces
 
 logger = logging.getLogger(__name__)
 
+# Background retry of VMs whose reattach failed at startup (their controller is
+# still running but the supervisor could not rebuild its in-memory state). A
+# transient cause (e.g. host networking not ready yet) heals on a later pass.
+REATTACH_RETRY_INTERVAL_SECONDS = 30
+REATTACH_RETRY_MAX_ATTEMPTS = 5
+
+
+@dataclass
+class _FailedReattach:
+    """A VM left running-but-untracked after a failed reattach, pending retry.
+
+    ``attempts`` starts at 1 (the startup attempt). Once it reaches
+    ``REATTACH_RETRY_MAX_ATTEMPTS`` the VM is ``exhausted``: the supervisor stops
+    retrying and leaves the live controller alone (operator intervention needed).
+    """
+
+    config: Configuration
+    vm_index: int
+    attempts: int = 1
+    exhausted: bool = False
+
 
 class VmPool:
     """Pool of existing VMs
@@ -79,12 +101,16 @@ class VmPool:
     """Resources reserved by an user, before launching (only GPU atm)"""
 
     _draining: bool
+    # VMs whose reattach failed and that are awaiting background retry. Keyed by
+    # vm_id; entries are removed once re-adopted, kept (exhausted) once given up.
+    _failed_reattach: dict[VmId, _FailedReattach]
 
     def __init__(self):
         self.executions = {}
         self.reservations = {}
         self.gpus = []
         self._draining = False
+        self._failed_reattach = {}
 
         self.creation_lock = asyncio.Lock()
 
@@ -490,6 +516,10 @@ class VmPool:
             vm_id,
         )
         await self._restore_running_execution_from_config(config, config.vm_id, vm_id)
+        # The VM may also be queued for background retry (or given up on):
+        # both paths run under creation_lock, so drop the entry here instead
+        # of leaving it to linger in unmanaged_vm_ids and hold its vm_index.
+        self._failed_reattach.pop(vm_id, None)
         return self.executions[vm_id]
 
     async def _create_firecracker_from_spec(self, spec: CreateVmSpec) -> VmExecution:
@@ -572,8 +602,12 @@ class VmPool:
         This identifier is used to name the network interface and in the IPv4 range
         dedicated to the VM.
         """
-        # Take the first id that is not already taken
+        # Take the first id that is not already taken. Failed-reattach VMs are
+        # not in self.executions but their live controllers still own their
+        # vm_index (tap interface, nft chains): handing one of those to a new
+        # create would let it delete the live VM's networking.
         currently_used_vm_ids = {execution.vm_index for execution in self.executions.values()}
+        currently_used_vm_ids |= {state.vm_index for state in self._failed_reattach.values()}
         for i in range(settings.START_ID_INDEX, 255**2):
             if i not in currently_used_vm_ids:
                 return i
@@ -746,10 +780,138 @@ class VmPool:
                 )
                 failed_vm_ids.add(vm_index)
                 failed_vm_hashes.add(str(config.vm_hash))
+                # Queue it for background retry (run_reattach_retry_loop): a
+                # transient cause may clear and let us adopt it without downtime.
+                self._failed_reattach[vm_id] = _FailedReattach(config=config, vm_index=vm_index)
 
         self._cleanup_orphan_resources(protected_vm_ids=failed_vm_ids, protected_vm_hashes=failed_vm_hashes)
 
         logger.info("Loaded %d executions", len(self.executions))
+
+    @property
+    def unmanaged_vm_ids(self) -> set[VmId]:
+        """VMs whose controller is running but which the supervisor gave up
+        reattaching (Option B). Surfaced for operators; these need manual action."""
+        return {vm_id for vm_id, state in self._failed_reattach.items() if state.exhausted}
+
+    async def discard_failed_reattach(self, vm_id: VmId) -> bool:
+        """Dequeue a failed-reattach VM (pending or exhausted) and stop its controller.
+
+        The delete path for a VM the supervisor never re-adopted: its
+        controller is running but the VM is not in ``self.executions``.
+        Without this, a delete raises VmNotFoundError while the retry loop
+        (or the next startup) resurrects the controller as an unmanageable,
+        still-billed VM.
+
+        Returns True if an entry was discarded (the controller was stopped
+        and its on-disk definition removed), False if nothing was queued.
+
+        Deliberately takes ``creation_lock``: the retry pass holds it around
+        its liveness check + restore, so acquiring it here guarantees we
+        never stop a controller that a concurrent retry pass is halfway
+        through adopting. If that pass wins the lock and adopts the VM
+        first, the entry is already gone and this returns False; the caller
+        then falls back to its not-found handling and a follow-up delete
+        goes through the tracked path.
+        """
+        async with self.creation_lock:
+            state = self._failed_reattach.pop(vm_id, None)
+            if state is None:
+                return False
+            logger.info(
+                "Discarding failed-reattach VM %s on delete: stopping its untracked controller",
+                vm_id,
+            )
+            # Same cleanup as a dead controller found at startup: stop and
+            # disable the unit, then drop the on-disk definition so neither
+            # the next startup nor systemd revives it.
+            await self._handle_dead_controller(state.config)
+            remove_controller_configuration(str(vm_id))
+            return True
+
+    async def run_reattach_retry_loop(self) -> None:
+        """Background loop: retry VMs whose reattach failed at startup.
+
+        Each pass re-attempts adoption for every VM not yet exhausted; a VM that
+        succeeds is dropped, one that fails has its attempt count bumped. After
+        REATTACH_RETRY_MAX_ATTEMPTS the VM is marked exhausted and left alone --
+        its controller keeps running, the supervisor just cannot manage it
+        (operator intervention required). The loop exits once nothing is left to
+        retry, so a clean startup (no failures) returns immediately.
+        """
+        while any(not state.exhausted for state in self._failed_reattach.values()):
+            await asyncio.sleep(REATTACH_RETRY_INTERVAL_SECONDS)
+            await self._retry_failed_reattachments_once()
+
+    async def _retry_failed_reattachments_once(self) -> None:
+        for vm_id, state in list(self._failed_reattach.items()):
+            if vm_id in self.executions:
+                # Adopted in the meantime (e.g. by an on-demand create). Checked
+                # before the exhausted skip so even a given-up entry is dropped
+                # once another path tracks the VM.
+                del self._failed_reattach[vm_id]
+                continue
+            if state.exhausted:
+                continue
+            # Serialize with create_vm_from_spec so the two adoption paths never
+            # rebuild the same VM concurrently.
+            async with self.creation_lock:
+                if vm_id in self.executions:
+                    # Adopted while we waited for the lock.
+                    del self._failed_reattach[vm_id]
+                    continue
+                # Liveness gate: the controller was alive at startup, but it may
+                # have died since. Restoring a dead one would register a phantom
+                # "running" execution (the restore never talks to the guest).
+                service_name = f"aleph-vm-controller@{vm_id}.service"
+                active_state = self.systemd_manager.get_service_active_state(service_name)
+                if active_state in ("inactive", "failed", "not-loaded"):
+                    # Positively dead: clean up the stale unit and stop retrying.
+                    logger.warning(
+                        "Controller of queued VM %s is %s; it died since startup. "
+                        "Cleaning it up and dropping it from reattach retries.",
+                        vm_id,
+                        active_state,
+                    )
+                    await self._handle_dead_controller(state.config)
+                    del self._failed_reattach[vm_id]
+                    continue
+                if active_state != "active":
+                    # "unknown" (D-Bus error) or a transitional state
+                    # (activating/deactivating): not proof of death, so treat it
+                    # exactly like a failed restore attempt and retry later.
+                    self._note_reattach_retry_failure(vm_id, state)
+                    continue
+                try:
+                    await self._restore_running_execution_from_config(state.config, state.vm_index, vm_id)
+                except Exception:
+                    self._note_reattach_retry_failure(vm_id, state)
+                else:
+                    del self._failed_reattach[vm_id]
+                    logger.info("Re-adopted previously-failed VM %s on retry", vm_id)
+
+    def _note_reattach_retry_failure(self, vm_id: VmId, state: _FailedReattach) -> None:
+        """Spend one reattach attempt for ``vm_id``; mark it exhausted at the cap.
+
+        ``attempts`` counts TOTAL attempts, including the one made at startup.
+        """
+        state.attempts += 1
+        if state.attempts >= REATTACH_RETRY_MAX_ATTEMPTS:
+            state.exhausted = True
+            logger.error(
+                "Giving up reattaching %s after %d attempts. Its controller is still "
+                "running but the supervisor cannot manage it; the VM is NOT auto-stopped "
+                "-- operator intervention required.",
+                vm_id,
+                state.attempts,
+            )
+        else:
+            logger.warning(
+                "Reattach attempt %d/%d for %s failed; will retry",
+                state.attempts,
+                REATTACH_RETRY_MAX_ATTEMPTS,
+                vm_id,
+            )
 
     async def _restore_network(self, vm_index: int, vm_id: VmId) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""
