@@ -434,10 +434,11 @@ class VmPool:
         restart-from-disk, which is safe).
 
         Fail-closed: when systemd cannot report a definitive unit state (a
-        D-Bus error, or a transitional activating/deactivating state), this
-        raises InternalSupervisorError so the create fails and the agent
-        retries later, instead of falling through to a fresh create over a
-        possibly live controller.
+        D-Bus error, or a transitional activating/deactivating state), or when
+        the VM's on-disk vm_index is meanwhile claimed by another tracked
+        execution, this raises InternalSupervisorError so the create fails and
+        the agent retries later, instead of falling through to a fresh create
+        over a possibly live controller.
 
         Called under ``creation_lock``. If re-adoption itself fails (the original
         transient cause persists), the exception propagates: the caller must NOT
@@ -463,6 +464,23 @@ class VmPool:
             msg = (
                 f"Cannot determine the state of controller {service_name} (ActiveState: {state}); "
                 f"refusing to create VM {vm_id} over a possibly live controller, retry later"
+            )
+            raise InternalSupervisorError(msg)
+
+        # The on-disk vm_index may have been handed to a newer VM after the
+        # failed reattach (get_unique_vm_index only sees tracked executions).
+        # Restoring on it would rewire that VM's tap/nftables (the restore
+        # path trusts the index), and a fresh create over the live controller
+        # is forbidden, so the only safe outcome is to fail.
+        claimed_by = next(
+            (other_id for other_id, execution in self.executions.items() if execution.vm_index == config.vm_id),
+            None,
+        )
+        if claimed_by is not None:
+            msg = (
+                f"Cannot re-adopt VM {vm_id}: its on-disk vm_index {config.vm_id} is now claimed by "
+                f"running VM {claimed_by}; refusing to rewire that VM's networking or to create a "
+                f"duplicate, operator intervention required"
             )
             raise InternalSupervisorError(msg)
 

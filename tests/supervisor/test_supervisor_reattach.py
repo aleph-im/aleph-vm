@@ -252,3 +252,36 @@ async def test_create_vm_from_spec_readopt_requires_same_spec(monkeypatch):
 
     with pytest.raises(VmAlreadyExistsError):
         await pool.create_vm_from_spec(replace(_spec(), vcpus=4))
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_raises_on_vm_index_conflict(monkeypatch, tmp_path):
+    """The untracked VM's on-disk vm_index may have been handed to a newer VM
+    after the failed reattach. Re-adopting on it would rewire the other VM's
+    tap/nftables (the restore path trusts the index), and a fresh create over
+    the live controller is forbidden, so the only safe outcome is to fail."""
+    pool = _bare_pool()
+    _fake_existing_config(monkeypatch, tmp_path)  # config.vm_id (vm_index) == 7
+    pool.executions[VmId("f" * 64)] = SimpleNamespace(vm_index=7)
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+    restore = AsyncMock(side_effect=AssertionError("must not restore on a conflicting vm_index"))
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    with pytest.raises(InternalSupervisorError):
+        await pool._readopt_live_controller(VmId(_HASH))
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_readopt_failure_does_not_fall_through(monkeypatch):
+    """The fail-closed contract of _readopt_live_controller: when re-adoption
+    fails (the original transient cause persists), the exception propagates
+    out of create_vm_from_spec and the fresh-create path is never reached."""
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(side_effect=RuntimeError("reattach still failing")))
+    pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
+
+    with pytest.raises(RuntimeError, match="reattach still failing"):
+        await pool.create_vm_from_spec(_spec())
+    pool.check_spec_admission.assert_not_called()
