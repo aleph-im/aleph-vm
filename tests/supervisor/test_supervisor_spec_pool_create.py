@@ -74,6 +74,7 @@ def _bare_pool() -> VmPool:
 
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
+    pool._failed_reattach = {}
     pool.reservations = {}
     pool.network = None  # exercise the no-network branch
     pool.snapshot_manager = None

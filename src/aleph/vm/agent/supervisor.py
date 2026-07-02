@@ -7,6 +7,7 @@ evolve in the future.
 """
 
 import asyncio
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.utils import create_task_log_exceptions
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -367,6 +369,27 @@ async def drain_in_flight_requests(app: web.Application):
         await pool.drain()
 
 
+async def start_reattach_retry_task(app: web.Application) -> None:
+    """on_startup: retry VMs whose reattach failed at load time (in-process mode).
+
+    No-op in split mode -- the daemon owns the pool and runs its own retry loop.
+    The loop self-terminates once nothing is left to retry.
+    """
+    pool: VmPool | None = app.get("_engine_pool")
+    if pool is None:
+        return
+    app["_reattach_retry_task"] = create_task_log_exceptions(pool.run_reattach_retry_loop(), name="reattach-retry-loop")
+
+
+async def stop_reattach_retry_task(app: web.Application) -> None:
+    """on_cleanup: cancel the reattach retry loop."""
+    task = app.get("_reattach_retry_task")
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def stop_all_vms(app: web.Application):
     pool: VmPool | None = app.get("_engine_pool")
     if pool is None:
@@ -457,7 +480,9 @@ def run():
     app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(start_node_hash_discovery)
+    app.on_startup.append(start_reattach_retry_task)
     app.on_cleanup.append(stop_node_hash_discovery)
+    app.on_cleanup.append(stop_reattach_retry_task)
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
