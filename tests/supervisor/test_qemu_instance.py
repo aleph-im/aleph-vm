@@ -19,6 +19,10 @@ from aleph.vm.supervisor.controllers.__main__ import (
     execute_persistent_vm,
 )
 from aleph.vm.supervisor.controllers.qemu import AlephQemuInstance
+from aleph.vm.supervisor.networking_db import (
+    create_supervisor_tables,
+    setup_supervisor_engine,
+)
 from aleph.vm.supervisor.qemu_build import build_qemu_configuration
 from aleph.vm.supervisor_interface.configuration import save_controller_configuration
 from aleph.vm.systemd import SystemDManager
@@ -101,6 +105,8 @@ async def test_create_qemu_instance(mocker):
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
     await metrics.create_tables(engine)
+    # The VM lifecycle persists port mappings to the supervisor DB.
+    await create_supervisor_tables(setup_supervisor_engine())
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     message = await get_message(ref=vm_hash)
@@ -177,6 +183,8 @@ async def test_create_qemu_instance_online(mocker):
     # The database is required for the metrics and is currently not optional.
     engine = metrics.setup_engine()
     await metrics.create_tables(engine)
+    # The VM lifecycle persists port mappings to the supervisor DB.
+    await create_supervisor_tables(setup_supervisor_engine())
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     message = await get_message(ref=vm_hash)

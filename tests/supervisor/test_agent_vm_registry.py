@@ -222,3 +222,42 @@ async def test_persist_then_rehydrate_round_trip(monkeypatch):
     assert rec.message is parsed
     assert rec.original is parsed
     assert rec.persistent is True
+
+
+@pytest.mark.asyncio
+async def test_delete_records_for_vm_removes_only_that_vm(monkeypatch):
+    """delete_records_for_vm drops every record for one vm_hash and no other."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    import aleph.vm.agent.metrics as metrics_mod
+    from aleph.vm.agent.metrics import (
+        Base,
+        delete_records_for_vm,
+        get_last_record_for_vm,
+        save_record,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(
+        metrics_mod,
+        "AsyncSessionMaker",
+        async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession),
+        raising=False,
+    )
+    now = datetime.now(tz=timezone.utc)
+    for uuid_, vm_hash in (("u1", "h1"), ("u2", "h1"), ("u3", "other")):
+        await save_record(ExecutionRecord(uuid=uuid_, vm_hash=vm_hash, time_defined=now, vcpus=1, memory=1))
+
+    await delete_records_for_vm("h1")
+
+    assert await get_last_record_for_vm("h1") is None
+    assert await get_last_record_for_vm("other") is not None
+    await engine.dispose()

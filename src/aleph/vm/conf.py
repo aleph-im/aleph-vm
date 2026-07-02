@@ -255,7 +255,10 @@ class Settings(BaseSettings):
     EXECUTION_ROOT: Path = Path("/var/lib/aleph/vm")
     JAILER_BASE_DIRECTORY: Path | None = Field(None, description="Default to EXECUTION_ROOT/jailer")
     EXECUTION_DATABASE: Path | None = Field(
-        None, description="Location of database file. Default to EXECUTION_ROOT/executions.sqlite3"
+        None, description="Agent database file (executions/records). Default to EXECUTION_ROOT/executions.sqlite3"
+    )
+    SUPERVISOR_DATABASE: Path | None = Field(
+        None, description="Supervisor database file (port mappings). Default to EXECUTION_ROOT/supervisor.sqlite3"
     )
     EXECUTION_LOG_ENABLED: bool = False
     EXECUTION_LOG_DIRECTORY: Path | None = Field(
@@ -699,6 +702,8 @@ class Settings(BaseSettings):
             self.PERSISTENT_VOLUMES_DIR = self.EXECUTION_ROOT / "volumes" / "persistent"
         if not self.EXECUTION_DATABASE:
             self.EXECUTION_DATABASE = self.EXECUTION_ROOT / "executions.sqlite3"
+        if not self.SUPERVISOR_DATABASE:
+            self.SUPERVISOR_DATABASE = self.EXECUTION_ROOT / "supervisor.sqlite3"
         if not self.EXECUTION_LOG_DIRECTORY:
             self.EXECUTION_LOG_DIRECTORY = self.EXECUTION_ROOT / "executions"
         if not self.JAILER_BASE_DIR:
@@ -718,6 +723,14 @@ def make_db_url():
 
 def make_sync_db_url():
     return f"sqlite:///{settings.EXECUTION_DATABASE}"
+
+
+def make_supervisor_db_url():
+    return f"sqlite+aiosqlite:///{settings.SUPERVISOR_DATABASE}"
+
+
+def make_supervisor_sync_db_url():
+    return f"sqlite:///{settings.SUPERVISOR_DATABASE}"
 
 
 # Settings singleton

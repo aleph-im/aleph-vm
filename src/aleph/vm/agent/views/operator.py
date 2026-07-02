@@ -661,6 +661,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["vm_registry"].forget(vm_hash)
+        await metrics.delete_records_for_vm(str(vm_hash))
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 

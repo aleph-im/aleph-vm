@@ -35,15 +35,13 @@ def default_socket_path() -> Path:
 async def run_daemon(socket_path: Path) -> None:
     # Local imports: pulling the pool imports the controller/networking stack,
     # which must happen after settings.setup().
-    from aleph.vm.agent import metrics
     from aleph.vm.pool import VmPool
     from aleph.vm.supervisor.grpc_server import serve_unix
     from aleph.vm.supervisor.local import LocalSupervisor
     from aleph.vm.utils import create_task_log_exceptions
 
-    engine = metrics.setup_engine()
-    await metrics.create_tables(engine)
-
+    # The supervisor owns only its own DB (port mappings); pool.setup() sets it
+    # up. The agent's executions DB is the agent process's concern.
     pool = VmPool()
     await pool.setup()
 
