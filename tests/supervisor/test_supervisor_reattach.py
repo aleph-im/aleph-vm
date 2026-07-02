@@ -406,6 +406,37 @@ async def test_retry_drops_vm_adopted_elsewhere(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discard_failed_reattach_stops_unit_and_removes_config():
+    """Deleting a queued (here: even exhausted) failed-reattach VM stops its
+    controller, removes its on-disk definition and dequeues it for good."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7, exhausted=True)
+    pool._failed_reattach = {VmId(_HASH): state}
+
+    with patch("aleph.vm.pool.remove_controller_configuration") as remove_config:
+        discarded = await pool.discard_failed_reattach(VmId(_HASH))
+
+    assert discarded is True
+    assert VmId(_HASH) not in pool._failed_reattach
+    pool.systemd_manager.stop_and_disable.assert_called_once_with(f"aleph-vm-controller@{_HASH}.service")
+    remove_config.assert_called_once_with(_HASH)
+
+
+@pytest.mark.asyncio
+async def test_discard_failed_reattach_without_entry_is_a_noop():
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+
+    discarded = await pool.discard_failed_reattach(VmId(_HASH))
+
+    assert discarded is False
+    pool.systemd_manager.stop_and_disable.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_retry_loop_returns_immediately_without_failures():
     """A clean startup (no failed reattachments) makes the loop a no-op."""
     pool = _bare_pool()

@@ -72,6 +72,10 @@ class FakePool:
         self.systemd_manager = systemd or FakeSystemd()
         self.network = network
 
+    async def discard_failed_reattach(self, vm_id):
+        # Mirrors VmPool.discard_failed_reattach: nothing queued by default.
+        return False
+
 
 @pytest.mark.asyncio
 async def test_get_vm_maps_a_running_qemu_instance():

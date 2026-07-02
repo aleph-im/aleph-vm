@@ -31,6 +31,7 @@ from aleph.vm.supervisor_interface.configuration import (
     Configuration,
     get_controller_configuration_path,
     load_controller_configuration,
+    remove_controller_configuration,
     save_controller_configuration,
 )
 from aleph.vm.supervisor_interface.errors import (
@@ -784,6 +785,41 @@ class VmPool:
         """VMs whose controller is running but which the supervisor gave up
         reattaching (Option B). Surfaced for operators; these need manual action."""
         return {vm_id for vm_id, state in self._failed_reattach.items() if state.exhausted}
+
+    async def discard_failed_reattach(self, vm_id: VmId) -> bool:
+        """Dequeue a failed-reattach VM (pending or exhausted) and stop its controller.
+
+        The delete path for a VM the supervisor never re-adopted: its
+        controller is running but the VM is not in ``self.executions``.
+        Without this, a delete raises VmNotFoundError while the retry loop
+        (or the next startup) resurrects the controller as an unmanageable,
+        still-billed VM.
+
+        Returns True if an entry was discarded (the controller was stopped
+        and its on-disk definition removed), False if nothing was queued.
+
+        Deliberately takes ``creation_lock``: the retry pass holds it around
+        its liveness check + restore, so acquiring it here guarantees we
+        never stop a controller that a concurrent retry pass is halfway
+        through adopting. If that pass wins the lock and adopts the VM
+        first, the entry is already gone and this returns False; the caller
+        then falls back to its not-found handling and a follow-up delete
+        goes through the tracked path.
+        """
+        async with self.creation_lock:
+            state = self._failed_reattach.pop(vm_id, None)
+            if state is None:
+                return False
+            logger.info(
+                "Discarding failed-reattach VM %s on delete: stopping its untracked controller",
+                vm_id,
+            )
+            # Same cleanup as a dead controller found at startup: stop and
+            # disable the unit, then drop the on-disk definition so neither
+            # the next startup nor systemd revives it.
+            await self._handle_dead_controller(state.config)
+            remove_controller_configuration(str(vm_id))
+            return True
 
     async def run_reattach_retry_loop(self) -> None:
         """Background loop: retry VMs whose reattach failed at startup.
