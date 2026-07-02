@@ -319,6 +319,10 @@ class VmPool:
             # disks, but it bounces or collides with a running instance).
             readopted = await self._readopt_live_controller(vm_id)
             if readopted is not None:
+                # Same idempotency contract as the tracked-running branch
+                # above: a retry with the identical spec returns the live VM,
+                # a different spec is a conflict, never a silent old-spec VM.
+                self._require_same_spec(readopted, spec)
                 return readopted
 
             # Authoritative capacity admission, folded into the create path so

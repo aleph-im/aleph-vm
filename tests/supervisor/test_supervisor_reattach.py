@@ -230,9 +230,25 @@ async def test_create_vm_from_spec_short_circuits_to_readopt(monkeypatch):
     fresh-create admission when a live untracked controller is found."""
     pool = _bare_pool()
     pool.creation_lock = asyncio.Lock()
-    sentinel = SimpleNamespace()
+    sentinel = SimpleNamespace(vm_spec=_spec())
     monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(return_value=sentinel))
     pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
 
     assert await pool.create_vm_from_spec(_spec()) is sentinel
     pool.check_spec_admission.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_readopt_requires_same_spec(monkeypatch):
+    """A create whose spec differs from the re-adopted VM's spec is a
+    conflict, same as the tracked-running idempotency branch: the caller must
+    not silently get a VM with the old vcpus/memory."""
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    readopted = SimpleNamespace(vm_spec=_spec())
+    monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(return_value=readopted))
+
+    from dataclasses import replace
+
+    with pytest.raises(VmAlreadyExistsError):
+        await pool.create_vm_from_spec(replace(_spec(), vcpus=4))
