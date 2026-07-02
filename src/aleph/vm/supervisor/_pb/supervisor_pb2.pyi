@@ -912,16 +912,20 @@ class DeleteVmRequest(google.protobuf.message.Message):
 
     VM_ID_FIELD_NUMBER: builtins.int
     WIPE_FIELD_NUMBER: builtins.int
+    KEEP_PORT_MAPPINGS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     wipe: builtins.bool
     """also delete persisted port mappings and writable data volumes"""
+    keep_port_mappings: builtins.bool
+    """the delete is part of a delete+recreate cycle: preserve persisted"""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
         wipe: builtins.bool = ...,
+        keep_port_mappings: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id", "wipe", b"wipe"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["keep_port_mappings", b"keep_port_mappings", "vm_id", b"vm_id", "wipe", b"wipe"]) -> None: ...
 
 global___DeleteVmRequest = DeleteVmRequest
 

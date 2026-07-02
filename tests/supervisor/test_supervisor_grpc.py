@@ -246,6 +246,28 @@ async def test_reinstall_wipe_volumes_crosses_explicitly(wipe_volumes):
     assert wrapped.calls == [("x", wipe_volumes)]
 
 
+class _RecordingDeleteSupervisor(LocalSupervisor):
+    """Records delete_vm kwargs to pin the wire crossing of both flags."""
+
+    def __init__(self):
+        super().__init__(pool=FakePool())
+        self.calls = []
+
+    async def delete_vm(self, vm_id, wipe=False, keep_port_mappings=False):
+        self.calls.append((vm_id, wipe, keep_port_mappings))
+        raise VmNotFoundError(vm_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("wipe", "keep_port_mappings"), [(False, False), (True, False), (False, True)])
+async def test_delete_vm_flags_cross_the_wire(wipe, keep_port_mappings):
+    wrapped = _RecordingDeleteSupervisor()
+    async with _ServerHarness(wrapped) as client:
+        with pytest.raises(VmNotFoundError):
+            await client.delete_vm(VmId("x"), wipe=wipe, keep_port_mappings=keep_port_mappings)
+    assert wrapped.calls == [("x", wipe, keep_port_mappings)]
+
+
 @pytest.mark.asyncio
 async def test_get_vm_spec_round_trips_over_the_wire():
     """GetVmSpec returns the spec class-exact: DTO → proto → DTO."""

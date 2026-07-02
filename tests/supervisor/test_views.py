@@ -1279,9 +1279,10 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker):
-    """update_allocations stop loop must call supervisor.delete_vm + delete_port_mappings
-    + registry.forget (permanent dealloc) for executions no longer in the allocation.
+async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client):
+    """update_allocations stop loop must call supervisor.delete_vm + registry.forget
+    (permanent dealloc) for executions no longer in the allocation. Port-mapping
+    cleanup is owned by supervisor.delete_vm (hypervisor-side).
     It must NOT call pool.stop_vm or pool.forget_vm directly.
     Status is read from supervisor.list_vms() (VmInfo); persistence from the registry.
     """
@@ -1341,8 +1342,6 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
-
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
@@ -1358,7 +1357,6 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
 
     # Verify the supervisor path was taken.
     fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
-    mock_delete_port_mappings.assert_awaited_once_with(vm_hash)
     # Permanent dealloc: registry.forget must be called.
     assert vm_hash not in app["vm_registry"]
 
@@ -1544,7 +1542,7 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mocker):
+async def test_update_allocations_spares_unrecorded_execution(aiohttp_client):
     """A VM with no registry record is not scheduler-managed and must NOT be stopped
     by the stop-loop; it is left to the idle-expiry path instead.
     Status is read from supervisor.list_vms(); a missing record means skip entirely."""
@@ -1578,8 +1576,6 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
-
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
@@ -1593,7 +1589,6 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mo
     # No registry record → not scheduler-managed → not stopped by this loop.
     assert vm_hash not in resp_json["stopped"]
     fake_supervisor.delete_vm.assert_not_awaited()
-    mock_delete_port_mappings.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1676,7 +1671,7 @@ def _running_vm_info(
 
 
 @pytest.mark.asyncio
-async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
+async def test_stop_loop_stops_eligible_vm(aiohttp_client):
     """A running, persistent, hold-tier VM not in the allocation must be stopped.
 
     Behavior 1: registry has record, persistent=True, status=RUNNING, no GPUs,
@@ -1692,8 +1687,6 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     app = _make_app_with_supervisor(fake_supervisor)
     app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
 
-    mock_delete_port_mappings = mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
-
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/allocations",
@@ -1705,7 +1698,6 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
 
     assert str(VM_HASH) in resp_json["stopped"]
     fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(VM_HASH)))
-    mock_delete_port_mappings.assert_awaited_once_with(VM_HASH)
     assert VM_HASH not in app["vm_registry"]
 
 
@@ -1745,7 +1737,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     ],
 )
 @pytest.mark.asyncio
-async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, description, vm_info_kwargs, registry_kwargs):
+async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_info_kwargs, registry_kwargs):
     """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
     must NOT be stopped by the stop-loop.
     """
@@ -1783,8 +1775,6 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, descripti
 
     if not registry_kwargs.get("no_record"):
         app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
-
-    mocker.patch("aleph.vm.agent.views.delete_port_mappings", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
     response = await client.post(
