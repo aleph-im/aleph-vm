@@ -26,10 +26,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-try:
-    from sqlalchemy.orm import declarative_base
-except ImportError:
-    from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 from aleph.vm.conf import make_supervisor_db_url, settings
 
@@ -174,8 +171,10 @@ def migrate_port_mappings_from_legacy_db() -> int:
     agent DB into the supervisor DB so live VMs keep their host-port forwards.
 
     Idempotent and self-skipping: does nothing when the two DBs are the same
-    file, the legacy DB is absent, the legacy table is missing, or the
-    supervisor table already holds rows. Returns the number of rows copied.
+    file, the legacy DB is absent, either table is missing, or the supervisor
+    table already holds rows. Returns the number of rows copied. The supervisor
+    schema is expected to exist (created in ``VmPool.setup``) for the copy to
+    happen; without it the migration skips.
 
     Both stores are SQLite files, so this copies rows verbatim (sync sqlite3),
     preserving created_at; ``id`` is left to autoincrement fresh.
@@ -186,8 +185,11 @@ def migrate_port_mappings_from_legacy_db() -> int:
         return 0
 
     with closing(sqlite3.connect(target)) as tgt:
-        if tgt.execute("SELECT 1 FROM port_mappings LIMIT 1").fetchone():
-            return 0  # already migrated / populated
+        try:
+            if tgt.execute("SELECT 1 FROM port_mappings LIMIT 1").fetchone():
+                return 0  # already migrated / populated
+        except sqlite3.OperationalError:
+            return 0  # supervisor schema not created yet, nothing to copy into
         with closing(sqlite3.connect(f"file:{legacy}?mode=ro", uri=True)) as src:
             try:
                 rows = src.execute(

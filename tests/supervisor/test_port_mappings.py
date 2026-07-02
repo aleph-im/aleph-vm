@@ -242,6 +242,33 @@ def test_migrate_port_mappings_copies_active_rows(tmp_path, monkeypatch):
     assert migrate_port_mappings_from_legacy_db() == 0
 
 
+def test_migrate_port_mappings_noop_when_target_table_missing(tmp_path, monkeypatch):
+    """A target DB file without the port_mappings table (schema not created
+    yet) must make the migration skip cleanly instead of crashing."""
+    import sqlite3
+
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
+
+    legacy = tmp_path / "executions.sqlite3"
+    target = tmp_path / "supervisor.sqlite3"
+    with closing(sqlite3.connect(legacy)) as c:
+        c.execute(_PM_SCHEMA)
+        c.execute(
+            "INSERT INTO port_mappings (vm_hash, vm_port, host_port, tcp, udp, created_at) VALUES (?,?,?,?,?,?)",
+            ("abc", 80, 30000, 1, 0, "2026-01-01"),
+        )
+        c.commit()
+    # Create the target DB file without any tables.
+    with closing(sqlite3.connect(target)):
+        pass
+
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", legacy)
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", target)
+
+    assert migrate_port_mappings_from_legacy_db() == 0
+
+
 def test_migrate_port_mappings_noop_when_same_file(tmp_path, monkeypatch):
     from aleph.vm.conf import settings
     from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
