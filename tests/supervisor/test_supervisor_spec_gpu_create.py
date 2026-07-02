@@ -79,6 +79,7 @@ def _spec(gpus: list[GpuSpec], *, owner_id: str = "") -> CreateVmSpec:
 def _bare_pool(gpus: list[ResourceGpuDevice]) -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
+    pool._failed_reattach = {}
     pool.reservations = {}
     pool.gpus = gpus
     pool.network = None
