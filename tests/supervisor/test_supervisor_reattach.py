@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aleph.vm.pool import VmPool
+from aleph.vm.supervisor_interface.errors import (
+    InternalSupervisorError,
+    VmAlreadyExistsError,
+)
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
@@ -148,3 +153,135 @@ async def test_restore_running_execution_from_config_registers_execution(monkeyp
     assert execution.vm_spec is execution.spec
     fake_vm.start_guest_api.assert_awaited_once()
     assert execution.ready_event.is_set()
+
+
+def _fake_existing_config(monkeypatch, tmp_path) -> SimpleNamespace:
+    """Point the on-disk config probe at an existing file and stub the loader."""
+    config_path = tmp_path / f"{_HASH}-controller.json"
+    config_path.write_text("{}")
+    config = SimpleNamespace(vm_hash=_HASH, vm_id=7)
+    monkeypatch.setattr("aleph.vm.pool.get_controller_configuration_path", lambda _h: config_path)
+    monkeypatch.setattr("aleph.vm.pool.load_controller_configuration", lambda _h: config)
+    return config
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_readopts_when_active(monkeypatch, tmp_path):
+    """A create for a VM whose controller is still running but untracked
+    re-adopts it (retries the reattach) instead of creating a duplicate."""
+    pool = _bare_pool()
+    _fake_existing_config(monkeypatch, tmp_path)
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+    adopted = SimpleNamespace()
+
+    async def fake_restore(_cfg, vm_index, vm_id):
+        assert vm_index == 7  # config.vm_id is the vm_index
+        pool.executions[vm_id] = adopted
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", fake_restore)
+
+    assert await pool._readopt_live_controller(VmId(_HASH)) is adopted
+    pool.systemd_manager.get_service_active_state.assert_called_once_with(f"aleph-vm-controller@{_HASH}.service")
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_none_without_config(monkeypatch, tmp_path):
+    """No on-disk config -> nothing to re-adopt -> normal create proceeds.
+    The loader is never called, so it cannot log a spurious warning."""
+    pool = _bare_pool()
+    monkeypatch.setattr(
+        "aleph.vm.pool.get_controller_configuration_path", lambda _h: tmp_path / f"{_HASH}-controller.json"
+    )
+    loader = MagicMock(side_effect=AssertionError("loader must not run when the config file is absent"))
+    monkeypatch.setattr("aleph.vm.pool.load_controller_configuration", loader)
+
+    assert await pool._readopt_live_controller(VmId(_HASH)) is None
+    loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["inactive", "failed", "not-loaded"])
+async def test_readopt_live_controller_none_when_positively_down(monkeypatch, tmp_path, state):
+    """Config exists but the controller is positively down -> no live VM to
+    clobber, so a normal create (a clean restart-from-disk) is allowed to
+    proceed."""
+    pool = _bare_pool()
+    _fake_existing_config(monkeypatch, tmp_path)
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value=state)
+    assert await pool._readopt_live_controller(VmId(_HASH)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["unknown", "activating", "deactivating"])
+async def test_readopt_live_controller_raises_when_state_indeterminate(monkeypatch, tmp_path, state):
+    """When systemd cannot tell whether the controller is live (a D-Bus error
+    or a transitional state), the create must fail so the agent retries later,
+    instead of falling through to a fresh create over a live controller."""
+    pool = _bare_pool()
+    _fake_existing_config(monkeypatch, tmp_path)
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value=state)
+    with pytest.raises(InternalSupervisorError):
+        await pool._readopt_live_controller(VmId(_HASH))
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_short_circuits_to_readopt(monkeypatch):
+    """create_vm_from_spec returns the re-adopted execution and never reaches
+    fresh-create admission when a live untracked controller is found."""
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    sentinel = SimpleNamespace(vm_spec=_spec())
+    monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(return_value=sentinel))
+    pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
+
+    assert await pool.create_vm_from_spec(_spec()) is sentinel
+    pool.check_spec_admission.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_readopt_requires_same_spec(monkeypatch):
+    """A create whose spec differs from the re-adopted VM's spec is a
+    conflict, same as the tracked-running idempotency branch: the caller must
+    not silently get a VM with the old vcpus/memory."""
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    readopted = SimpleNamespace(vm_spec=_spec())
+    monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(return_value=readopted))
+
+    from dataclasses import replace
+
+    with pytest.raises(VmAlreadyExistsError):
+        await pool.create_vm_from_spec(replace(_spec(), vcpus=4))
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_raises_on_vm_index_conflict(monkeypatch, tmp_path):
+    """The untracked VM's on-disk vm_index may have been handed to a newer VM
+    after the failed reattach. Re-adopting on it would rewire the other VM's
+    tap/nftables (the restore path trusts the index), and a fresh create over
+    the live controller is forbidden, so the only safe outcome is to fail."""
+    pool = _bare_pool()
+    _fake_existing_config(monkeypatch, tmp_path)  # config.vm_id (vm_index) == 7
+    pool.executions[VmId("f" * 64)] = SimpleNamespace(vm_index=7)
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+    restore = AsyncMock(side_effect=AssertionError("must not restore on a conflicting vm_index"))
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    with pytest.raises(InternalSupervisorError):
+        await pool._readopt_live_controller(VmId(_HASH))
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_from_spec_readopt_failure_does_not_fall_through(monkeypatch):
+    """The fail-closed contract of _readopt_live_controller: when re-adoption
+    fails (the original transient cause persists), the exception propagates
+    out of create_vm_from_spec and the fresh-create path is never reached."""
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(side_effect=RuntimeError("reattach still failing")))
+    pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
+
+    with pytest.raises(RuntimeError, match="reattach still failing"):
+        await pool.create_vm_from_spec(_spec())
+    pool.check_spec_admission.assert_not_called()
