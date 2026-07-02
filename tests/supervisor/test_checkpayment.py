@@ -258,6 +258,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
     mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.REMOVED)
     mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    mock_delete_records = mocker.patch("aleph.vm.agent.tasks.delete_records_for_vm", new_callable=mocker.AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
@@ -278,7 +279,8 @@ async def test_removed_message_status(mocker, fake_instance_content):
 
     await check_payment(supervisor=supervisor, registry=registry)
     # Terminal-status dealloc: supervisor.delete_vm (which owns port-mapping
-    # cleanup hypervisor-side) + registry.forget.
+    # cleanup hypervisor-side) + registry.forget + delete the persisted record.
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
+    mock_delete_records.assert_awaited_once_with(hash)
     assert ItemHash(hash) not in registry
     # pool.stop_vm and pool.forget_vm must NOT be called

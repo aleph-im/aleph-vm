@@ -1,5 +1,6 @@
 """Tests for port mapping DB logic and port availability checker."""
 
+from contextlib import closing
 from unittest.mock import patch
 
 import pytest
@@ -7,7 +8,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from aleph.vm.agent.metrics import Base, save_port_mappings
+from aleph.vm.supervisor.networking_db import Base, save_port_mappings
 
 
 @pytest_asyncio.fixture
@@ -23,13 +24,13 @@ async def async_session():
 
 @pytest_asyncio.fixture
 async def _patch_session_maker(async_session, monkeypatch):
-    """Redirect AsyncSessionMaker in metrics module to the in-memory DB."""
-    import aleph.vm.agent.metrics as metrics_mod
+    """Redirect SupervisorSessionMaker in the networking_db module to the in-memory DB."""
+    from aleph.vm.supervisor import networking_db
 
-    # raising=False: AsyncSessionMaker is a bare module annotation until
-    # setup_engine() binds it, so whether the attribute already exists depends
-    # on test order. Redirect it regardless of any prior setup_engine() call.
-    monkeypatch.setattr(metrics_mod, "AsyncSessionMaker", async_session, raising=False)
+    # raising=False: SupervisorSessionMaker is a bare module annotation until
+    # setup_supervisor_engine() binds it, so whether the attribute already exists
+    # depends on test order. Redirect it regardless of any prior setup call.
+    monkeypatch.setattr(networking_db, "SupervisorSessionMaker", async_session, raising=False)
 
 
 @pytest.mark.asyncio
@@ -140,7 +141,10 @@ def test_get_active_host_ports_missing_table(tmp_path):
     _SyncEngineHolder.reset()
     try:
         db_path = tmp_path / "empty.db"
-        with patch("aleph.vm.network.port_availability_checker.make_sync_db_url", return_value=f"sqlite:///{db_path}"):
+        with patch(
+            "aleph.vm.network.port_availability_checker.make_supervisor_sync_db_url",
+            return_value=f"sqlite:///{db_path}",
+        ):
             result = _get_active_host_ports()
         assert result == set()
     finally:
@@ -184,8 +188,130 @@ def test_get_active_host_ports_with_data(tmp_path):
 
     _SyncEngineHolder.reset()
     try:
-        with patch("aleph.vm.network.port_availability_checker.make_sync_db_url", return_value=f"sqlite:///{db_path}"):
+        with patch(
+            "aleph.vm.network.port_availability_checker.make_supervisor_sync_db_url",
+            return_value=f"sqlite:///{db_path}",
+        ):
             result = _get_active_host_ports()
         assert result == {30000}  # deleted row excluded
     finally:
         _SyncEngineHolder.reset()
+
+
+_PM_SCHEMA = (
+    "CREATE TABLE port_mappings ("
+    "id INTEGER PRIMARY KEY, vm_hash TEXT, vm_port INTEGER, host_port INTEGER, "
+    "tcp BOOLEAN, udp BOOLEAN, created_at DATETIME, deleted_at DATETIME)"
+)
+
+
+def test_migrate_port_mappings_copies_active_rows(tmp_path, monkeypatch):
+    """The upgrade migration copies active rows from the legacy agent DB into
+    the supervisor DB, skips soft-deleted rows, and is idempotent."""
+    import sqlite3
+
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
+
+    legacy = tmp_path / "executions.sqlite3"
+    target = tmp_path / "supervisor.sqlite3"
+    with closing(sqlite3.connect(legacy)) as c:
+        c.execute(_PM_SCHEMA)
+        c.execute(
+            "INSERT INTO port_mappings (vm_hash, vm_port, host_port, tcp, udp, created_at) VALUES (?,?,?,?,?,?)",
+            ("abc", 80, 30000, 1, 0, "2026-01-01"),
+        )
+        c.execute(
+            "INSERT INTO port_mappings (vm_hash, vm_port, host_port, tcp, udp, created_at, deleted_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("abc", 443, 30001, 1, 0, "2026-01-01", "2026-01-02"),
+        )
+        c.commit()
+    with closing(sqlite3.connect(target)) as c:
+        c.execute(_PM_SCHEMA)
+        c.commit()
+
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", legacy)
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", target)
+
+    assert migrate_port_mappings_from_legacy_db() == 1
+    with closing(sqlite3.connect(target)) as c:
+        rows = c.execute("SELECT vm_hash, host_port FROM port_mappings WHERE deleted_at IS NULL").fetchall()
+    assert rows == [("abc", 30000)]
+    # Idempotent: the target is now populated, so a second run copies nothing.
+    assert migrate_port_mappings_from_legacy_db() == 0
+
+
+def test_migrate_port_mappings_noop_when_target_table_missing(tmp_path, monkeypatch):
+    """A target DB file without the port_mappings table (schema not created
+    yet) must make the migration skip cleanly instead of crashing."""
+    import sqlite3
+
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
+
+    legacy = tmp_path / "executions.sqlite3"
+    target = tmp_path / "supervisor.sqlite3"
+    with closing(sqlite3.connect(legacy)) as c:
+        c.execute(_PM_SCHEMA)
+        c.execute(
+            "INSERT INTO port_mappings (vm_hash, vm_port, host_port, tcp, udp, created_at) VALUES (?,?,?,?,?,?)",
+            ("abc", 80, 30000, 1, 0, "2026-01-01"),
+        )
+        c.commit()
+    # Create the target DB file without any tables.
+    with closing(sqlite3.connect(target)):
+        pass
+
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", legacy)
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", target)
+
+    assert migrate_port_mappings_from_legacy_db() == 0
+
+
+def test_migrate_port_mappings_noop_when_same_file(tmp_path, monkeypatch):
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
+
+    same = tmp_path / "db.sqlite3"
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", same)
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", same)
+    assert migrate_port_mappings_from_legacy_db() == 0
+
+
+def test_migrate_port_mappings_noop_when_legacy_missing(tmp_path, monkeypatch):
+    from aleph.vm.conf import settings
+    from aleph.vm.supervisor.networking_db import migrate_port_mappings_from_legacy_db
+
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", tmp_path / "nope.sqlite3")
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", tmp_path / "supervisor.sqlite3")
+    assert migrate_port_mappings_from_legacy_db() == 0
+
+
+@pytest.mark.asyncio
+async def test_vm_pool_setup_binds_supervisor_engine(tmp_path, monkeypatch):
+    """VmPool.setup() must bind SupervisorSessionMaker and create the schema:
+    any process that runs the pool without it hits a NameError on the first
+    port-mapping access (regression: the run-instances CLI path)."""
+    import sqlite3
+
+    from aleph.vm.conf import settings
+    from aleph.vm.pool import VmPool
+    from aleph.vm.supervisor import networking_db
+
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
+    monkeypatch.setattr(settings, "SNAPSHOT_FREQUENCY", 0)
+    monkeypatch.setattr(settings, "ENABLE_GPU_SUPPORT", False)
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", tmp_path / "executions.sqlite3")
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", tmp_path / "supervisor.sqlite3")
+    monkeypatch.delattr(networking_db, "SupervisorSessionMaker", raising=False)
+
+    pool = VmPool()
+    await pool.setup()
+
+    # The session maker is bound and usable.
+    assert isinstance(networking_db.SupervisorSessionMaker, async_sessionmaker)
+    assert await networking_db.get_port_mappings("no-such-vm") == {}
+    # The schema exists in the supervisor DB file.
+    with closing(sqlite3.connect(tmp_path / "supervisor.sqlite3")) as c:
+        assert c.execute("SELECT COUNT(*) FROM port_mappings").fetchone() == (0,)

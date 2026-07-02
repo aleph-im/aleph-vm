@@ -951,6 +951,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     )
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
+    mock_delete_records = mocker.patch("aleph.vm.agent.metrics.delete_records_for_vm", new_callable=mocker.AsyncMock)
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/erase",
@@ -959,8 +960,9 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     assert response.status == 200
     assert await response.text() == f"Erased VM with ref {vm_hash}"
     fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe=True)
-    # registry record must be forgotten after erase
+    # registry record must be forgotten after erase, and its DB records deleted
     assert app["vm_registry"].get(vm_hash) is None
+    mock_delete_records.assert_awaited_once_with(str(vm_hash))
 
 
 @pytest.mark.asyncio
