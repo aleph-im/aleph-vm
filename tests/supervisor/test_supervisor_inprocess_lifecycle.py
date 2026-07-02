@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from test_supervisor_inprocess_query import FakePool, FakeSystemd, make_execution
@@ -54,6 +54,33 @@ async def test_delete_unknown_vm_raises():
     with pytest.raises(VmNotFoundError):
         await sup.delete_vm(VmId("nope"))
     pool.stop_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_queued_for_reattach_retry_stops_and_dequeues():
+    """A VM whose reattach failed is untracked (not in pool.executions) but
+    its controller is still running and the retry loop would resurrect it.
+    Delete must honor the request: stop the controller and drop the entry
+    instead of raising VmNotFoundError."""
+    import asyncio
+
+    from aleph.vm.pool import VmPool, _FailedReattach
+
+    pool = VmPool.__new__(VmPool)
+    pool.executions = {}
+    pool.network = None
+    pool.snapshot_manager = None
+    pool.systemd_manager = MagicMock()
+    pool.creation_lock = asyncio.Lock()
+    pool._failed_reattach = {VM_ID: _FailedReattach(config=SimpleNamespace(vm_hash=str(VM_ID), vm_id=7), vm_index=7)}
+    sup = LocalSupervisor(pool=pool)
+
+    with patch("aleph.vm.pool.remove_controller_configuration") as remove_config:
+        await sup.delete_vm(VM_ID)  # must not raise
+
+    assert VM_ID not in pool._failed_reattach
+    pool.systemd_manager.stop_and_disable.assert_called_once_with(f"aleph-vm-controller@{VM_ID}.service")
+    remove_config.assert_called_once_with(str(VM_ID))
 
 
 @pytest.mark.asyncio

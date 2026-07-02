@@ -57,6 +57,7 @@ def _bare_pool() -> VmPool:
     pool.network = None
     pool.snapshot_manager = None
     pool.systemd_manager = MagicMock()
+    pool._failed_reattach = {}
     return pool
 
 
@@ -285,3 +286,215 @@ async def test_create_vm_from_spec_readopt_failure_does_not_fall_through(monkeyp
     with pytest.raises(RuntimeError, match="reattach still failing"):
         await pool.create_vm_from_spec(_spec())
     pool.check_spec_admission.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_readopts_a_failed_vm(monkeypatch):
+    """A queued failed VM is dropped from the retry set once it re-adopts."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)}
+
+    async def fake_restore(_cfg, vm_index, vm_id):
+        pool.executions[vm_id] = SimpleNamespace(vm_index=vm_index)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", fake_restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    assert VmId(_HASH) in pool.executions
+
+
+@pytest.mark.asyncio
+async def test_retry_drops_dead_controller(monkeypatch):
+    """A controller that died since startup must not be re-adopted as a
+    phantom running execution: it is cleaned up and dequeued for good."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="inactive")
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+    dead = AsyncMock()
+    monkeypatch.setattr(pool, "_handle_dead_controller", dead)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    assert VmId(_HASH) not in pool.executions
+    dead.assert_awaited_once_with(state.config)
+    restore.assert_not_awaited()
+    pool.systemd_manager.get_service_active_state.assert_called_once_with(f"aleph-vm-controller@{_HASH}.service")
+
+
+@pytest.mark.asyncio
+async def test_retry_unknown_state_counts_as_failed_attempt(monkeypatch):
+    """A D-Bus error ("unknown") is not proof the controller is dead: the
+    entry stays queued, no restore or cleanup happens, one attempt is spent."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="unknown")
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+    dead = AsyncMock()
+    monkeypatch.setattr(pool, "_handle_dead_controller", dead)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) in pool._failed_reattach
+    assert state.attempts == 2
+    assert state.exhausted is False
+    restore.assert_not_awaited()
+    dead.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausts_and_leaves_vm_running(monkeypatch):
+    """After MAX attempts the VM is exhausted, kept as unmanaged, and NOT
+    auto-stopped (Option B)."""
+    from aleph.vm.pool import REATTACH_RETRY_MAX_ATTEMPTS, _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+
+    async def always_fail(_cfg, _vm_index, _vm_id):
+        msg = "still broken"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", always_fail)
+
+    for _ in range(REATTACH_RETRY_MAX_ATTEMPTS):
+        await pool._retry_failed_reattachments_once()
+
+    assert state.exhausted is True
+    assert VmId(_HASH) in pool._failed_reattach
+    assert VmId(_HASH) in pool.unmanaged_vm_ids
+    pool.systemd_manager.stop_and_disable.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_drops_vm_adopted_elsewhere(monkeypatch):
+    """If the VM is already in the pool (adopted by an on-demand create), the
+    retry drops it without attempting another restore."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)}
+    pool.executions[VmId(_HASH)] = SimpleNamespace(vm_index=7)
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_drops_exhausted_vm_adopted_elsewhere(monkeypatch):
+    """Even a given-up (exhausted) entry is dropped once another path tracks
+    the VM: the adopted-elsewhere cleanup runs before the exhausted skip."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7, exhausted=True)
+    pool._failed_reattach = {VmId(_HASH): state}
+    pool.executions[VmId(_HASH)] = SimpleNamespace(vm_index=7)
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discard_failed_reattach_stops_unit_and_removes_config():
+    """Deleting a queued (here: even exhausted) failed-reattach VM stops its
+    controller, removes its on-disk definition and dequeues it for good."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7, exhausted=True)
+    pool._failed_reattach = {VmId(_HASH): state}
+
+    with patch("aleph.vm.pool.remove_controller_configuration") as remove_config:
+        discarded = await pool.discard_failed_reattach(VmId(_HASH))
+
+    assert discarded is True
+    assert VmId(_HASH) not in pool._failed_reattach
+    pool.systemd_manager.stop_and_disable.assert_called_once_with(f"aleph-vm-controller@{_HASH}.service")
+    remove_config.assert_called_once_with(_HASH)
+
+
+@pytest.mark.asyncio
+async def test_discard_failed_reattach_without_entry_is_a_noop():
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+
+    discarded = await pool.discard_failed_reattach(VmId(_HASH))
+
+    assert discarded is False
+    pool.systemd_manager.stop_and_disable.assert_not_called()
+
+
+def test_get_unique_vm_index_skips_failed_reattach_indexes(monkeypatch):
+    """A queued/exhausted failed-reattach VM still owns its vm_index (tap,
+    nft chains): handing it to a fresh create would let that create tear
+    down the live VM's networking."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    monkeypatch.setattr("aleph.vm.pool.settings.START_ID_INDEX", 4, raising=False)
+    pool.executions = {VmId("a" * 64): SimpleNamespace(vm_index=4)}
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=5), vm_index=5)}
+
+    assert pool.get_unique_vm_index() == 6
+
+
+@pytest.mark.asyncio
+async def test_retry_loop_returns_immediately_without_failures():
+    """A clean startup (no failed reattachments) makes the loop a no-op."""
+    pool = _bare_pool()
+    pool._failed_reattach = {}
+    await pool.run_reattach_retry_loop()  # must not hang
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_dequeues_failed_reattach(monkeypatch, tmp_path):
+    """A successful re-adopt via create drops the VM from the retry set
+    directly (both paths run under creation_lock), so a queued or exhausted
+    entry does not linger in unmanaged_vm_ids or block its vm_index."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    config = _fake_existing_config(monkeypatch, tmp_path)
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=config, vm_index=7, exhausted=True)}
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+
+    async def fake_restore(_cfg, vm_index, vm_id):
+        pool.executions[vm_id] = SimpleNamespace(vm_index=vm_index)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", fake_restore)
+
+    await pool._readopt_live_controller(VmId(_HASH))
+
+    assert VmId(_HASH) not in pool._failed_reattach

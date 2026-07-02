@@ -47,6 +47,10 @@ class FakePool:
     def __init__(self):
         self.executions = {}
 
+    async def discard_failed_reattach(self, vm_id) -> bool:
+        # Nothing is ever queued for reattach retry in these tests.
+        return False
+
 
 class _ServerHarness:
     """Server + client pair on a short-lived UDS path."""
