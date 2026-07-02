@@ -250,7 +250,8 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
 
 async def _logs_auth_message(request: web.Request, vm_hash: ItemHash):
     """Message for owner-auth on the logs endpoints: registry first, then the
-    agent DB (past executions keep their record until record_usage deletes it)."""
+    agent DB. Past executions keep their DB record: nothing deletes it today
+    (a follow-up adds explicit deletion on permanent dealloc)."""
     record = request.app["vm_registry"].get(vm_hash)
     if record is not None:
         return record.message

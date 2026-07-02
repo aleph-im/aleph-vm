@@ -8,7 +8,6 @@ from enum import Enum
 
 from aleph.vm.agent.metrics import (
     delete_port_mappings,
-    delete_record,
     save_execution_data,
     save_port_mappings,
 )
@@ -692,7 +691,6 @@ class VmExecution:
         return deleted_count
 
     async def record_usage(self):
-        await delete_record(execution_uuid=str(self.uuid))
         # Non-persistent VMs won't restart, so clean up their port mappings
         if not self.persistent:
             await delete_port_mappings(self.vm_id)

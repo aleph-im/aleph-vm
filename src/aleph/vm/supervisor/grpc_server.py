@@ -131,7 +131,9 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
 
     @_translating
     async def DeleteVm(self, request: pb.DeleteVmRequest, context) -> pb.DeleteVmResponse:
-        await self._supervisor.delete_vm(VmId(request.vm_id), wipe=request.wipe)
+        await self._supervisor.delete_vm(
+            VmId(request.vm_id), wipe=request.wipe, keep_port_mappings=request.keep_port_mappings
+        )
         return pb.DeleteVmResponse()
 
     @_translating

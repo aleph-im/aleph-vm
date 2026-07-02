@@ -295,6 +295,14 @@ def test_delete_vm_request_has_wipe_field():
     assert supervisor_pb2.DeleteVmRequest(vm_id="x").wipe is False
 
 
+def test_delete_vm_request_has_keep_port_mappings_field():
+    from aleph.vm.supervisor._pb import supervisor_pb2
+
+    req = supervisor_pb2.DeleteVmRequest(vm_id="x", keep_port_mappings=True)
+    assert req.keep_port_mappings is True
+    assert supervisor_pb2.DeleteVmRequest(vm_id="x").keep_port_mappings is False
+
+
 def test_reinstall_vm_request_has_wipe_volumes_field():
     from aleph.vm.supervisor._pb import supervisor_pb2
 

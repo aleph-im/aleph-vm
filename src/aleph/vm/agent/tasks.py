@@ -27,7 +27,6 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
-from aleph.vm.agent.metrics import delete_port_mappings
 from aleph.vm.agent.run import reconcile_port_forwards
 from aleph.vm.agent.utils import (
     format_cost,
@@ -393,9 +392,6 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             )
             del _terminal_strike_count[key]
             await supervisor.delete_vm(VmId(str(vm_hash)))
-            # Residual direct DB call: mapping persistence moves fully
-            # hypervisor-side with the gRPC split (plan: Design deltas #3).
-            await delete_port_mappings(vm_hash)
             registry.forget(vm_hash)
         else:
             # Status is healthy — reset any previous strikes
