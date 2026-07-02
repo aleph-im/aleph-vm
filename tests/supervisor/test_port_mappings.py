@@ -259,3 +259,32 @@ def test_migrate_port_mappings_noop_when_legacy_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_DATABASE", tmp_path / "nope.sqlite3")
     monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", tmp_path / "supervisor.sqlite3")
     assert migrate_port_mappings_from_legacy_db() == 0
+
+
+@pytest.mark.asyncio
+async def test_vm_pool_setup_binds_supervisor_engine(tmp_path, monkeypatch):
+    """VmPool.setup() must bind SupervisorSessionMaker and create the schema:
+    any process that runs the pool without it hits a NameError on the first
+    port-mapping access (regression: the run-instances CLI path)."""
+    import sqlite3
+
+    from aleph.vm.conf import settings
+    from aleph.vm.pool import VmPool
+    from aleph.vm.supervisor import networking_db
+
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
+    monkeypatch.setattr(settings, "SNAPSHOT_FREQUENCY", 0)
+    monkeypatch.setattr(settings, "ENABLE_GPU_SUPPORT", False)
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", tmp_path / "executions.sqlite3")
+    monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", tmp_path / "supervisor.sqlite3")
+    monkeypatch.delattr(networking_db, "SupervisorSessionMaker", raising=False)
+
+    pool = VmPool()
+    await pool.setup()
+
+    # The session maker is bound and usable.
+    assert isinstance(networking_db.SupervisorSessionMaker, async_sessionmaker)
+    assert await networking_db.get_port_mappings("no-such-vm") == {}
+    # The schema exists in the supervisor DB file.
+    with closing(sqlite3.connect(tmp_path / "supervisor.sqlite3")) as c:
+        assert c.execute("SELECT COUNT(*) FROM port_mappings").fetchone() == (0,)
