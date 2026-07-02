@@ -353,6 +353,8 @@ message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
   string vm_id = 1;
   bool wipe = 2;                     // also delete persisted port mappings and writable data volumes
+  bool keep_port_mappings = 3;       // the delete is part of a delete+recreate cycle: preserve persisted
+                                     // host-port forwards (ignored when wipe=true)
 }
 message DeleteVmResponse  {}
 message RebootVmRequest {

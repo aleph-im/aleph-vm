@@ -462,7 +462,7 @@ class LocalSupervisor(Supervisor):
             execution = self._require(vm_id)
             return execution.vm_spec
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
         with translating_errors():
             execution = self._require(vm_id)
             old_status = self._status_snapshot(execution)
@@ -477,11 +477,16 @@ class LocalSupervisor(Supervisor):
             # Delete releases the definition: the controller config and the
             # cloud-init seed go too (stop_vm keeps them for reattach).
             remove_controller_configuration(str(vm_id))
-            # The VM is gone, so its persisted port mappings go too. A mere stop
-            # keeps them (a persistent VM restarts with the same forwards); a
-            # delete is final. Port mappings are hypervisor-owned state, so this
-            # lives here rather than as a residual direct DB call agent-side.
-            await delete_port_mappings(execution.vm_id)
+            # The VM is gone, so its persisted port mappings normally go too:
+            # a delete is final unless the caller says otherwise. Delete+recreate
+            # cycles (crash recovery, message updates) pass keep_port_mappings=True
+            # so the recreated VM reloads the same host ports; wipe overrides it
+            # (an erase is always final). Port mappings are hypervisor-owned state,
+            # so this lives here rather than as a residual direct DB call
+            # agent-side. Note: VmExecution.record_usage (models.py) also deletes
+            # the mappings of non-persistent VMs on stop; keep both sites in sync.
+            if wipe or not keep_port_mappings:
+                await delete_port_mappings(execution.vm_id)
             if wipe:
                 # Mirrors the old operate_erase semantics: writable data volumes
                 # go, the rootfs stays.

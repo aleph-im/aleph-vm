@@ -32,12 +32,13 @@ def _make_pool(executions: dict | None = None):
 
 
 @pytest.mark.asyncio
-async def test_delete_vm_stops_and_forgets():
+async def test_delete_vm_stops_and_forgets(monkeypatch):
     execution = make_execution()
     pool = FakePool(executions={"itemhash123": execution})
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
     sup = LocalSupervisor(pool=pool)
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", AsyncMock())
 
     await sup.delete_vm(VmId("itemhash123"))
 
@@ -153,6 +154,43 @@ async def test_delete_vm_without_wipe_keeps_data_but_drops_port_mappings(monkeyp
     deleted.assert_awaited_once_with(execution.vm_id)
     # ... but the data volumes are kept without wipe.
     execution.erase_volumes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_keep_port_mappings_preserves_rows(monkeypatch):
+    """A delete+recreate cycle (crash recovery, message update) passes
+    keep_port_mappings=True so the recreated VM reloads the same host ports."""
+    execution = make_execution()
+    pool = _make_pool({VM_ID: execution})
+    supervisor = LocalSupervisor(pool)
+    deleted = AsyncMock()
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
+    execution.erase_volumes = MagicMock()
+
+    await supervisor.delete_vm(VM_ID, keep_port_mappings=True)
+
+    pool.stop_vm.assert_awaited_once_with(VM_ID)
+    pool.forget_vm.assert_called_once_with(VM_ID)
+    deleted.assert_not_awaited()
+    execution.erase_volumes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_wipe_overrides_keep_port_mappings(monkeypatch):
+    """wipe=True is final: the port mappings go even when a (nonsensical)
+    keep_port_mappings=True is passed along."""
+    execution = make_execution()
+    pool = _make_pool({VM_ID: execution})
+    supervisor = LocalSupervisor(pool)
+    deleted = AsyncMock()
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
+    erased = MagicMock(return_value=1)
+    execution.erase_volumes = erased
+
+    await supervisor.delete_vm(VM_ID, wipe=True, keep_port_mappings=True)
+
+    deleted.assert_awaited_once_with(execution.vm_id)
+    erased.assert_called_once_with()
 
 
 def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
@@ -360,6 +398,7 @@ async def test_delete_vm_removes_on_disk_artifacts(monkeypatch, tmp_path):
     execution = make_execution()
     pool = _make_pool({str(VM_ID): execution})
     sup = LocalSupervisor(pool=pool)
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", AsyncMock())
 
     await sup.delete_vm(VM_ID)
 
