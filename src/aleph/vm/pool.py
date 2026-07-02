@@ -29,10 +29,12 @@ from aleph.vm.supervisor.qemu_build import (
 )
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
+    get_controller_configuration_path,
     load_controller_configuration,
     save_controller_configuration,
 )
 from aleph.vm.supervisor_interface.errors import (
+    InternalSupervisorError,
     InvalidBackendError,
     VmAlreadyExistsError,
 )
@@ -421,22 +423,44 @@ class VmPool:
         """Re-adopt a VM whose controller is still running but is absent from the
         pool (a reattach that failed and was isolated by load_persistent_executions).
 
-        Returns the re-adopted execution, or None when there is nothing live to
-        adopt -- no on-disk config, or the controller is not active -- in which
-        case the caller proceeds with a normal create (an inactive controller is
-        a clean restart-from-disk, which is safe).
+        Returns the re-adopted execution, or None when there is positively
+        nothing live to adopt (no on-disk config, or the controller unit is
+        inactive, failed, or not loaded), in which case the caller proceeds
+        with a normal create (an inactive controller is a clean
+        restart-from-disk, which is safe).
+
+        Fail-closed: when systemd cannot report a definitive unit state (a
+        D-Bus error, or a transitional activating/deactivating state), this
+        raises InternalSupervisorError so the create fails and the agent
+        retries later, instead of falling through to a fresh create over a
+        possibly live controller.
 
         Called under ``creation_lock``. If re-adoption itself fails (the original
         transient cause persists), the exception propagates: the caller must NOT
         fall through to a fresh create over the live controller. The VM stays
-        untracked until the next attempt -- never clobbered.
+        untracked until the next attempt, never clobbered.
         """
+        # Probe for the config file before calling the loader: for a genuinely
+        # new VM there is no file and load_controller_configuration would log
+        # a spurious "not found" warning on every create.
+        if not get_controller_configuration_path(str(vm_id)).exists():
+            return None
         config = load_controller_configuration(str(vm_id))
         if config is None:
             return None
         service_name = f"aleph-vm-controller@{vm_id}.service"
-        if not self.systemd_manager.get_services_active_states([service_name]).get(service_name, False):
+        state = self.systemd_manager.get_service_active_state(service_name)
+        if state in ("inactive", "failed", "not-loaded"):
+            # Positively not running: a fresh create is a clean restart.
             return None
+        if state != "active":
+            # "unknown" (a D-Bus failure) or a transitional state: we cannot
+            # tell whether the controller is live, so refuse to create.
+            msg = (
+                f"Cannot determine the state of controller {service_name} (ActiveState: {state}); "
+                f"refusing to create VM {vm_id} over a possibly live controller, retry later"
+            )
+            raise InternalSupervisorError(msg)
 
         logger.warning(
             "create requested for %s but its controller is already running and untracked "
