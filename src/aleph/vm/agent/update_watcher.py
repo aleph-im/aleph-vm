@@ -73,7 +73,10 @@ class UpdateWatcher:
         try:
             await pubsub.msubscribe(*refs)
             logger.info("Update received for %s, reaping", vm_id)
-            await self.supervisor.delete_vm(vm_id)
+            # An update reap is a delete+recreate cycle, not a dealloc: the VM
+            # is redeployed with the updated message, so keep the persisted
+            # host-port forwards for the recreated VM to reload.
+            await self.supervisor.delete_vm(vm_id, keep_port_mappings=True)
             reaped = True
         except VmNotFoundError:
             logger.debug("Update-watch: VM %s already gone", vm_id)

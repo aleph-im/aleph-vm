@@ -16,7 +16,7 @@ class FakeSupervisor:
         self.deleted: list[tuple[str, bool]] = []
         self.raise_not_found = raise_not_found
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
         self.deleted.append((str(vm_id), wipe))
         if self.raise_not_found:
             raise VmNotFoundError(str(vm_id))

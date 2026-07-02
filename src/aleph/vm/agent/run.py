@@ -704,7 +704,10 @@ async def start_persistent_vm(
             await _wait_until_running(supervisor, vm_id)
         else:  # FAILED
             logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
-            await supervisor.delete_vm(vm_id)
+            # Crash recovery is a delete+recreate cycle, not a dealloc: keep
+            # the persisted host-port forwards (the owner's SSH forward among
+            # them) so the recreated VM reloads the same host ports.
+            await supervisor.delete_vm(vm_id, keep_port_mappings=True)
             info = None
 
     if info is None:

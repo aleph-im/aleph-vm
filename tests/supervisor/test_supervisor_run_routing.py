@@ -495,7 +495,9 @@ async def test_start_persistent_recreates_after_failed(monkeypatch):
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
-    sup.delete_vm.assert_awaited_once()  # FAILED -> delete then recreate
+    # FAILED -> delete then recreate: a recovery cycle, so the persisted
+    # host-port forwards must survive the delete.
+    sup.delete_vm.assert_awaited_once_with(VmId(_HASH), keep_port_mappings=True)
     created.assert_awaited_once()
     sup.start_vm.assert_not_awaited()
 
