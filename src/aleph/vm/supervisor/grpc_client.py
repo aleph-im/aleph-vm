@@ -179,8 +179,12 @@ class GrpcSupervisor(Supervisor):
         reply = await self._unary("ListVms", pb.ListVmsRequest(), QUERY_TIMEOUT_SECS)
         return [conv.vm_info_from_pb(info) for info in reply.vms]
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None:
-        await self._unary("DeleteVm", pb.DeleteVmRequest(vm_id=str(vm_id), wipe=wipe), LIFECYCLE_TIMEOUT_SECS)
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
+        await self._unary(
+            "DeleteVm",
+            pb.DeleteVmRequest(vm_id=str(vm_id), wipe=wipe, keep_port_mappings=keep_port_mappings),
+            LIFECYCLE_TIMEOUT_SECS,
+        )
 
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
         reply = await self._unary("StopVm", pb.StopVmRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)

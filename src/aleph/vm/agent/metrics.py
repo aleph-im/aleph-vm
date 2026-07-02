@@ -14,7 +14,6 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    delete,
     select,
     update,
 )
@@ -101,17 +100,6 @@ async def save_record(record: ExecutionRecord):
     async with AsyncSessionMaker() as session:
         await session.merge(record)
         await session.commit()
-
-
-async def delete_record(execution_uuid: str):
-    """Delete the resource usage in database"""
-    async with AsyncSessionMaker() as session:
-        try:
-            statement = delete(ExecutionRecord).where(ExecutionRecord.uuid == execution_uuid)
-            await session.execute(statement)
-            await session.commit()
-        finally:
-            await session.close()
 
 
 async def get_execution_records() -> Iterable[ExecutionRecord]:

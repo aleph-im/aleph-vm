@@ -56,7 +56,13 @@ class LifecycleOps(ABC):
     async def list_vms(self) -> list[VmInfo]: ...
 
     @abstractmethod
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False) -> None: ...
+    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
+        """Stop the VM and release its definition. A delete is final by
+        default: persisted host-port mappings go too, and wipe=True also
+        erases writable data volumes. keep_port_mappings=True preserves the
+        persisted host-port forwards for a delete+recreate cycle (crash
+        recovery, message updates), so the recreated VM reloads the same
+        host ports; it is ignored when wipe is True."""
 
     @abstractmethod
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
