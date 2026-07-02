@@ -476,3 +476,25 @@ async def test_retry_loop_returns_immediately_without_failures():
     pool = _bare_pool()
     pool._failed_reattach = {}
     await pool.run_reattach_retry_loop()  # must not hang
+
+
+@pytest.mark.asyncio
+async def test_readopt_live_controller_dequeues_failed_reattach(monkeypatch, tmp_path):
+    """A successful re-adopt via create drops the VM from the retry set
+    directly (both paths run under creation_lock), so a queued or exhausted
+    entry does not linger in unmanaged_vm_ids or block its vm_index."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    config = _fake_existing_config(monkeypatch, tmp_path)
+    pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=config, vm_index=7, exhausted=True)}
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
+
+    async def fake_restore(_cfg, vm_index, vm_id):
+        pool.executions[vm_id] = SimpleNamespace(vm_index=vm_index)
+
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", fake_restore)
+
+    await pool._readopt_live_controller(VmId(_HASH))
+
+    assert VmId(_HASH) not in pool._failed_reattach

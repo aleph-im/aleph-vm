@@ -516,6 +516,10 @@ class VmPool:
             vm_id,
         )
         await self._restore_running_execution_from_config(config, config.vm_id, vm_id)
+        # The VM may also be queued for background retry (or given up on):
+        # both paths run under creation_lock, so drop the entry here instead
+        # of leaving it to linger in unmanaged_vm_ids and hold its vm_index.
+        self._failed_reattach.pop(vm_id, None)
         return self.executions[vm_id]
 
     async def _create_firecracker_from_spec(self, spec: CreateVmSpec) -> VmExecution:
