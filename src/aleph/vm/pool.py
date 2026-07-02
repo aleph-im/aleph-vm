@@ -810,29 +810,58 @@ class VmPool:
                     # Adopted in the meantime (e.g. by an on-demand create).
                     del self._failed_reattach[vm_id]
                     continue
+                # Liveness gate: the controller was alive at startup, but it may
+                # have died since. Restoring a dead one would register a phantom
+                # "running" execution (the restore never talks to the guest).
+                service_name = f"aleph-vm-controller@{vm_id}.service"
+                active_state = self.systemd_manager.get_service_active_state(service_name)
+                if active_state in ("inactive", "failed", "not-loaded"):
+                    # Positively dead: clean up the stale unit and stop retrying.
+                    logger.warning(
+                        "Controller of queued VM %s is %s; it died since startup. "
+                        "Cleaning it up and dropping it from reattach retries.",
+                        vm_id,
+                        active_state,
+                    )
+                    await self._handle_dead_controller(state.config)
+                    del self._failed_reattach[vm_id]
+                    continue
+                if active_state != "active":
+                    # "unknown" (D-Bus error) or a transitional state
+                    # (activating/deactivating): not proof of death, so treat it
+                    # exactly like a failed restore attempt and retry later.
+                    self._note_reattach_retry_failure(vm_id, state)
+                    continue
                 try:
                     await self._restore_running_execution_from_config(state.config, state.vm_index, vm_id)
                 except Exception:
-                    state.attempts += 1
-                    if state.attempts >= REATTACH_RETRY_MAX_ATTEMPTS:
-                        state.exhausted = True
-                        logger.error(
-                            "Giving up reattaching %s after %d attempts. Its controller is still "
-                            "running but the supervisor cannot manage it; the VM is NOT auto-stopped "
-                            "-- operator intervention required.",
-                            vm_id,
-                            state.attempts,
-                        )
-                    else:
-                        logger.warning(
-                            "Reattach retry %d/%d for %s failed; will retry",
-                            state.attempts,
-                            REATTACH_RETRY_MAX_ATTEMPTS,
-                            vm_id,
-                        )
+                    self._note_reattach_retry_failure(vm_id, state)
                 else:
                     del self._failed_reattach[vm_id]
                     logger.info("Re-adopted previously-failed VM %s on retry", vm_id)
+
+    def _note_reattach_retry_failure(self, vm_id: VmId, state: _FailedReattach) -> None:
+        """Spend one reattach attempt for ``vm_id``; mark it exhausted at the cap.
+
+        ``attempts`` counts TOTAL attempts, including the one made at startup.
+        """
+        state.attempts += 1
+        if state.attempts >= REATTACH_RETRY_MAX_ATTEMPTS:
+            state.exhausted = True
+            logger.error(
+                "Giving up reattaching %s after %d attempts. Its controller is still "
+                "running but the supervisor cannot manage it; the VM is NOT auto-stopped "
+                "-- operator intervention required.",
+                vm_id,
+                state.attempts,
+            )
+        else:
+            logger.warning(
+                "Reattach retry %d/%d for %s failed; will retry",
+                state.attempts,
+                REATTACH_RETRY_MAX_ATTEMPTS,
+                vm_id,
+            )
 
     async def _restore_network(self, vm_index: int, vm_id: VmId) -> TapInterface | None:
         """Restore tap interface, NDP proxy, and nftables rules for a VM."""

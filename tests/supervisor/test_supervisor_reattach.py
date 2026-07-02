@@ -295,6 +295,7 @@ async def test_retry_readopts_a_failed_vm(monkeypatch):
 
     pool = _bare_pool()
     pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
     pool._failed_reattach = {VmId(_HASH): _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)}
 
     async def fake_restore(_cfg, vm_index, vm_id):
@@ -309,6 +310,56 @@ async def test_retry_readopts_a_failed_vm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retry_drops_dead_controller(monkeypatch):
+    """A controller that died since startup must not be re-adopted as a
+    phantom running execution: it is cleaned up and dequeued for good."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="inactive")
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+    dead = AsyncMock()
+    monkeypatch.setattr(pool, "_handle_dead_controller", dead)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) not in pool._failed_reattach
+    assert VmId(_HASH) not in pool.executions
+    dead.assert_awaited_once_with(state.config)
+    restore.assert_not_awaited()
+    pool.systemd_manager.get_service_active_state.assert_called_once_with(f"aleph-vm-controller@{_HASH}.service")
+
+
+@pytest.mark.asyncio
+async def test_retry_unknown_state_counts_as_failed_attempt(monkeypatch):
+    """A D-Bus error ("unknown") is not proof the controller is dead: the
+    entry stays queued, no restore or cleanup happens, one attempt is spent."""
+    from aleph.vm.pool import _FailedReattach
+
+    pool = _bare_pool()
+    pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="unknown")
+    state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
+    pool._failed_reattach = {VmId(_HASH): state}
+    restore = AsyncMock()
+    monkeypatch.setattr(pool, "_restore_running_execution_from_config", restore)
+    dead = AsyncMock()
+    monkeypatch.setattr(pool, "_handle_dead_controller", dead)
+
+    await pool._retry_failed_reattachments_once()
+
+    assert VmId(_HASH) in pool._failed_reattach
+    assert state.attempts == 2
+    assert state.exhausted is False
+    restore.assert_not_awaited()
+    dead.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_retry_exhausts_and_leaves_vm_running(monkeypatch):
     """After MAX attempts the VM is exhausted, kept as unmanaged, and NOT
     auto-stopped (Option B)."""
@@ -316,6 +367,7 @@ async def test_retry_exhausts_and_leaves_vm_running(monkeypatch):
 
     pool = _bare_pool()
     pool.creation_lock = asyncio.Lock()
+    pool.systemd_manager.get_service_active_state = MagicMock(return_value="active")
     state = _FailedReattach(config=SimpleNamespace(vm_hash=_HASH, vm_id=7), vm_index=7)
     pool._failed_reattach = {VmId(_HASH): state}
 
