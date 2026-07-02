@@ -1279,7 +1279,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker):
+async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client):
     """update_allocations stop loop must call supervisor.delete_vm + registry.forget
     (permanent dealloc) for executions no longer in the allocation. Port-mapping
     cleanup is owned by supervisor.delete_vm (hypervisor-side).
@@ -1542,7 +1542,7 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, mocker):
+async def test_update_allocations_spares_unrecorded_execution(aiohttp_client):
     """A VM with no registry record is not scheduler-managed and must NOT be stopped
     by the stop-loop; it is left to the idle-expiry path instead.
     Status is read from supervisor.list_vms(); a missing record means skip entirely."""
@@ -1671,7 +1671,7 @@ def _running_vm_info(
 
 
 @pytest.mark.asyncio
-async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
+async def test_stop_loop_stops_eligible_vm(aiohttp_client):
     """A running, persistent, hold-tier VM not in the allocation must be stopped.
 
     Behavior 1: registry has record, persistent=True, status=RUNNING, no GPUs,
@@ -1737,7 +1737,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     ],
 )
 @pytest.mark.asyncio
-async def test_stop_loop_spares_ineligible_vms(aiohttp_client, mocker, description, vm_info_kwargs, registry_kwargs):
+async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_info_kwargs, registry_kwargs):
     """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
     must NOT be stopped by the stop-loop.
     """
