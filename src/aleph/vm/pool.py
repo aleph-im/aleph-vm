@@ -10,7 +10,6 @@ from typing import Any
 
 import psutil
 
-from aleph.vm.agent.metrics import get_port_mappings
 from aleph.vm.agent.utils import update_aggregate_settings
 from aleph.vm.conf import settings
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
@@ -22,6 +21,12 @@ from aleph.vm.resources import (
     get_gpu_devices,
 )
 from aleph.vm.supervisor.controllers.firecracker.snapshot_manager import SnapshotManager
+from aleph.vm.supervisor.networking_db import (
+    create_supervisor_tables,
+    get_port_mappings,
+    migrate_port_mappings_from_legacy_db,
+    setup_supervisor_engine,
+)
 from aleph.vm.supervisor.qemu_build import (
     build_qemu_confidential_configuration,
     build_qemu_configuration,
@@ -136,6 +141,14 @@ class VmPool:
 
     async def setup(self) -> None:
         """Set up the VM pool and the network."""
+        # This process runs the pool, so it owns the supervisor DB (port
+        # mappings). Set up its engine, create the schema, and on first start
+        # after the agent/supervisor DB split, migrate any pre-split rows so
+        # live VMs keep their host-port forwards.
+        engine = setup_supervisor_engine()
+        await create_supervisor_tables(engine)
+        migrate_port_mappings_from_legacy_db()
+
         if self.network:
             self.network.setup()
 

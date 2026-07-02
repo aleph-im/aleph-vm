@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 import psutil
 from aleph_message.models.execution.environment import AMDSEVPolicy
 
-from aleph.vm.agent.metrics import delete_port_mappings, get_port_mappings
 from aleph.vm.conf import settings
 from aleph.vm.network.firewall import (
     initialize_nftables,
@@ -45,6 +44,7 @@ from aleph.vm.supervisor.controllers.qemu.backup import (
 )
 from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 from aleph.vm.supervisor.error_mapping import translating_errors
+from aleph.vm.supervisor.networking_db import delete_port_mappings, get_port_mappings
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.configuration import remove_controller_configuration
 from aleph.vm.supervisor_interface.errors import (

@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
-from aleph.vm.conf import make_sync_db_url
+from aleph.vm.conf import make_supervisor_sync_db_url
 from aleph.vm.network.firewall import check_nftables_redirections
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class _SyncEngineHolder:
     @classmethod
     def get(cls) -> Engine:
         if cls._instance is None:
-            cls._instance = create_engine(make_sync_db_url())
+            cls._instance = create_engine(make_supervisor_sync_db_url())
         return cls._instance
 
     @classmethod

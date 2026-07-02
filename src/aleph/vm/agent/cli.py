@@ -285,6 +285,9 @@ async def run_instances(instances: list[ItemHash]) -> None:
     logger.info(f"Instances to run: {instances}")
     loop = asyncio.get_event_loop()
     pool = VmPool()
+    # Bind the supervisor DB engine (port mappings) and set up the network;
+    # the create path hits that DB on its first port-mapping lookup.
+    await pool.setup()
     # The main program uses a singleton pubsub instance in order to watch for updates.
     # We create another instance here since that singleton is not initialized yet.
     # Watching for updates on this instance will therefore not work.

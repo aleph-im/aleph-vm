@@ -1279,7 +1279,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client):
+async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker):
     """update_allocations stop loop must call supervisor.delete_vm + registry.forget
     (permanent dealloc) for executions no longer in the allocation. Port-mapping
     cleanup is owned by supervisor.delete_vm (hypervisor-side).
@@ -1342,6 +1342,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client):
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
+    mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
@@ -1357,7 +1358,8 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client):
 
     # Verify the supervisor path was taken.
     fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
-    # Permanent dealloc: registry.forget must be called.
+    # Permanent dealloc: registry.forget + delete the persisted record.
+    mock_delete_records.assert_awaited_once_with(vm_hash)
     assert vm_hash not in app["vm_registry"]
 
 
@@ -1671,7 +1673,7 @@ def _running_vm_info(
 
 
 @pytest.mark.asyncio
-async def test_stop_loop_stops_eligible_vm(aiohttp_client):
+async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     """A running, persistent, hold-tier VM not in the allocation must be stopped.
 
     Behavior 1: registry has record, persistent=True, status=RUNNING, no GPUs,
@@ -1686,6 +1688,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client):
     )
     app = _make_app_with_supervisor(fake_supervisor)
     app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+    mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
     response = await client.post(
@@ -1698,6 +1701,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client):
 
     assert str(VM_HASH) in resp_json["stopped"]
     fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(VM_HASH)))
+    mock_delete_records.assert_awaited_once_with(str(VM_HASH))
     assert VM_HASH not in app["vm_registry"]
 
 

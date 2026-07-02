@@ -27,6 +27,7 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
+from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.run import reconcile_port_forwards
 from aleph.vm.agent.utils import (
     format_cost,
@@ -393,6 +394,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             del _terminal_strike_count[key]
             await supervisor.delete_vm(VmId(str(vm_hash)))
             registry.forget(vm_hash)
+            await delete_records_for_vm(str(vm_hash))
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
