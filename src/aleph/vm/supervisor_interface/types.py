@@ -430,9 +430,10 @@ class HostInfo:
     # Reservation-aware figures the agent's /about endpoints surface. The
     # embedded engine fills them from the pool. ``gpu_inventory`` /
     # ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
-    # device_class, compatible) as plain dicts so the public usage endpoint does
-    # not regress to the narrow boundary GpuDevice; they ride the proto as JSON
-    # strings.
+    # device_class) as plain dicts so the public usage endpoint does not
+    # regress to the narrow boundary GpuDevice; they ride the proto as JSON
+    # strings. Raw hardware only: the network annotation (model name,
+    # aggregate-whitelist compatibility) is the agent's job.
     available_disk_bytes: int = 0
     gpu_inventory: list[dict] = field(default_factory=list)
     available_gpus: list[dict] = field(default_factory=list)

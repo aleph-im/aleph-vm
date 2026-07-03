@@ -254,12 +254,10 @@ async def test_create_vm_from_spec_confidential_with_gpu_carries_resolved_gpu(mo
 
     gpu = ResourceGpuDevice(
         vendor="NVIDIA",
-        model="RTX 4000",
         device_name="GH100",
         device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
         pci_host="0000:01:00.0",
         device_id=_DEVICE_ID,
-        compatible=True,
     )
     pool = _bare_pool()
     pool.gpus = [gpu]
@@ -321,12 +319,10 @@ def _gpu_device(device_id: str = _DEVICE_ID, pci_host: str = "0000:01:00.0"):
 
     return ResourceGpuDevice(
         vendor="NVIDIA",
-        model="RTX 4000",
         device_name="GH100",
         device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
         pci_host=pci_host,
         device_id=device_id,
-        compatible=True,
     )
 
 

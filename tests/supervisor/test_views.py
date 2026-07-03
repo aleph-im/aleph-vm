@@ -670,7 +670,7 @@ async def test_about_certificates(aiohttp_client):
 @pytest.fixture
 def mock_aggregate_settings(mocker: MockerFixture):
     mocker.patch(
-        "aleph.vm.utils.aggregate.fetch_aggregate_settings",
+        "aleph.vm.agent.aggregate.fetch_aggregate_settings",
         return_value={
             "compatible_gpus": [
                 {"name": "AD102GL [L40S]", "model": "L40S", "vendor": "NVIDIA", "device_id": "10de:26b9"},
