@@ -1,8 +1,9 @@
 """The supervisor daemon: the hypervisor side of the process split.
 
 Owns the VmPool (controllers, networking, systemd supervision) and serves the
-gRPC contract on a Unix socket. The agent process connects with
-`GrpcSupervisor` when `ALEPH_VM_SUPERVISOR_GRPC_SOCKET` is set.
+gRPC contract on a Unix socket (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET`, default
+`EXECUTION_ROOT/supervisor.sock`). The agent process always connects to it
+with `GrpcSupervisor`; there is no in-process mode.
 
 On SIGTERM/SIGINT the gRPC server stops but VMs keep running: persistent VMs
 live in systemd controller units and are reattached on the next daemon start
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 def default_socket_path() -> Path:
+    # The setting always carries a value: conf derives EXECUTION_ROOT/supervisor.sock
+    # when ALEPH_VM_SUPERVISOR_GRPC_SOCKET is unset. The fallback below only guards
+    # against an explicitly emptied setting.
     if settings.SUPERVISOR_GRPC_SOCKET:
         return Path(settings.SUPERVISOR_GRPC_SOCKET)
     return Path(settings.EXECUTION_ROOT) / "supervisor.sock"

@@ -22,6 +22,14 @@ from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
+
+# Supervisor-side harness imports: the benchmark and --run-test-instance /
+# --run-fake-instance paths below build the daemon's engine (VmPool +
+# LocalSupervisor) directly in this process instead of dialing a running
+# daemon over gRPC. They are single-shot developer/CI harnesses (the droplet
+# CI drives --run-fake-instance), deliberately exempt from the agent's
+# gRPC-only rule; the production agent path (supervisor.run()) never builds a
+# pool. The exemption is pinned in pyproject.toml's import-linter contract.
 from aleph.vm.pool import VmPool
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git

@@ -22,6 +22,7 @@ from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
 from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.types import (
     DirectoryPath,
     IpAssignment,
@@ -70,7 +71,7 @@ def mock_instance_content():
 @pytest.mark.asyncio
 async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid item_hash is provided."""
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     response: web.Response = await client.post(
@@ -297,7 +298,7 @@ async def test_system_capability_mock(aiohttp_client, mocker):
         "psutil.cpu_count",
         lambda: 200,
     )
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/capability")
     assert response.status == 200
@@ -323,7 +324,7 @@ async def test_system_capability_real(aiohttp_client, mocker):
     if os.environ.get("GITHUB_JOB"):
         pytest.xfail("Test fail inside GITHUB CI because of invalid lshw return inside worker")
 
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/capability")
     assert response.status == 200
@@ -339,7 +340,7 @@ async def test_system_capability_real(aiohttp_client, mocker):
 async def test_allocation_invalid_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when an invalid auth token is provided."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/allocations",
@@ -353,7 +354,7 @@ async def test_allocation_invalid_auth_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_allocation_missing_auth_token(aiohttp_client):
     """Test that the allocation endpoint fails when auth token is not provided."""
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response: web.Response = await client.post(
         "/control/allocations",
@@ -370,7 +371,7 @@ async def test_allocation_valid_token(aiohttp_client):
     This is a very simple test that don't start or stop any VM so the mock is minimal"""
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp(pool=_FakeVmPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
@@ -386,7 +387,7 @@ async def test_allocation_valid_token(aiohttp_client):
 @pytest.mark.asyncio
 async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool):
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -425,7 +426,7 @@ async def test_v2_executions_list_confidential_awaiting_init(aiohttp_client, moc
     """A confidential VM waiting for its owner to initialize it must be distinguishable
     from a dead VM in the executions list, so the scheduler and console can report it."""
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
@@ -461,7 +462,7 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(aiohttp_cl
     from ipaddress import IPv4Network, IPv6Network
 
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
@@ -510,7 +511,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(aiohttp
     (the scheduler requires networking.ipv4/ipv6), so an awaiting-init VM whose
     tap interface is not set up must stay out of the list."""
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
     systemd_manager = mocker.Mock(
@@ -541,7 +542,7 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(aiohttp
 async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_with_pool):
     "Test locally but do not create"
     web_app = await mock_app_with_pool
-    pool: VmPool = web_app["_engine_pool"]
+    pool: VmPool = web_app["supervisor"].pool
 
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
@@ -625,7 +626,7 @@ async def test_about_certificates_missing_setting(aiohttp_client):
     """Test that the certificates system endpoint returns an error if the setting isn't enabled"""
     settings.ENABLE_CONFIDENTIAL_COMPUTING = False
 
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     app["sev_client"] = SevClient(Path().resolve(), Path("/opt/sevctl").resolve())
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/certificates")
@@ -650,7 +651,7 @@ async def test_about_certificates(aiohttp_client):
             return_value=True,
         ) as export_mock:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                app = setup_webapp(pool=None)
+                app = setup_webapp(supervisor=LocalSupervisor(None))
                 sev_client = SevClient(Path(tmp_dir), Path("/opt/sevctl"))
                 app["sev_client"] = sev_client
                 # Create mock file to return it
@@ -754,7 +755,7 @@ async def mock_app_with_pool(mocker, mock_aggregate_settings):
     mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
     pool = VmPool()
     await pool.setup()
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     return app
 
 
@@ -857,7 +858,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     resp = await response.json()
     assert "expires" in resp
     assert resp["status"] == "reserved"
-    assert len(app["_engine_pool"].reservations) == 1
+    assert len(app["supervisor"].pool.reservations) == 1
 
     # make a second reservation
     response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
@@ -866,7 +867,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert "expires" in resp2
     assert resp2["status"] == "reserved"
     assert resp2["expires"] > resp["expires"]
-    assert len(app["_engine_pool"].reservations) == 1
+    assert len(app["supervisor"].pool.reservations) == 1
 
     # another user try to reserve, should return an error
     other_user = "other_user"
@@ -879,7 +880,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     # InsufficientResourcesError when no matching card is free (here the only card
     # is held by the first user), which the endpoint maps to 503.
     assert response3.status == 503, await response3.text()
-    assert len(app["_engine_pool"].reservations) == 1
+    assert len(app["supervisor"].pool.reservations) == 1
 
     # Try to reserve a GPU that the CRN doesn't have
 
@@ -969,7 +970,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     # all cards before committing, raises InsufficientResourcesError, and holds
     # nothing. The endpoint maps that to 503.
     assert response.status == 503, await response.text()
-    assert len(app["_engine_pool"].reservations) == 0
+    assert len(app["supervisor"].pool.reservations) == 0
 
 
 @pytest.mark.asyncio
@@ -1052,7 +1053,7 @@ async def test_operate(aiohttp_client, mock_app_with_pool, mock_instance_content
 @pytest.mark.asyncio
 async def test_regenerate_proxy_missing_auth_token(aiohttp_client):
     """Test that the regenerate_proxy endpoint fails when auth token is not provided."""
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response: web.Response = await client.post("/control/proxy/regenerate")
     assert response.status == 401
@@ -1063,7 +1064,7 @@ async def test_regenerate_proxy_missing_auth_token(aiohttp_client):
 async def test_regenerate_proxy_invalid_auth_token(aiohttp_client):
     """Test that the regenerate_proxy endpoint fails when an invalid auth token is provided."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/proxy/regenerate",
@@ -1172,7 +1173,7 @@ async def test_allocation_aleph_eip191_v1_valid(aiohttp_client, monkeypatch):
     body_bytes = json.dumps(body_dict).encode()
     auth = _make_aleph_eip191_v1_header(account, body=body_bytes)
 
-    app = setup_webapp(pool=_FakeVmPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
@@ -1193,7 +1194,7 @@ async def test_allocation_aleph_eip191_v1_invalid_no_fallback(aiohttp_client, mo
         sha256(b"test").hexdigest(),
     )
 
-    app = setup_webapp(pool=_FakeVmPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
     response = await client.post(
@@ -1220,7 +1221,7 @@ async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkey
         sha256(b"test").hexdigest(),
     )
 
-    app = setup_webapp(pool=_FakeVmPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
@@ -1259,7 +1260,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
     mocker.patch.object(operator, "is_sender_authorized", new=mocker.AsyncMock(return_value=True))
     mocker.patch.object(operator, "get_backup_directory", return_value=tmp_path)
 
-    app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+    app = setup_webapp(supervisor=LocalSupervisor(mocker.AsyncMock(executions={})))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1333,7 +1334,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     )
 
     pool = _FakeVmPool()
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     app["pubsub"] = None
 
     # Seed registry so the app knows the VM.
@@ -1367,7 +1368,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
 async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_with_pool, mock_instance_content):
     """/about/executions/list keeps its shape: running VMs only, networks + vm_type."""
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
     registry = web_app["vm_registry"]
     message = InstanceContent.model_validate(mock_instance_content)
 
@@ -1412,7 +1413,7 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_with_pool):
     """v2 rebuilds the legacy mapped_ports shape from list_port_forwards."""
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     execution = VmExecution.from_spec(
@@ -1442,7 +1443,7 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocke
     """A mapping with no enabled protocol (ghost entry) is not listed (deliberate
     divergence from the legacy pool dump, which emitted it verbatim)."""
     web_app = await mock_app_with_pool
-    pool = web_app["_engine_pool"]
+    pool = web_app["supervisor"].pool
     vm_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     execution = VmExecution.from_spec(
@@ -1521,7 +1522,7 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     )
 
     pool = _FakeVmPool()
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message, original=message, persistent=True)
 
@@ -1571,7 +1572,7 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client):
     )
 
     pool = _FakeVmPool()
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     app["pubsub"] = None
     # Deliberately do NOT record vm_hash in app["vm_registry"].
 
@@ -1635,7 +1636,7 @@ _CREDIT_INSTANCE_CONTENT = {
 def _make_app_with_supervisor(supervisor):
     """Create a minimal webapp whose supervisor is replaced with the given double."""
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-    app = setup_webapp(pool=_FakeVmPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     app["supervisor"] = supervisor
     return app
@@ -1796,7 +1797,7 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_i
 @pytest.mark.asyncio
 async def test_about_executions_details_route_gone(aiohttp_client):
     """/about/executions/details must NOT exist — route was deleted in Phase 1."""
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response: web.Response = await client.get("/about/executions/details")
     assert response.status == 404, (

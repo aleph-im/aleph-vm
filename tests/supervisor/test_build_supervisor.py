@@ -1,23 +1,32 @@
-"""Guard the embedded-vs-gRPC supervisor selection in `build_supervisor`.
+"""Guard `build_supervisor` and the gRPC socket default.
 
-The factory's only job is the dev/test-vs-production split: with
-`SUPERVISOR_GRPC_SOCKET` unset the agent runs the embedded pool-backed
-`LocalSupervisor`; with it set the agent talks to the daemon over gRPC via
-`GrpcSupervisor`. These tests pin both branches.
+gRPC is the only supervisor mode: the factory always returns a
+`GrpcSupervisor` dialing `settings.SUPERVISOR_GRPC_SOCKET`, and the settings
+derive that socket from EXECUTION_ROOT when the environment leaves it unset
+(so production, where EXECUTION_ROOT is /var/lib/aleph/vm, matches the
+packaged supervisor.env value /var/lib/aleph/vm/supervisor.sock).
 """
 
 from types import SimpleNamespace
 
 from aleph.vm.agent.supervisor import build_supervisor
+from aleph.vm.conf import Settings
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.local import LocalSupervisor
 
 
-def test_build_supervisor_embedded_when_socket_unset():
-    supervisor = build_supervisor(SimpleNamespace(SUPERVISOR_GRPC_SOCKET=None), pool=object())
-    assert isinstance(supervisor, LocalSupervisor)
-
-
-def test_build_supervisor_grpc_when_socket_set():
-    supervisor = build_supervisor(SimpleNamespace(SUPERVISOR_GRPC_SOCKET="/tmp/x.sock"), pool=None)
+def test_build_supervisor_always_returns_the_grpc_client():
+    supervisor = build_supervisor(SimpleNamespace(SUPERVISOR_GRPC_SOCKET="/tmp/x.sock"))
     assert isinstance(supervisor, GrpcSupervisor)
+    assert supervisor.socket_path == "/tmp/x.sock"
+
+
+def test_supervisor_grpc_socket_defaults_to_execution_root(monkeypatch):
+    monkeypatch.delenv("ALEPH_VM_SUPERVISOR_GRPC_SOCKET", raising=False)
+    settings = Settings()
+    assert settings.SUPERVISOR_GRPC_SOCKET == settings.EXECUTION_ROOT / "supervisor.sock"
+
+
+def test_supervisor_grpc_socket_env_override(monkeypatch):
+    monkeypatch.setenv("ALEPH_VM_SUPERVISOR_GRPC_SOCKET", "/run/custom/supervisor.sock")
+    settings = Settings()
+    assert str(settings.SUPERVISOR_GRPC_SOCKET) == "/run/custom/supervisor.sock"

@@ -1,13 +1,11 @@
 """
-The VM Supervisor is in charge of executing code, starting and stopping VMs and provides
-an API to launch these operations.
-
-At its core, it is currently an asynchronous HTTP server using aiohttp, but this may
-evolve in the future.
+The agent web server: the public HTTP API of the CRN (aiohttp). It executes
+code and starts/stops VMs by driving the supervisor daemon, which owns the
+VmPool, over gRPC (the `Supervisor` contract); the agent itself never builds
+a pool.
 """
 
 import asyncio
-import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -23,11 +21,9 @@ from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
-from aleph.vm.pool import VmPool
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor.grpc_client import GrpcSupervisor
-from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.utils import create_task_log_exceptions
+from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -103,9 +99,8 @@ async def drain_middleware(request, handler) -> web.Response:
     (/vm/* and hostname-based routing). Status, control, and about
     endpoints remain accessible for monitoring and operations.
 
-    The draining flag is agent-owned (``app["draining"]``), so it works in split
-    mode where the in-process pool is absent: the agent fronts every request
-    regardless of which process owns the VMs.
+    The draining flag is agent-owned (``app["draining"]``): the agent fronts
+    every request while the supervisor daemon owns the VMs.
     """
     if request.app.get("draining"):
         path = request.path
@@ -167,14 +162,15 @@ async def http_not_found(request: web.Request):  # noqa: ARG001
 
 
 async def watch_supervisor_events(app: web.Application) -> None:
-    """Split mode: consume the supervisor's WatchEvents stream and drop
-    agent-side per-VM state when a VM goes down.
+    """Consume the supervisor's WatchEvents stream and drop agent-side per-VM
+    state when a VM goes down.
 
-    This is the cross-process replacement for the in-process reap hooks: a
-    VM leaving RUNNING (stop, reboot's down-phase, delete, reinstall) must
+    A VM leaving RUNNING (stop, reboot's down-phase, delete, reinstall) must
     drop the agent's guest-side program state (guest API process, configured
-    mark) and cancel pending idle-teardown timers. Reconnects on stream
-    failure; exits if the supervisor does not implement WatchEvents.
+    mark) and cancel pending idle-teardown timers; the supervisor's event
+    stream is the agent's only way to learn about it without polling.
+    Reconnects on stream failure; exits if the supervisor does not implement
+    WatchEvents.
     """
     from aleph.vm.supervisor_interface.errors import NotImplementedSupervisorError
     from aleph.vm.supervisor_interface.types import VmStatus
@@ -197,41 +193,35 @@ async def watch_supervisor_events(app: web.Application) -> None:
         await asyncio.sleep(5)
 
 
-def build_supervisor(settings, pool: VmPool | None) -> GrpcSupervisor | LocalSupervisor:
-    """Select the Supervisor the agent talks to.
+def build_supervisor(settings) -> GrpcSupervisor:
+    """Build the agent's handle on the supervisor daemon.
 
-    Production split mode (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set): the supervisor
-    daemon owns the pool and the agent reaches it over gRPC (`GrpcSupervisor`).
-    Otherwise (dev/test, and Phase 1 single-process production): the embedded
-    pool-backed engine `LocalSupervisor(pool)` runs in the agent process.
+    gRPC is the only supervisor mode: the daemon (`python -m
+    aleph.vm.supervisor`) owns the VmPool and serves the `Supervisor` contract
+    on `settings.SUPERVISOR_GRPC_SOCKET`. The setting is always set: it
+    defaults to `EXECUTION_ROOT/supervisor.sock`, the same path the packaged
+    supervisor.env pins.
     """
-    if settings.SUPERVISOR_GRPC_SOCKET:
-        logger.info("Agent in split mode: supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
-        return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
-    return LocalSupervisor(pool)
+    logger.info("Supervisor over gRPC at %s", settings.SUPERVISOR_GRPC_SOCKET)
+    return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
 
 
-def setup_webapp(pool: VmPool | None):
-    """Create the webapp and set the VmPool.
+def setup_webapp(supervisor: Supervisor):
+    """Create the agent webapp around a `Supervisor`.
 
-    VmPool is None in two cases: tests that won't use it, and **split mode**
-    (`ALEPH_VM_SUPERVISOR_GRPC_SOCKET` set), where the supervisor daemon owns
-    the pool and the agent reaches it over gRPC. Request handlers never touch
-    the pool directly: every VM operation (backups, restore, confidential,
-    migration, network recreation, GPU reservation, persistent programs) goes
-    through the `Supervisor` interface, so it works identically in split mode.
+    Production passes `build_supervisor(settings)`'s `GrpcSupervisor`; tests
+    may inject the daemon's engine (`LocalSupervisor(pool)`) to drive the
+    views in-process as a harness. Request handlers never touch a VmPool:
+    every VM operation (backups, restore, confidential, migration, network
+    recreation, GPU reservation, persistent programs) goes through the
+    `Supervisor` interface.
     """
     app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
-    # The raw pool is NOT exposed to request handlers: the agent reaches VMs
-    # only through app["supervisor"]. A few process-lifecycle hooks (drain,
-    # stop-all-on-shutdown, the migration reaper) still need the embedded pool;
-    # they read this private key, which is None in split mode.
-    app["_engine_pool"] = pool
-    # Agent-owned drain flag: drain_middleware rejects new VM requests when set.
-    # Works in both modes (no pool needed); flipped by drain_in_flight_requests.
+    # Agent-owned drain flag: drain_middleware rejects new VM requests when set;
+    # flipped by drain_in_flight_requests.
     app["draining"] = False
-    app["supervisor"] = build_supervisor(settings, pool)
+    app["supervisor"] = supervisor
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
@@ -255,23 +245,22 @@ def setup_webapp(pool: VmPool | None):
     app["expiry"].on_reaped = _on_expiry_reaped
     app["update_watcher"].on_reaped = _on_update_reaped
 
-    if settings.SUPERVISOR_GRPC_SOCKET:
-        # In-process, the reap hooks above run in the same loop as the pool;
-        # across the boundary the supervisor's event stream is the only way
-        # to learn that a VM went down without polling.
-        async def _start_event_watcher(app: web.Application) -> None:
-            app["_event_watcher"] = asyncio.get_running_loop().create_task(watch_supervisor_events(app))
+    # The supervisor daemon owns the VMs, so its event stream is the only way
+    # for the agent to learn that a VM went down without polling; feed the
+    # reap hooks above from it.
+    async def _start_event_watcher(app: web.Application) -> None:
+        app["_event_watcher"] = asyncio.get_running_loop().create_task(watch_supervisor_events(app))
 
-        async def _stop_event_watcher(app: web.Application) -> None:
-            task = app.get("_event_watcher")
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+    async def _stop_event_watcher(app: web.Application) -> None:
+        task = app.get("_event_watcher")
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
-        # type-ignores: aiohttp's Signal stubs reject perfectly valid
-        # `async (Application) -> None` handlers here.
-        app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
-        app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
+    # type-ignores: aiohttp's Signal stubs reject perfectly valid
+    # `async (Application) -> None` handlers here.
+    app.on_startup.append(_start_event_watcher)  # type: ignore[arg-type]
+    app.on_cleanup.append(_stop_event_watcher)  # type: ignore[arg-type]
 
     cors = setup(
         app,
@@ -355,53 +344,14 @@ def setup_webapp(pool: VmPool | None):
 
 
 async def drain_in_flight_requests(app: web.Application):
-    """Stop accepting new VM requests, then wait for in-flight ones.
+    """Stop accepting new VM requests.
 
     Setting the agent-owned draining flag makes drain_middleware reject new VM
-    requests in both modes. In-process, also drain the embedded pool (which waits
-    for in-flight ephemeral runs). In split mode the daemon owns the pool and
-    keeps VMs running across its own restart, so the agent only flips the flag and
-    lets aiohttp finish its in-flight handlers.
+    requests. The daemon owns the pool and keeps VMs running across the agent's
+    restart, so the agent only flips the flag and lets aiohttp finish its
+    in-flight handlers.
     """
     app["draining"] = True
-    pool: VmPool | None = app.get("_engine_pool")
-    if pool is not None:
-        await pool.drain()
-
-
-async def start_reattach_retry_task(app: web.Application) -> None:
-    """on_startup: retry VMs whose reattach failed at load time (in-process mode).
-
-    No-op in split mode -- the daemon owns the pool and runs its own retry loop.
-    The loop self-terminates once nothing is left to retry.
-    """
-    pool: VmPool | None = app.get("_engine_pool")
-    if pool is None:
-        return
-    app["_reattach_retry_task"] = create_task_log_exceptions(pool.run_reattach_retry_loop(), name="reattach-retry-loop")
-
-
-async def stop_reattach_retry_task(app: web.Application) -> None:
-    """on_cleanup: cancel the reattach retry loop."""
-    task = app.get("_reattach_retry_task")
-    if task is not None:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-
-async def stop_all_vms(app: web.Application):
-    pool: VmPool | None = app.get("_engine_pool")
-    if pool is None:
-        # Split mode: the supervisor daemon owns the VMs; the agent's exit
-        # must not stop them.
-        return
-    try:
-        await pool.stop()
-    except Exception:
-        # Never let cleanup errors fail the supervisor shutdown — a non-zero
-        # exit would trigger the systemd restart loop and break package upgrades.
-        logger.exception("Error stopping VMs during shutdown")
 
 
 async def stop_expiry_manager(app: web.Application) -> None:
@@ -428,10 +378,9 @@ async def stop_program_client(app: web.Application) -> None:
 async def _run_migration_reaper(app: web.Application) -> None:
     """on_startup hook: clean up orphan migration files from a prior agent run.
 
-    Cold migration staging is agent-owned, so this runs agent-side in both modes.
-    The live-VM set comes from the supervisor over the ABC (works in split mode,
-    where there is no in-process pool); it only guards against deleting a running
-    VM's volume directory.
+    Cold migration staging is agent-owned, so this runs agent-side. The live-VM
+    set comes from the supervisor over the ABC; it only guards against deleting
+    a running VM's volume directory.
     """
     supervisor = app["supervisor"]
     known_vm_ids = {str(info.vm_id) for info in await supervisor.list_vms()}
@@ -445,20 +394,11 @@ async def _rehydrate_vm_registry(app: web.Application) -> None:
 
 
 def run():
-    """Run the VM Supervisor."""
+    """Run the agent web server."""
     settings.check()
     from aleph.vm.agent.views.allocation_auth import log_allocation_auth_config
 
     log_allocation_auth_config()
-
-    split_mode = settings.SUPERVISOR_GRPC_SOCKET is not None
-    pool: VmPool | None
-    if split_mode:
-        # The supervisor daemon (python -m aleph.vm.supervisor) owns the pool.
-        pool = None
-    else:
-        pool = VmPool()
-        asyncio.run(pool.setup())
 
     hostname = settings.DOMAIN_NAME
     protocol = "http" if hostname == "localhost" else "https"
@@ -467,7 +407,9 @@ def run():
     secret_token = token_urlsafe(nbytes=32)
     (settings.EXECUTION_ROOT / "login_token").write_text(secret_token)
     (settings.EXECUTION_ROOT / "login_token").chmod(0o400)
-    app = setup_webapp(pool=pool)
+    # The supervisor daemon (python -m aleph.vm.supervisor) owns the VmPool;
+    # the agent only holds the gRPC client handle.
+    app = setup_webapp(supervisor=build_supervisor(settings))
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
 
@@ -480,9 +422,7 @@ def run():
     app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(start_node_hash_discovery)
-    app.on_startup.append(start_reattach_retry_task)
     app.on_cleanup.append(stop_node_hash_discovery)
-    app.on_cleanup.append(stop_reattach_retry_task)
 
     # Store sevctl app singleton only if confidential feature is enabled
     if settings.ENABLE_CONFIDENTIAL_COMPUTING:
@@ -509,24 +449,14 @@ def run():
         app.on_cleanup.append(stop_expiry_manager)
         app.on_cleanup.append(stop_update_watcher)
         app.on_cleanup.append(stop_program_client)
-        app.on_cleanup.append(stop_all_vms)
 
         from aleph.vm.utils.http import close_session, reset_session
 
         app.on_cleanup.append(close_session)
 
-        if pool is not None:
-            logger.info("Loading existing executions ...")
-            # No guard here on purpose: per-VM reattach failures are isolated
-            # inside load_persistent_executions (one bad VM is skipped, its live
-            # controller protected). Anything that still escapes is systemic --
-            # an unparseable controller config (a supervisor bug) or a broken
-            # systemd/D-Bus -- and must abort startup rather than bring the agent
-            # up with a pool that does not reflect what is actually running.
-            asyncio.run(pool.load_persistent_executions())
         # Each asyncio.run() creates and destroys its own event loop.
-        # Discard any HTTP session created during setup/loading so it
-        # doesn't hold a reference to the dead loop.
+        # Discard any HTTP session created during setup so it doesn't hold
+        # a reference to a dead loop.
         reset_session()
 
         logger.info(f"Starting the web server on http://{settings.SUPERVISOR_HOST}:{settings.SUPERVISOR_PORT}")
@@ -540,6 +470,3 @@ def run():
             sys.exit(1)
         else:
             raise
-    finally:
-        if pool is not None and settings.ALLOW_VM_NETWORKING:
-            pool.teardown()
