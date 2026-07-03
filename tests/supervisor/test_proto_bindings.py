@@ -6,18 +6,18 @@ fields. Behavioural tests live with the Supervisor implementations
 (plans 0.C and 0.D).
 """
 
-from aleph.vm.supervisor._pb import supervisor_pb2
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
 
 def test_generated_modules_importable():
-    from aleph.vm.supervisor._pb import (  # noqa: F401
+    from aleph.vm.supervisor_interface.wire._pb import (  # noqa: F401
         supervisor_pb2,
         supervisor_pb2_grpc,
     )
 
 
 def test_service_descriptor_present():
-    from aleph.vm.supervisor._pb import supervisor_pb2_grpc
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2_grpc
 
     assert hasattr(supervisor_pb2_grpc, "SupervisorStub")
     assert hasattr(supervisor_pb2_grpc, "SupervisorServicer")
@@ -25,7 +25,7 @@ def test_service_descriptor_present():
 
 
 def test_health_rpc_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     # Request and response types exist
     assert hasattr(supervisor_pb2, "HealthRequest")
@@ -39,7 +39,7 @@ def test_health_rpc_defined():
 
 
 def test_get_host_info_rpc_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     assert hasattr(supervisor_pb2, "GetHostInfoRequest")
     assert hasattr(supervisor_pb2, "HostInfo")
@@ -68,14 +68,14 @@ def test_get_host_info_rpc_defined():
 
 
 def test_lifecycle_rpcs_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert {"CreateVm", "GetVm", "GetVmSpec", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
 
 
 def test_backend_enum_complete():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     # The VMM only: confidential computing is selected by TeeConfig presence,
     # not a backend variant (BACKEND_QEMU_SEV is reserved).
@@ -84,7 +84,7 @@ def test_backend_enum_complete():
 
 
 def test_tee_backend_enum_complete():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     values = {v.name for v in supervisor_pb2.TeeBackend.DESCRIPTOR.values}
     assert values == {
@@ -102,7 +102,7 @@ def test_tee_backend_enum_complete():
 
 
 def test_health_status_enum_typed():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     values = {v.name for v in supervisor_pb2.HealthStatus.DESCRIPTOR.values}
     assert values == {"HEALTH_STATUS_UNSPECIFIED", "HEALTH_STATUS_OK", "HEALTH_STATUS_DEGRADED"}
@@ -111,7 +111,7 @@ def test_health_status_enum_typed():
 
 
 def test_protocol_enum_typed():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     values = {v.name for v in supervisor_pb2.Protocol.DESCRIPTOR.values}
     assert values == {"PROTOCOL_UNSPECIFIED", "PROTOCOL_TCP", "PROTOCOL_UDP"}
@@ -125,7 +125,7 @@ def test_protocol_enum_typed():
 
 
 def test_create_vm_request_shape():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.VmSpec.DESCRIPTOR.fields}
     expected = {
@@ -147,7 +147,7 @@ def test_create_vm_request_shape():
 
 
 def test_disk_config_has_role_and_format_enums():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     disk_fields = {f.name for f in supervisor_pb2.DiskConfig.DESCRIPTOR.fields}
     assert {"path", "readonly", "format", "role"} <= disk_fields
@@ -166,7 +166,7 @@ def test_disk_config_has_role_and_format_enums():
 
 
 def test_vm_info_has_status_enum_and_core_fields():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.VmInfo.DESCRIPTOR.fields}
     assert {"vm_id", "status", "ipv4", "ipv6", "uptime_secs", "backend", "numa_node"} <= fields
@@ -183,14 +183,14 @@ def test_vm_info_has_status_enum_and_core_fields():
 
 
 def test_port_forwarding_rpcs_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert {"AddPortForward", "RemovePortForward", "ListPortForwards"} <= methods
 
 
 def test_port_forward_info_shape():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.PortForwardInfo.DESCRIPTOR.fields}
     assert {"vm_id", "host_port", "vm_port", "protocol"} <= fields
@@ -199,7 +199,7 @@ def test_port_forward_info_shape():
 
 
 def test_log_rpcs_defined_with_streaming():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name: m for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert "GetLogs" in methods
@@ -212,7 +212,7 @@ def test_log_rpcs_defined_with_streaming():
 
 
 def test_backup_rpcs_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name: m for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert {"StartBackup", "GetBackupStatus", "ListBackups", "DownloadBackup", "DeleteBackup", "RestoreBackup"} <= set(
@@ -222,7 +222,7 @@ def test_backup_rpcs_defined():
 
 
 def test_backup_info_shape():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.BackupInfo.DESCRIPTOR.fields}
     assert {"vm_id", "backup_id", "status", "size_bytes", "created_at_unix_secs"} <= fields
@@ -237,14 +237,14 @@ def test_backup_info_shape():
 
 
 def test_confidential_rpcs_defined():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
     assert {"InitializeConfidential", "GetMeasurement", "InjectSecret"} <= methods
 
 
 def test_confidential_message_shapes():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     init = {f.name for f in supervisor_pb2.InitializeConfidentialRequest.DESCRIPTOR.fields}
     assert {"vm_id", "session_bytes", "godh_bytes"} <= init
@@ -257,7 +257,7 @@ def test_confidential_message_shapes():
 
 
 def test_error_code_enum_covers_design_doc_cases():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     values = {v.name for v in supervisor_pb2.ErrorCode.DESCRIPTOR.values}
     required = {
@@ -281,14 +281,14 @@ def test_error_code_enum_covers_design_doc_cases():
 
 
 def test_error_detail_message_shape():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.ErrorDetail.DESCRIPTOR.fields}
     assert {"code", "message", "vm_id"} <= fields
 
 
 def test_delete_vm_request_has_wipe_field():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     req = supervisor_pb2.DeleteVmRequest(vm_id="x", wipe=True)
     assert req.wipe is True
@@ -296,7 +296,7 @@ def test_delete_vm_request_has_wipe_field():
 
 
 def test_delete_vm_request_has_keep_port_mappings_field():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     req = supervisor_pb2.DeleteVmRequest(vm_id="x", keep_port_mappings=True)
     assert req.keep_port_mappings is True
@@ -304,7 +304,7 @@ def test_delete_vm_request_has_keep_port_mappings_field():
 
 
 def test_reinstall_vm_request_has_wipe_volumes_field():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     req = supervisor_pb2.ReinstallVmRequest(vm_id="x", wipe_volumes=True)
     assert req.wipe_volumes is True
@@ -312,7 +312,7 @@ def test_reinstall_vm_request_has_wipe_volumes_field():
 
 
 def test_log_source_has_stderr():
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
 
@@ -324,7 +324,7 @@ def test_log_source_has_stderr():
 def test_full_service_surface_pinned():
     """Whole-surface assertion. Update this list intentionally when the
     contract changes (and bump the proto package version when breaking)."""
-    from aleph.vm.supervisor._pb import supervisor_pb2
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     expected = {
         # Host

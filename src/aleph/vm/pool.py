@@ -10,7 +10,6 @@ from typing import Any
 
 import psutil
 
-from aleph.vm.agent.utils import update_aggregate_settings
 from aleph.vm.conf import settings
 from aleph.vm.network.hostnetwork import Network, make_ipv6_allocator
 from aleph.vm.network.interfaces import TapInterface
@@ -52,6 +51,7 @@ from aleph.vm.supervisor_interface.types import (
     VmId,
 )
 from aleph.vm.systemd import SystemDManager
+from aleph.vm.utils.aggregate import update_aggregate_settings
 from aleph.vm.vm_type import VmType
 
 from .models import VmExecution

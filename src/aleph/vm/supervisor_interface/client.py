@@ -27,10 +27,6 @@ import grpc
 import msgpack
 from google.protobuf.message import Message
 
-from aleph.vm.supervisor import proto_convert as conv
-from aleph.vm.supervisor._pb import supervisor_pb2 as pb
-from aleph.vm.supervisor._pb import supervisor_pb2_grpc
-from aleph.vm.supervisor.grpc_server import ERROR_TRAILER_KEY
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
@@ -69,6 +65,10 @@ from aleph.vm.supervisor_interface.types import (
     VmId,
     VmInfo,
 )
+from aleph.vm.supervisor_interface.wire import ERROR_TRAILER_KEY
+from aleph.vm.supervisor_interface.wire import proto_convert as conv
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2 as pb
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2_grpc
 
 logger = logging.getLogger(__name__)
 

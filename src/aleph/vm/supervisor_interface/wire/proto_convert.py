@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from aleph.vm.supervisor._pb import supervisor_pb2 as pb
 from aleph.vm.supervisor_interface.types import (
     Backend,
     BackupChunk,
@@ -55,6 +54,7 @@ from aleph.vm.supervisor_interface.types import (
     VmInfo,
     VmStatus,
 )
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2 as pb
 
 # ── Enum tables ──────────────────────────────────────────────────────────────
 

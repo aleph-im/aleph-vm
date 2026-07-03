@@ -15,10 +15,10 @@ import pytest
 import pytest_asyncio
 from conformance import STUB_METHODS
 
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.grpc_server import serve_unix
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.errors import (
     FileTooLargeError,
     InsufficientResourcesError,
@@ -321,7 +321,7 @@ async def test_unary_calls_carry_a_deadline(monkeypatch):
         async def health(self):
             await aio.sleep(30)
 
-    monkeypatch.setattr("aleph.vm.supervisor.grpc_client.QUERY_TIMEOUT_SECS", 0.2)
+    monkeypatch.setattr("aleph.vm.supervisor_interface.client.QUERY_TIMEOUT_SECS", 0.2)
     harness = _ServerHarness(_WedgedSupervisor(pool=FakePool()))
     async with harness as client:
         with pytest.raises(InternalSupervisorError):

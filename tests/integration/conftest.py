@@ -44,7 +44,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
+from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.errors import SupervisorError
 from aleph.vm.supervisor_interface.types import (
     Backend,
