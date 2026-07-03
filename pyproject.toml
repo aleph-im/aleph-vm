@@ -87,9 +87,11 @@ dependencies = [
 ]
 
 [tool.hatch.envs.default.scripts]
-orchestrator = "aleph-vm orchestrator run {args:--help}"
-config = "aleph-vm orchestrator config {args:--help}"
-check = "aleph-vm controller run {args:--help}"
+# The aleph-vm console script (aleph.vm.agent.cli:main) is a flat argparse
+# CLI, no subcommands; the supervisor daemon is a separate module entry point.
+agent = "aleph-vm {args:--help}"
+supervisor = "python -m aleph.vm.supervisor {args:--help}"
+config = "aleph-vm --print-settings --do-not-run {args}"
 
 [tool.hatch.envs.testing]
 type = "virtual"

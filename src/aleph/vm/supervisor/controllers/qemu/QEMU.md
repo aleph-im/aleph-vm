@@ -12,7 +12,7 @@ To create a local venv use the `--system-site-packages` option so it can access 
 
 ## To test launching a VM instance
 
-Launch aleph.vm.orchestrator with the following environment variables
+Launch the agent (`python3 -m aleph.vm.agent`) with the following environment variables
 
 
 ```environ
