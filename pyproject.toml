@@ -311,7 +311,7 @@ forbidden_modules = [
 # by the pool and the controllers); the agent never touches it. Remaining
 # shared-domain edges the model split still has to dissolve: agent ->
 # aleph.vm.models (VmExecution, MigrationState), agent -> aleph.vm.hypervisors
-# (two leaf classes).
+# (one leaf class: RuntimeConfiguration in agent.vm.program_client).
 
 [[tool.importlinter.contracts]]
 name = "the supervisor side does not import the agent"
