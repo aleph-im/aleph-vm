@@ -24,6 +24,7 @@ from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
+from aleph.vm.utils import create_task_log_exceptions
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -232,7 +233,7 @@ def setup_webapp(supervisor: Supervisor):
     # task), and the agent's guest-side program state (guest API process,
     # configured mark) is dropped.
     def _drop_program_guest_state(vm_id) -> None:
-        asyncio.get_running_loop().create_task(app["program_client"].forget(vm_id))
+        create_task_log_exceptions(app["program_client"].forget(vm_id), name=f"forget {vm_id}")
 
     def _on_expiry_reaped(vm_id) -> None:
         app["update_watcher"].cancel(vm_id)
