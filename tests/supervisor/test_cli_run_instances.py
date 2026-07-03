@@ -1,4 +1,5 @@
-"""Regression tests for the --run-test-instance / --run-fake-instance CLI path."""
+"""Regression tests for the --run-test-instance / --run-fake-instance CLI path
+(the single-process harness in aleph.vm.testing.harness)."""
 
 import asyncio
 import contextlib
@@ -7,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent import cli
 from aleph.vm.conf import settings
+from aleph.vm.testing import harness
 
 FAKE_INSTANCE_ID = ItemHash("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe")
 
@@ -29,12 +30,12 @@ async def test_run_instances_sets_up_pool(monkeypatch):
     # Keep VmPool() construction host-independent.
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
     monkeypatch.setattr(settings, "SNAPSHOT_FREQUENCY", 0)
-    monkeypatch.setattr(cli.VmPool, "setup", fake_setup)
-    monkeypatch.setattr(cli, "start_instance", AsyncMock(side_effect=fake_start_instance))
+    monkeypatch.setattr(harness.VmPool, "setup", fake_setup)
+    monkeypatch.setattr(harness, "start_instance", AsyncMock(side_effect=fake_start_instance))
 
     # run_instances waits forever after starting the instances; run it as a
     # task and cancel it once the startup sequence has been observed.
-    task = asyncio.create_task(cli.run_instances([FAKE_INSTANCE_ID]))
+    task = asyncio.create_task(harness.run_instances([FAKE_INSTANCE_ID]))
     try:
         for _ in range(100):
             if "start_instance" in calls:

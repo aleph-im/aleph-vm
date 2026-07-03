@@ -8,8 +8,8 @@ them reference the raw pool in any form - the require_vm_pool helper, the
 app["vm_pool"] / request.app["vm_pool"] keys, the pool's .executions attribute,
 the create_a_vm create path, the retired _engine_pool app key, the embedded
 supervisor.pool, or a direct `from aleph.vm.pool import`. The daemon's engine
-and agent.cli's supervisor-side harnesses legitimately keep the pool and are
-out of scope here.
+and the single-process harnesses (aleph.vm.testing.harness) legitimately keep
+the pool and are out of scope here.
 """
 
 from __future__ import annotations

@@ -272,7 +272,12 @@ section_whitelines = 2
 
 [tool.importlinter]
 root_package = "aleph"
-# Grimp counts TYPE_CHECKING imports too, so type-only edges also appear here.
+# Grimp counts TYPE_CHECKING and function-level imports too, so type-only and
+# lazy edges also appear here. All contracts use allow_indirect_imports:
+# direct edges are what defines package ownership; the single sanctioned
+# indirect chain is agent.cli -> aleph.vm.testing.harness -> supervisor.local
+# (the composition-root harness for benchmarks and the droplet CI, loaded
+# lazily and living outside both sides).
 
 [[tool.importlinter.contracts]]
 name = "supervisor_interface (contract + wire + client) depends on neither side"
@@ -287,44 +292,41 @@ forbidden_modules = [
   "aleph.vm.network",
   "aleph.vm.migration",
   "aleph.vm.hypervisors",
+  "aleph.vm.testing",
 ]
 
 [[tool.importlinter.contracts]]
-name = "controllers do not import the agent"
-type = "forbidden"
-allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.supervisor.controllers" ]
-forbidden_modules = [ "aleph.vm.agent" ]
-
-[[tool.importlinter.contracts]]
-name = "the agent does not reach into the supervisor daemon"
+name = "the agent does not import the supervisor side"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.agent" ]
 forbidden_modules = [
-  "aleph.vm.supervisor.controllers",
-  "aleph.vm.supervisor.local",
-  "aleph.vm.supervisor.grpc_server",
-  "aleph.vm.supervisor.daemon",
-  "aleph.vm.supervisor.error_mapping",
-  "aleph.vm.supervisor.qemu_build",
+  "aleph.vm.supervisor",
+  "aleph.vm.pool",
+  "aleph.vm.network",
 ]
-# Composition root only: the one remaining supervisor.local edge is agent.cli's
-# benchmark / --run-*-instance harnesses, which build the daemon's engine
-# in-process as a supervisor-side test rig (documented at the import site).
-# The wire client and stubs now live on the contract side
-# (aleph.vm.supervisor_interface.client / .wire), so the agent no longer needs
-# any aleph.vm.supervisor module for its production path.
-ignore_imports = [
-  "aleph.vm.agent.cli -> aleph.vm.supervisor.local",
-]
+# Total separation, no exemptions: the agent talks to the supervisor daemon
+# only through aleph.vm.supervisor_interface (the Supervisor ABC, the DTOs,
+# and the GrpcSupervisor client in supervisor_interface.client). The network
+# package is supervisor-side host plumbing (TAP/nftables/IPv6 forwarding used
+# by the pool and the controllers); the agent never touches it. Remaining
+# shared-domain edges the model split still has to dissolve: agent ->
+# aleph.vm.models (VmExecution, MigrationState), agent -> aleph.vm.hypervisors
+# (two leaf classes), agent -> aleph.vm.migration (agent-side job plumbing).
 
 [[tool.importlinter.contracts]]
-name = "the supervisor does not import the agent"
+name = "the supervisor side does not import the agent"
 type = "forbidden"
 allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.supervisor", "aleph.vm.pool", "aleph.vm.models" ]
-forbidden_modules = [ "aleph.vm.agent" ]
-# No residuals left: the DB split (per-actor databases) removed the
-# agent.metrics edges, the execution debug dump moved into models.py, and the
-# aggregate-settings helpers moved to the neutral aleph.vm.utils.aggregate.
+source_modules = [
+  "aleph.vm.supervisor",
+  "aleph.vm.pool",
+  "aleph.vm.models",
+  "aleph.vm.network",
+  "aleph.vm.hypervisors",
+]
+forbidden_modules = [ "aleph.vm.agent", "aleph.vm.testing" ]
+# pool, models, network and hypervisors are supervisor-side packages: they may
+# import neither the agent nor the aleph.vm.testing harness. aleph.vm.migration
+# is NOT in this source list: it is agent-side job plumbing (it imports
+# agent.run/messages/translate) that still lives outside the agent package.
