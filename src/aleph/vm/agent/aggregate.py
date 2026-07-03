@@ -21,7 +21,9 @@ class CompatibleGPU(BaseModel):
 
 
 class AggregateSettingsDict(TypedDict):
-    compatible_gpus: list[Any]
+    # Expected entry shape is CompatibleGPU; get_compatible_gpus validates
+    # each entry and skips violations, so this stays a raw-payload type.
+    compatible_gpus: list[dict[str, Any]]
     community_wallet_address: str
     community_wallet_timestamp: int
     # Optional in practice (older aggregates omit it); accessed via .get().
