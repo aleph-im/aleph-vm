@@ -33,17 +33,20 @@ class GpuDeviceClass(str, Enum):
 
 
 class GpuDevice(HashableModel):
-    """GPU properties."""
+    """A GPU as the host hardware reports it (lspci): no network knowledge.
+
+    The card's name on the Aleph network and whether the network supports it
+    are properties of the settings aggregate, not of the hardware; the agent
+    layers them on via AnnotatedGpuDevice (agent/resources.py). The
+    supervisor stays network-blind."""
 
     vendor: str = Field(description="GPU vendor name")
-    model: str | None = Field(description="GPU model name on Aleph Network", default=None)
     device_name: str = Field(description="GPU vendor card name")
     device_class: GpuDeviceClass = Field(
         description="GPU device class. Look at https://admin.pci-ids.ucw.cz/read/PD/03"
     )
     pci_host: str = Field(description="Host PCI bus for this device")
     device_id: str = Field(description="GPU vendor & device ids")
-    compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
 
     @property
     def has_x_vga_support(self) -> bool:
@@ -113,18 +116,12 @@ def parse_gpu_device_info(line: str) -> GpuDevice | None:
     model_id = model_id[:-1]
     device_id = f"{vendor_id}:{model_id}"
 
-    # Raw hardware knowledge only: `model` (the network name for the card) and
-    # `compatible` (whether the network supports it) come from the settings
-    # aggregate and are filled in agent-side (agent/resources.py); the
-    # supervisor stays network-blind.
     return GpuDevice(
         pci_host=pci_host,
         vendor=vendor_name,
-        model=None,
         device_name=device_name,
         device_class=device_class,
         device_id=device_id,
-        compatible=False,
     )
 
 

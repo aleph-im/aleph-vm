@@ -75,9 +75,20 @@ class MachineProperties(BaseModel):
     cpu: CpuProperties
 
 
+class AnnotatedGpuDevice(GpuDevice):
+    """A host GPU annotated with what the network says about it.
+
+    The supervisor reports raw hardware (GpuDevice); the network-derived
+    fields are the agent's to add, from the settings aggregate's
+    compatible_gpus whitelist."""
+
+    model: str | None = Field(description="GPU model name on Aleph Network", default=None)
+    compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
+
+
 class GpuProperties(BaseModel):
-    devices: list[GpuDevice] | None = None
-    available_devices: list[GpuDevice] | None = None
+    devices: list[AnnotatedGpuDevice] | None = None
+    available_devices: list[AnnotatedGpuDevice] | None = None
 
 
 class MachineUsage(BaseModel):
@@ -116,17 +127,16 @@ class MachineCapability(BaseModel):
 async def _gpus_from_host_info(host_info) -> GpuProperties:
     """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
-    GetHostInfo carries the agent GpuDevice fields as plain dicts
-    (gpu_inventory / available_gpus). The supervisor reports raw hardware
-    only (it never talks to the network): the network annotation, `model`
-    (the card's name on the Aleph network) and `compatible` (whether the
-    network's settings aggregate whitelists it), is applied here.
+    GetHostInfo carries raw GpuDevice fields as plain dicts (gpu_inventory /
+    available_gpus): the supervisor never talks to the network, so the
+    network annotation (AnnotatedGpuDevice: `model`, `compatible`) is
+    applied here from the settings aggregate.
     """
     await update_aggregate_settings()
     network_models = {gpu["device_id"]: gpu["model"] for gpu in get_compatible_gpus()}
 
-    def annotate(gpu: dict) -> GpuDevice:
-        return GpuDevice.model_validate(
+    def annotate(gpu: dict) -> AnnotatedGpuDevice:
+        return AnnotatedGpuDevice.model_validate(
             gpu
             | {
                 "model": network_models.get(gpu["device_id"]),

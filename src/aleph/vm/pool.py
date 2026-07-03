@@ -377,7 +377,12 @@ class VmPool:
             # skips reservations still held by OTHER users.
             resolved_host_gpus: list[HostGPU] = []
             if spec.gpus:
+                # _resolve_spec_gpus resolves in request order, so requests and
+                # devices zip index-aligned. `model` is a network-derived name
+                # the supervisor does not know: echo whatever the agent
+                # requested rather than inventing one.
                 resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_id)
+                resolved_pairs = list(zip(spec.gpus, resolved_devices, strict=True))
                 spec = replace(
                     spec,
                     gpus=[
@@ -385,9 +390,9 @@ class VmPool:
                             pci_host=PciAddress(device.pci_host),
                             supports_x_vga=device.has_x_vga_support,
                             device_id=device.device_id,
-                            model=device.model or "",
+                            model=request.model,
                         )
-                        for device in resolved_devices
+                        for request, device in resolved_pairs
                     ],
                 )
                 resolved_host_gpus = [
@@ -395,9 +400,9 @@ class VmPool:
                         pci_host=device.pci_host,
                         supports_x_vga=device.has_x_vga_support,
                         device_id=device.device_id,
-                        model=device.model,
+                        model=request.model or None,
                     )
-                    for device in resolved_devices
+                    for request, device in resolved_pairs
                 ]
 
             execution = VmExecution.from_spec(

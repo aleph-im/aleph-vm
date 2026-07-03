@@ -11,15 +11,14 @@ from aleph.vm.agent.resources import _gpus_from_host_info
 
 
 def _raw_gpu(device_id: str, pci_host: str) -> dict:
-    """A GPU dict as the supervisor reports it: no network annotation."""
+    """A GPU dict as the supervisor reports it: raw hardware, no `model` or
+    `compatible` key at all (GpuDevice does not carry them)."""
     return {
         "vendor": "NVIDIA",
-        "model": None,
         "device_name": f"Device {device_id}",
         "device_class": "0300",
         "pci_host": pci_host,
         "device_id": device_id,
-        "compatible": False,
     }
 
 

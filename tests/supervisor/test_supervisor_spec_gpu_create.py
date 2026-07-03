@@ -37,12 +37,10 @@ _DEVICE_ID = "10de:2504"
 def _gpu_device(pci_host: str, *, device_id: str = _DEVICE_ID) -> ResourceGpuDevice:
     return ResourceGpuDevice(
         vendor="NVIDIA",
-        model="RTX 4000",
         device_name="GH100",
         device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
         pci_host=pci_host,
         device_id=device_id,
-        compatible=True,
     )
 
 
