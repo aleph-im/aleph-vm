@@ -230,7 +230,7 @@ jobs:
           # contender for good, then wait out any run already in flight.
           ssh root@${DROPLET_IPV4} "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
           ssh root@${DROPLET_IPV4} "systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true"
-          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend 2>/dev/null; do sleep 1; done
+          while ssh root@${DROPLET_IPV4} "lsof /var/lib/apt/lists/lock || lsof /var/lib/dpkg/lock-frontend" 2>/dev/null; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
@@ -396,7 +396,7 @@ jobs:
           # apt timers and wait out any run already holding the locks.
           ssh root@${DROPLET_IPV4} "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
           ssh root@${DROPLET_IPV4} "systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true"
-          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend 2>/dev/null; do sleep 1; done
+          while ssh root@${DROPLET_IPV4} "lsof /var/lib/apt/lists/lock || lsof /var/lib/dpkg/lock-frontend" 2>/dev/null; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
