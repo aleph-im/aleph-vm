@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
 
+from aleph.vm.agent.aggregate import get_aggregate_settings
 from aleph.vm.conf import settings
-from aleph.vm.utils.aggregate import get_aggregate_settings
 
 logger = getLogger(__name__)
 

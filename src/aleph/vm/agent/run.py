@@ -16,6 +16,7 @@ from aleph_message.models import InstanceContent, ItemHash, ProgramContent
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
+from aleph.vm.agent.aggregate import get_user_settings
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
@@ -43,7 +44,6 @@ from aleph.vm.supervisor_interface.types import (
     VmStatus,
 )
 from aleph.vm.utils import HostNotFoundError
-from aleph.vm.utils.aggregate import get_user_settings
 
 from .messages import load_updated_message
 from .pubsub import PubSub

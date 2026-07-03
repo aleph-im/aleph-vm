@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
+from aleph.vm.agent.aggregate import update_aggregate_settings
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
@@ -87,7 +88,6 @@ from aleph.vm.utils import (
     dumps_for_json,
     get_ref_from_dns,
 )
-from aleph.vm.utils.aggregate import update_aggregate_settings
 from aleph.vm.version import __version__
 from aleph.vm.vm_type import VmType
 
