@@ -4,8 +4,6 @@ from enum import Enum
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, ConfigDict, Field
 
-from aleph.vm.utils.aggregate import get_compatible_gpus
-
 
 class InsufficientResourcesError(Exception):
     """Raised when there are insufficient resources to create a VM."""
@@ -77,21 +75,6 @@ def is_gpu_device_class(device_class: str) -> bool:
         return False
 
 
-def get_gpu_model(device_id: str) -> bool | None:
-    """Returns a GPU model name if it's found from the compatible ones."""
-    model_gpu_set = {gpu["device_id"]: gpu["model"] for gpu in get_compatible_gpus()}
-    try:
-        return model_gpu_set[device_id]
-    except KeyError:
-        return None
-
-
-def is_gpu_compatible(device_id: str) -> bool:
-    """Checks if a GPU is compatible based on vendor and model IDs."""
-    compatible_gpu_set = {gpu["device_id"] for gpu in get_compatible_gpus()}
-    return device_id in compatible_gpu_set
-
-
 def get_vendor_name(vendor_id: str) -> str:
     match vendor_id:
         case "10de":
@@ -138,17 +121,19 @@ def parse_gpu_device_info(line: str) -> GpuDevice | None:
     device_name, model_id = device_name.rsplit(" [", maxsplit=1)
     model_id = model_id[:-1]
     device_id = f"{vendor_id}:{model_id}"
-    model = get_gpu_model(device_id=device_id)
-    compatible = is_gpu_compatible(device_id=device_id)
 
+    # Raw hardware knowledge only: `model` (the network name for the card) and
+    # `compatible` (whether the network supports it) come from the settings
+    # aggregate and are filled in agent-side (agent/resources.py); the
+    # supervisor stays network-blind.
     return GpuDevice(
         pci_host=pci_host,
         vendor=vendor_name,
-        model=model,
+        model=None,
         device_name=device_name,
         device_class=device_class,
         device_id=device_id,
-        compatible=compatible,
+        compatible=False,
     )
 
 

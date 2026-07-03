@@ -51,7 +51,6 @@ from aleph.vm.supervisor_interface.types import (
     VmId,
 )
 from aleph.vm.systemd import SystemDManager
-from aleph.vm.utils.aggregate import update_aggregate_settings
 from aleph.vm.vm_type import VmType
 
 from .models import VmExecution
@@ -156,8 +155,8 @@ class VmPool:
             logger.debug("Initializing SnapshotManager ...")
             self.snapshot_manager.run_in_thread()
         if settings.ENABLE_GPU_SUPPORT:
-            # Refresh and get latest settings aggregate
-            await update_aggregate_settings()
+            # Raw hardware inventory (lspci): network annotation (model name,
+            # compatibility) is applied agent-side from the settings aggregate.
             logger.debug("Detecting GPU devices ...")
             self.gpus = get_gpu_devices()
 

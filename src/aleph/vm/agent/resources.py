@@ -18,6 +18,7 @@ from aleph.vm.utils import (
     check_amd_sev_supported,
     cors_allow_all,
 )
+from aleph.vm.utils.aggregate import get_compatible_gpus, update_aggregate_settings
 
 
 class Period(BaseModel):
@@ -112,16 +113,30 @@ class MachineCapability(BaseModel):
     memory: MemoryProperties
 
 
-def _gpus_from_host_info(host_info) -> GpuProperties:
+async def _gpus_from_host_info(host_info) -> GpuProperties:
     """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
     GetHostInfo carries the agent GpuDevice fields as plain dicts
-    (gpu_inventory / available_gpus); reconstruct the model so the public
-    usage endpoint keeps its full shape.
+    (gpu_inventory / available_gpus). The supervisor reports raw hardware
+    only (it never talks to the network): the network annotation, `model`
+    (the card's name on the Aleph network) and `compatible` (whether the
+    network's settings aggregate whitelists it), is applied here.
     """
+    await update_aggregate_settings()
+    network_models = {gpu["device_id"]: gpu["model"] for gpu in get_compatible_gpus()}
+
+    def annotate(gpu: dict) -> GpuDevice:
+        return GpuDevice.model_validate(
+            gpu
+            | {
+                "model": network_models.get(gpu["device_id"]),
+                "compatible": gpu["device_id"] in network_models,
+            }
+        )
+
     return GpuProperties(
-        devices=[GpuDevice.model_validate(gpu) for gpu in host_info.gpu_inventory],
-        available_devices=[GpuDevice.model_validate(gpu) for gpu in host_info.available_gpus],
+        devices=[annotate(gpu) for gpu in host_info.gpu_inventory],
+        available_devices=[annotate(gpu) for gpu in host_info.available_gpus],
     )
 
 
@@ -221,7 +236,7 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        gpu=_gpus_from_host_info(host_info),
+        gpu=await _gpus_from_host_info(host_info),
     )
 
     return web.json_response(text=usage.model_dump_json(exclude_none=True))

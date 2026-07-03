@@ -407,9 +407,10 @@ class LocalSupervisor(Supervisor):
     async def get_host_info(self) -> HostInfo:
         with translating_errors():
             network = getattr(self.pool, "network", None)
-            # Rich GPU inventory (vendor / device_name / device_class /
-            # compatible) the public usage endpoint exposes. Carried as plain
-            # dicts so the boundary stays GpuDevice-agnostic.
+            # Rich GPU inventory (vendor / device_name / device_class) the
+            # public usage endpoint exposes. Raw hardware only: the agent
+            # annotates model / compatible from the settings aggregate.
+            # Carried as plain dicts so the boundary stays GpuDevice-agnostic.
             inventory = [gpu.model_dump() for gpu in getattr(self.pool, "gpus", None) or []]
             get_available = getattr(self.pool, "get_available_gpus", None)
             available_gpus = [gpu.model_dump() for gpu in get_available()] if get_available else []
