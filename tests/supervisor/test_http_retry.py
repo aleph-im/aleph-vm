@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from aleph.vm.agent.http import (
+from aleph.vm.utils.http import (
     MAX_CONCURRENT_REQUESTS,
     MAX_RETRIES,
     RetrySession,
@@ -69,7 +69,7 @@ async def test_request_with_retry_succeeds_after_429():
     session.closed = False
     session.request = AsyncMock(side_effect=[rate_limited, ok_resp])
 
-    with patch("aleph.vm.agent.http.asyncio.sleep", new_callable=AsyncMock):
+    with patch("aleph.vm.utils.http.asyncio.sleep", new_callable=AsyncMock):
         result = await _request_with_retry("GET", "http://example.com", session)
 
     assert result is ok_resp
@@ -83,7 +83,7 @@ async def test_request_with_retry_exhausts_retries():
     session.closed = False
     session.request = AsyncMock(return_value=rate_limited)
 
-    with patch("aleph.vm.agent.http.asyncio.sleep", new_callable=AsyncMock):
+    with patch("aleph.vm.utils.http.asyncio.sleep", new_callable=AsyncMock):
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
             await _request_with_retry("GET", "http://example.com", session)
 

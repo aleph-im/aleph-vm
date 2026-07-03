@@ -511,7 +511,7 @@ def run():
         app.on_cleanup.append(stop_program_client)
         app.on_cleanup.append(stop_all_vms)
 
-        from aleph.vm.agent.http import close_session, reset_session
+        from aleph.vm.utils.http import close_session, reset_session
 
         app.on_cleanup.append(close_session)
 

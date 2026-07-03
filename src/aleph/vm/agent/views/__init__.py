@@ -47,7 +47,6 @@ from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
-    update_aggregate_settings,
 )
 from aleph.vm.agent.views.allocation_auth import authenticate_api_request
 from aleph.vm.agent.views.authentication import require_jwk_authentication
@@ -88,6 +87,7 @@ from aleph.vm.utils import (
     dumps_for_json,
     get_ref_from_dns,
 )
+from aleph.vm.utils.aggregate import update_aggregate_settings
 from aleph.vm.version import __version__
 from aleph.vm.vm_type import VmType
 
