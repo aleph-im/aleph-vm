@@ -2,7 +2,7 @@ from logging import getLogger
 from typing import Any, TypedDict
 
 import aiohttp
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from aleph.vm.conf import settings
 from aleph.vm.utils.cache import AsyncTTLCache
@@ -63,12 +63,22 @@ async def update_aggregate_settings() -> None:
     await get_aggregate_settings()
 
 
-def get_compatible_gpus() -> list[Any]:
-    """Return compatible GPUs from the cached settings aggregate."""
+def get_compatible_gpus() -> list[CompatibleGPU]:
+    """Return the validated GPU whitelist from the cached settings aggregate.
+
+    The aggregate is remote data: a malformed entry is skipped with a warning
+    rather than propagating (a raise here would take down every consumer,
+    e.g. the public usage endpoint) and older aggregates may omit the key."""
     cached = _settings_cache.get("settings")
     if not cached:
         return []
-    return cached["compatible_gpus"]
+    gpus = []
+    for entry in cached.get("compatible_gpus") or []:
+        try:
+            gpus.append(CompatibleGPU.model_validate(entry))
+        except ValidationError:
+            logger.warning(f"Skipping malformed compatible_gpus aggregate entry: {entry!r}")
+    return gpus
 
 
 async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:

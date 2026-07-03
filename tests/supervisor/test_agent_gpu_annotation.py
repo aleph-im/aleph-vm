@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from aleph.vm.agent import aggregate
+from aleph.vm.agent.aggregate import CompatibleGPU
 from aleph.vm.agent.resources import _gpus_from_host_info
 
 
@@ -28,7 +30,7 @@ async def test_agent_annotates_gpus_from_aggregate(mocker):
     mocker.patch(
         "aleph.vm.agent.resources.get_compatible_gpus",
         return_value=[
-            {"device_id": "10de:27b0", "model": "RTX 4000 ADA", "vendor": "NVIDIA", "name": "AD104GL"},
+            CompatibleGPU(device_id="10de:27b0", model="RTX 4000 ADA", vendor="NVIDIA", name="AD104GL"),
         ],
     )
     host_info = SimpleNamespace(
@@ -64,3 +66,29 @@ async def test_agent_annotation_survives_missing_aggregate(mocker):
     assert gpu.devices[0].model is None
     assert gpu.devices[0].compatible is False
     assert gpu.available_devices == []
+
+
+def test_get_compatible_gpus_skips_malformed_entries(mocker):
+    """The whitelist is remote data: one bad aggregate entry must not take
+    down every consumer (e.g. the public usage endpoint)."""
+    valid = {"device_id": "10de:27b0", "model": "RTX 4000 ADA", "vendor": "NVIDIA", "name": "AD104GL"}
+    mocker.patch.object(
+        aggregate._settings_cache,
+        "get",
+        return_value={"compatible_gpus": [valid, {"device_id": "10de:2204"}, "not-a-dict"]},
+    )
+
+    gpus = aggregate.get_compatible_gpus()
+
+    assert [gpu.device_id for gpu in gpus] == ["10de:27b0"]
+
+
+def test_get_compatible_gpus_tolerates_missing_key(mocker):
+    """Older aggregates omit compatible_gpus entirely."""
+    mocker.patch.object(
+        aggregate._settings_cache,
+        "get",
+        return_value={"community_wallet_address": "0x0"},
+    )
+
+    assert aggregate.get_compatible_gpus() == []

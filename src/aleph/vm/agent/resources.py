@@ -133,7 +133,7 @@ async def _gpus_from_host_info(host_info) -> GpuProperties:
     applied here from the settings aggregate.
     """
     await update_aggregate_settings()
-    network_models = {gpu["device_id"]: gpu["model"] for gpu in get_compatible_gpus()}
+    network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
 
     def annotate(gpu: dict) -> AnnotatedGpuDevice:
         return AnnotatedGpuDevice.model_validate(
