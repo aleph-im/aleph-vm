@@ -223,8 +223,14 @@ jobs:
           # Wait a few seconds for DigitalOcean to setup the Droplet using apt, which conflicts with our comands:
           sleep 5
 
-          # Wait for /var/lib/apt/lists/lock to be unlocked on the remote host via SSH.
-          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock; do sleep 1; done
+          # Fresh droplets run apt-daily / unattended-upgrades at boot, which
+          # grabs /var/lib/apt/lists/lock. DPkg::Lock::Timeout does not cover
+          # that lock reliably, and a check-then-run wait loop races (the
+          # timer can re-fire between the check and our apt-get). Stop the
+          # contender for good, then wait out any run already in flight.
+          ssh root@${DROPLET_IPV4} "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
+          ssh root@${DROPLET_IPV4} "systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true"
+          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend 2>/dev/null; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
@@ -385,6 +391,12 @@ jobs:
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
           scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
+
+          # Same apt-daily mitigation as the matrix job above: stop the boot-time
+          # apt timers and wait out any run already holding the locks.
+          ssh root@${DROPLET_IPV4} "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
+          ssh root@${DROPLET_IPV4} "systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true"
+          while ssh root@${DROPLET_IPV4} lsof /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend 2>/dev/null; do sleep 1; done
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
