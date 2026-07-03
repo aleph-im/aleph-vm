@@ -162,7 +162,7 @@ line-length = 120
 target-version = "py310"
 line-length = 120
 src = [ "src" ]
-extend-exclude = [ "src/aleph/vm/supervisor/_pb" ]
+extend-exclude = [ "src/aleph/vm/supervisor_interface/wire/_pb" ]
 lint.select = [
   "A",
   "ARG",
@@ -217,7 +217,7 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 [tool.isort]
 profile = "black"
 extra_standard_library = [ "packaging" ]
-skip_glob = [ "src/aleph/vm/supervisor/_pb/*" ]
+skip_glob = [ "src/aleph/vm/supervisor_interface/wire/_pb/*" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -240,8 +240,8 @@ omit = [
   # Generated protobuf bindings: descriptor code that does not run under the
   # default C++ descriptors, so it is not meaningfully testable. Already
   # excluded from mypy (see [tool.mypy] exclude below).
-  "src/aleph/vm/supervisor/_pb/*",
-  "*/supervisor/_pb/*",
+  "src/aleph/vm/supervisor_interface/wire/_pb/*",
+  "*/supervisor_interface/wire/_pb/*",
 ]
 
 [tool.coverage.paths]
@@ -262,7 +262,7 @@ non_interactive = true
 ignore_missing_imports = true
 explicit_package_bases = true
 check_untyped_defs = true
-exclude = [ "src/aleph/vm/supervisor/_pb/" ]
+exclude = [ "src/aleph/vm/supervisor_interface/wire/_pb/" ]
 
 [tool.yamlfix]
 sequence_style = "keep_style"
@@ -272,10 +272,15 @@ section_whitelines = 2
 
 [tool.importlinter]
 root_package = "aleph"
-# Grimp counts TYPE_CHECKING imports too, so type-only edges also appear here.
+# Grimp counts TYPE_CHECKING and function-level imports too, so type-only and
+# lazy edges also appear here. All contracts use allow_indirect_imports:
+# direct edges are what defines package ownership; the single sanctioned
+# indirect chain is agent.cli -> aleph.vm.testing.harness -> supervisor.local
+# (the composition-root harness for benchmarks and the droplet CI, loaded
+# lazily and living outside both sides).
 
 [[tool.importlinter.contracts]]
-name = "supervisor_interface layer depends on neither side"
+name = "supervisor_interface (contract + wire + client) depends on neither side"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor_interface" ]
@@ -287,53 +292,41 @@ forbidden_modules = [
   "aleph.vm.network",
   "aleph.vm.migration",
   "aleph.vm.hypervisors",
+  "aleph.vm.testing",
 ]
 
 [[tool.importlinter.contracts]]
-name = "controllers do not import the agent"
-type = "forbidden"
-allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.supervisor.controllers" ]
-forbidden_modules = [ "aleph.vm.agent" ]
-
-[[tool.importlinter.contracts]]
-name = "the agent does not reach into the supervisor daemon"
+name = "the agent does not import the supervisor side"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.agent" ]
 forbidden_modules = [
-  "aleph.vm.supervisor.controllers",
-  "aleph.vm.supervisor.local",
-  "aleph.vm.supervisor.grpc_server",
-  "aleph.vm.supervisor.grpc_client",
-  "aleph.vm.supervisor.daemon",
-  "aleph.vm.supervisor.proto_convert",
-  "aleph.vm.supervisor._pb",
-  "aleph.vm.supervisor.error_mapping",
-  "aleph.vm.supervisor.qemu_build",
+  "aleph.vm.supervisor",
+  "aleph.vm.pool",
+  "aleph.vm.network",
 ]
-# Composition root only: the agent entrypoints pick a concrete Supervisor impl.
-# The PR-1 agent->supervisor.controllers residuals (Resources downloaders,
-# controller exception types, cloudinit, the QEMU backup utils) were removed by
-# PR-2 (the controller split): the downloaders live agent-side, the wire-error
-# vocabulary is the contract's SupervisorError set, and the shared host-volume /
-# program-config / backup-staging / hostname helpers moved to neutral modules.
-ignore_imports = [
-  "aleph.vm.agent.cli -> aleph.vm.supervisor.local",
-  "aleph.vm.agent.supervisor -> aleph.vm.supervisor.local",
-  "aleph.vm.agent.supervisor -> aleph.vm.supervisor.grpc_client",
-]
+# Total separation, no exemptions: the agent talks to the supervisor daemon
+# only through aleph.vm.supervisor_interface (the Supervisor ABC, the DTOs,
+# and the GrpcSupervisor client in supervisor_interface.client). The network
+# package is supervisor-side host plumbing (TAP/nftables/IPv6 forwarding used
+# by the pool and the controllers); the agent never touches it. Remaining
+# shared-domain edges the model split still has to dissolve: agent ->
+# aleph.vm.models (VmExecution, MigrationState), agent -> aleph.vm.hypervisors
+# (two leaf classes), agent -> aleph.vm.migration (agent-side job plumbing).
 
 [[tool.importlinter.contracts]]
-name = "the supervisor does not import the agent"
+name = "the supervisor side does not import the agent"
 type = "forbidden"
 allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.supervisor", "aleph.vm.pool", "aleph.vm.models" ]
-forbidden_modules = [ "aleph.vm.agent" ]
-# Residuals removed by the VmExecution/VmPool cleave + DB-layer extraction.
-# The DB split (per-actor databases) removed the pool/daemon/local ->
-# agent.metrics residuals; only these two remain.
-ignore_imports = [
-  "aleph.vm.models -> aleph.vm.agent.metrics",
-  "aleph.vm.pool -> aleph.vm.agent.utils",
+source_modules = [
+  "aleph.vm.supervisor",
+  "aleph.vm.pool",
+  "aleph.vm.models",
+  "aleph.vm.network",
+  "aleph.vm.hypervisors",
 ]
+forbidden_modules = [ "aleph.vm.agent", "aleph.vm.testing" ]
+# pool, models, network and hypervisors are supervisor-side packages: they may
+# import neither the agent nor the aleph.vm.testing harness. aleph.vm.migration
+# is NOT in this source list: it is agent-side job plumbing (it imports
+# agent.run/messages/translate) that still lives outside the agent package.

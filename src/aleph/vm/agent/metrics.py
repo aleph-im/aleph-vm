@@ -1,8 +1,6 @@
 import logging
 from collections.abc import Iterable
-from pathlib import Path
 from typing import Any
-from uuid import UUID
 
 from sqlalchemy import (
     JSON,
@@ -27,7 +25,7 @@ try:
 except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
 
-from aleph.vm.conf import make_db_url, settings
+from aleph.vm.conf import make_db_url
 
 AsyncSessionMaker: async_sessionmaker[AsyncSession]
 
@@ -84,13 +82,6 @@ class ExecutionRecord(Base):
 
     def to_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.c}
-
-
-async def save_execution_data(execution_uuid: UUID, execution_data: str):
-    """Save the execution data in a file on disk"""
-    directory = Path(settings.EXECUTION_LOG_DIRECTORY)
-    directory.mkdir(exist_ok=True)
-    (directory / f"{execution_uuid}.json").write_text(execution_data)
 
 
 async def save_record(record: ExecutionRecord):

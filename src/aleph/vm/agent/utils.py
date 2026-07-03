@@ -1,58 +1,13 @@
 from datetime import datetime, timezone
 from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
-from typing import Any, TypedDict
 
-from aleph.vm.agent.cache import AsyncTTLCache
-from aleph.vm.agent.http import get_session
 from aleph.vm.conf import settings
+from aleph.vm.utils.aggregate import get_aggregate_settings
 
 logger = getLogger(__name__)
 
-
-class AggregateSettingsDict(TypedDict):
-    compatible_gpus: list[Any]
-    community_wallet_address: str
-    community_wallet_timestamp: int
-    # Optional in practice (older aggregates omit it); accessed via .get().
-    authorized_allocation_signers: list[str]
-
-
 PRICE_PRECISION = 18
-
-_settings_cache = AsyncTTLCache(ttl_seconds=60.0)
-
-
-async def fetch_aggregate_settings() -> AggregateSettingsDict | None:
-    """Fetch the settings aggregate from the PyAleph API."""
-    session = get_session()
-    url = f"{settings.API_SERVER}/api/v0/aggregates/{settings.SETTINGS_AGGREGATE_ADDRESS}.json?keys=settings"
-    logger.info(f"Fetching settings aggregate from {url}")
-    resp = await session.get(url)
-    resp.raise_for_status()
-
-    resp_data = await resp.json()
-    return resp_data["data"]["settings"]
-
-
-async def get_aggregate_settings() -> AggregateSettingsDict | None:
-    """Return the settings aggregate, fetching and caching as needed."""
-    cached = _settings_cache.get("settings")
-    if cached is not None:
-        return cached
-
-    try:
-        aggregate = await fetch_aggregate_settings()
-        _settings_cache.set("settings", aggregate)
-        return aggregate
-    except Exception:
-        logger.exception("Failed to fetch aggregate settings")
-        return None
-
-
-async def update_aggregate_settings() -> None:
-    """Refresh the settings aggregate cache if stale."""
-    await get_aggregate_settings()
 
 
 async def get_community_wallet_address() -> str | None:
@@ -114,11 +69,3 @@ async def get_authorized_allocation_signers() -> set[str]:
         if signers:
             return {addr.lower() for addr in signers}
     return {addr.lower() for addr in settings.DEFAULT_ALLOCATION_SIGNERS}
-
-
-def get_compatible_gpus() -> list[Any]:
-    """Return compatible GPUs from the cached settings aggregate."""
-    cached = _settings_cache.get("settings")
-    if not cached:
-        return []
-    return cached["compatible_gpus"]

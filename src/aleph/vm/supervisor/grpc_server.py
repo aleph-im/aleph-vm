@@ -20,9 +20,6 @@ from typing import TypeVar
 import grpc
 import msgpack
 
-from aleph.vm.supervisor import proto_convert as conv
-from aleph.vm.supervisor._pb import supervisor_pb2 as pb
-from aleph.vm.supervisor._pb import supervisor_pb2_grpc
 from aleph.vm.supervisor.error_mapping import translate_exception
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
@@ -36,10 +33,12 @@ from aleph.vm.supervisor_interface.types import (
     HostPort,
     VmId,
 )
+from aleph.vm.supervisor_interface.wire import ERROR_TRAILER_KEY
+from aleph.vm.supervisor_interface.wire import proto_convert as conv
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2 as pb
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2_grpc
 
 logger = logging.getLogger(__name__)
-
-ERROR_TRAILER_KEY = "aleph-supervisor-error-bin"
 
 # Wire status for each error code. The trailer carries the precise code; the
 # status code is the coarse fallback for clients that do not read the trailer.

@@ -11,6 +11,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -130,7 +131,7 @@ class TestMigrationExportEndpoint:
             return_value=False,
         )
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -140,7 +141,7 @@ class TestMigrationExportEndpoint:
     async def test_export_vm_not_found(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export fails if VM not found."""
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/export")
@@ -149,7 +150,7 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_vm_not_running(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export fails if VM is not running."""
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, status=VmStatus.STOPPED))
         )
@@ -163,7 +164,7 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_not_qemu(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export fails for non-QEMU VMs."""
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, backend=Backend.FIRECRACKER))
         )
@@ -177,7 +178,7 @@ class TestMigrationExportEndpoint:
     @pytest.mark.asyncio
     async def test_export_confidential_rejected(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that export rejects confidential VMs."""
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash, confidential_mode=ConfidentialMode.SEV))
         )
@@ -203,7 +204,7 @@ class TestMigrationExportEndpoint:
             started_at=datetime.now(timezone.utc),
         )
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)))
         client: TestClient = await aiohttp_client(app)
 
@@ -226,7 +227,7 @@ class TestMigrationExportEndpoint:
         volumes.mkdir(parents=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
         )
@@ -251,7 +252,7 @@ class TestMigrationDiskDownloadEndpoint:
     async def test_download_no_export_state(self, aiohttp_client, mocker, mock_vm_hash):
         """Test that download fails when no export job exists."""
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.get(f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2?token=invalid")
@@ -273,7 +274,7 @@ class TestMigrationDiskDownloadEndpoint:
         )
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.get(f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2?token=wrong-token")
@@ -295,7 +296,7 @@ class TestMigrationDiskDownloadEndpoint:
         )
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.get(
@@ -324,7 +325,7 @@ class TestMigrationDiskDownloadEndpoint:
         )
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.get(f"/control/machine/{mock_vm_hash}/migration/disk/rootfs.qcow2?token=test-token")
@@ -345,7 +346,7 @@ class TestMigrationImportEndpoint:
             return_value=False,
         )
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(
@@ -363,7 +364,7 @@ class TestMigrationImportEndpoint:
     async def test_import_invalid_request(self, aiohttp_client, mocker, mock_scheduler_auth):
         """Test that invalid request body is rejected."""
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post("/control/migrate", json={"vm_hash": "a" * 64})
@@ -372,7 +373,7 @@ class TestMigrationImportEndpoint:
     @pytest.mark.asyncio
     async def test_import_vm_already_running(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         """Test that import fails if VM already running on host."""
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)))
         client: TestClient = await aiohttp_client(app)
 
@@ -408,7 +409,7 @@ class TestMigrationImportEndpoint:
         )
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(
@@ -476,7 +477,7 @@ class TestMigrationImportEndpoint:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         supervisor = _migration_supervisor()
         app["supervisor"] = supervisor
         client: TestClient = await aiohttp_client(app)
@@ -540,7 +541,7 @@ class TestMigrationImportEndpoint:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor()
         client: TestClient = await aiohttp_client(app)
 
@@ -584,7 +585,7 @@ class TestMigrationImportEndpoint:
         )
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -604,7 +605,7 @@ class TestMigrationStatusEndpoints:
         self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
     ):
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
         r = await client.get(f"/control/machine/{mock_vm_hash}/migration/export/status")
         assert r.status == HTTPStatus.NOT_FOUND
@@ -614,7 +615,7 @@ class TestMigrationStatusEndpoints:
         self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
     ):
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
         r = await client.get(f"/control/migrate/{mock_vm_hash}/status")
         assert r.status == HTTPStatus.NOT_FOUND
@@ -632,7 +633,7 @@ class TestMigrationCleanupEndpoint:
             return_value=False,
         )
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         response = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
@@ -651,7 +652,7 @@ class TestMigrationCleanupEndpoint:
             started_at=datetime.now(timezone.utc),
         )
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         supervisor = _migration_supervisor()
         app["supervisor"] = supervisor
         client: TestClient = await aiohttp_client(app)
@@ -713,7 +714,7 @@ class TestMigrationExportIdempotency:
         volumes.mkdir(parents=True, exist_ok=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
         )
@@ -764,7 +765,7 @@ class TestMigrationFailedReset:
         volumes.mkdir(parents=True)
         (volumes / "rootfs.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor(
             get_vm=AsyncMock(return_value=_vm_info(mock_vm_hash)),
         )
@@ -840,7 +841,7 @@ class TestMigrationFailedReset:
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
-        app = setup_webapp(pool=mocker.Mock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor()
         client: TestClient = await aiohttp_client(app)
 
@@ -877,7 +878,7 @@ class TestMigrationCleanupGuard:
         self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash
     ):
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         r = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
@@ -958,7 +959,7 @@ class TestMigrationCleanupActiveDownload:
         export_jobs[mock_vm_hash] = job
 
         pool = mocker.Mock(executions={})
-        app = setup_webapp(pool=pool)
+        app = setup_webapp(supervisor=LocalSupervisor(pool))
         client: TestClient = await aiohttp_client(app)
 
         r = await client.post(f"/control/machine/{mock_vm_hash}/migration/cleanup")
