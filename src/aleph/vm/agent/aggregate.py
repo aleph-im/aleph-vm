@@ -2,12 +2,22 @@ from logging import getLogger
 from typing import Any, TypedDict
 
 import aiohttp
+from pydantic import BaseModel, Field
 
 from aleph.vm.conf import settings
 from aleph.vm.utils.cache import AsyncTTLCache
 from aleph.vm.utils.http import get_session
 
 logger = getLogger(__name__)
+
+
+class CompatibleGPU(BaseModel):
+    """Shape of one ``compatible_gpus`` entry in the settings aggregate."""
+
+    vendor: str = Field(description="GPU vendor name")
+    model: str = Field(description="GPU model name")
+    name: str = Field(description="GPU full name")
+    device_id: str = Field(description="GPU device id code including vendor_id and model_id")
 
 
 class AggregateSettingsDict(TypedDict):

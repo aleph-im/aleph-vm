@@ -7,6 +7,7 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import CpuProperties
 from pydantic import BaseModel, Field
 
+from aleph.vm.agent.aggregate import get_compatible_gpus, update_aggregate_settings
 from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_info
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
@@ -18,7 +19,6 @@ from aleph.vm.utils import (
     check_amd_sev_supported,
     cors_allow_all,
 )
-from aleph.vm.utils.aggregate import get_compatible_gpus, update_aggregate_settings
 
 
 class Period(BaseModel):

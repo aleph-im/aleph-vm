@@ -58,15 +58,6 @@ class GpuDevice(HashableModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class CompatibleGPU(BaseModel):
-    """Compatible GPU properties detail."""
-
-    vendor: str = Field(description="GPU vendor name")
-    model: str = Field(description="GPU model name")
-    name: str = Field(description="GPU full name")
-    device_id: str = Field(description="GPU device id code including vendor_id and model_id")
-
-
 def is_gpu_device_class(device_class: str) -> bool:
     try:
         GpuDeviceClass(device_class)
