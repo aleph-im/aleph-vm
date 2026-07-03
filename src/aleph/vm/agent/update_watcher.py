@@ -63,6 +63,10 @@ class UpdateWatcher:
         task.cancel()
         return True
 
+    def tracked(self) -> set[VmId]:
+        """vm_ids with a live subscription (event-gap reconciliation support)."""
+        return set(self._tasks)
+
     async def cancel_all(self) -> None:
         """Cancel every pending watch (shutdown cleanup)."""
         for vm_id in list(self._tasks):

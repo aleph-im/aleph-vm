@@ -16,11 +16,11 @@ from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
 from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
-from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
@@ -162,6 +162,35 @@ async def http_not_found(request: web.Request):  # noqa: ARG001
     return web.HTTPNotFound()
 
 
+RECONNECT_DELAY = 5
+
+
+async def _drop_vm_state(app: web.Application, vm_id) -> None:
+    """Drop the agent's per-VM state after the VM went down (idempotent)."""
+    app["expiry"].cancel(vm_id)
+    app["update_watcher"].cancel(vm_id)
+    await app["program_client"].forget(vm_id)
+
+
+async def _reconcile_after_event_gap(app: web.Application) -> None:
+    """Compensate for VM-down events missed while the event stream was down.
+
+    The stream is the agent's only push channel, so a VM that went down during
+    the gap never got its state drop. Re-list the VMs and apply the same drop
+    a missed event would have triggered to every tracked VM that is now
+    STOPPED, FAILED, or gone entirely.
+    """
+    from aleph.vm.supervisor_interface.types import VmStatus
+
+    status_by_vm = {info.vm_id: info.status for info in await app["supervisor"].list_vms()}
+    tracked = app["expiry"].tracked() | app["update_watcher"].tracked() | app["program_client"].tracked()
+    for vm_id in tracked:
+        status = status_by_vm.get(vm_id)
+        if status is None or status in (VmStatus.STOPPED, VmStatus.FAILED):
+            logger.info("Reconcile after event-stream gap: dropping agent state for %s (status: %s)", vm_id, status)
+            await _drop_vm_state(app, vm_id)
+
+
 async def watch_supervisor_events(app: web.Application) -> None:
     """Consume the supervisor's WatchEvents stream and drop agent-side per-VM
     state when a VM goes down.
@@ -170,28 +199,33 @@ async def watch_supervisor_events(app: web.Application) -> None:
     drop the agent's guest-side program state (guest API process, configured
     mark) and cancel pending idle-teardown timers; the supervisor's event
     stream is the agent's only way to learn about it without polling.
-    Reconnects on stream failure; exits if the supervisor does not implement
-    WatchEvents.
+    Reconnects on stream failure and reconciles first (events lost during the
+    gap are compensated by re-listing the VMs; only the instant between the
+    re-list and the re-subscribe remains uncovered, versus the whole outage).
+    Exits if the supervisor does not implement WatchEvents.
     """
     from aleph.vm.supervisor_interface.errors import NotImplementedSupervisorError
     from aleph.vm.supervisor_interface.types import VmStatus
 
     supervisor = app["supervisor"]
+    stream_interrupted = False
     while True:
         try:
+            if stream_interrupted:
+                await _reconcile_after_event_gap(app)
+                stream_interrupted = False
             async for event in supervisor.watch_events():
                 if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
-                    app["expiry"].cancel(event.vm_id)
-                    app["update_watcher"].cancel(event.vm_id)
-                    await app["program_client"].forget(event.vm_id)
+                    await _drop_vm_state(app, event.vm_id)
         except NotImplementedSupervisorError:
             logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")
             return
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("Supervisor event stream interrupted; reconnecting in 5s", exc_info=True)
-        await asyncio.sleep(5)
+            logger.warning("Supervisor event stream interrupted; reconnecting in %ss", RECONNECT_DELAY, exc_info=True)
+            stream_interrupted = True
+        await asyncio.sleep(RECONNECT_DELAY)
 
 
 def build_supervisor(settings) -> GrpcSupervisor:
