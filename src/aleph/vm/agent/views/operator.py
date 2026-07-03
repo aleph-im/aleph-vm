@@ -19,10 +19,8 @@ from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
 from aleph.vm.agent import metrics
-from aleph.vm.agent.cache import AsyncTTLCache
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.http import get_session
 from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
 from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
@@ -51,6 +49,8 @@ from aleph.vm.utils import (
     dumps_for_json,
     get_message_executable_content,
 )
+from aleph.vm.utils.cache import AsyncTTLCache
+from aleph.vm.utils.http import get_session
 
 logger = logging.getLogger(__name__)
 

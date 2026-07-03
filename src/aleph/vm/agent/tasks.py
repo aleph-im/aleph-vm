@@ -121,7 +121,7 @@ async def retry_generator(
 
 async def subscribe_via_ws(url) -> AsyncIterable[AlephMessage]:
     logger.debug("subscribe_via_ws()")
-    from aleph.vm.agent.http import get_session
+    from aleph.vm.utils.http import get_session
 
     session = get_session()
     async with session.ws_connect(

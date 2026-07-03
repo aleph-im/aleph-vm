@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PROTO_DIR = REPO / "proto"
-OUT_DIR = REPO / "src" / "aleph" / "vm" / "supervisor" / "_pb"
+OUT_DIR = REPO / "src" / "aleph" / "vm" / "supervisor_interface" / "wire" / "_pb"
 PROTO_FILE = PROTO_DIR / "supervisor.proto"
 
 

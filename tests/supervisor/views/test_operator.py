@@ -14,6 +14,7 @@ from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_message
+from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -182,7 +183,7 @@ async def test_operator_confidential_initialize_not_authorized(aiohttp_client):
             "aleph.vm.agent.views.operator.is_sender_authorized",
             return_value=False,
         ) as is_sender_authorized_mock:
-            app = setup_webapp(pool=FakeVmPool())
+            app = setup_webapp(supervisor=LocalSupervisor(FakeVmPool()))
             app["vm_registry"].record(
                 vm_hash,
                 message=instance_message.content,
@@ -217,7 +218,7 @@ async def test_operator_confidential_initialize_already_running(aiohttp_client, 
         "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -261,7 +262,7 @@ async def test_operator_stop(aiohttp_client, mocker):
         "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -298,7 +299,7 @@ async def test_operator_confidential_initialize_not_confidential(aiohttp_client,
         "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -347,7 +348,7 @@ async def test_operator_confidential_initialize(aiohttp_client, mocker):
             "aleph.vm.agent.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
-            app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+            app = setup_webapp(supervisor=LocalSupervisor(mocker.AsyncMock(executions={})))
             app["vm_registry"].record(
                 vm_hash,
                 message=instance_message.content,
@@ -404,7 +405,7 @@ async def test_operator_confidential_initialize_waits_for_awaiting(aiohttp_clien
             "aleph.vm.agent.views.authentication.authenticate_jwk",
             return_value=instance_message.sender,
         ):
-            app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+            app = setup_webapp(supervisor=LocalSupervisor(mocker.AsyncMock(executions={})))
             app["vm_registry"].record(
                 vm_hash,
                 message=instance_message.content,
@@ -462,7 +463,7 @@ async def test_operator_confidential_initialize_times_out(aiohttp_client, mocker
         "aleph.vm.agent.views.authentication.authenticate_jwk",
         return_value=instance_message.sender,
     ):
-        app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+        app = setup_webapp(supervisor=LocalSupervisor(mocker.AsyncMock(executions={})))
         app["vm_registry"].record(
             vm_hash,
             message=instance_message.content,
@@ -493,7 +494,7 @@ async def test_reboot_ok(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = mocker.Mock()
     app["vm_registry"].record(
         ItemHash(mock_hash),
@@ -520,7 +521,7 @@ async def test_websocket_logs_missing_auth(aiohttp_client, mocker):
     mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     # Seed the registry so _logs_auth_message succeeds and ws.prepare is called
     app["vm_registry"].record(
@@ -553,7 +554,7 @@ async def test_websocket_logs_invalid_auth(aiohttp_client, mocker):
     mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     # Seed the registry so _logs_auth_message succeeds and ws.prepare is called
     app["vm_registry"].record(
@@ -591,7 +592,7 @@ async def test_websocket_logs_good_auth(aiohttp_client, mocker, patch_datetime_n
     mock_hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     # Seed registry so _logs_auth_message finds the message
     app["vm_registry"].record(
@@ -703,7 +704,7 @@ async def test_get_past_logs(aiohttp_client, mocker, patch_datetime_now):
     )
 
     pool = mocker.MagicMock(executions={})
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     app["supervisor"] = fake_sup
     client = await aiohttp_client(app)
     response = await client.get(
@@ -767,7 +768,7 @@ async def test_operator_stop_with_delegation_authorized(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -826,7 +827,7 @@ async def test_operator_stop_with_delegation_unauthorized(aiohttp_client, mocker
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -884,7 +885,7 @@ async def test_operator_reboot_with_delegation(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = mocker.Mock()
     app["vm_registry"].record(
         vm_hash,
@@ -942,7 +943,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -989,7 +990,7 @@ async def test_operator_backup_status_authorized_reads_registry(aiohttp_client, 
         "aleph.vm.agent.views.operator.get_backup_directory",
         return_value=tmp_path,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1022,7 +1023,7 @@ async def test_operator_backup_status_unauthorized_reads_registry(aiohttp_client
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1056,7 +1057,7 @@ async def test_operator_backup_delete_authorized_reads_registry(aiohttp_client, 
         "aleph.vm.agent.views.operator.get_backup_directory",
         return_value=tmp_path,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1092,7 +1093,7 @@ async def test_operator_reinstall(aiohttp_client, mocker):
         new=AsyncMock(),
     )
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1133,7 +1134,7 @@ async def test_operator_reinstall_unauthorized(aiohttp_client, mocker):
         return_value=False,
     )
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1178,7 +1179,7 @@ async def test_delegation_with_empty_authorizations(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1235,7 +1236,7 @@ async def test_delegation_with_wrong_message_type(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1293,7 +1294,7 @@ async def test_delegation_with_case_insensitive_address(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1337,7 +1338,7 @@ async def test_delegation_api_error_denies_access(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1394,7 +1395,7 @@ async def test_delegation_with_empty_types_allows_all(aiohttp_client, mocker):
     mock_session.get = mocker.AsyncMock(return_value=mock_response)
     mocker.patch("aleph.vm.agent.views.operator.get_session", return_value=mock_session)
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1430,7 +1431,7 @@ async def test_operator_stop_already_stopped(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1465,7 +1466,7 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1500,7 +1501,7 @@ async def test_operator_stop_unknown_vm_hash_registry_empty(aiohttp_client, mock
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     # No record in registry
 
     client: TestClient = await aiohttp_client(app)
@@ -1521,7 +1522,7 @@ async def test_operator_stop_registry_exists_but_supervisor_not_found(aiohttp_cl
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1553,7 +1554,7 @@ async def test_operator_reboot_registry_exists_but_supervisor_not_found(aiohttp_
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1585,7 +1586,7 @@ async def test_operator_stop_booting_vm_is_stopped(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1621,7 +1622,7 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1657,7 +1658,7 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1690,7 +1691,7 @@ async def test_operator_erase_unknown_vm_404(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     # No record in registry
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
@@ -1714,7 +1715,7 @@ async def test_operator_erase_supervisor_not_found_404(aiohttp_client, mocker):
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1756,7 +1757,7 @@ async def test_operator_erase_unauthorized(aiohttp_client, mocker):
         return_value=False,
     )
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1787,7 +1788,7 @@ async def test_operator_reinstall_supervisor_not_found_404(aiohttp_client, mocke
     )
 
     fake_vm_pool = mocker.AsyncMock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -1823,7 +1824,7 @@ async def test_websocket_logs_stopped_vm_sends_past_logs(aiohttp_client, mocker,
     mock_hash = _FAKE_HASH
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     app["vm_registry"].record(
         ItemHash(mock_hash),
@@ -1871,7 +1872,7 @@ async def test_websocket_logs_booting_vm_sends_starting_message(aiohttp_client, 
     mock_hash = _FAKE_HASH
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     app["vm_registry"].record(
         ItemHash(mock_hash),
@@ -1917,7 +1918,7 @@ async def test_operate_logs_json_unknown_vm_404(aiohttp_client, mocker):
     )
 
     pool = mocker.MagicMock(executions={})
-    app = setup_webapp(pool=pool)
+    app = setup_webapp(supervisor=LocalSupervisor(pool))
     # No registry record seeded
     client = await aiohttp_client(app)
     response = await client.get(f"/control/machine/{mock_hash}/logs")
@@ -1935,7 +1936,7 @@ async def test_websocket_logs_db_fallback_auth(aiohttp_client, mocker, patch_dat
     mock_hash = _FAKE_HASH
 
     fake_vm_pool = mocker.Mock(executions={})
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["pubsub"] = None
     # Do NOT seed the registry; test DB fallback
     # Mock metrics.get_last_record_for_vm to return a record with message that parses to same content
@@ -2035,7 +2036,7 @@ async def test_operate_update_reconciles_when_running(aiohttp_client, mocker):
         reconcile_mock,
     )
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2068,7 +2069,7 @@ async def test_operate_update_skips_reconcile_when_not_running(aiohttp_client, m
         reconcile_mock,
     )
 
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2112,7 +2113,7 @@ async def test_operator_confidential_measurement_unauthorized_reads_registry(aio
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2142,7 +2143,7 @@ async def test_operator_confidential_inject_secret_unauthorized_reads_registry(a
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2179,7 +2180,7 @@ async def test_operator_confidential_measurement_delegates_and_preserves_respons
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2231,7 +2232,7 @@ async def test_operator_confidential_inject_secret_delegates(aiohttp_client, moc
     # After injecting the secret the endpoint reconciles the now-running VM's
     # port forwards; that path is covered by the run helper's own tests.
     mocker.patch("aleph.vm.agent.run.reconcile_port_forwards", AsyncMock())
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2267,7 +2268,7 @@ async def test_operator_backup_unauthorized_reads_registry(aiohttp_client, mocke
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2296,7 +2297,7 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=False,
     )
-    app = setup_webapp(pool=fake_vm_pool)
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
     app["vm_registry"].record(
         vm_hash,
         message=instance_message.content,
@@ -2342,7 +2343,7 @@ async def _seed_authorized_backup_app(aiohttp_client, mocker, **supervisor_overr
         "aleph.vm.agent.views.operator.is_sender_authorized",
         return_value=True,
     )
-    app = setup_webapp(pool=mocker.AsyncMock(executions={}))
+    app = setup_webapp(supervisor=LocalSupervisor(mocker.AsyncMock(executions={})))
     # secret_token is set by the startup hook (setup), not setup_webapp; the
     # presigned download URL signing needs it.
     app["secret_token"] = "test-secret-token"
@@ -2629,7 +2630,7 @@ async def test_recreate_network_delegates_to_supervisor(aiohttp_client, mocker):
         def executions(self):
             raise AssertionError("recreate_network endpoint must not read the pool")
 
-    app = setup_webapp(pool=_ExplodingPool())
+    app = setup_webapp(supervisor=LocalSupervisor(_ExplodingPool()))
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
     client: TestClient = await aiohttp_client(app)
@@ -2650,7 +2651,7 @@ async def test_recreate_network_partial_failure_returns_207(aiohttp_client, mock
     )
     partial = dict(_RECREATE_NETWORK_SUMMARY, success=False, failed_count=1, failed_vms=[{"vm_hash": "x"}])
 
-    app = setup_webapp(pool=mocker.Mock())
+    app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock()))
     fake_sup = _fake_supervisor()
     fake_sup.recreate_network = AsyncMock(return_value=partial)
     app["supervisor"] = fake_sup
@@ -2672,7 +2673,7 @@ async def test_recreate_network_internal_error_returns_500(aiohttp_client, mocke
         new=AsyncMock(return_value=True),
     )
 
-    app = setup_webapp(pool=mocker.Mock())
+    app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock()))
     fake_sup = _fake_supervisor()
     fake_sup.recreate_network = AsyncMock(side_effect=InternalSupervisorError("nft broke"))
     app["supervisor"] = fake_sup

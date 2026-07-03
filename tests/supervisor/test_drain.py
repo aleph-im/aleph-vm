@@ -14,6 +14,7 @@ from conftest import make_spec
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
 from aleph.vm.models import VmExecution
+from aleph.vm.supervisor.local import LocalSupervisor
 
 FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 
@@ -25,10 +26,10 @@ def _make_execution(persistent: bool = False) -> VmExecution:
 
 
 def _draining_app(draining: bool = True):
-    """A webapp with no in-process pool (split mode) and the agent-owned drain
-    flag set. The middleware reads app["draining"], not the pool, so this proves
-    drain works without an embedded pool."""
-    app = setup_webapp(pool=None)
+    """A webapp with the agent-owned drain flag set. The middleware reads
+    app["draining"], never the supervisor, so an inert engine handle is
+    enough."""
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     app["draining"] = draining
     return app
 
@@ -101,33 +102,20 @@ class TestDrainMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# drain_in_flight_requests — the on_shutdown hook, both modes
+# drain_in_flight_requests: the on_shutdown hook
 # ---------------------------------------------------------------------------
 
 
 class TestDrainShutdownHook:
     @pytest.mark.asyncio
-    async def test_split_mode_flips_flag_without_pool(self):
-        """Split mode (no embedded pool): the hook flips the flag and returns;
-        the daemon owns the pool and keeps VMs running across its own restart."""
+    async def test_hook_flips_the_agent_flag(self):
+        """The hook flips the agent-owned flag and returns; the daemon owns
+        the pool and keeps VMs running across the agent's restart."""
         from aleph.vm.agent.supervisor import drain_in_flight_requests
 
-        app = {"_engine_pool": None, "draining": False}
+        app = {"draining": False}
         await drain_in_flight_requests(app)
         assert app["draining"] is True
-
-    @pytest.mark.asyncio
-    async def test_in_process_flips_flag_and_drains_pool(self):
-        """In-process: the hook flips the flag AND drains the embedded pool."""
-        from unittest.mock import AsyncMock
-
-        from aleph.vm.agent.supervisor import drain_in_flight_requests
-
-        pool = AsyncMock()
-        app = {"_engine_pool": pool, "draining": False}
-        await drain_in_flight_requests(app)
-        assert app["draining"] is True
-        pool.drain.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

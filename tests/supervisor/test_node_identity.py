@@ -13,6 +13,7 @@ from aleph.vm.agent.node_identity import (
 )
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import Settings
+from aleph.vm.supervisor.local import LocalSupervisor
 
 
 def test_node_hash_setting():
@@ -328,7 +329,7 @@ async def test_discovery_task_resolves_from_setting():
 
 def _make_notify_app(node_hash: str | None) -> web.Application:
     """Create a minimal app with node identity for notify_allocation tests."""
-    app = setup_webapp(pool=None)
+    app = setup_webapp(supervisor=LocalSupervisor(None))
     app["node_identity"] = NodeIdentity(
         node_hash=node_hash,
         owner_address="",

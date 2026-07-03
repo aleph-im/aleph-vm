@@ -5,8 +5,8 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 
-from aleph.vm.agent.metrics import save_execution_data
 from aleph.vm.conf import settings
 from aleph.vm.network.firewall import (
     add_entities_if_not_present,
@@ -688,8 +688,21 @@ class VmExecution:
         return deleted_count
 
     async def record_usage(self):
+        """Supervisor-side stop bookkeeping.
+
+        The agent's usage records (ExecutionRecord rows) are written agent-side
+        by aleph.vm.agent.vm_registry.persist_record; this only cleans up
+        hypervisor-owned state and dumps diagnostics.
+        """
         # Non-persistent VMs won't restart, so clean up their port mappings
         if not self.persistent:
             await delete_port_mappings(self.vm_id)
         if settings.EXECUTION_LOG_ENABLED:
-            await save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
+            _save_execution_data(execution_uuid=self.uuid, execution_data=self.to_json())
+
+
+def _save_execution_data(execution_uuid: uuid.UUID, execution_data: str) -> None:
+    """Dump the execution state as JSON in the execution-log directory (diagnostics)."""
+    directory = Path(settings.EXECUTION_LOG_DIRECTORY)
+    directory.mkdir(exist_ok=True)
+    (directory / f"{execution_uuid}.json").write_text(execution_data)
