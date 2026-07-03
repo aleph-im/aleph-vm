@@ -25,7 +25,7 @@ This method is not recommended, except for development and testing.
 Read the installation document for the various components and the developer documentation. 
 
 1. Install the [VM-Connector](./vm_connector/README.md)
-2. Install the [VM-Supervisor](src/aleph/vm/orchestrator/README.md).
+2. Install the [VM-Supervisor](src/aleph/vm/agent/README.md).
 3. Install and configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
 
 ## Create and run an Aleph Program 
@@ -162,7 +162,7 @@ Following these best practices can help streamline code reviews and improve over
 
 Actually runs the programs in a secure environment on virtualization enabled systems. 
 
-See [vm_supervisor/README.md](src/aleph/vm/orchestrator/README.md).
+See [vm_supervisor/README.md](src/aleph/vm/agent/README.md).
 
 ### VM Connector
 

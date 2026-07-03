@@ -246,6 +246,10 @@ class ProgramGuestClient:
             writer.close()
             await writer.wait_closed()
 
+    def tracked(self) -> set[VmId]:
+        """vm_ids with agent-side guest state (event-gap reconciliation support)."""
+        return self._configured | set(self._guest_api_processes)
+
     async def forget(self, vm_id: VmId) -> None:
         """Drop agent-side guest state for a VM (after delete/reap)."""
         self._configured.discard(vm_id)

@@ -108,14 +108,17 @@ curl -fsSL -o ./target/vmlinux.bin https://ipfs.aleph.cloud/ipfs/bafybeiaj2lf6g5
 
 ## 3. Running
 
-Run the VM Supervisor with Python:
+Aleph-VM runs as two processes: the supervisor daemon (owns the VMs, gRPC
+over a Unix socket) and the agent (the public HTTP API, drives the daemon).
+Start the daemon first, then the agent:
 ```shell
-export PYTHONPATH=$(pwd)
-python3 -m orchestrator
+export PYTHONPATH=$(pwd)/src
+python3 -m aleph.vm.supervisor &
+python3 -m aleph.vm.agent
 ```
-or in debug mode:
+or run the agent in debug mode:
 ```shell
-python3 -m orchestrator -vv --system-logs
+python3 -m aleph.vm.agent -vv --system-logs
 ```
 
 Test accessing the service on
@@ -123,16 +126,16 @@ http://localhost:4020/
 
 ## 4. Configuration
 
-The VM Supervisor can be configured using command-line arguments or using environment variables.
+The agent can be configured using command-line arguments or using environment variables.
 
 List the available command-line arguments using:
 ```shell
-python3 -m orchestrator --help
+python3 -m aleph.vm.agent --help
 ```
 
 List available using environment variables using:
 ```shell
-python3 -m orchestrator --print-config --do-not-run
+python3 -m aleph.vm.agent --print-settings --do-not-run
 ```
 
 Configuration environment variables can be stored in a file named `.env` in the local directory.

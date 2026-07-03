@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.conf import settings
-from aleph.vm.migration.reaper import reap_orphan_migration_files
 
 
 @pytest.mark.asyncio

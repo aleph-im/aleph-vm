@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args(args):
-    parser = argparse.ArgumentParser(prog="orchestrator", description="Aleph.im VM Supervisor")
+    parser = argparse.ArgumentParser(prog="aleph-vm", description="Aleph.im compute node agent")
     parser.add_argument(
         "--system-logs",
         action="store_true",

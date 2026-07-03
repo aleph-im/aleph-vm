@@ -9,39 +9,7 @@ from pathlib import Path
 
 import aiohttp
 
-from aleph.vm.models import VmExecution
-
 logger = logging.getLogger(__name__)
-
-GRACEFUL_SHUTDOWN_TIMEOUT = 30
-
-
-async def graceful_shutdown(execution: VmExecution, timeout: int = GRACEFUL_SHUTDOWN_TIMEOUT) -> None:
-    """Gracefully shut down a QEMU VM via QMP system_powerdown, with fallback to systemd stop."""
-    from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
-
-    vm = execution.vm
-    if not vm:
-        msg = "VM not initialized"
-        raise RuntimeError(msg)
-
-    try:
-        client = QemuVmClient(vm)
-        client.system_powerdown()
-        client.close()
-    except Exception as e:
-        logger.warning("Failed to send system_powerdown for %s: %s", execution.vm_id, e)
-
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-        if execution.systemd_manager and not execution.systemd_manager.is_service_active(execution.controller_service):
-            logger.info("VM %s shut down gracefully", execution.vm_id)
-            return
-        await asyncio.sleep(1)
-
-    logger.warning("VM %s did not shut down within %ds, forcing stop", execution.vm_id, timeout)
-    if execution.systemd_manager:
-        execution.systemd_manager.stop_and_disable(execution.controller_service)
 
 
 async def compress_disk(source_path: Path, dest_path: Path) -> None:

@@ -157,3 +157,105 @@ async def test_watch_events_round_trips_over_the_wire():
     assert received[0].vm_id == VM_ID
     assert received[0].old_status is VmStatus.RUNNING
     assert received[0].new_status is VmStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_agent_watcher_reconciles_missed_events_on_reconnect(monkeypatch):
+    """Events lost while the stream was down must be compensated on reconnect:
+    every tracked VM that is now STOPPED, FAILED or gone gets the same drop
+    the missed event would have triggered; running VMs are left alone."""
+    from aleph.vm.agent import supervisor as agent_supervisor
+
+    running_vm = VmId("vm-running")
+    stopped_vm = VmId("vm-stopped")
+    gone_vm = VmId("vm-gone")
+
+    reconnected = asyncio.Event()
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.calls = 0
+
+        async def watch_events(self):
+            self.calls += 1
+            if self.calls == 1:
+                msg = "stream dropped"
+                raise ConnectionError(msg)
+            reconnected.set()
+            await asyncio.Event().wait()  # block like a live stream
+            yield  # pragma: no cover  (makes this an async generator)
+
+        async def list_vms(self):
+            return [
+                MagicMock(vm_id=running_vm, status=VmStatus.RUNNING),
+                MagicMock(vm_id=stopped_vm, status=VmStatus.STOPPED),
+            ]
+
+    tracked = {running_vm, stopped_vm, gone_vm}
+    app: dict[str, Any] = {
+        "supervisor": FakeSupervisor(),
+        "expiry": MagicMock(tracked=MagicMock(return_value=set(tracked))),
+        "update_watcher": MagicMock(tracked=MagicMock(return_value=set(tracked))),
+        "program_client": MagicMock(tracked=MagicMock(return_value=set(tracked)), forget=AsyncMock()),
+    }
+
+    monkeypatch.setattr(agent_supervisor, "RECONNECT_DELAY", 0)
+    task = asyncio.ensure_future(agent_supervisor.watch_supervisor_events(app))
+    await asyncio.wait_for(reconnected.wait(), timeout=2)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    dropped = {call.args[0] for call in app["expiry"].cancel.call_args_list}
+    assert dropped == {stopped_vm, gone_vm}
+    dropped = {call.args[0] for call in app["update_watcher"].cancel.call_args_list}
+    assert dropped == {stopped_vm, gone_vm}
+    forgotten = {call.args[0] for call in app["program_client"].forget.await_args_list}
+    assert forgotten == {stopped_vm, gone_vm}
+
+
+@pytest.mark.asyncio
+async def test_agent_watcher_retries_when_reconcile_itself_fails(monkeypatch):
+    """If the daemon is still down when the reconcile runs, the watcher keeps
+    retrying and reconciles once the daemon is back."""
+    from aleph.vm.agent import supervisor as agent_supervisor
+
+    stopped_vm = VmId("vm-stopped")
+    reconnected = asyncio.Event()
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.watch_calls = 0
+            self.list_calls = 0
+
+        async def watch_events(self):
+            self.watch_calls += 1
+            if self.watch_calls == 1:
+                msg = "stream dropped"
+                raise ConnectionError(msg)
+            reconnected.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+        async def list_vms(self):
+            self.list_calls += 1
+            if self.list_calls == 1:
+                msg = "daemon still down"
+                raise ConnectionError(msg)
+            return []
+
+    app: dict[str, Any] = {
+        "supervisor": FakeSupervisor(),
+        "expiry": MagicMock(tracked=MagicMock(return_value={stopped_vm})),
+        "update_watcher": MagicMock(tracked=MagicMock(return_value=set())),
+        "program_client": MagicMock(tracked=MagicMock(return_value=set()), forget=AsyncMock()),
+    }
+
+    monkeypatch.setattr(agent_supervisor, "RECONNECT_DELAY", 0)
+    task = asyncio.ensure_future(agent_supervisor.watch_supervisor_events(app))
+    await asyncio.wait_for(reconnected.wait(), timeout=2)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert app["supervisor"].list_calls == 2  # first reconcile failed, retried
+    app["expiry"].cancel.assert_called_once_with(stopped_vm)
+    app["program_client"].forget.assert_awaited_once_with(stopped_vm)
