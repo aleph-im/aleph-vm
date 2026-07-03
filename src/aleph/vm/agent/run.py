@@ -23,7 +23,6 @@ from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.conf import settings
-from aleph.vm.hypervisors.firecracker.microvm import MicroVMFailedInitError
 from aleph.vm.models import VmExecution
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -398,7 +397,7 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
     if isinstance(error, VmSetupError):
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    if isinstance(error, (MicroVMFailedInitError, supervisor_errors.MicroVMInitError)):
+    if isinstance(error, supervisor_errors.MicroVMInitError):
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during runtime initialisation") from error
     if isinstance(error, (HostNotFoundError, supervisor_errors.HostNotFoundError)):

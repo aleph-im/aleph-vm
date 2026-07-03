@@ -22,14 +22,14 @@ from aiohttp import web
 from aleph_message.models import ItemHash
 from pydantic import BaseModel, Field
 
-from aleph.vm.migration.jobs import (
+from aleph.vm.agent.migration.jobs import (
     DiskFileInfo,
     ExportJob,
     ImportJob,
     export_jobs,
     import_jobs,
 )
-from aleph.vm.migration.runner import run_export, run_import
+from aleph.vm.agent.migration.runner import run_export, run_import
 from aleph.vm.models import MigrationState
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError

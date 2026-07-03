@@ -35,6 +35,10 @@ class ExpiryManager:
         task.cancel()
         return True
 
+    def tracked(self) -> set[VmId]:
+        """vm_ids with a pending timer (event-gap reconciliation support)."""
+        return set(self._tasks)
+
     async def cancel_all(self) -> None:
         """Cancel every pending timer (shutdown cleanup)."""
         for vm_id in list(self._tasks):
