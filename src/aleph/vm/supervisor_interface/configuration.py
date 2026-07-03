@@ -3,15 +3,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    PlainSerializer,
-    field_validator,
-)
+from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
 
-from aleph.vm.conf import Settings, settings
+from aleph.vm.conf import IPv6AllocationPolicy, settings
 from aleph.vm.sizes import MiB
 
 logger = logging.getLogger(__name__)
@@ -93,37 +87,44 @@ class HypervisorType(str, Enum):
     firecracker = "firecracker"
 
 
+class ControllerSettings(BaseModel):
+    """The slice of node settings a VM controller actually needs.
+
+    Controller configs used to embed a FULL Settings dump, which coupled the
+    on-disk format to every one of the ~200 settings: any rename or removal
+    broke parsing of configs written by the previous version and crash-looped
+    the supervisor daemon on upgrade (the 1.13.0 CONNECTIVITY_DNS_HOSTNAME
+    incident). Only the fields below were ever read controller-side
+    (supervisor/controllers/__main__.py); nothing else belongs here.
+
+    Validation is deliberately lax in both directions:
+    - ``extra="ignore"``: configs written by older versions carry the full
+      dump; the surplus keys are ignored on read. No file migration needed.
+    - ``from_attributes=True``: writers pass the live Settings object and
+      pydantic extracts just this slice.
+    - Defaults mirror conf.py so a key absent from an old dump (or removed
+      from a future one) falls back instead of failing.
+    Known keys with invalid values still fail loudly."""
+
+    model_config = ConfigDict(extra="ignore", from_attributes=True)
+
+    JAILER_BASE_DIR: Path | None = None
+    NETWORK_INTERFACE: str | None = None
+    IPV4_ADDRESS_POOL: str = "172.16.0.0/12"
+    IPV4_NETWORK_PREFIX_LENGTH: int = 24
+    IPV6_ADDRESS_POOL: str = "fc00:1:2:3::/64"
+    IPV6_ALLOCATION_POLICY: IPv6AllocationPolicy = IPv6AllocationPolicy.static
+    IPV6_SUBNET_PREFIX: int = 124
+    IPV6_FORWARDING_ENABLED: bool = True
+    USE_NDP_PROXY: bool = True
+
+
 class Configuration(BaseModel):
     vm_id: int
     vm_hash: str
-    settings: Settings
+    settings: ControllerSettings
     vm_configuration: QemuConfidentialVMConfiguration | QemuVMConfiguration | VMConfiguration
     hypervisor: HypervisorType = HypervisorType.firecracker
-
-    @field_validator("settings", mode="before")
-    @classmethod
-    def _drop_unknown_settings_keys(cls, value: object) -> object:
-        """Tolerate settings keys this version does not know.
-
-        Controller configs on disk embed a full Settings dump from whichever
-        aleph-vm version created the VM. Settings itself is extra=forbid, so
-        a key that has since been renamed or removed (e.g. 1.13.0's
-        CONNECTIVITY_DNS_HOSTNAME, now CONNECTIVITY_DNS_HOSTNAMES) would
-        reject the whole config; load_persistent_executions would then abort
-        the supervisor daemon on startup, turning a routine package upgrade
-        of a node with live VMs into a crash loop. Unknown keys are dropped
-        (a renamed setting falls back to its current default); known keys
-        with invalid values still fail loudly."""
-        if not isinstance(value, dict):
-            return value
-        unknown = value.keys() - Settings.model_fields.keys()
-        if unknown:
-            logger.warning(
-                "Ignoring unknown settings keys in controller config (written by another aleph-vm version): %s",
-                ", ".join(sorted(unknown)),
-            )
-            return {key: item for key, item in value.items() if key not in unknown}
-        return value
 
 
 def get_controller_configuration_path(vm_hash: str) -> Path:
