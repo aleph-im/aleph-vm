@@ -330,10 +330,6 @@ type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor", "aleph.vm.pool", "aleph.vm.models" ]
 forbidden_modules = [ "aleph.vm.agent" ]
-# Residuals removed by the VmExecution/VmPool cleave + DB-layer extraction.
-# The DB split (per-actor databases) removed the pool/daemon/local ->
-# agent.metrics residuals; only these two remain.
-ignore_imports = [
-  "aleph.vm.models -> aleph.vm.agent.metrics",
-  "aleph.vm.pool -> aleph.vm.agent.utils",
-]
+# No residuals left: the DB split (per-actor databases) removed the
+# agent.metrics edges, the execution debug dump moved into models.py, and the
+# aggregate-settings helpers moved to the neutral aleph.vm.utils.aggregate.
