@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aleph.vm.agent.supervisor import build_supervisor, setup_webapp
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor.local import LocalSupervisor
+from aleph.vm.supervisor_interface.client import GrpcSupervisor
 
 
 def test_production_wiring_is_grpc_only():

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 from aleph.vm.agent.supervisor import build_supervisor
 from aleph.vm.conf import Settings
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
+from aleph.vm.supervisor_interface.client import GrpcSupervisor
 
 
 def test_build_supervisor_always_returns_the_grpc_client():

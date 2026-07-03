@@ -22,8 +22,8 @@ from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
 from aleph.vm.migration.reaper import reap_orphan_migration_files
 from aleph.vm.sevclient import SevClient
-from aleph.vm.supervisor.grpc_client import GrpcSupervisor
 from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.version import __version__
 
 from .node_identity import (

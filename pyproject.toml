@@ -162,7 +162,7 @@ line-length = 120
 target-version = "py310"
 line-length = 120
 src = [ "src" ]
-extend-exclude = [ "src/aleph/vm/supervisor/_pb" ]
+extend-exclude = [ "src/aleph/vm/supervisor_interface/wire/_pb" ]
 lint.select = [
   "A",
   "ARG",
@@ -217,7 +217,7 @@ lint.per-file-ignores."tests/**/*" = [ "PLR2004", "S101", "TID252" ]
 [tool.isort]
 profile = "black"
 extra_standard_library = [ "packaging" ]
-skip_glob = [ "src/aleph/vm/supervisor/_pb/*" ]
+skip_glob = [ "src/aleph/vm/supervisor_interface/wire/_pb/*" ]
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -240,8 +240,8 @@ omit = [
   # Generated protobuf bindings: descriptor code that does not run under the
   # default C++ descriptors, so it is not meaningfully testable. Already
   # excluded from mypy (see [tool.mypy] exclude below).
-  "src/aleph/vm/supervisor/_pb/*",
-  "*/supervisor/_pb/*",
+  "src/aleph/vm/supervisor_interface/wire/_pb/*",
+  "*/supervisor_interface/wire/_pb/*",
 ]
 
 [tool.coverage.paths]
@@ -262,7 +262,7 @@ non_interactive = true
 ignore_missing_imports = true
 explicit_package_bases = true
 check_untyped_defs = true
-exclude = [ "src/aleph/vm/supervisor/_pb/" ]
+exclude = [ "src/aleph/vm/supervisor_interface/wire/_pb/" ]
 
 [tool.yamlfix]
 sequence_style = "keep_style"
@@ -275,7 +275,7 @@ root_package = "aleph"
 # Grimp counts TYPE_CHECKING imports too, so type-only edges also appear here.
 
 [[tool.importlinter.contracts]]
-name = "supervisor_interface layer depends on neither side"
+name = "supervisor_interface (contract + wire + client) depends on neither side"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor_interface" ]
@@ -305,22 +305,18 @@ forbidden_modules = [
   "aleph.vm.supervisor.controllers",
   "aleph.vm.supervisor.local",
   "aleph.vm.supervisor.grpc_server",
-  "aleph.vm.supervisor.grpc_client",
   "aleph.vm.supervisor.daemon",
-  "aleph.vm.supervisor.proto_convert",
-  "aleph.vm.supervisor._pb",
   "aleph.vm.supervisor.error_mapping",
   "aleph.vm.supervisor.qemu_build",
 ]
-# Composition roots only. gRPC is the sole supervisor mode: the agent web
-# server (agent.supervisor) instantiates only the GrpcSupervisor client. The
-# one remaining supervisor.local edge is agent.cli's benchmark /
-# --run-*-instance harnesses, which build the daemon's engine in-process as a
-# supervisor-side test rig (documented at the import site); Phase C moves the
-# gRPC client to the contract side and removes both entries.
+# Composition root only: the one remaining supervisor.local edge is agent.cli's
+# benchmark / --run-*-instance harnesses, which build the daemon's engine
+# in-process as a supervisor-side test rig (documented at the import site).
+# The wire client and stubs now live on the contract side
+# (aleph.vm.supervisor_interface.client / .wire), so the agent no longer needs
+# any aleph.vm.supervisor module for its production path.
 ignore_imports = [
   "aleph.vm.agent.cli -> aleph.vm.supervisor.local",
-  "aleph.vm.agent.supervisor -> aleph.vm.supervisor.grpc_client",
 ]
 
 [[tool.importlinter.contracts]]

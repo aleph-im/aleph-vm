@@ -1,8 +1,8 @@
 import inspect
 
-from aleph.vm.supervisor import grpc_client
-from aleph.vm.supervisor._pb import supervisor_pb2_grpc as g
 from aleph.vm.supervisor.grpc_server import SupervisorService
+from aleph.vm.supervisor_interface import client as grpc_client
+from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2_grpc as g
 
 
 def test_no_phase2_stubs_remain():
