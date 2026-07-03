@@ -3,7 +3,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    PlainSerializer,
+    field_validator,
+)
 
 from aleph.vm.conf import Settings, settings
 from aleph.vm.sizes import MiB
@@ -93,6 +99,31 @@ class Configuration(BaseModel):
     settings: Settings
     vm_configuration: QemuConfidentialVMConfiguration | QemuVMConfiguration | VMConfiguration
     hypervisor: HypervisorType = HypervisorType.firecracker
+
+    @field_validator("settings", mode="before")
+    @classmethod
+    def _drop_unknown_settings_keys(cls, value: object) -> object:
+        """Tolerate settings keys this version does not know.
+
+        Controller configs on disk embed a full Settings dump from whichever
+        aleph-vm version created the VM. Settings itself is extra=forbid, so
+        a key that has since been renamed or removed (e.g. 1.13.0's
+        CONNECTIVITY_DNS_HOSTNAME, now CONNECTIVITY_DNS_HOSTNAMES) would
+        reject the whole config; load_persistent_executions would then abort
+        the supervisor daemon on startup, turning a routine package upgrade
+        of a node with live VMs into a crash loop. Unknown keys are dropped
+        (a renamed setting falls back to its current default); known keys
+        with invalid values still fail loudly."""
+        if not isinstance(value, dict):
+            return value
+        unknown = value.keys() - Settings.model_fields.keys()
+        if unknown:
+            logger.warning(
+                "Ignoring unknown settings keys in controller config (written by another aleph-vm version): %s",
+                ", ".join(sorted(unknown)),
+            )
+            return {key: item for key, item in value.items() if key not in unknown}
+        return value
 
 
 def get_controller_configuration_path(vm_hash: str) -> Path:
