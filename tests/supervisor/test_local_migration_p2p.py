@@ -15,9 +15,12 @@ from unittest.mock import AsyncMock
 import pytest
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.migration.jobs import (
+    ExportJob,
+    _reset_migration_semaphore_for_tests,
+)
+from aleph.vm.agent.migration.runner import run_export
 from aleph.vm.conf import settings
-from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
-from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
 from aleph.vm.supervisor_interface.abc import Supervisor
 
@@ -49,7 +52,7 @@ async def test_export_drives_stop_vm_and_derives_volumes_dir(tmp_path, monkeypat
     async def fake_compress(src: Path, dst: Path):
         dst.write_bytes(b"compressed")
 
-    monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", fake_compress)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.compress_disk", fake_compress)
 
     supervisor = AsyncMock()
     job = ExportJob(

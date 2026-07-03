@@ -20,7 +20,7 @@ from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
-from aleph.vm.migration.reaper import reap_orphan_migration_files
+from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor

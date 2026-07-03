@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 import pytest
 from aleph_message.models import ItemHash
 
-from aleph.vm.conf import settings
-from aleph.vm.migration.jobs import (
+from aleph.vm.agent.migration.jobs import (
     ExportJob,
     ImportJob,
     _reset_migration_semaphore_for_tests,
     get_migration_semaphore,
 )
+from aleph.vm.conf import settings
 from aleph.vm.models import MigrationState
 
 

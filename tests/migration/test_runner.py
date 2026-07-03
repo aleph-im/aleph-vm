@@ -10,9 +10,12 @@ import pytest
 from aleph_message.models import ItemHash, MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
+from aleph.vm.agent.migration.jobs import (
+    ExportJob,
+    _reset_migration_semaphore_for_tests,
+)
+from aleph.vm.agent.migration.runner import run_export
 from aleph.vm.conf import settings
-from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
-from aleph.vm.migration.runner import run_export
 from aleph.vm.models import MigrationState
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
@@ -31,7 +34,7 @@ def stub_finish_instance_create(monkeypatch):
     the import tests don't need a fully wired supervisor; the success test takes
     this fixture to assert run_import invokes it. Returns the mock."""
     mock = AsyncMock()
-    monkeypatch.setattr("aleph.vm.migration.runner.finish_instance_create", mock)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.finish_instance_create", mock)
     return mock
 
 
@@ -80,7 +83,7 @@ async def testrun_export_success(tmp_path, monkeypatch):
     async def fake_compress(src: Path, dst: Path):
         dst.write_bytes(b"compressed")
 
-    monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", fake_compress)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.compress_disk", fake_compress)
 
     supervisor = _export_supervisor(volumes_dir)
     job = ExportJob(
@@ -123,7 +126,7 @@ async def testrun_export_compression_failure(tmp_path, monkeypatch):
         else:
             raise RuntimeError("boom")
 
-    monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", flaky_compress)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.compress_disk", flaky_compress)
 
     supervisor = _export_supervisor(volumes_dir)
     job = ExportJob(
@@ -141,7 +144,7 @@ async def testrun_export_compression_failure(tmp_path, monkeypatch):
     supervisor.start_vm.assert_awaited_once_with(vm_hash)
 
 
-from aleph.vm.migration.jobs import ImportJob
+from aleph.vm.agent.migration.jobs import ImportJob
 
 
 @pytest.mark.asyncio
@@ -183,15 +186,15 @@ async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_cre
     async def fake_build_spec(vm_hash, content, *, gpus=()):
         return MagicMock(vm_id=vm_hash)
 
-    monkeypatch.setattr("aleph.vm.migration.runner.load_updated_message", fake_load_message)
-    monkeypatch.setattr("aleph.vm.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
-    monkeypatch.setattr("aleph.vm.migration.runner.detect_parent_format", fake_detect_format)
-    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
-    monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", fake_rebase)
-    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.load_updated_message", fake_load_message)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.detect_parent_format", fake_detect_format)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.rebase_overlay", fake_rebase)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.build_create_vm_spec", fake_build_spec)
 
-    from aleph.vm.migration.jobs import DiskFileInfo
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo
+    from aleph.vm.agent.migration.runner import run_import
 
     job = ImportJob(
         vm_hash=vm_hash,
@@ -273,15 +276,15 @@ async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, m
     async def fake_build_spec(vm_hash, content, *, gpus=()):
         return MagicMock(vm_id=vm_hash)
 
-    monkeypatch.setattr("aleph.vm.migration.runner.load_updated_message", fake_load_message)
-    monkeypatch.setattr("aleph.vm.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
-    monkeypatch.setattr("aleph.vm.migration.runner.detect_parent_format", fake_detect_format)
-    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
-    monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", fake_rebase)
-    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.load_updated_message", fake_load_message)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.get_rootfs_base_path", fake_get_rootfs_base_path)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.detect_parent_format", fake_detect_format)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.rebase_overlay", fake_rebase)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.build_create_vm_spec", fake_build_spec)
 
-    from aleph.vm.migration.jobs import DiskFileInfo
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo
+    from aleph.vm.agent.migration.runner import run_import
 
     job = ImportJob(
         vm_hash=vm_hash,
@@ -309,8 +312,8 @@ async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, m
 @pytest.mark.asyncio
 async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch):
     """If the fetched message isn't an instance, state ends in IMPORT_FAILED."""
-    from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
 
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -320,7 +323,7 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
     fake_message.content.environment.trusted_execution = None
 
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.load_updated_message",
+        "aleph.vm.agent.migration.runner.load_updated_message",
         AsyncMock(return_value=(fake_message, fake_message)),
     )
 
@@ -346,8 +349,8 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypatch):
     """If download_disk_from_source raises, dest_dir is rmtree'd."""
-    from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -363,18 +366,18 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
         raise RuntimeError("network exploded")
 
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.load_updated_message",
+        "aleph.vm.agent.migration.runner.load_updated_message",
         AsyncMock(return_value=(fake_message, fake_message)),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.get_rootfs_base_path",
+        "aleph.vm.agent.migration.runner.get_rootfs_base_path",
         AsyncMock(return_value=parent_path),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.detect_parent_format",
+        "aleph.vm.agent.migration.runner.detect_parent_format",
         AsyncMock(return_value="qcow2"),
     )
-    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", boom_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", boom_download)
 
     supervisor = _import_supervisor(has_vm=False)
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
@@ -401,8 +404,8 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypatch):
     """If create_vm raises, dest_dir is rmtree'd."""
-    from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -423,20 +426,20 @@ async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypa
         return MagicMock(vm_id=vm_hash)
 
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.load_updated_message",
+        "aleph.vm.agent.migration.runner.load_updated_message",
         AsyncMock(return_value=(fake_message, fake_message)),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.get_rootfs_base_path",
+        "aleph.vm.agent.migration.runner.get_rootfs_base_path",
         AsyncMock(return_value=parent_path),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.detect_parent_format",
+        "aleph.vm.agent.migration.runner.detect_parent_format",
         AsyncMock(return_value="qcow2"),
     )
-    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
-    monkeypatch.setattr("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
-    monkeypatch.setattr("aleph.vm.migration.runner.build_create_vm_spec", fake_build_spec)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.build_create_vm_spec", fake_build_spec)
 
     supervisor = _import_supervisor(has_vm=False, create_side_effect=RuntimeError("pool kaboom"))
 
@@ -464,8 +467,8 @@ async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypa
 async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path, monkeypatch):
     """Defence-in-depth: if the supervisor already reports a VM for this hash,
     do NOT rmtree the dest dir on failure."""
-    from aleph.vm.migration.jobs import DiskFileInfo, ImportJob
-    from aleph.vm.migration.runner import run_import
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
 
     parent_path = tmp_path / "parent.qcow2"
     parent_path.write_bytes(b"parent")
@@ -483,20 +486,20 @@ async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path,
         return 1
 
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.load_updated_message",
+        "aleph.vm.agent.migration.runner.load_updated_message",
         AsyncMock(return_value=(fake_message, fake_message)),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.get_rootfs_base_path",
+        "aleph.vm.agent.migration.runner.get_rootfs_base_path",
         AsyncMock(return_value=parent_path),
     )
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.detect_parent_format",
+        "aleph.vm.agent.migration.runner.detect_parent_format",
         AsyncMock(return_value="qcow2"),
     )
-    monkeypatch.setattr("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
     monkeypatch.setattr(
-        "aleph.vm.migration.runner.rebase_overlay",
+        "aleph.vm.agent.migration.runner.rebase_overlay",
         AsyncMock(side_effect=RuntimeError("rebase failed")),
     )
 
@@ -525,8 +528,11 @@ async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path,
 @pytest.mark.asyncio
 async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
     """With MAX_CONCURRENT_MIGRATIONS=1, two concurrent run_export calls must run sequentially."""
-    from aleph.vm.migration.jobs import ExportJob, _reset_migration_semaphore_for_tests
-    from aleph.vm.migration.runner import run_export
+    from aleph.vm.agent.migration.jobs import (
+        ExportJob,
+        _reset_migration_semaphore_for_tests,
+    )
+    from aleph.vm.agent.migration.runner import run_export
 
     monkeypatch.setattr(settings, "MAX_CONCURRENT_MIGRATIONS", 1)
     _reset_migration_semaphore_for_tests()
@@ -555,7 +561,7 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
         dst.write_bytes(b"c")
         in_flight -= 1
 
-    monkeypatch.setattr("aleph.vm.migration.runner.compress_disk", slow_compress)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.compress_disk", slow_compress)
 
     sup_a = _export_supervisor(tmp_path / str(hash_a))
     sup_b = _export_supervisor(tmp_path / str(hash_b))
@@ -573,7 +579,7 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_download_disk_verifies_sha256(tmp_path):
     """download_disk_from_source raises and unlinks the partial file when sha256 mismatches."""
-    from aleph.vm.migration.helpers import download_disk_from_source
+    from aleph.vm.agent.migration.helpers import download_disk_from_source
 
     payload = b"hello world"
     correct = hashlib.sha256(payload).hexdigest()
@@ -625,8 +631,8 @@ async def test_download_disk_verifies_sha256(tmp_path):
 @pytest.mark.asyncio
 async def test_export_ttl_removes_files_and_forgets_job(tmp_path, monkeypatch):
     """After TTL expires, export files are deleted and the job is removed from the registry."""
-    from aleph.vm.migration.jobs import ExportJob, export_jobs
-    from aleph.vm.migration.runner import schedule_export_ttl
+    from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
+    from aleph.vm.agent.migration.runner import schedule_export_ttl
 
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)

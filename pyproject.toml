@@ -290,7 +290,6 @@ forbidden_modules = [
   "aleph.vm.pool",
   "aleph.vm.models",
   "aleph.vm.network",
-  "aleph.vm.migration",
   "aleph.vm.hypervisors",
   "aleph.vm.testing",
 ]
@@ -312,7 +311,7 @@ forbidden_modules = [
 # by the pool and the controllers); the agent never touches it. Remaining
 # shared-domain edges the model split still has to dissolve: agent ->
 # aleph.vm.models (VmExecution, MigrationState), agent -> aleph.vm.hypervisors
-# (two leaf classes), agent -> aleph.vm.migration (agent-side job plumbing).
+# (two leaf classes).
 
 [[tool.importlinter.contracts]]
 name = "the supervisor side does not import the agent"
@@ -327,6 +326,6 @@ source_modules = [
 ]
 forbidden_modules = [ "aleph.vm.agent", "aleph.vm.testing" ]
 # pool, models, network and hypervisors are supervisor-side packages: they may
-# import neither the agent nor the aleph.vm.testing harness. aleph.vm.migration
-# is NOT in this source list: it is agent-side job plumbing (it imports
-# agent.run/messages/translate) that still lives outside the agent package.
+# import neither the agent nor the aleph.vm.testing harness. Migration is
+# agent-side job plumbing (it imports agent.run/messages/translate) and lives
+# at aleph.vm.agent.migration, covered by the agent contract above.

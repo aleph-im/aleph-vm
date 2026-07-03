@@ -63,7 +63,7 @@ def _migration_supervisor(get_vm=None, **overrides):
 
 @pytest.fixture(autouse=True)
 def _clear_migration_registries():
-    from aleph.vm.migration.jobs import export_jobs, import_jobs
+    from aleph.vm.agent.migration.jobs import export_jobs, import_jobs
 
     export_jobs.clear()
     import_jobs.clear()
@@ -196,7 +196,7 @@ class TestMigrationExportEndpoint:
         """Test that POST /export returns 409 when a terminal-state job already exists."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         export_jobs[mock_vm_hash] = ExportJob(
             vm_hash=mock_vm_hash,
@@ -220,7 +220,7 @@ class TestMigrationExportEndpoint:
         async def fake_compress(src, dst):
             dst.write_bytes(b"compressed")
 
-        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
+        mocker.patch("aleph.vm.agent.migration.runner.compress_disk", fake_compress)
 
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         volumes = tmp_path / str(mock_vm_hash)
@@ -263,7 +263,7 @@ class TestMigrationDiskDownloadEndpoint:
         """Test that download fails with invalid token."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         export_jobs[mock_vm_hash] = ExportJob(
             vm_hash=mock_vm_hash,
@@ -285,7 +285,7 @@ class TestMigrationDiskDownloadEndpoint:
         """Test that download returns 404 for missing file."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         export_jobs[mock_vm_hash] = ExportJob(
             vm_hash=mock_vm_hash,
@@ -309,7 +309,7 @@ class TestMigrationDiskDownloadEndpoint:
         """Test successful file download."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         # The handler reads from `{volumes_dir}/{filename}.export.qcow2`
         export_file = tmp_path / "rootfs.qcow2.export.qcow2"
@@ -404,7 +404,7 @@ class TestMigrationImportEndpoint:
         mock_message.type = MessageType.program
 
         mocker.patch(
-            "aleph.vm.migration.runner.load_updated_message",
+            "aleph.vm.agent.migration.runner.load_updated_message",
             AsyncMock(return_value=(mock_message, mock_message)),
         )
 
@@ -448,23 +448,23 @@ class TestMigrationImportEndpoint:
         fake_message.content.rootfs.parent.ref = "parent"
 
         mocker.patch(
-            "aleph.vm.migration.runner.load_updated_message",
+            "aleph.vm.agent.migration.runner.load_updated_message",
             AsyncMock(return_value=(fake_message, fake_message)),
         )
         mocker.patch(
-            "aleph.vm.migration.runner.get_rootfs_base_path",
+            "aleph.vm.agent.migration.runner.get_rootfs_base_path",
             AsyncMock(return_value=tmp_path / "parent.qcow2"),
         )
-        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
-        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch("aleph.vm.agent.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
         mocker.patch(
-            "aleph.vm.migration.runner.build_create_vm_spec",
+            "aleph.vm.agent.migration.runner.build_create_vm_spec",
             AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
         )
         # Post-create tail (wait-until-running + port forwards) is covered in the
         # runner unit tests; stub it so the endpoint test's fake supervisor need
         # not report RUNNING for the migrated VM.
-        mocker.patch("aleph.vm.migration.runner.finish_instance_create", AsyncMock())
+        mocker.patch("aleph.vm.agent.migration.runner.finish_instance_create", AsyncMock())
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -473,7 +473,7 @@ class TestMigrationImportEndpoint:
                 on_chunk(1)
             return 1
 
-        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
@@ -528,16 +528,16 @@ class TestMigrationImportEndpoint:
         fake_message.content.rootfs.parent.ref = "parent"
 
         mocker.patch(
-            "aleph.vm.migration.runner.load_updated_message",
+            "aleph.vm.agent.migration.runner.load_updated_message",
             AsyncMock(return_value=(fake_message, fake_message)),
         )
         mocker.patch(
-            "aleph.vm.migration.runner.get_rootfs_base_path",
+            "aleph.vm.agent.migration.runner.get_rootfs_base_path",
             AsyncMock(return_value=tmp_path / "parent.qcow2"),
         )
-        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
-        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
-        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch("aleph.vm.agent.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
@@ -574,7 +574,7 @@ class TestMigrationImportEndpoint:
     async def test_post_against_imported_returns_409(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ImportJob, import_jobs
+        from aleph.vm.agent.migration.jobs import ImportJob, import_jobs
 
         import_jobs[mock_vm_hash] = ImportJob(
             vm_hash=mock_vm_hash,
@@ -644,7 +644,7 @@ class TestMigrationCleanupEndpoint:
         """Test successful cleanup when an EXPORTED job is present."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         export_jobs[mock_vm_hash] = ExportJob(
             vm_hash=mock_vm_hash,
@@ -706,7 +706,7 @@ class TestMigrationExportIdempotency:
             await slow.wait()
             dst.write_bytes(b"x")
 
-        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
+        mocker.patch("aleph.vm.agent.migration.runner.compress_disk", fake_compress)
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
         # Pre-create the volumes dir so the runner finds disk files to compress.
@@ -743,7 +743,7 @@ class TestMigrationFailedReset:
         """POST against an EXPORT_FAILED slot clears partial files and starts a fresh job."""
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
         partial = tmp_path / "rootfs.qcow2.export.qcow2"
         partial.write_bytes(b"partial")
@@ -759,7 +759,7 @@ class TestMigrationFailedReset:
         async def fake_compress(src, dst):
             dst.write_bytes(b"compressed")
 
-        mocker.patch("aleph.vm.migration.runner.compress_disk", fake_compress)
+        mocker.patch("aleph.vm.agent.migration.runner.compress_disk", fake_compress)
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         volumes = tmp_path / str(mock_vm_hash)
         volumes.mkdir(parents=True)
@@ -792,7 +792,7 @@ class TestMigrationFailedReset:
         from aleph_message.models import MessageType
         from aleph_message.models.execution.environment import HypervisorType
 
-        from aleph.vm.migration.jobs import ImportJob, import_jobs
+        from aleph.vm.agent.migration.jobs import ImportJob, import_jobs
 
         prior_dest = tmp_path / "prior_dest"
         prior_dest.mkdir()
@@ -815,20 +815,20 @@ class TestMigrationFailedReset:
         fake_message.content.rootfs.parent.ref = "parent"
 
         mocker.patch(
-            "aleph.vm.migration.runner.load_updated_message",
+            "aleph.vm.agent.migration.runner.load_updated_message",
             AsyncMock(return_value=(fake_message, fake_message)),
         )
         mocker.patch(
-            "aleph.vm.migration.runner.get_rootfs_base_path",
+            "aleph.vm.agent.migration.runner.get_rootfs_base_path",
             AsyncMock(return_value=tmp_path / "parent.qcow2"),
         )
-        mocker.patch("aleph.vm.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
-        mocker.patch("aleph.vm.migration.runner.rebase_overlay", AsyncMock())
+        mocker.patch("aleph.vm.agent.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+        mocker.patch("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
         mocker.patch(
-            "aleph.vm.migration.runner.build_create_vm_spec",
+            "aleph.vm.agent.migration.runner.build_create_vm_spec",
             AsyncMock(return_value=mocker.Mock(vm_id=VmId(str(mock_vm_hash)))),
         )
-        mocker.patch("aleph.vm.migration.runner.finish_instance_create", AsyncMock())
+        mocker.patch("aleph.vm.agent.migration.runner.finish_instance_create", AsyncMock())
 
         async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -837,7 +837,7 @@ class TestMigrationFailedReset:
                 on_chunk(1)
             return 1
 
-        mocker.patch("aleph.vm.migration.runner.download_disk_from_source", fake_download)
+        mocker.patch("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
         mocker.patch.object(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
         (tmp_path / "parent.qcow2").write_bytes(b"x")
 
@@ -908,8 +908,8 @@ class TestImportRequestSourceHostValidation:
     def test_rejects_unsafe_hosts(self, bad_host):
         from pydantic import ValidationError
 
+        from aleph.vm.agent.migration.jobs import DiskFileInfo
         from aleph.vm.agent.views.migration import ColdMigrationImportRequest
-        from aleph.vm.migration.jobs import DiskFileInfo
 
         with pytest.raises(ValidationError):
             ColdMigrationImportRequest(
@@ -930,8 +930,8 @@ class TestImportRequestSourceHostValidation:
         ],
     )
     def test_accepts_routable_or_hostname(self, good_host):
+        from aleph.vm.agent.migration.jobs import DiskFileInfo
         from aleph.vm.agent.views.migration import ColdMigrationImportRequest
-        from aleph.vm.migration.jobs import DiskFileInfo
 
         ColdMigrationImportRequest(
             vm_hash="0" * 64,
@@ -947,7 +947,7 @@ class TestMigrationCleanupActiveDownload:
     async def test_cleanup_during_download_returns_409(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         from datetime import datetime, timezone
 
-        from aleph.vm.migration.jobs import ExportJob, export_jobs
+        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
         from aleph.vm.models import MigrationState
 
         job = ExportJob(
