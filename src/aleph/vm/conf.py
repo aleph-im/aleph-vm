@@ -18,7 +18,7 @@ from eth_utils import is_checksum_address
 from pydantic import Field, HttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aleph.vm.agent.chain import STREAM_CHAINS
+from aleph.vm.chains import STREAM_CHAINS
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,

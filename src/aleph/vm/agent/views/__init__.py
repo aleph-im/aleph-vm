@@ -21,7 +21,6 @@ from pydantic import ValidationError
 
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
-from aleph.vm.agent.chain import STREAM_CHAINS
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
@@ -62,6 +61,7 @@ from aleph.vm.agent.views.host_status import (
 )
 from aleph.vm.agent.views.operator import get_itemhash_or_400
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
+from aleph.vm.chains import STREAM_CHAINS
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.abc import Supervisor

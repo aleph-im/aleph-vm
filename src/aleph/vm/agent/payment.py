@@ -8,12 +8,11 @@ from eth_typing import HexAddress
 from eth_utils import from_wei
 from superfluid import CFA_V1, Web3FlowInfo
 
+from aleph.vm.chains import ChainInfo, InvalidChainError, get_chain
 from aleph.vm.conf import settings
 from aleph.vm.utils import to_normalized_address
 from aleph.vm.utils.cache import AsyncTTLCache
 from aleph.vm.utils.http import get_session
-
-from .chain import ChainInfo, InvalidChainError, get_chain
 
 logger = logging.getLogger(__name__)
 
