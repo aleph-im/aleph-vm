@@ -25,6 +25,7 @@ from aleph.vm.agent.migration.jobs import (
     DiskFileInfo,
     ExportJob,
     ImportJob,
+    MigrationState,
     export_jobs,
     get_migration_semaphore,
     import_jobs,
@@ -32,7 +33,6 @@ from aleph.vm.agent.migration.jobs import (
 from aleph.vm.agent.run import finish_instance_create
 from aleph.vm.agent.translate import build_create_vm_spec
 from aleph.vm.conf import settings
-from aleph.vm.models import MigrationState
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 

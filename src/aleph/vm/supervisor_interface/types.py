@@ -172,6 +172,19 @@ class GuestChannelSpec:
     ready_timeout_secs: int = 0
 
 
+@dataclass
+class RuntimeConfiguration:
+    """Version handshake the Aleph runtime sends in its guest-channel ready
+    payload. Part of the guest-init protocol both sides interpret: the
+    supervisor parses it from the ready signal, the agent uses it to shape
+    the configuration push."""
+
+    version: str
+
+    def supports_ipv6(self) -> bool:
+        return self.version != "1.0.0"
+
+
 @dataclass(frozen=True)
 class CreateVmSpec:
     vm_id: VmId

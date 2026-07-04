@@ -4,7 +4,6 @@ import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 
 from aleph.vm.conf import settings
@@ -55,18 +54,6 @@ from aleph.vm.utils import dumps_for_json
 SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]
 
 logger = logging.getLogger(__name__)
-
-
-class MigrationState(str, Enum):
-    """State of VM migration process. Source-side states begin with EXPORT_, destination-side with IMPORT_."""
-
-    NONE = "none"
-    EXPORTING = "exporting"
-    EXPORTED = "exported"
-    EXPORT_FAILED = "export_failed"
-    IMPORTING = "importing"
-    IMPORTED = "imported"
-    IMPORT_FAILED = "import_failed"
 
 
 @dataclass

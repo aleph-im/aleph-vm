@@ -304,16 +304,17 @@ source_modules = [ "aleph.vm.agent" ]
 forbidden_modules = [
   "aleph.vm.supervisor",
   "aleph.vm.pool",
+  "aleph.vm.models",
   "aleph.vm.network",
+  "aleph.vm.hypervisors",
 ]
 # Total separation, no exemptions: the agent talks to the supervisor daemon
 # only through aleph.vm.supervisor_interface (the Supervisor ABC, the DTOs,
 # and the GrpcSupervisor client in supervisor_interface.client). The network
 # package is supervisor-side host plumbing (TAP/nftables/IPv6 forwarding used
-# by the pool and the controllers); the agent never touches it. Remaining
-# shared-domain edges the model split still has to dissolve: agent ->
-# aleph.vm.models (VmExecution, MigrationState), agent -> aleph.vm.hypervisors
-# (one leaf class: RuntimeConfiguration in agent.vm.program_client).
+# by the pool and the controllers); the agent never touches it. models and
+# hypervisors are supervisor-side too (VmExecution and the VMM wrappers): the
+# agent has no remaining edge into either, not even a type-only one.
 
 [[tool.importlinter.contracts]]
 name = "the supervisor side does not import the agent"
