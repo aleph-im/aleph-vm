@@ -123,9 +123,13 @@ def main():
     )
 
     if args.print_settings:
-        print(config.settings.display())
+        print(config.settings.model_dump_json(indent=4))
 
-    config.settings.check()
+    # The config predates this process (written at VM creation, possibly by
+    # an older aleph-vm): validate the one field Network cannot default.
+    if not config.settings.NETWORK_INTERFACE:
+        logger.error("Controller config %s carries no NETWORK_INTERFACE", config_path)
+        sys.exit(1)
 
     network = Network(
         vm_ipv4_address_pool_range=config.settings.IPV4_ADDRESS_POOL,
