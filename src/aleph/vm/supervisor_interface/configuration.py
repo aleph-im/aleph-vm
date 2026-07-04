@@ -152,11 +152,7 @@ def save_controller_configuration(vm_hash: str, configuration: Configuration) ->
     """Save VM configuration to be used by the controller service"""
     config_file_path = get_controller_configuration_path(vm_hash)
     with config_file_path.open("w") as controller_config_file:
-        controller_config_file.write(
-            configuration.model_dump_json(
-                by_alias=True, exclude_none=True, indent=4, exclude={"settings": {"USE_DEVELOPER_SSH_KEYS"}}
-            )
-        )
+        controller_config_file.write(configuration.model_dump_json(by_alias=True, exclude_none=True, indent=4))
     config_file_path.chmod(0o644)
     return config_file_path
 
