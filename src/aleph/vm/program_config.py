@@ -26,7 +26,7 @@ from pathlib import Path
 from aleph_message.models.execution.base import Encoding
 
 from aleph.vm.conf import settings
-from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
+from aleph.vm.supervisor_interface.types import RuntimeConfiguration
 from aleph.vm.utils import MsgpackSerializable
 
 logger = logging.getLogger(__name__)

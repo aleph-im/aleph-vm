@@ -12,11 +12,11 @@ from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.agent.migration.jobs import (
     ExportJob,
+    MigrationState,
     _reset_migration_semaphore_for_tests,
 )
 from aleph.vm.agent.migration.runner import run_export
 from aleph.vm.conf import settings
-from aleph.vm.models import MigrationState
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
 

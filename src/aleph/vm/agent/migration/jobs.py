@@ -3,13 +3,25 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 from aleph_message.models import ItemHash
 from pydantic import BaseModel
 
 from aleph.vm.conf import settings
-from aleph.vm.models import MigrationState
+
+
+class MigrationState(str, Enum):
+    """State of VM migration process. Source-side states begin with EXPORT_, destination-side with IMPORT_."""
+
+    NONE = "none"
+    EXPORTING = "exporting"
+    EXPORTED = "exported"
+    EXPORT_FAILED = "export_failed"
+    IMPORTING = "importing"
+    IMPORTED = "imported"
+    IMPORT_FAILED = "import_failed"
 
 
 class DiskFileInfo(BaseModel):
