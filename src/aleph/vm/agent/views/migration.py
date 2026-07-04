@@ -26,11 +26,11 @@ from aleph.vm.agent.migration.jobs import (
     DiskFileInfo,
     ExportJob,
     ImportJob,
+    MigrationState,
     export_jobs,
     import_jobs,
 )
 from aleph.vm.agent.migration.runner import run_export, run_import
-from aleph.vm.models import MigrationState
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (

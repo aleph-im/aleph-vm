@@ -4,9 +4,6 @@ from contextvars import ContextVar
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.models import VmExecution
-
-ctx_current_execution: ContextVar[VmExecution | None] = ContextVar("current_execution")
 ctx_current_execution_hash: ContextVar[ItemHash | None] = ContextVar("current_execution_hash")
 
 
@@ -26,11 +23,6 @@ class InjectingFilter(logging.Filter):
 
     def filter(self, record):
         vm_hash = ctx_current_execution_hash.get(None)
-        if not vm_hash:
-            vm_execution: VmExecution | None = ctx_current_execution.get(None)
-            if vm_execution:
-                vm_hash = vm_execution.vm_id
-
         if not vm_hash:
             return False
 
