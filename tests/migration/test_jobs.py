@@ -9,11 +9,11 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.migration.jobs import (
     ExportJob,
     ImportJob,
+    MigrationState,
     _reset_migration_semaphore_for_tests,
     get_migration_semaphore,
 )
 from aleph.vm.conf import settings
-from aleph.vm.models import MigrationState
 
 
 def test_export_job_starts_in_exporting_state():

@@ -34,7 +34,6 @@ from aleph_message.models.execution.base import Encoding
 from aleph.vm.agent.vm.downloader import ProgramDownloader
 from aleph.vm.conf import settings
 from aleph.vm.guest_api.__main__ import run_guest_api
-from aleph.vm.hypervisors.firecracker.microvm import RuntimeConfiguration
 from aleph.vm.program_config import (
     ConfigurationResponse,
     ProgramConfiguration,
@@ -45,7 +44,7 @@ from aleph.vm.program_config import (
 )
 from aleph.vm.storage import chown_to_jailman
 from aleph.vm.supervisor_interface.errors import FileTooLargeError, VmSetupError
-from aleph.vm.supervisor_interface.types import VmId, VmInfo
+from aleph.vm.supervisor_interface.types import RuntimeConfiguration, VmId, VmInfo
 from aleph.vm.utils.runtime_channel import GUEST_API_PORT, RUNTIME_CONTROL_PORT
 
 logger = logging.getLogger(__name__)

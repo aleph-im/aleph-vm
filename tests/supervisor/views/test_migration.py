@@ -8,9 +8,9 @@ import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.migration.jobs import MigrationState
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.conf import settings
-from aleph.vm.models import MigrationState
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
@@ -947,8 +947,7 @@ class TestMigrationCleanupActiveDownload:
     async def test_cleanup_during_download_returns_409(self, aiohttp_client, mocker, mock_scheduler_auth, mock_vm_hash):
         from datetime import datetime, timezone
 
-        from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
-        from aleph.vm.models import MigrationState
+        from aleph.vm.agent.migration.jobs import ExportJob, MigrationState, export_jobs
 
         job = ExportJob(
             vm_hash=mock_vm_hash,

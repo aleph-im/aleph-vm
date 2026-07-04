@@ -7,7 +7,6 @@ import shutil
 import string
 import traceback
 from asyncio.base_events import Server
-from dataclasses import dataclass
 from os import getuid
 from pathlib import Path
 from pwd import getpwnam
@@ -17,6 +16,8 @@ from typing import Any, BinaryIO
 import msgpack
 from aleph_message.models import ItemHash
 from systemd import journal
+
+from aleph.vm.supervisor_interface.types import RuntimeConfiguration
 
 from .config import Drive, FirecrackerConfig
 
@@ -67,14 +68,6 @@ async def setfacl():
         logger.warning(f"[stdout]\n{stdout.decode()}")
     if stderr:
         logger.warning(f"[stderr]\n{stderr.decode()}")
-
-
-@dataclass
-class RuntimeConfiguration:
-    version: str
-
-    def supports_ipv6(self) -> bool:
-        return self.version != "1.0.0"
 
 
 class MicroVM:

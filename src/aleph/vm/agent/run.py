@@ -23,7 +23,6 @@ from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.conf import settings
-from aleph.vm.models import VmExecution
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -221,7 +220,7 @@ async def create_vm_execution(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     persistent: bool = False,
-) -> VmExecution | None:
+) -> None:
     """Create a VM for the given message.
 
     Every supported content type is created through the Supervisor abstraction:
@@ -327,7 +326,7 @@ async def create_vm_execution_or_raise_http_error(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     persistent: bool = False,
-) -> VmExecution | None:
+) -> None:
     # The spec path tears down and forgets a half-started VM inside
     # create_vm_execution (registry.forget + supervisor.delete_vm), so this
     # wrapper only translates failures to HTTP responses. The agent holds no
