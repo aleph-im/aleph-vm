@@ -17,6 +17,12 @@
 //! `add_match` calls on one sd-journal reader. Recorded in
 //! docs/plans/rust-port-divergences.md.
 //!
+//! Memory bound: the caller passes `last_lines` (journalctl `-n`) whenever
+//! it only needs the tail, so the subprocess output is bounded at the
+//! source instead of buffering the full history; the GetLogs handler adds a
+//! Rust-only server cap for "unlimited" requests (ledger entry 16 in
+//! docs/plans/rust-port-divergences.md).
+//!
 //! The trait seam keeps cargo tests hermetic: production uses
 //! [`JournalctlLogSource`], tests use [`StaticLogSource`].
 
@@ -41,23 +47,43 @@ pub struct LogEntry {
 /// Where GetLogs reads VM history from. Blocking (subprocess or file I/O);
 /// handlers call it through `spawn_blocking`.
 pub trait LogSource: Send + Sync {
-    /// All journal entries matching either identifier, oldest first.
-    fn read_history(&self, stdout_id: &str, stderr_id: &str) -> Result<Vec<LogEntry>, String>;
+    /// Journal entries matching either identifier, oldest first. When
+    /// `last_lines` is set, only the LAST n matching entries are read
+    /// (journalctl `-n`), which bounds the subprocess output; `None` reads
+    /// everything, for head slices where `-n` would keep the wrong end.
+    fn read_history(
+        &self,
+        stdout_id: &str,
+        stderr_id: &str,
+        last_lines: Option<u32>,
+    ) -> Result<Vec<LogEntry>, String>;
 }
 
 /// Production implementation: one `journalctl -o json` run per call.
 pub struct JournalctlLogSource;
 
 impl LogSource for JournalctlLogSource {
-    fn read_history(&self, stdout_id: &str, stderr_id: &str) -> Result<Vec<LogEntry>, String> {
+    fn read_history(
+        &self,
+        stdout_id: &str,
+        stderr_id: &str,
+        last_lines: Option<u32>,
+    ) -> Result<Vec<LogEntry>, String> {
         // --all: emit MESSAGE for unprintable/binary payloads too (as byte
         // arrays), which the sd-journal reader also yields (as bytes that
         // Python decodes with errors="replace").
-        let output = Command::new("journalctl")
+        let mut command = Command::new("journalctl");
+        command
             .arg("--output=json")
             .arg("--all")
             .arg("--no-pager")
-            .arg("--quiet")
+            .arg("--quiet");
+        if let Some(lines) = last_lines {
+            // Bound the buffered output at the source: -n keeps the last n
+            // entries in normal journal order, exactly the tail slice.
+            command.arg(format!("--lines={lines}"));
+        }
+        let output = command
             .arg(format!("SYSLOG_IDENTIFIER={stdout_id}"))
             .arg(format!("SYSLOG_IDENTIFIER={stderr_id}"))
             .output()
@@ -145,8 +171,21 @@ impl StaticLogSource {
 }
 
 impl LogSource for StaticLogSource {
-    fn read_history(&self, _stdout_id: &str, _stderr_id: &str) -> Result<Vec<LogEntry>, String> {
-        Ok(self.entries.clone())
+    fn read_history(
+        &self,
+        _stdout_id: &str,
+        _stderr_id: &str,
+        last_lines: Option<u32>,
+    ) -> Result<Vec<LogEntry>, String> {
+        let mut entries = self.entries.clone();
+        // Emulate journalctl -n: keep the LAST n entries, journal order.
+        if let Some(lines) = last_lines {
+            let lines = lines as usize;
+            if entries.len() > lines {
+                entries.drain(..entries.len() - lines);
+            }
+        }
+        Ok(entries)
     }
 }
 

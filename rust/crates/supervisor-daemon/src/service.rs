@@ -1,15 +1,22 @@
-//! The Supervisor gRPC service, increment 1.
+//! The Supervisor gRPC service, increments 1 and 2.
 //!
-//! Health and GetHostInfo are field-for-field ports of the Python
-//! LocalSupervisor (src/aleph/vm/supervisor/local.py). Every other RPC
-//! aborts UNIMPLEMENTED the way the Python `_abort` does for
-//! NotImplementedSupervisorError: grpc-status UNIMPLEMENTED plus a
+//! Health, GetHostInfo, GetVm, GetVmSpec, ListVms, ListPortForwards and
+//! GetLogs are field-for-field ports of the Python LocalSupervisor
+//! (src/aleph/vm/supervisor/local.py) as observed after a daemon restart:
+//! the pool state is the world view rebuilt from disk/systemd/sqlite
+//! (src/world.rs), unit liveness is queried live per RPC like
+//! `_is_running`/`_running_states`, and the VmSpec served for an adopted VM
+//! is the `spec_from_controller_configuration` reconstruction
+//! (src/aleph/vm/supervisor/qemu_build.py) the restarted Python daemon
+//! holds. Every other RPC aborts UNIMPLEMENTED the way the Python `_abort`
+//! does for NotImplementedSupervisorError: grpc-status UNIMPLEMENTED plus a
 //! serialized ErrorDetail (code INTERNAL, the wire code of
 //! NotImplementedSupervisorError) in the `aleph-supervisor-error-bin`
 //! trailer. The Python client maps UNIMPLEMENTED to
 //! NotImplementedSupervisorError before reading the trailer, so both
 //! encodings agree.
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -23,8 +30,15 @@ use tonic::{Code, Request, Response, Status};
 
 use crate::config::Settings;
 use crate::error::DaemonError;
+use crate::logs::{LogSource, LogStream};
 use crate::lspci::GpuDevice;
+use crate::units::UnitStateSource;
+use crate::world::{VmEntry, VmTimes, WorldView, now_ns};
 use crate::{host, lspci, net};
+
+/// AMDSEVPolicy.SEV_ES: the policy bit that upgrades a SEV launch to
+/// SEV-ES (the Python `_confidential_mode` reads the same bit).
+const SEV_ES_POLICY_BIT: u32 = 0x4;
 
 /// Host facts resolved once at daemon startup, exactly when the Python
 /// daemon resolves them: host_ipv4 at Network construction (pool.__init__),
@@ -73,27 +87,60 @@ impl HostState {
     }
 }
 
+/// Everything the RPC handlers read: the boot-time host facts, the world
+/// view (read-only in increment 2; increments 3+ mutate it, hence the
+/// RwLock), and the two host-dependency seams.
+pub struct DaemonState {
+    pub host: HostState,
+    pub world: tokio::sync::RwLock<WorldView>,
+    pub units: Arc<dyn UnitStateSource>,
+    pub logs: Arc<dyn LogSource>,
+}
+
 pub struct SupervisorService {
-    state: Arc<HostState>,
+    state: Arc<DaemonState>,
 }
 
 impl SupervisorService {
-    pub fn new(state: Arc<HostState>) -> Self {
+    pub fn new(state: Arc<DaemonState>) -> Self {
         Self { state }
     }
 
     async fn host_info(&self) -> Result<pb::HostInfo, DaemonError> {
         let (kernel_version, hostname) = host::uname_release_and_nodename()?;
-        let inventory_json = gpu_json(&self.state.gpus)?;
-        // No VM holds a GPU in increment 1 (there are no VMs), so the
-        // available list equals the inventory, as in
-        // VmPool.get_available_gpus with no executions.
-        let available_json = inventory_json.clone();
+        let inventory_json = gpu_json(&self.state.host.gpus)?;
+        // Available = inventory minus the GPUs the world view's controller
+        // configs attach. Deliberate divergence (ledger entry 14): the
+        // restarted Python daemon rebuilds executions with an empty `gpus`
+        // list, so it reports adopted VMs' GPUs as available.
+        let attached: HashSet<String> = {
+            let world = self.state.world.read().await;
+            world
+                .entries
+                .values()
+                .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
+                .collect()
+        };
+        let available: Vec<&GpuDevice> = self
+            .state
+            .host
+            .gpus
+            .iter()
+            .filter(|gpu| !attached.contains(&gpu.pci_host))
+            .collect();
+        let available_json = serde_json::to_string(&available).map_err(|error| {
+            DaemonError::Internal(format!("GPU inventory serialization failed: {error}"))
+        })?;
         // statvfs can block indefinitely on a hung backing device; run it on
         // the blocking pool so it cannot pin a tokio worker and take Health
         // down with it. The /proc/meminfo and uname reads stay inline: they
         // are instant in-kernel lookups.
-        let volumes_dir = self.state.settings.persistent_volumes_dir.clone();
+        //
+        // Python parity for VMs: calculate_available_disk adds each
+        // execution's get_disk_usage_delta, which is 0 for every adopted
+        // (spec-built, message-free) execution, so free space alone is
+        // still the exact post-restart figure.
+        let volumes_dir = self.state.host.settings.persistent_volumes_dir.clone();
         let available_disk_bytes =
             tokio::task::spawn_blocking(move || host::available_disk_bytes(&volumes_dir))
                 .await
@@ -110,11 +157,61 @@ impl SupervisorService {
             memory_mib: host::memory_total_mib()?,
             kernel_version,
             hostname,
-            host_ipv4: self.state.host_ipv4.clone(),
+            host_ipv4: self.state.host.host_ipv4.clone(),
             available_disk_bytes,
             gpu_inventory_json: inventory_json,
             available_gpus_json: available_json,
             ..Default::default()
+        })
+    }
+
+    /// Live active flag for one entry's controller unit, off the runtime
+    /// threads (the Python `_is_running` D-Bus query equivalent). A bus
+    /// failure degrades to "inactive", the Python
+    /// `get_services_active_states` parity behavior (ledger entry 13).
+    async fn unit_running(&self, unit: String) -> Result<bool, Status> {
+        let units = self.state.units.clone();
+        tokio::task::spawn_blocking(move || {
+            match units.active_states(std::slice::from_ref(&unit)) {
+                Ok(states) => states.get(&unit).copied().unwrap_or(false),
+                Err(error) => {
+                    tracing::error!(error, "Failed to get services active states");
+                    false
+                }
+            }
+        })
+        .await
+        .map_err(|error| {
+            internal_status(DaemonError::Internal(format!(
+                "the unit-state task failed: {error}"
+            )))
+        })
+    }
+
+    /// Live active flags for every entry, one batched query (the Python
+    /// `_running_states` ListUnits call, pushed off the loop like
+    /// `asyncio.to_thread` in list_vms). Bus failures degrade to
+    /// all-inactive, like the Python method (ledger entry 13).
+    async fn units_running(
+        &self,
+        unit_names: Vec<String>,
+    ) -> Result<HashMap<String, bool>, Status> {
+        let units = self.state.units.clone();
+        tokio::task::spawn_blocking(move || match units.active_states(&unit_names) {
+            Ok(states) => states,
+            Err(error) => {
+                tracing::error!(error, "Failed to get services active states");
+                unit_names
+                    .iter()
+                    .map(|unit| (unit.clone(), false))
+                    .collect()
+            }
+        })
+        .await
+        .map_err(|error| {
+            internal_status(DaemonError::Internal(format!(
+                "the unit-state task failed: {error}"
+            )))
         })
     }
 }
@@ -124,6 +221,201 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
         DaemonError::Internal(format!("GPU inventory serialization failed: {error}"))
     })
 }
+
+// ── World view to wire mapping ──────────────────────────────────────────
+
+/// `_status_of`, ported literally: the times short-circuit the live flag.
+fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
+    if times.stopped_at_ns != 0 {
+        pb::VmStatus::Stopped
+    } else if times.stopping_at_ns != 0 {
+        pb::VmStatus::Stopping
+    } else if running {
+        pb::VmStatus::Running
+    } else if times.starting_at_ns != 0 {
+        pb::VmStatus::Booting
+    } else {
+        pb::VmStatus::Defined
+    }
+}
+
+/// `_to_vm_info` for an adopted execution.
+fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInfo {
+    let times = &entry.times;
+    // `_uptime_secs`: seconds since started_at while running, else 0.
+    let uptime_secs = if running && times.started_at_ns != 0 {
+        now_ns.saturating_sub(times.started_at_ns) / 1_000_000_000
+    } else {
+        0
+    };
+    let confidential = entry.config.confidential();
+    let confidential_mode = match &confidential {
+        None => pb::ConfidentialMode::None,
+        Some(config) if config.sev_policy & SEV_ES_POLICY_BIT != 0 => pb::ConfidentialMode::SevEs,
+        Some(_) => pb::ConfidentialMode::Sev,
+    };
+    // `is_awaiting_confidential_init`, ported literally: confidential,
+    // persistent (every adopted VM is), started but neither stopping nor
+    // observed running.
+    let awaiting_confidential_init =
+        confidential.is_some() && times.started_at_ns != 0 && times.stopping_at_ns == 0 && !running;
+    let ip = |pair: &Option<crate::world::IpPair>| {
+        pair.as_ref()
+            .map(|pair| pb::IpAssignment {
+                address: pair.address.clone(),
+                network_cidr: pair.network_cidr.clone(),
+                gateway: pair.gateway.clone(),
+            })
+            .unwrap_or_default()
+    };
+    pb::VmInfo {
+        vm_id: entry.vm_hash.clone(),
+        status: vm_status(times, running) as i32,
+        ipv4: Some(ip(&entry.ipv4)),
+        ipv6: Some(ip(&entry.ipv6)),
+        uptime_secs,
+        backend: pb::Backend::Qemu as i32,
+        numa_node: None,
+        status_message: String::new(),
+        defined_at_ns: times.defined_at_ns,
+        preparing_at_ns: times.preparing_at_ns,
+        prepared_at_ns: times.prepared_at_ns,
+        starting_at_ns: times.starting_at_ns,
+        started_at_ns: times.started_at_ns,
+        stopping_at_ns: times.stopping_at_ns,
+        stopped_at_ns: times.stopped_at_ns,
+        confidential_mode: confidential_mode as i32,
+        // Python parity: the reattach path never rebuilds execution.gpus,
+        // so an adopted VM reports no attached GPUs even when its config
+        // carries them (the world view still withholds them from
+        // GetHostInfo.available_gpus_json; ledger entry 14).
+        gpus: Vec::new(),
+        guest_channel_path: String::new(),
+        guest_ready_payload: Vec::new(),
+        awaiting_confidential_init,
+    }
+}
+
+/// The VmSpec a restarted Python daemon serves for an adopted VM:
+/// `spec_from_controller_configuration` + `create_vm_spec_to_pb`.
+fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
+    let config = &entry.config;
+    let mut disks = vec![pb::DiskConfig {
+        path: config.image_path.clone(),
+        readonly: false,
+        format: pb::disk_config::Format::Qcow2 as i32,
+        role: pb::disk_config::DiskRole::Rootfs as i32,
+    }];
+    disks.extend(config.host_volumes.iter().map(|volume| pb::DiskConfig {
+        path: volume.path_on_host.clone(),
+        readonly: volume.read_only,
+        format: pb::disk_config::Format::Raw as i32,
+        role: pb::disk_config::DiskRole::Extra as i32,
+    }));
+    let tee = config.confidential().map(|confidential| pb::TeeConfig {
+        backend: pb::TeeBackend::Sev as i32,
+        // Python: hex(vm_cfg.sev_policy), e.g. "0x5".
+        policy: format!("{:#x}", confidential.sev_policy),
+        // Python: sev_session_file.parent (where initialize_confidential
+        // wrote the owner's certificates).
+        session_dir: std::path::Path::new(&confidential.sev_session_file)
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        firmware_path: confidential.ovmf_path.clone(),
+    });
+    pb::VmSpec {
+        vm_id: entry.vm_hash.clone(),
+        backend: pb::Backend::Qemu as i32,
+        kernel_path: String::new(),
+        initrd_path: String::new(),
+        disks,
+        vcpus: config.vcpu_count,
+        memory_mib: config.mem_size_mb,
+        tee,
+        network: Some(pb::NetworkConfig {
+            // Python: bool(vm_cfg.interface_name).
+            internet_access: config
+                .interface_name
+                .as_deref()
+                .is_some_and(|name| !name.is_empty()),
+            requested_ipv6: String::new(),
+            ipv6_prefix_len: 0,
+        }),
+        gpus: config
+            .gpus
+            .iter()
+            .map(|gpu| pb::GpuConfig {
+                pci_host: gpu.pci_host.clone(),
+                supports_x_vga: gpu.supports_x_vga,
+            })
+            .collect(),
+        numa_node: None,
+        persistent: true,
+        ssh_authorized_keys: Vec::new(),
+        hostname: String::new(),
+        guest_channel: None,
+    }
+}
+
+/// `_mapped_to_infos`: one PortForwardInfo per active protocol, TCP first.
+fn port_forward_messages(entry: &VmEntry) -> Vec<pb::PortForwardInfo> {
+    let mut infos = Vec::new();
+    for forward in &entry.port_forwards {
+        for (active, protocol) in [
+            (forward.tcp, pb::Protocol::Tcp),
+            (forward.udp, pb::Protocol::Udp),
+        ] {
+            if active {
+                infos.push(pb::PortForwardInfo {
+                    vm_id: entry.vm_hash.clone(),
+                    host_port: forward.host_port,
+                    vm_port: forward.vm_port,
+                    protocol: protocol as i32,
+                });
+            }
+        }
+    }
+    infos
+}
+
+/// Rust-only server cap on GetLogs history (ledger entry 16): the proto
+/// documents max_lines 0 as "unlimited (subject to server cap)"; Python has
+/// no cap today and buffers the whole journal.
+const GET_LOGS_SERVER_CAP: u32 = 10_000;
+
+/// The `-n` bound handed to journalctl. `-n` keeps the LAST n entries, so
+/// it is only correct when the caller wants the tail (`from_tail`) or a
+/// capped "everything" (max_lines == 0). A head read (from_tail=false,
+/// max_lines > 0) must scan from the start and slice after parsing, the
+/// Python `chunks[:max_lines]`; `-n` there would return the wrong entries.
+fn journal_tail_bound(max_lines: u32, from_tail: bool) -> Option<u32> {
+    if max_lines == 0 {
+        Some(GET_LOGS_SERVER_CAP)
+    } else if from_tail {
+        Some(max_lines)
+    } else {
+        None
+    }
+}
+
+fn log_chunks(entries: Vec<crate::logs::LogEntry>) -> Vec<pb::LogChunk> {
+    entries
+        .into_iter()
+        .map(|entry| pb::LogChunk {
+            // Python: whole seconds * 1e9 + microseconds * 1000, which is
+            // the journal's microsecond timestamp times 1000.
+            timestamp_ns: entry.timestamp_us * 1_000,
+            line: entry.message,
+            source: match entry.source {
+                LogStream::Stdout => pb::log_chunk::LogSource::Stdout as i32,
+                LogStream::Stderr => pb::log_chunk::LogSource::Stderr as i32,
+            },
+        })
+        .collect()
+}
+
+// ── Error statuses ──────────────────────────────────────────────────────
 
 /// Attach the serialized ErrorDetail trailer the Python `_abort` sends, so
 /// the agent rebuilds the exact SupervisorError subclass.
@@ -149,12 +441,18 @@ fn internal_status(error: DaemonError) -> Status {
     status_with_error_detail(Code::Internal, pb::ErrorCode::Internal, error.to_string())
 }
 
+/// The Python `VmNotFoundError(vm_id)` abort: grpc NOT_FOUND, message =
+/// the vm_id itself (str(error)), ErrorCode.VM_NOT_FOUND in the trailer.
+fn vm_not_found_status(vm_id: &str) -> Status {
+    status_with_error_detail(Code::NotFound, pb::ErrorCode::VmNotFound, vm_id.to_string())
+}
+
 /// UNIMPLEMENTED with the trailer NotImplementedSupervisorError carries
 /// (wire code INTERNAL; the status code alone distinguishes it, which is
 /// what the Python client keys on).
 fn unimplemented_status(rpc: &str) -> Status {
     let message = format!(
-        "{rpc} is not implemented yet by the Rust supervisor daemon (increment 1 serves Health and GetHostInfo)"
+        "{rpc} is not implemented yet by the Rust supervisor daemon (increment 2 serves the host and read-only VM RPCs)"
     );
     status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
 }
@@ -173,10 +471,11 @@ impl Supervisor for SupervisorService {
         _request: Request<pb::HealthRequest>,
     ) -> Result<Response<pb::HealthResponse>, Status> {
         // LocalSupervisor.health: always OK, vm_count = len(pool.executions)
-        // (always zero in increment 1: the daemon runs no VMs yet).
+        // (here: the world view rebuilt at boot).
+        let vm_count = self.state.world.read().await.len() as u32;
         Ok(Response::new(pb::HealthResponse {
             status: pb::HealthStatus::Ok as i32,
-            vm_count: 0,
+            vm_count,
         }))
     }
 
@@ -190,7 +489,7 @@ impl Supervisor for SupervisorService {
             .map_err(internal_status)
     }
 
-    // ── VM lifecycle (increments 2-4) ──
+    // ── VM lifecycle (create/delete/start/stop land in increments 3-4) ──
     async fn create_vm(
         &self,
         _request: Request<pb::VmSpec>,
@@ -200,23 +499,56 @@ impl Supervisor for SupervisorService {
 
     async fn get_vm(
         &self,
-        _request: Request<pb::GetVmRequest>,
+        request: Request<pb::GetVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("GetVm"))
+        let vm_id = request.into_inner().vm_id;
+        // Clone the entry out and release the lock BEFORE the unit-state
+        // query: increment 3 adds writers, and a read guard held across a
+        // D-Bus round trip would park them behind it.
+        let entry = {
+            let world = self.state.world.read().await;
+            match world.entries.get(&vm_id) {
+                Some(entry) => entry.clone(),
+                None => return Err(vm_not_found_status(&vm_id)),
+            }
+        };
+        let running = self.unit_running(entry.unit_name()).await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     async fn get_vm_spec(
         &self,
-        _request: Request<pb::GetVmSpecRequest>,
+        request: Request<pb::GetVmSpecRequest>,
     ) -> Result<Response<pb::VmSpec>, Status> {
-        Err(unimplemented_status("GetVmSpec"))
+        let vm_id = request.into_inner().vm_id;
+        let world = self.state.world.read().await;
+        let Some(entry) = world.entries.get(&vm_id) else {
+            return Err(vm_not_found_status(&vm_id));
+        };
+        Ok(Response::new(vm_spec_message(entry)))
     }
 
     async fn list_vms(
         &self,
         _request: Request<pb::ListVmsRequest>,
     ) -> Result<Response<pb::ListVmsResponse>, Status> {
-        Err(unimplemented_status("ListVms"))
+        // Snapshot the entries and release the lock BEFORE the batched
+        // unit-state query (see get_vm); BTreeMap order is preserved.
+        let entries: Vec<VmEntry> = {
+            let world = self.state.world.read().await;
+            world.entries.values().cloned().collect()
+        };
+        let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
+        let states = self.units_running(unit_names).await?;
+        let now = now_ns();
+        let vms = entries
+            .iter()
+            .map(|entry| {
+                let running = states.get(&entry.unit_name()).copied().unwrap_or(false);
+                vm_info_message(entry, running, now)
+            })
+            .collect();
+        Ok(Response::new(pb::ListVmsResponse { vms }))
     }
 
     async fn delete_vm(
@@ -268,7 +600,7 @@ impl Supervisor for SupervisorService {
         Err(unimplemented_status("RestoreFromImage"))
     }
 
-    // ── Port forwarding (increment 3) ──
+    // ── Port forwarding (mutations land in increment 3) ──
     async fn add_port_forward(
         &self,
         _request: Request<pb::AddPortForwardRequest>,
@@ -285,9 +617,23 @@ impl Supervisor for SupervisorService {
 
     async fn list_port_forwards(
         &self,
-        _request: Request<pb::ListPortForwardsRequest>,
+        request: Request<pb::ListPortForwardsRequest>,
     ) -> Result<Response<pb::ListPortForwardsResponse>, Status> {
-        Err(unimplemented_status("ListPortForwards"))
+        let vm_id = request.into_inner().vm_id;
+        let world = self.state.world.read().await;
+        let forwards = if vm_id.is_empty() {
+            world
+                .entries
+                .values()
+                .flat_map(port_forward_messages)
+                .collect()
+        } else {
+            let Some(entry) = world.entries.get(&vm_id) else {
+                return Err(vm_not_found_status(&vm_id));
+            };
+            port_forward_messages(entry)
+        };
+        Ok(Response::new(pb::ListPortForwardsResponse { forwards }))
     }
 
     // ── Events (increment 4) ──
@@ -300,12 +646,43 @@ impl Supervisor for SupervisorService {
         Err(unimplemented_status("WatchEvents"))
     }
 
-    // ── Logs (increments 2 and 4) ──
+    // ── Logs (StreamLogs lands in increment 4) ──
     async fn get_logs(
         &self,
-        _request: Request<pb::GetLogsRequest>,
+        request: Request<pb::GetLogsRequest>,
     ) -> Result<Response<pb::GetLogsResponse>, Status> {
-        Err(unimplemented_status("GetLogs"))
+        // Python get_logs performs no existence check: an unknown VM (or a
+        // VM that never logged) yields an empty history, not NOT_FOUND.
+        let request = request.into_inner();
+        let stdout_id = format!("vm-{}-stdout", request.vm_id);
+        let stderr_id = format!("vm-{}-stderr", request.vm_id);
+        // Bound the subprocess output at the source where -n keeps the
+        // right entries; the head path still slices after parsing (Python
+        // ordering semantics, see journal_tail_bound).
+        let tail_bound = journal_tail_bound(request.max_lines, request.from_tail);
+        let logs = self.state.logs.clone();
+        let history = tokio::task::spawn_blocking(move || {
+            logs.read_history(&stdout_id, &stderr_id, tail_bound)
+        })
+        .await
+        .map_err(|error| {
+            internal_status(DaemonError::Internal(format!(
+                "the journal task failed: {error}"
+            )))
+        })?
+        .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+        let mut lines = log_chunks(history);
+        let max_lines = request.max_lines as usize;
+        if max_lines > 0 && lines.len() > max_lines {
+            if request.from_tail {
+                // Python: chunks[-max_lines:].
+                lines.drain(..lines.len() - max_lines);
+            } else {
+                // Python: chunks[:max_lines].
+                lines.truncate(max_lines);
+            }
+        }
+        Ok(Response::new(pb::GetLogsResponse { lines }))
     }
 
     type StreamLogsStream = UnimplementedStream<pb::LogChunk>;
@@ -390,5 +767,219 @@ impl Supervisor for SupervisorService {
         _request: Request<pb::RecreateNetworkRequest>,
     ) -> Result<Response<pb::RecreateNetworkResponse>, Status> {
         Err(unimplemented_status("RecreateNetwork"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller_config::{VmConfiguration, parse_controller_config};
+    use crate::ports::PortForward;
+    use crate::test_fixtures;
+    use crate::world::IpPair;
+
+    fn fixture_entry(vm_hash: &str, running: bool) -> VmEntry {
+        let path = test_fixtures::fixtures_dir().join(format!("{vm_hash}-controller.json"));
+        let config = parse_controller_config(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let VmConfiguration::Qemu(qemu) = config.vm else {
+            panic!("fixtures are QEMU configs");
+        };
+        let mut times = VmTimes {
+            defined_at_ns: 1_000_000_000_000,
+            ..VmTimes::default()
+        };
+        if running {
+            times.preparing_at_ns = 1_000_000_001_000;
+            times.prepared_at_ns = 1_000_000_002_000;
+            times.started_at_ns = 1_000_000_003_000;
+        } else {
+            times.stopped_at_ns = times.defined_at_ns;
+        }
+        VmEntry {
+            vm_hash: vm_hash.to_string(),
+            vm_index: config.vm_index,
+            config: *qemu,
+            settings_slice: config.settings,
+            times,
+            adopted_running: running,
+            ipv4: running.then(|| IpPair {
+                address: "172.16.3.2".to_string(),
+                network_cidr: "172.16.3.0/24".to_string(),
+                gateway: "172.16.3.1".to_string(),
+            }),
+            ipv6: None,
+            port_forwards: if running {
+                vec![PortForward {
+                    vm_port: 22,
+                    host_port: 24000,
+                    tcp: true,
+                    udp: true,
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn a_running_adopted_vm_maps_like_the_python_to_vm_info() {
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let now = entry.times.started_at_ns + 7_500_000_000;
+        let info = vm_info_message(&entry, true, now);
+        assert_eq!(info.status, pb::VmStatus::Running as i32);
+        assert_eq!(info.uptime_secs, 7, "int(total_seconds()) truncates");
+        assert_eq!(info.backend, pb::Backend::Qemu as i32);
+        assert_eq!(info.vm_id, test_fixtures::QEMU_HASH);
+        assert_eq!(info.ipv4.as_ref().unwrap().address, "172.16.3.2");
+        assert_eq!(info.starting_at_ns, 0);
+        assert_ne!(info.started_at_ns, 0);
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::None as i32);
+        assert!(!info.awaiting_confidential_init);
+        assert!(info.gpus.is_empty());
+        assert_eq!(info.numa_node, None);
+    }
+
+    #[test]
+    fn an_entry_seen_inactive_at_boot_stays_stopped_whatever_the_live_unit_says() {
+        // R2 case 1: the bus ANSWERED at boot and the unit was inactive:
+        // stopped_at was stamped at adoption, and _status_of checks
+        // stopped_at first, so even a unit appearing later cannot resurrect
+        // the entry (Python behaves the same for a VM stopped through
+        // StopVm whose unit is started manually; the deliberate parity
+        // wart of ledger entry 11).
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, false);
+        for live in [false, true] {
+            let info = vm_info_message(&entry, live, now_ns());
+            assert_eq!(info.status, pb::VmStatus::Stopped as i32);
+            assert_eq!(info.uptime_secs, 0);
+        }
+        let info = vm_info_message(&entry, false, now_ns());
+        assert_eq!(info.ipv4, Some(pb::IpAssignment::default()));
+        assert_eq!(info.ipv6, Some(pb::IpAssignment::default()));
+    }
+
+    #[test]
+    fn an_entry_adopted_under_a_bus_failure_follows_the_live_unit_state() {
+        // R2 case 2: the bus did NOT answer at boot, so nothing was
+        // stamped (no stopped_at, no started_at). Once the bus recovers,
+        // an active unit reports RUNNING; an inactive one falls through
+        // _status_of to DEFINED, never a permanent STOPPED.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, false);
+        entry.times = VmTimes {
+            defined_at_ns: entry.times.defined_at_ns,
+            ..VmTimes::default()
+        };
+        let info = vm_info_message(&entry, true, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Running as i32);
+        assert_eq!(info.uptime_secs, 0, "no started_at was ever stamped");
+        let info = vm_info_message(&entry, false, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Defined as i32);
+    }
+
+    #[test]
+    fn a_running_adopted_vm_whose_unit_died_reports_defined() {
+        // The Python wart, ported: the restore path never sets starting_at
+        // or stopped_at, so a dead unit falls through _status_of to DEFINED.
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let info = vm_info_message(&entry, false, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Defined as i32);
+        assert_eq!(info.uptime_secs, 0);
+    }
+
+    #[test]
+    fn confidential_mode_follows_the_sev_policy_bit() {
+        let entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
+        // The fixture's policy is 0x5: the SEV_ES bit (0x4) is set.
+        let info = vm_info_message(&entry, true, now_ns());
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
+        assert!(!info.awaiting_confidential_init);
+        // A confidential VM with a dead unit but started_at set is
+        // "awaiting init" in Python's formula; port it literally.
+        let info = vm_info_message(&entry, false, now_ns());
+        assert!(info.awaiting_confidential_init);
+    }
+
+    #[test]
+    fn vm_spec_mirrors_spec_from_controller_configuration() {
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let spec = vm_spec_message(&entry);
+        assert_eq!(spec.vm_id, test_fixtures::QEMU_HASH);
+        assert_eq!(spec.backend, pb::Backend::Qemu as i32);
+        assert_eq!(spec.kernel_path, "");
+        assert_eq!(spec.initrd_path, "");
+        assert_eq!(spec.vcpus, 2);
+        assert_eq!(spec.memory_mib, 2048);
+        assert!(spec.persistent);
+        assert_eq!(spec.tee, None);
+        assert_eq!(spec.numa_node, None);
+        assert!(spec.network.as_ref().unwrap().internet_access);
+        assert_eq!(spec.disks.len(), 2, "rootfs plus one host volume");
+        assert_eq!(spec.disks[0].role, pb::disk_config::DiskRole::Rootfs as i32);
+        assert_eq!(spec.disks[0].format, pb::disk_config::Format::Qcow2 as i32);
+        assert!(!spec.disks[0].readonly);
+        assert_eq!(spec.disks[1].role, pb::disk_config::DiskRole::Extra as i32);
+        assert_eq!(spec.disks[1].format, pb::disk_config::Format::Raw as i32);
+    }
+
+    #[test]
+    fn a_confidential_spec_rebuilds_the_tee_config() {
+        let entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
+        let spec = vm_spec_message(&entry);
+        let tee = spec.tee.expect("confidential specs carry a TeeConfig");
+        assert_eq!(tee.backend, pb::TeeBackend::Sev as i32);
+        assert_eq!(tee.policy, "0x5");
+        assert!(tee.firmware_path.ends_with("OVMF_CSV.fd"));
+        assert!(tee.session_dir.ends_with(test_fixtures::CONFIDENTIAL_HASH));
+        assert!(!tee.session_dir.ends_with("vm_session.b64"));
+    }
+
+    #[test]
+    fn port_forwards_expand_per_protocol_tcp_first() {
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let infos = port_forward_messages(&entry);
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].protocol, pb::Protocol::Tcp as i32);
+        assert_eq!(infos[1].protocol, pb::Protocol::Udp as i32);
+        assert_eq!(infos[0].host_port, 24000);
+        assert_eq!(infos[0].vm_port, 22);
+    }
+
+    #[test]
+    fn log_history_maps_and_slices_like_python() {
+        use crate::logs::LogEntry;
+        let entries = vec![
+            LogEntry {
+                timestamp_us: 1_000_001,
+                message: "one".into(),
+                source: LogStream::Stdout,
+            },
+            LogEntry {
+                timestamp_us: 1_000_002,
+                message: "two".into(),
+                source: LogStream::Stderr,
+            },
+            LogEntry {
+                timestamp_us: 1_000_003,
+                message: "three".into(),
+                source: LogStream::Stdout,
+            },
+        ];
+        let chunks = log_chunks(entries);
+        assert_eq!(chunks[0].timestamp_ns, 1_000_001_000);
+        assert_eq!(chunks[0].source, pb::log_chunk::LogSource::Stdout as i32);
+        assert_eq!(chunks[1].source, pb::log_chunk::LogSource::Stderr as i32);
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn the_journal_subprocess_is_bounded_except_for_head_reads() {
+        // R3: "unlimited" requests get the Rust-only server cap (ledger
+        // entry 16), tail requests pass their own bound, and head reads
+        // cannot use -n (it keeps the LAST n entries) so they slice after
+        // parsing instead.
+        assert_eq!(journal_tail_bound(0, false), Some(GET_LOGS_SERVER_CAP));
+        assert_eq!(journal_tail_bound(0, true), Some(GET_LOGS_SERVER_CAP));
+        assert_eq!(journal_tail_bound(50, true), Some(50));
+        assert_eq!(journal_tail_bound(50, false), None);
     }
 }
