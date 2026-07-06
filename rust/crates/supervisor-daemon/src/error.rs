@@ -1,8 +1,8 @@
 //! Daemon-level error type.
 //!
-//! Increment 1 only needs the INTERNAL corner of the wire vocabulary: every
-//! host-info failure crosses the boundary as ErrorCode.INTERNAL (mirroring the
-//! Python `translating_errors()` catch-all in
+//! Increments 1 and 2 only need two corners of the wire vocabulary:
+//! VM_NOT_FOUND (an unknown vm_id on the read RPCs) and the INTERNAL
+//! catch-all (mirroring the Python `translating_errors()` in
 //! src/aleph/vm/supervisor/error_mapping.py). The full ErrorCode mapping
 //! arrives with the lifecycle RPCs in increment 3.
 
@@ -12,6 +12,13 @@ use std::path::PathBuf;
 pub enum DaemonError {
     #[error("invalid boolean for {key}: {value:?} (expected true/false/1/0/yes/no/on/off/t/f/y/n)")]
     InvalidBool { key: String, value: String },
+
+    #[error("invalid value for {key}: {value:?} (expected {expected})")]
+    InvalidSetting {
+        key: String,
+        value: String,
+        expected: &'static str,
+    },
 
     #[error("failed to read {path}: {source}")]
     ReadFile {

@@ -1,0 +1,903 @@
+//! The daemon's world view: every VM the host defines, rebuilt from disk,
+//! systemd and sqlite at boot (adoption steps 1-4 of the design doc,
+//! section 4; step 5, the nftables reconcile, is increment 3).
+//!
+//! Python parity notes. The oracle is the restarted Python daemon
+//! (`VmPool.load_persistent_executions`): it scans
+//! `{EXECUTION_ROOT}/*-controller.json` in sorted order, batch-queries
+//! systemd, and rebuilds an execution per ACTIVE controller (keyed on the
+//! EMBEDDED `Configuration.vm_hash`, never the file name), setting
+//! `defined_at`/`preparing_at`/`prepared_at`/`started_at` to the adoption
+//! instant and leaving `starting_at` unset. Like Python's `claimed_vm_ids`
+//! guard, when two active configs claim the same vm_index only the first
+//! (sorted file order) is adopted. This module ports that faithfully for
+//! running VMs, with deliberate, ledgered differences
+//! (docs/plans/rust-port-divergences.md):
+//!
+//! - A config whose controller unit is NOT active is kept and reported
+//!   STOPPED (with `stopped_at` = the adoption instant), where Python stops
+//!   and disables the unit and deletes the config. A read-only daemon never
+//!   destroys state (ledger entry 11; duplicates covered there too).
+//! - An unparseable, oversized or non-regular-file config is logged and
+//!   skipped, where Python's startup aborts (the crash-loop lesson) or, for
+//!   a FIFO, would hang (ledger entry 12).
+//! - A `hypervisor: firecracker` config is logged and skipped: Python's
+//!   reattach also fails for it (spec_from_controller_configuration is
+//!   QEMU-only), leaving the VM untracked, so both daemons hide it from
+//!   ListVms; Python just also queues doomed retries.
+//! - When the boot-time ListUnits call FAILS (bus unreachable), no VM is
+//!   stamped stopped: unit states are unknown, and each VM's status defers
+//!   to the live per-RPC unit queries until the bus answers (ledger 13).
+//! - A per-VM IP-derivation failure hides the VM (skipped with a WARN),
+//!   like a failed Python reattach that excludes the VM from ListVms via
+//!   the retry queue (ledger 13; negative vm_index in ledger 17).
+//!
+//! A controller unit without a config file gets a WARN and is left alone.
+//!
+//! The view is read-only and rebuilt at boot; increments 3+ will mutate it
+//! (hence the RwLock in `DaemonState`).
+
+use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::config::{Ipv6AllocationPolicy, Settings};
+use crate::controller_config::{
+    self, ControllerConfig, QemuVmConfig, VmConfiguration, parse_controller_config,
+};
+use crate::ports::{self, PortForward};
+use crate::units::{UnitStateSource, controller_unit_name};
+
+const CONFIG_SUFFIX: &str = "-controller.json";
+
+/// Lifecycle instants in unix nanoseconds UTC, 0 = stage not reached.
+/// Same shape as the Python `VmExecutionTimes` after `_ns()` conversion
+/// (microsecond precision).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VmTimes {
+    pub defined_at_ns: u64,
+    pub preparing_at_ns: u64,
+    pub prepared_at_ns: u64,
+    pub starting_at_ns: u64,
+    pub started_at_ns: u64,
+    pub stopping_at_ns: u64,
+    pub stopped_at_ns: u64,
+}
+
+/// One address family's computed assignment (VmInfo.IpAssignment fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpPair {
+    /// The guest's address, bare IP.
+    pub address: String,
+    /// The tap network, e.g. "172.16.3.0/24".
+    pub network_cidr: String,
+    /// Host-side tap address (bare IP), the guest's default route.
+    pub gateway: String,
+}
+
+/// One adopted VM.
+#[derive(Debug, Clone)]
+pub struct VmEntry {
+    pub vm_hash: String,
+    /// `Configuration.vm_id`, the tap/IPv4-range index.
+    pub vm_index: i64,
+    pub config: QemuVmConfig,
+    pub settings_slice: controller_config::ControllerSettingsSlice,
+    pub times: VmTimes,
+    /// Whether the controller unit was active when the view was built.
+    /// Status queries use the LIVE unit state; this drives what was
+    /// populated at adoption (times, IPs, port forwards).
+    pub adopted_running: bool,
+    /// Computed like the Python `TapInterface` the reattach rebuilds; only
+    /// for VMs adopted running (a stopped VM's tap was torn down, and the
+    /// proto documents empty assignments until the tap exists).
+    pub ipv4: Option<IpPair>,
+    pub ipv6: Option<IpPair>,
+    /// Active persisted port mappings, loaded at adoption for running VMs
+    /// (Python parity: a stopped persistent VM's `mapped_ports` is empty
+    /// until StartVm reloads it from the database).
+    pub port_forwards: Vec<PortForward>,
+}
+
+impl VmEntry {
+    pub fn unit_name(&self) -> String {
+        controller_unit_name(&self.vm_hash)
+    }
+}
+
+/// The in-memory map, keyed and iterated by vm_hash. The BTreeMap order
+/// equals the Python pool's insertion order (sorted config paths), so
+/// ListVms enumerates identically.
+#[derive(Debug, Default)]
+pub struct WorldView {
+    pub entries: BTreeMap<String, VmEntry>,
+}
+
+impl WorldView {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Unix nanoseconds now, truncated to microsecond precision like the
+/// Python `_ns()` (whole seconds * 1e9 + microseconds * 1000).
+pub fn now_ns() -> u64 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    elapsed.as_micros() as u64 * 1_000
+}
+
+/// Build the world view: scan configs, query systemd once, load port
+/// mappings. Never fails: every per-VM problem is logged and isolated,
+/// exactly like the Python per-VM reattach isolation.
+pub fn build_world_view(settings: &Settings, units: &dyn UnitStateSource) -> WorldView {
+    let configs = scan_controller_configs(settings);
+
+    let unit_names: Vec<String> = configs
+        .iter()
+        .map(|config| controller_unit_name(&config.vm_hash))
+        .collect();
+    // None: the bus did not answer, so unit states are UNKNOWN. Adopted
+    // entries must not be stamped stopped on a transient bus outage; their
+    // status defers to the live per-RPC unit queries instead (ledger 13).
+    let active_states: Option<std::collections::HashMap<String, bool>> =
+        match units.active_states(&unit_names) {
+            Ok(states) => Some(states),
+            Err(error) => {
+                tracing::warn!(
+                    error,
+                    "system bus unreachable at adoption; unit states unknown, \
+                     deferring every VM's status to live queries"
+                );
+                None
+            }
+        };
+
+    // Adoption step 3's counterpart check: units without a config file are
+    // reported and left alone.
+    let known: std::collections::HashSet<&String> = unit_names.iter().collect();
+    if let Ok(controller_units) = units.controller_units() {
+        for (unit, active) in controller_units {
+            if !known.contains(&unit) {
+                tracing::warn!(
+                    unit,
+                    active,
+                    "controller unit has no configuration file; leaving it alone"
+                );
+            }
+        }
+    }
+
+    let mut entries = BTreeMap::new();
+    // The dynamic IPv6 allocator hands out pool subnets in allocation order
+    // (first subnet reserved for the host); adoption order is the sorted
+    // config order, running VMs only, like the Python generator.
+    let mut dynamic_ordinal: usize = 0;
+    // Python's claimed_vm_ids guard (pool.load_persistent_executions): a
+    // stale config can reuse a vm_index; only the first active one (sorted
+    // file order) is adopted, so two VMs never share a tap interface.
+    let mut claimed_vm_indices: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+    for config in configs {
+        let vm_hash = config.vm_hash.clone();
+        let unit = controller_unit_name(&vm_hash);
+        // Some(flag): the bus answered; None: unknown (bus unreachable).
+        let running: Option<bool> = active_states
+            .as_ref()
+            .map(|states| states.get(&unit).copied().unwrap_or(false));
+
+        // Like Python, the vm_index claim precedes the per-VM rebuild: an
+        // active duplicate is never adopted (Python destroys it at startup
+        // and answers NOT_FOUND; the read-only daemon just does not adopt,
+        // ledger entry 11).
+        if running == Some(true) && !claimed_vm_indices.insert(config.vm_index) {
+            tracing::warn!(
+                vm_hash,
+                vm_index = config.vm_index,
+                "vm_index already claimed by an earlier active config; skipping the VM"
+            );
+            continue;
+        }
+
+        let qemu = match config.vm {
+            VmConfiguration::Qemu(qemu) => *qemu,
+            VmConfiguration::Firecracker => {
+                tracing::warn!(
+                    vm_hash,
+                    "skipping non-QEMU controller config (adoption is QEMU-only, \
+                     as in the Python reattach); leaving the VM alone"
+                );
+                continue;
+            }
+        };
+
+        // Mirrors the instants the Python restore path stamps: __init__
+        // sets defined_at, prepare() sets preparing_at/prepared_at,
+        // _restore_running_execution_from_config sets started_at;
+        // starting_at is never set on this path.
+        let mut times = VmTimes {
+            defined_at_ns: now_ns(),
+            ..VmTimes::default()
+        };
+        let mut ipv4 = None;
+        let mut ipv6 = None;
+        let mut port_forwards = Vec::new();
+        match running {
+            Some(true) => {
+                times.preparing_at_ns = now_ns();
+                times.prepared_at_ns = now_ns();
+
+                if settings.allow_vm_networking {
+                    // Python rebuilds the tap unconditionally for adopted VMs
+                    // (even when the config carries no interface_name). A
+                    // derivation failure fails the whole per-VM reattach
+                    // there, hiding the VM from ListVms (retry queue); hide
+                    // it here too instead of serving empty assignments.
+                    match ipv4_assignment(
+                        &settings.ipv4_address_pool,
+                        settings.ipv4_network_prefix_length,
+                        config.vm_index,
+                    ) {
+                        Ok(pair) => ipv4 = Some(pair),
+                        Err(error) => {
+                            tracing::warn!(
+                                vm_hash,
+                                error,
+                                "cannot compute the IPv4 assignment; hiding the VM \
+                                 like a failed Python reattach"
+                            );
+                            continue;
+                        }
+                    }
+                    let ipv6_result = match settings.ipv6_allocation_policy {
+                        Ipv6AllocationPolicy::Static => {
+                            ipv6_static_assignment(&settings.ipv6_address_pool, &vm_hash)
+                        }
+                        Ipv6AllocationPolicy::Dynamic => {
+                            dynamic_ordinal += 1;
+                            ipv6_dynamic_assignment(
+                                &settings.ipv6_address_pool,
+                                settings.ipv6_subnet_prefix,
+                                dynamic_ordinal,
+                            )
+                        }
+                    };
+                    match ipv6_result {
+                        Ok(pair) => ipv6 = Some(pair),
+                        Err(error) => {
+                            tracing::warn!(
+                                vm_hash,
+                                error,
+                                "cannot compute the IPv6 assignment; hiding the VM \
+                                 like a failed Python reattach"
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                // Python: execution.mapped_ports = await get_port_mappings(vm_id)
+                // during _restore_running_execution_from_config.
+                match ports::load_port_forwards(&settings.supervisor_database, &vm_hash) {
+                    Ok(forwards) => port_forwards = forwards,
+                    Err(error) => {
+                        tracing::warn!(vm_hash, error, "cannot load persisted port mappings");
+                    }
+                }
+
+                times.started_at_ns = now_ns();
+            }
+            Some(false) => {
+                // No Python counterpart (the Python startup destroys these);
+                // the daemon observed the VM stopped at adoption.
+                times.stopped_at_ns = times.defined_at_ns;
+                tracing::info!(
+                    vm_hash,
+                    "controller config present but its unit is not active; reporting the VM stopped"
+                );
+            }
+            None => {
+                // Bus unreachable at boot: not proof the VM stopped. Leave
+                // every stage timestamp except defined_at unset so vm_status
+                // follows the live unit state once the bus answers.
+                tracing::info!(
+                    vm_hash,
+                    "unit state unknown at adoption (bus unreachable); \
+                     the VM's status defers to live unit queries"
+                );
+            }
+        }
+
+        entries.insert(
+            vm_hash.clone(),
+            VmEntry {
+                vm_hash,
+                vm_index: config.vm_index,
+                config: qemu,
+                settings_slice: config.settings,
+                times,
+                adopted_running: running == Some(true),
+                ipv4,
+                ipv6,
+                port_forwards,
+            },
+        );
+    }
+
+    tracing::info!(count = entries.len(), "world view built");
+    WorldView { entries }
+}
+
+/// Sanity cap on one controller config file: real configs are KB-sized, so
+/// anything above this is not a config and must not be buffered.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Scan `{EXECUTION_ROOT}/*-controller.json` in sorted order, parsing each;
+/// unparseable, oversized or non-regular files are logged and skipped,
+/// never fatal. Each config is keyed on its EMBEDDED `vm_hash`, like the
+/// Python loader (pool.py keys the unit name, port mappings, static IPv6
+/// and vm_id on `config.vm_hash`; the file name only locates the file).
+fn scan_controller_configs(settings: &Settings) -> Vec<ControllerConfig> {
+    let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(&settings.execution_root) {
+        Ok(dir) => dir
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(CONFIG_SUFFIX))
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(%error, "Failed to enumerate controller configs");
+            return Vec::new();
+        }
+    };
+    paths.sort();
+
+    let mut configs = Vec::new();
+    for path in paths {
+        let file_hash = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name[..name.len() - CONFIG_SUFFIX.len()].to_string())
+            .unwrap_or_default();
+        // symlink_metadata: never follow links, never open the path before
+        // knowing what it is. A FIFO dropped into EXECUTION_ROOT must not
+        // hang boot inside read_to_string.
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "cannot stat controller config; skipping the VM");
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            tracing::warn!(
+                path = %path.display(),
+                "controller config is not a regular file (symlink, FIFO or directory); skipping the VM"
+            );
+            continue;
+        }
+        if metadata.len() > MAX_CONFIG_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                size = metadata.len(),
+                "controller config exceeds the 1 MiB sanity cap; skipping the VM"
+            );
+            continue;
+        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "cannot read controller config; skipping the VM");
+                continue;
+            }
+        };
+        match parse_controller_config(&contents) {
+            Ok(config) => {
+                if config.vm_hash != file_hash {
+                    // Python keys everything on the embedded hash (unit
+                    // name, port mappings, static IPv6, vm_id); trust it
+                    // and note the mismatch.
+                    tracing::warn!(
+                        path = %path.display(),
+                        embedded = config.vm_hash,
+                        "controller config vm_hash differs from its file name; using the embedded hash"
+                    );
+                }
+                configs.push(config);
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "unparseable controller config; skipping the VM");
+            }
+        }
+    }
+    configs
+}
+
+// ── IP assignment math ──────────────────────────────────────────────────
+//
+// Ports of the Python derivations the reattach path performs:
+// Network.get_network_for_tap (IPv4), StaticIPv6Allocator /
+// DynamicIPv6Allocator (IPv6) and the TapInterface properties
+// (guest_ip/host_ip/guest_ipv6/host_ipv6) in
+// src/aleph/vm/network/{hostnetwork,interfaces,ipaddresses}.py.
+
+/// The vm_index-th /{prefix} subnet of the pool: guest = network+2,
+/// gateway = network+1, like `TapInterface.guest_ip`/`host_ip`.
+fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, String> {
+    let (base, pool_len) = parse_ipv4_cidr(pool)?;
+    if prefix > 32 || prefix < pool_len {
+        return Err(format!("prefix /{prefix} does not subnet the pool {pool}"));
+    }
+    let index = u64::try_from(vm_index).map_err(|_| format!("negative vm_index {vm_index}"))?;
+    let subnet_count = 1u64 << (prefix - pool_len);
+    if index >= subnet_count {
+        // Python raises IndexError from `subnets[vm_index]`.
+        return Err(format!(
+            "vm_index {vm_index} out of range for {pool} split into /{prefix} subnets"
+        ));
+    }
+    let subnet_size = 1u64 << (32 - prefix);
+    let network = u64::from(u32::from(base)) + index * subnet_size;
+    let broadcast = network + subnet_size - 1;
+    if network + 2 > broadcast {
+        return Err(format!("no guest address in a /{prefix} subnet"));
+    }
+    let network_addr = Ipv4Addr::from(network as u32);
+    let gateway = Ipv4Addr::from((network + 1) as u32);
+    let guest = Ipv4Addr::from((network + 2) as u32);
+    Ok(IpPair {
+        address: guest.to_string(),
+        network_cidr: format!("{network_addr}/{prefix}"),
+        gateway: gateway.to_string(),
+    })
+}
+
+/// StaticIPv6Allocator: the /124 subnet is the pool's first four hextets,
+/// the instance vm-type prefix (3), then 44 bits of the item hash with a
+/// trailing zero nibble. guest = network+1, gateway = network address.
+fn ipv6_static_assignment(pool: &str, vm_hash: &str) -> Result<IpPair, String> {
+    let (base, pool_len) = parse_ipv6_cidr(pool)?;
+    if pool_len != 56 && pool_len != 64 {
+        // Python: StaticIPv6Allocator refuses anything but /56 or /64.
+        return Err(format!(
+            "the static IPv6 allocation scheme requires a /64 or /56 pool, got /{pool_len}"
+        ));
+    }
+    // Checked slicing: get() returns None both for a short hash and for a
+    // range that splits a multibyte character, where byte indexing would
+    // panic. The hash comes from a request-reachable path in increment 3.
+    let slice = |range: std::ops::Range<usize>| -> Result<&str, String> {
+        vm_hash
+            .get(range)
+            .ok_or_else(|| format!("vm_hash {vm_hash:?} is too short for the static IPv6 scheme"))
+    };
+    let hextet = |text: &str| -> Result<u16, String> {
+        u16::from_str_radix(text, 16).map_err(|_| format!("non-hex vm_hash slice {text:?}"))
+    };
+    let segments = base.segments();
+    let network = Ipv6Addr::new(
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        // VmType.instance prefix; reattach is QEMU-instance only.
+        0x3,
+        hextet(slice(0..4)?)?,
+        hextet(slice(4..8)?)?,
+        hextet(&format!("{}0", slice(8..11)?))?,
+    );
+    Ok(ipv6_pair(network, 124))
+}
+
+/// DynamicIPv6Allocator: the ordinal-th /{subnet_prefix} subnet of the
+/// pool, the zeroth being reserved for the host. Ordinals start at 1 and
+/// advance per adopted running VM, like the Python generator advancing on
+/// each prepare_tap call.
+fn ipv6_dynamic_assignment(
+    pool: &str,
+    subnet_prefix: u8,
+    ordinal: usize,
+) -> Result<IpPair, String> {
+    let (base, pool_len) = parse_ipv6_cidr(pool)?;
+    if subnet_prefix > 128 || subnet_prefix < pool_len {
+        return Err(format!(
+            "subnet prefix /{subnet_prefix} does not subnet the pool {pool}"
+        ));
+    }
+    let subnet_count = 1u128 << (subnet_prefix - pool_len).min(127);
+    let ordinal = ordinal as u128;
+    if ordinal >= subnet_count {
+        return Err(format!(
+            "the IPv6 pool {pool} is out of /{subnet_prefix} subnets"
+        ));
+    }
+    let step = 1u128 << (128 - subnet_prefix);
+    let network = Ipv6Addr::from(u128::from(base) + ordinal * step);
+    Ok(ipv6_pair(network, subnet_prefix))
+}
+
+fn ipv6_pair(network: Ipv6Addr, prefix: u8) -> IpPair {
+    let guest = Ipv6Addr::from(u128::from(network) + 1);
+    IpPair {
+        address: guest.to_string(),
+        network_cidr: format!("{network}/{prefix}"),
+        gateway: network.to_string(),
+    }
+}
+
+fn parse_ipv4_cidr(pool: &str) -> Result<(Ipv4Addr, u8), String> {
+    let (address, len) = pool
+        .split_once('/')
+        .ok_or_else(|| format!("invalid IPv4 pool {pool:?}"))?;
+    let address: Ipv4Addr = address
+        .parse()
+        .map_err(|_| format!("invalid IPv4 pool address {pool:?}"))?;
+    let len: u8 = len
+        .parse()
+        .map_err(|_| format!("invalid IPv4 pool prefix {pool:?}"))?;
+    if len > 32 {
+        return Err(format!("invalid IPv4 pool prefix {pool:?}"));
+    }
+    // Python's IPv4Network is strict: host bits must be zero.
+    let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
+    if u32::from(address) & !mask != 0 {
+        return Err(format!("the IPv4 pool {pool:?} has host bits set"));
+    }
+    Ok((address, len))
+}
+
+fn parse_ipv6_cidr(pool: &str) -> Result<(Ipv6Addr, u8), String> {
+    let (address, len) = pool
+        .split_once('/')
+        .ok_or_else(|| format!("invalid IPv6 pool {pool:?}"))?;
+    let address: Ipv6Addr = address
+        .parse()
+        .map_err(|_| format!("invalid IPv6 pool address {pool:?}"))?;
+    let len: u8 = len
+        .parse()
+        .map_err(|_| format!("invalid IPv6 pool prefix {pool:?}"))?;
+    if len > 128 {
+        return Err(format!("invalid IPv6 pool prefix {pool:?}"));
+    }
+    let mask = if len == 0 {
+        0
+    } else {
+        u128::MAX << (128 - len)
+    };
+    if u128::from(address) & !mask != 0 {
+        return Err(format!("the IPv6 pool {pool:?} has host bits set"));
+    }
+    Ok((address, len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures;
+    use crate::units::StaticUnitStates;
+
+    fn test_settings(root: &std::path::Path) -> Settings {
+        Settings::from_vars(
+            [(
+                "ALEPH_VM_EXECUTION_ROOT".to_string(),
+                root.to_string_lossy().into_owned(),
+            )]
+            .into_iter(),
+        )
+        .unwrap()
+    }
+
+    /// Copy the committed fixtures into a temp EXECUTION_ROOT.
+    fn populate_execution_root(root: &std::path::Path) {
+        for hash in [
+            test_fixtures::QEMU_HASH,
+            test_fixtures::GPU_HASH,
+            test_fixtures::CONFIDENTIAL_HASH,
+        ] {
+            let name = format!("{hash}-controller.json");
+            std::fs::copy(test_fixtures::fixtures_dir().join(&name), root.join(&name)).unwrap();
+        }
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join("supervisor.sqlite3"),
+            root.join("supervisor.sqlite3"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn assembles_the_world_from_configs_units_and_sqlite() {
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        // An unparseable config must be skipped, never fatal (the Python
+        // crash-loop lesson).
+        std::fs::write(tmp.path().join("ffff-controller.json"), "{broken").unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units);
+
+        assert_eq!(world.len(), 3, "the broken config is skipped");
+        let qemu = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(qemu.adopted_running);
+        assert_eq!(qemu.vm_index, 3);
+        assert_ne!(qemu.times.defined_at_ns, 0);
+        assert_ne!(qemu.times.started_at_ns, 0);
+        assert_eq!(
+            qemu.times.starting_at_ns, 0,
+            "the restore path never sets starting_at"
+        );
+        assert_eq!(qemu.times.stopped_at_ns, 0);
+        // vm_index 3 in the default 172.16.0.0/12 pool split into /24s.
+        assert_eq!(
+            qemu.ipv4,
+            Some(IpPair {
+                address: "172.16.3.2".to_string(),
+                network_cidr: "172.16.3.0/24".to_string(),
+                gateway: "172.16.3.1".to_string(),
+            })
+        );
+        let hash = test_fixtures::QEMU_HASH;
+        assert_eq!(
+            qemu.ipv6,
+            Some(IpPair {
+                address: format!(
+                    "fc00:1:2:3:3:{}:{}:{}1",
+                    &hash[0..4],
+                    &hash[4..8],
+                    &hash[8..11]
+                ),
+                network_cidr: format!(
+                    "fc00:1:2:3:3:{}:{}:{}0/124",
+                    &hash[0..4],
+                    &hash[4..8],
+                    &hash[8..11]
+                ),
+                gateway: format!(
+                    "fc00:1:2:3:3:{}:{}:{}0",
+                    &hash[0..4],
+                    &hash[4..8],
+                    &hash[8..11]
+                ),
+            })
+        );
+        assert_eq!(qemu.port_forwards.len(), 2);
+
+        // The GPU VM's unit is not active: stopped, no tap, no ports.
+        let gpu = &world.entries[test_fixtures::GPU_HASH];
+        assert!(!gpu.adopted_running);
+        assert_ne!(gpu.times.stopped_at_ns, 0);
+        assert_eq!(gpu.times.started_at_ns, 0);
+        assert_eq!(gpu.ipv4, None);
+        assert_eq!(gpu.ipv6, None);
+        assert!(gpu.port_forwards.is_empty());
+        assert_eq!(gpu.config.gpus.len(), 1);
+
+        let confidential = &world.entries[test_fixtures::CONFIDENTIAL_HASH];
+        assert_eq!(confidential.config.confidential().unwrap().sev_policy, 0x5);
+    }
+
+    #[test]
+    fn an_empty_or_missing_execution_root_is_an_empty_world() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = test_settings(&tmp.path().join("does-not-exist"));
+        let units = StaticUnitStates::default();
+        assert!(build_world_view(&settings, &units).is_empty());
+    }
+
+    #[test]
+    fn networking_disabled_means_no_ip_assignments() {
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let mut settings = test_settings(tmp.path());
+        settings.allow_vm_networking = false;
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units);
+        let qemu = &world.entries[test_fixtures::QEMU_HASH];
+        assert_eq!(qemu.ipv4, None);
+        assert_eq!(qemu.ipv6, None);
+    }
+
+    #[test]
+    fn a_bus_failure_at_boot_leaves_statuses_undecided() {
+        // R2: a transient bus outage must NOT stamp every VM stopped
+        // forever; the entries carry no stopped_at (and no started_at), so
+        // vm_status follows the live unit state once the bus answers.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let world = build_world_view(&settings, &crate::units::UnreachableBus);
+
+        assert_eq!(world.len(), 3);
+        for entry in world.entries.values() {
+            assert!(!entry.adopted_running);
+            assert_ne!(entry.times.defined_at_ns, 0);
+            assert_eq!(entry.times.stopped_at_ns, 0, "unknown is not stopped");
+            assert_eq!(entry.times.started_at_ns, 0);
+            assert_eq!(entry.ipv4, None);
+            assert_eq!(entry.ipv6, None);
+            assert!(entry.port_forwards.is_empty());
+        }
+    }
+
+    #[test]
+    fn non_regular_and_oversized_configs_are_skipped() {
+        // R5b: a directory (or FIFO/symlink) named like a config must not be
+        // opened, and a huge file must not be buffered.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        std::fs::create_dir(tmp.path().join("dddd-controller.json")).unwrap();
+        std::fs::write(
+            tmp.path().join("eeee-controller.json"),
+            vec![b'x'; (MAX_CONFIG_BYTES + 1) as usize],
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units);
+        assert_eq!(world.len(), 3, "only the three real fixture configs");
+    }
+
+    #[test]
+    fn the_world_is_keyed_on_the_embedded_vm_hash() {
+        // P2: Python keys everything on Configuration.vm_hash; a config
+        // file whose name disagrees is served under the embedded hash.
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = test_fixtures::fixtures_dir()
+            .join(format!("{}-controller.json", test_fixtures::QEMU_HASH));
+        let misnamed = format!("{}-controller.json", "0".repeat(64));
+        std::fs::copy(&fixture, tmp.path().join(&misnamed)).unwrap();
+
+        let settings = test_settings(tmp.path());
+        // The unit lookup must also use the embedded hash.
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units);
+
+        assert_eq!(world.len(), 1);
+        let entry = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(
+            entry.adopted_running,
+            "unit name derives from the embedded hash"
+        );
+        assert!(!world.entries.contains_key(&"0".repeat(64)));
+    }
+
+    #[test]
+    fn duplicate_vm_indices_adopt_only_the_first_active_config() {
+        // P1: Python's claimed_vm_ids guard. Two ACTIVE configs share
+        // vm_index 3; the first in sorted file order wins, the second is
+        // not served at all.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let clone_hash = "a".repeat(64);
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_hash"] = clone_hash.clone().into();
+        // "aaaa..." sorts before the real fixture file name, so the clone
+        // is scanned (and claims vm_index 3) first.
+        std::fs::write(
+            tmp.path().join(format!("{clone_hash}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units =
+            StaticUnitStates::with_active_vms(&[clone_hash.as_str(), test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units);
+
+        assert!(world.entries.contains_key(clone_hash.as_str()));
+        assert!(
+            !world.entries.contains_key(test_fixtures::QEMU_HASH),
+            "the duplicate is skipped, not served"
+        );
+        assert_eq!(world.len(), 3, "the clone plus the two inactive fixtures");
+    }
+
+    #[test]
+    fn an_ip_derivation_failure_hides_the_vm() {
+        // P5: restarted Python answers NOT_FOUND for a VM whose reattach
+        // failed (retry queue); a running VM whose IP cannot be derived is
+        // hidden, not served with empty assignments.
+        for bad_index in [-1, 4096] {
+            let tmp = tempfile::tempdir().unwrap();
+            populate_execution_root(tmp.path());
+            let fixture = tmp
+                .path()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH));
+            let mut value: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+            value["vm_id"] = bad_index.into();
+            std::fs::write(&fixture, value.to_string()).unwrap();
+
+            let settings = test_settings(tmp.path());
+            let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+            let world = build_world_view(&settings, &units);
+            assert!(
+                !world.entries.contains_key(test_fixtures::QEMU_HASH),
+                "vm_index {bad_index} must hide the VM"
+            );
+            assert_eq!(world.len(), 2, "the other fixtures are unaffected");
+        }
+    }
+
+    #[test]
+    fn ipv4_math_matches_the_python_pool() {
+        // Python: list(IPv4Network("172.16.0.0/12").subnets(new_prefix=24))[5]
+        // is 172.16.5.0/24; guest [2], host [1].
+        let pair = ipv4_assignment("172.16.0.0/12", 24, 5).unwrap();
+        assert_eq!(pair.address, "172.16.5.2");
+        assert_eq!(pair.network_cidr, "172.16.5.0/24");
+        assert_eq!(pair.gateway, "172.16.5.1");
+        // Subnet 300 crosses the second octet: 172.17.44.0/24.
+        let pair = ipv4_assignment("172.16.0.0/12", 24, 300).unwrap();
+        assert_eq!(pair.network_cidr, "172.17.44.0/24");
+
+        assert!(ipv4_assignment("172.16.0.0/12", 24, 4096).is_err());
+        assert!(
+            ipv4_assignment("172.16.0.1/12", 24, 0).is_err(),
+            "host bits set"
+        );
+        assert!(
+            ipv4_assignment("172.16.0.0/24", 12, 0).is_err(),
+            "prefix above pool"
+        );
+    }
+
+    #[test]
+    fn ipv6_static_math_matches_the_python_allocator() {
+        // Python: StaticIPv6Allocator(IPv6Network("2a01:240:2:c8::/64"), 124)
+        // .allocate_vm_ipv6_subnet(3, "abcdef0123...", VmType.instance)
+        // == 2a01:240:2:c8:3:abcd:ef01:2340/124 (hash[0:4], hash[4:8],
+        // hash[8:11] + "0").
+        let pair = ipv6_static_assignment(
+            "2a01:240:2:c8::/64",
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        )
+        .unwrap();
+        assert_eq!(pair.network_cidr, "2a01:240:2:c8:3:abcd:ef01:2340/124");
+        assert_eq!(pair.address, "2a01:240:2:c8:3:abcd:ef01:2341");
+        assert_eq!(pair.gateway, "2a01:240:2:c8:3:abcd:ef01:2340");
+
+        assert!(
+            ipv6_static_assignment("fc00::/48", "aabbccddeeff").is_err(),
+            "the static scheme requires a /56 or /64 pool"
+        );
+        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----").is_err());
+    }
+
+    #[test]
+    fn a_multibyte_vm_hash_errors_instead_of_panicking() {
+        // R6: byte-index slicing panicked on a range splitting a multibyte
+        // character; the checked path must return the error instead (the
+        // hash becomes request-reachable in increment 3).
+        // U+00E9 spans bytes 3..5, so 0..4 is not a char boundary.
+        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abc\u{00e9}56789012345").is_err());
+        // A long enough hash whose 8..11 range splits a character
+        // (U+00E9 spans bytes 10..12 here).
+        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abcdef0123\u{00e9}45678").is_err());
+        // Multibyte characters past the sliced ranges do not matter.
+        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abcdef01234\u{00e9}").is_ok());
+    }
+
+    #[test]
+    fn ipv6_dynamic_math_skips_the_host_subnet() {
+        // Python: DynamicIPv6Allocator(IPv6Network("fc00::/64"), 124) skips
+        // the first /124 and hands out the second on the first call.
+        let pair = ipv6_dynamic_assignment("fc00::/64", 124, 1).unwrap();
+        assert_eq!(pair.network_cidr, "fc00::10/124");
+        assert_eq!(pair.address, "fc00::11");
+        assert_eq!(pair.gateway, "fc00::10");
+    }
+}

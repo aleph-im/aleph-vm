@@ -19,16 +19,18 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
 fn test_settings(root: &Path) -> Settings {
-    Settings {
-        execution_root: root.to_path_buf(),
-        supervisor_grpc_socket: root.join("supervisor.sock"),
-        persistent_volumes_dir: root.join("volumes").join("persistent"),
-        // Hermetic: no dependency on the test host's routing table. The
-        // Python parity for this configuration is host_ipv4 == "".
-        allow_vm_networking: false,
-        network_interface: None,
-        enable_gpu_support: false,
-    }
+    let mut settings = Settings::from_vars(
+        [(
+            "ALEPH_VM_EXECUTION_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        )]
+        .into_iter(),
+    )
+    .unwrap();
+    // Hermetic: no dependency on the test host's routing table. The
+    // Python parity for this configuration is host_ipv4 == "".
+    settings.allow_vm_networking = false;
+    settings
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {
