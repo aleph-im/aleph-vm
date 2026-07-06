@@ -11,7 +11,9 @@ WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
-ExecStart=python3 -m aleph.vm.supervisor
+# The launcher picks the daemon implementation from ALEPH_VM_SUPERVISOR_IMPL
+# (default python), carried by the EnvironmentFile above.
+ExecStart=/opt/aleph-vm/bin/supervisor-launcher
 Restart=on-failure
 RestartPreventExitStatus=0 130 143
 RestartSec=10s
