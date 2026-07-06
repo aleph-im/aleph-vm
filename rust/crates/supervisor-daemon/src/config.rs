@@ -3,10 +3,11 @@
 //! Reads the same `ALEPH_VM_*` environment variables as the Python
 //! `Settings` (src/aleph/vm/conf.py), case-insensitively like
 //! pydantic-settings (`env_prefix="ALEPH_VM_", case_sensitive=False`), with
-//! the same defaults. Only the slice increment 1 needs is modeled: the
-//! socket/paths pair plus the three knobs GetHostInfo parity depends on
-//! (host networking for host_ipv4, GPU support for the lspci inventory, the
-//! persistent volumes directory for available disk).
+//! the same defaults. Only the slice increments 1 and 2 need is modeled:
+//! the socket/paths pair, the GetHostInfo knobs (host networking for
+//! host_ipv4, GPU support for the lspci inventory, the persistent volumes
+//! directory for available disk), the supervisor database and the network
+//! address pools the adopted-VM IP assignments derive from.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +16,15 @@ use crate::error::DaemonError;
 
 /// Environment prefix, mirroring pydantic's `env_prefix="ALEPH_VM_"`.
 pub const ENV_PREFIX: &str = "ALEPH_VM_";
+
+/// conf.py IPv6AllocationPolicy: how VM IPv6 subnets are assigned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv6AllocationPolicy {
+    /// Compute the subnet from the VM item hash (production default).
+    Static,
+    /// Iterate through the pool's subnets (testing/CI).
+    Dynamic,
+}
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -33,6 +43,18 @@ pub struct Settings {
     /// conf.py ENABLE_GPU_SUPPORT, default false. When false the Python pool
     /// never runs the lspci inventory.
     pub enable_gpu_support: bool,
+    /// conf.py SUPERVISOR_DATABASE, default {EXECUTION_ROOT}/supervisor.sqlite3.
+    pub supervisor_database: PathBuf,
+    /// conf.py IPV4_ADDRESS_POOL, default "172.16.0.0/12".
+    pub ipv4_address_pool: String,
+    /// conf.py IPV4_NETWORK_PREFIX_LENGTH, default 24.
+    pub ipv4_network_prefix_length: u8,
+    /// conf.py IPV6_ADDRESS_POOL, default "fc00:1:2:3::/64".
+    pub ipv6_address_pool: String,
+    /// conf.py IPV6_ALLOCATION_POLICY, default static.
+    pub ipv6_allocation_policy: Ipv6AllocationPolicy,
+    /// conf.py IPV6_SUBNET_PREFIX, default 124.
+    pub ipv6_subnet_prefix: u8,
 }
 
 impl Settings {
@@ -79,6 +101,33 @@ impl Settings {
         // Python treats an empty NETWORK_INTERFACE as unset (`if not
         // self.NETWORK_INTERFACE: auto-detect`).
         let network_interface = env.get("NETWORK_INTERFACE").filter(|name| !name.is_empty());
+        // conf.py setup(): SUPERVISOR_DATABASE defaults to
+        // EXECUTION_ROOT/supervisor.sqlite3 when unset (or emptied).
+        let supervisor_database = match env.get("SUPERVISOR_DATABASE") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => execution_root.join("supervisor.sqlite3"),
+        };
+        let ipv4_address_pool = env
+            .get("IPV4_ADDRESS_POOL")
+            .unwrap_or_else(|| "172.16.0.0/12".to_string());
+        let ipv4_network_prefix_length = env.get_int("IPV4_NETWORK_PREFIX_LENGTH")?.unwrap_or(24);
+        let ipv6_address_pool = env
+            .get("IPV6_ADDRESS_POOL")
+            .unwrap_or_else(|| "fc00:1:2:3::/64".to_string());
+        let ipv6_allocation_policy = match env.get("IPV6_ALLOCATION_POLICY") {
+            None => Ipv6AllocationPolicy::Static,
+            // pydantic matches the str-enum values exactly, case-sensitive.
+            Some(value) if value == "static" => Ipv6AllocationPolicy::Static,
+            Some(value) if value == "dynamic" => Ipv6AllocationPolicy::Dynamic,
+            Some(value) => {
+                return Err(DaemonError::InvalidSetting {
+                    key: format!("{ENV_PREFIX}IPV6_ALLOCATION_POLICY"),
+                    value,
+                    expected: "static or dynamic",
+                });
+            }
+        };
+        let ipv6_subnet_prefix = env.get_int("IPV6_SUBNET_PREFIX")?.unwrap_or(124);
 
         Ok(Self {
             execution_root,
@@ -87,6 +136,12 @@ impl Settings {
             allow_vm_networking,
             network_interface,
             enable_gpu_support,
+            supervisor_database,
+            ipv4_address_pool,
+            ipv4_network_prefix_length,
+            ipv6_address_pool,
+            ipv6_allocation_policy,
+            ipv6_subnet_prefix,
         })
     }
 }
@@ -119,6 +174,23 @@ impl EnvSlice {
                     key: format!("{ENV_PREFIX}{name}"),
                     value,
                 })
+            })
+            .transpose()
+    }
+
+    /// Integer parsing; an unparseable value is a startup error, as it is
+    /// for pydantic's int fields.
+    fn get_int(&self, name: &str) -> Result<Option<u8>, DaemonError> {
+        self.get(name)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| DaemonError::InvalidSetting {
+                        key: format!("{ENV_PREFIX}{name}"),
+                        value,
+                        expected: "an integer",
+                    })
             })
             .transpose()
     }
@@ -160,6 +232,66 @@ mod tests {
         assert!(settings.allow_vm_networking);
         assert!(!settings.enable_gpu_support);
         assert_eq!(settings.network_interface, None);
+        assert_eq!(
+            settings.supervisor_database,
+            PathBuf::from("/var/lib/aleph/vm/supervisor.sqlite3")
+        );
+        assert_eq!(settings.ipv4_address_pool, "172.16.0.0/12");
+        assert_eq!(settings.ipv4_network_prefix_length, 24);
+        assert_eq!(settings.ipv6_address_pool, "fc00:1:2:3::/64");
+        assert_eq!(
+            settings.ipv6_allocation_policy,
+            Ipv6AllocationPolicy::Static
+        );
+        assert_eq!(settings.ipv6_subnet_prefix, 124);
+    }
+
+    #[test]
+    fn network_pool_settings_are_read() {
+        let settings = Settings::from_vars(vars(&[
+            ("ALEPH_VM_IPV4_ADDRESS_POOL", "10.0.0.0/8"),
+            ("ALEPH_VM_IPV4_NETWORK_PREFIX_LENGTH", "26"),
+            ("ALEPH_VM_IPV6_ADDRESS_POOL", "2001:db8::/64"),
+            ("ALEPH_VM_IPV6_ALLOCATION_POLICY", "dynamic"),
+            ("ALEPH_VM_IPV6_SUBNET_PREFIX", "126"),
+            ("ALEPH_VM_SUPERVISOR_DATABASE", "/tmp/db.sqlite3"),
+        ]))
+        .unwrap();
+        assert_eq!(settings.ipv4_address_pool, "10.0.0.0/8");
+        assert_eq!(settings.ipv4_network_prefix_length, 26);
+        assert_eq!(settings.ipv6_address_pool, "2001:db8::/64");
+        assert_eq!(
+            settings.ipv6_allocation_policy,
+            Ipv6AllocationPolicy::Dynamic
+        );
+        assert_eq!(settings.ipv6_subnet_prefix, 126);
+        assert_eq!(
+            settings.supervisor_database,
+            PathBuf::from("/tmp/db.sqlite3")
+        );
+    }
+
+    #[test]
+    fn invalid_policy_and_int_are_errors() {
+        let error = Settings::from_vars(vars(&[("ALEPH_VM_IPV6_ALLOCATION_POLICY", "Static")]))
+            .unwrap_err();
+        assert!(error.to_string().contains("IPV6_ALLOCATION_POLICY"));
+        let error =
+            Settings::from_vars(vars(&[("ALEPH_VM_IPV6_SUBNET_PREFIX", "many")])).unwrap_err();
+        assert!(error.to_string().contains("IPV6_SUBNET_PREFIX"));
+    }
+
+    #[test]
+    fn database_default_follows_execution_root() {
+        let settings = Settings::from_vars(vars(&[
+            ("ALEPH_VM_EXECUTION_ROOT", "/tmp/exec"),
+            ("ALEPH_VM_SUPERVISOR_DATABASE", ""),
+        ]))
+        .unwrap();
+        assert_eq!(
+            settings.supervisor_database,
+            PathBuf::from("/tmp/exec/supervisor.sqlite3")
+        );
     }
 
     #[test]

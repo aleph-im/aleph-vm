@@ -1,0 +1,33 @@
+{
+    "vm_id": 3,
+    "vm_hash": "c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8",
+    "settings": {
+        "IPV4_ADDRESS_POOL": "172.16.0.0/12",
+        "IPV4_NETWORK_PREFIX_LENGTH": 24,
+        "IPV6_ADDRESS_POOL": "fc00:1:2:3::/64",
+        "IPV6_ALLOCATION_POLICY": "static",
+        "IPV6_SUBNET_PREFIX": 124,
+        "IPV6_FORWARDING_ENABLED": true,
+        "USE_NDP_PROXY": true
+    },
+    "vm_configuration": {
+        "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+        "cloud_init_drive_path": "/var/lib/aleph/vm/cloud-init-c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8.img",
+        "image_path": "/var/lib/aleph/vm/volumes/persistent/c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8/rootfs.qcow2",
+        "monitor_socket_path": "/var/lib/aleph/vm/c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8-monitor.socket",
+        "qmp_socket_path": "/var/lib/aleph/vm/c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8-qmp.socket",
+        "qga_socket_path": "/var/lib/aleph/vm/c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8-qga.socket",
+        "vcpu_count": 2,
+        "mem_size_mb": 2048,
+        "interface_name": "vmtap3",
+        "host_volumes": [
+            {
+                "mount": "",
+                "path_on_host": "/var/lib/aleph/vm/volumes/persistent/c1108e43cb5d47e6ceb5bbbb31a8f12390573dc6fda96915b1a6cac5bc2ce2e8/data.qcow2",
+                "read_only": false
+            }
+        ],
+        "gpus": []
+    },
+    "hypervisor": "qemu"
+}

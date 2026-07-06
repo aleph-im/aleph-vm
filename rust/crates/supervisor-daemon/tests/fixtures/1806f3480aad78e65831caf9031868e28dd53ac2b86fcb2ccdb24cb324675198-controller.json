@@ -1,0 +1,31 @@
+{
+    "vm_id": 5,
+    "vm_hash": "1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198",
+    "settings": {
+        "IPV4_ADDRESS_POOL": "172.16.0.0/12",
+        "IPV4_NETWORK_PREFIX_LENGTH": 24,
+        "IPV6_ADDRESS_POOL": "fc00:1:2:3::/64",
+        "IPV6_ALLOCATION_POLICY": "static",
+        "IPV6_SUBNET_PREFIX": 124,
+        "IPV6_FORWARDING_ENABLED": true,
+        "USE_NDP_PROXY": true
+    },
+    "vm_configuration": {
+        "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+        "cloud_init_drive_path": "/var/lib/aleph/vm/cloud-init-1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198.img",
+        "image_path": "/var/lib/aleph/vm/volumes/persistent/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198/rootfs.qcow2",
+        "monitor_socket_path": "/var/lib/aleph/vm/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198-monitor.socket",
+        "qmp_socket_path": "/var/lib/aleph/vm/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198-qmp.socket",
+        "qga_socket_path": "/var/lib/aleph/vm/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198-qga.socket",
+        "vcpu_count": 2,
+        "mem_size_mb": 2048,
+        "interface_name": "vmtap5",
+        "host_volumes": [],
+        "gpus": [],
+        "ovmf_path": "/opt/aleph-vm/firmware/OVMF_CSV.fd",
+        "sev_session_file": "/var/lib/aleph/vm/confidential_sessions/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198/vm_session.b64",
+        "sev_dh_cert_file": "/var/lib/aleph/vm/confidential_sessions/1806f3480aad78e65831caf9031868e28dd53ac2b86fcb2ccdb24cb324675198/vm_godh.b64",
+        "sev_policy": 5
+    },
+    "hypervisor": "qemu"
+}

@@ -1,16 +1,26 @@
-//! Rust supervisor daemon, increment 1 (Health + GetHostInfo).
+//! Rust supervisor daemon, increments 1 (Health + GetHostInfo) and 2 (the
+//! read-only world: GetVm, GetVmSpec, ListVms, ListPortForwards, GetLogs).
 //!
-//! The parity oracle is the Python daemon (`python3 -m aleph.vm.supervisor`):
-//! same `ALEPH_VM_*` configuration, same socket lifecycle, same field-level
-//! behavior for the RPCs ported so far. Everything else returns UNIMPLEMENTED
-//! until its increment lands (design doc
-//! docs/plans/2026-07-04-rust-supervisor-daemon-design.md, section 7).
+//! The parity oracle is the Python daemon (`python3 -m aleph.vm.supervisor`)
+//! after a restart: same `ALEPH_VM_*` configuration, same socket lifecycle,
+//! same field-level behavior for the RPCs ported so far, with the world
+//! rebuilt from disk/systemd/sqlite the way `load_persistent_executions`
+//! rebuilds it. Everything else returns UNIMPLEMENTED until its increment
+//! lands (design doc docs/plans/2026-07-04-rust-supervisor-daemon-design.md,
+//! section 7). Deliberate differences from the oracle live in
+//! docs/plans/rust-port-divergences.md.
 
 pub mod config;
+pub mod controller_config;
 pub mod envfile;
 pub mod error;
 pub mod host;
+pub mod logs;
 pub mod lspci;
 pub mod net;
+pub mod ports;
 pub mod server;
 pub mod service;
+pub mod test_fixtures;
+pub mod units;
+pub mod world;

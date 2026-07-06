@@ -13,10 +13,15 @@ supervisor-proto = { path = "crates/supervisor-proto" }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 prost = "0.13"
+# bundled: link a vendored libsqlite3 so cargo builds and tests are hermetic
+# (no libsqlite3-dev needed on CI runners or in build containers). The
+# on-disk format is plain sqlite3, shared with SQLAlchemy.
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs"] }
+zbus = "5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.12"
 tonic-build = "0.12"

@@ -1,4 +1,6 @@
 import logging
+import os
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -149,11 +151,31 @@ def load_controller_configuration(vm_hash: str) -> Configuration | None:
 
 
 def save_controller_configuration(vm_hash: str, configuration: Configuration) -> Path:
-    """Save VM configuration to be used by the controller service"""
+    """Save VM configuration to be used by the controller service.
+
+    The write is atomic (temporary file in the same directory, fsync,
+    os.replace): these files are what a (re)starting supervisor daemon
+    adopts running VMs from, and an in-place truncate-and-write leaves a
+    window where a reader sees a truncated config and drops the VM
+    (notably during a Python-to-Rust daemon handoff, where the new daemon
+    scans EXECUTION_ROOT while the draining one may still be writing).
+    """
     config_file_path = get_controller_configuration_path(vm_hash)
-    with config_file_path.open("w") as controller_config_file:
-        controller_config_file.write(configuration.model_dump_json(by_alias=True, exclude_none=True, indent=4))
-    config_file_path.chmod(0o644)
+    payload = configuration.model_dump_json(by_alias=True, exclude_none=True, indent=4)
+    # The temporary file must live in the same directory for os.replace to
+    # be an atomic rename; its name never ends in "-controller.json", so
+    # directory scanners cannot pick it up.
+    fd, tmp_path = tempfile.mkstemp(dir=config_file_path.parent, prefix=f".{config_file_path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as tmp_file:
+            tmp_file.write(payload)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, config_file_path)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
     return config_file_path
 
 
