@@ -28,6 +28,10 @@ pub const CONFIDENTIAL_HASH: &str =
 pub const PORTS_ONLY_HASH: &str =
     "b797c7b5d8d8acc7839c9212f8fbf8a11fcb5056b9e117c9adc2941bdac3936b";
 
+/// The written-controller-config.json fixture VM (vm_index 6, one host
+/// volume, one GPU): the byte-parity target of the config writer.
+pub const CREATED_HASH: &str = "66fc20349b370dd2d15cf9fdf2a0b59ccb906da315619c9f1c34cbcc00e8309c";
+
 /// The committed fixtures directory.
 pub fn fixtures_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

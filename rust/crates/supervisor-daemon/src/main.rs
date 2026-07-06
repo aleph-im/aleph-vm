@@ -16,11 +16,15 @@ use clap::Parser;
 use supervisor_daemon::config::Settings;
 use supervisor_daemon::envfile::apply_env_file;
 use supervisor_daemon::error::DaemonError;
+use supervisor_daemon::lifecycle::{self, Pacing};
 use supervisor_daemon::logs::JournalctlLogSource;
+use supervisor_daemon::ndppd::{NdpProxy, SystemNdppd};
+use supervisor_daemon::nft::NftCli;
 use supervisor_daemon::server::{self, SocketGuard};
 use supervisor_daemon::service::{DaemonState, HostState};
+use supervisor_daemon::tap::IpCommand;
 use supervisor_daemon::units::ZbusUnitStates;
-use supervisor_daemon::world;
+use supervisor_daemon::{checks, ports, world};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,30 +99,101 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     let guard = Arc::new(SocketGuard::new(settings.supervisor_grpc_socket.clone()));
     let host = HostState::initialize(settings)?;
 
+    // settings.check() slice: the startup preconditions the lifecycle RPCs
+    // depend on. Aborts like daemon.py main(), after setup.
+    checks::check(&host.settings, host.network_interface.as_deref())
+        .map_err(DaemonError::Internal)?;
+
+    // pool.setup() counterparts: the port-mapping store schema, the
+    // forwarding sysctls, the NDP proxy, the base nftables ruleset.
+    ports::ensure_schema(&host.settings.supervisor_database).map_err(DaemonError::Internal)?;
+    let ndp = if host.settings.allow_vm_networking {
+        enable_forwarding_sysctls(&host.settings);
+        host.settings.use_ndp_proxy.then(|| {
+            Arc::new(NdpProxy::new(
+                host.network_interface.clone().unwrap_or_default(),
+                Arc::new(SystemNdppd),
+            ))
+        })
+    } else {
+        None
+    };
+
     // Adoption steps 1-4 (design doc section 4), before the socket exists,
     // like the Python daemon's load_persistent_executions before serve_unix.
     // Blocking on purpose: no runtime is up yet, and the sources (files,
     // one D-Bus round trip, sqlite) are all local.
     let units = Arc::new(ZbusUnitStates::new());
-    let world = world::build_world_view(&host.settings, units.as_ref());
+    let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus);
     tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
+    let allow_networking = host.settings.allow_vm_networking;
     let state = Arc::new(DaemonState {
         host,
         world: tokio::sync::RwLock::new(world),
         units,
         logs: Arc::new(JournalctlLogSource),
+        nft: Arc::new(NftCli),
+        taps: Arc::new(IpCommand),
+        ndp,
+        port_cursor: Default::default(),
+        creation_lock: std::sync::Mutex::new(()),
+        vm_locks: std::sync::Mutex::new(Default::default()),
+        pacing: Pacing::default(),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        // Base ruleset + adoption step 5 inside the runtime (the ndppd
+        // debounce and the blocking-pool hops need it), still before the
+        // socket exists, like the Python network.setup() +
+        // load_persistent_executions before serve_unix.
+        if allow_networking {
+            let boot_state = state.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = lifecycle::initialize_nftables(&boot_state) {
+                    // The Python execute edge only logs nft failures too.
+                    tracing::error!(error, "failed to initialize nftables");
+                }
+                lifecycle::reconcile_boot(&boot_state);
+            })
+            .await
+            .map_err(|error| {
+                DaemonError::Internal(format!("the boot reconcile task failed: {error}"))
+            })?;
+        }
+
         // Handlers must be installed before the socket is bound: a client
         // that sees the socket may send SIGTERM right away, and an
         // uninstalled handler would mean death without cleanup.
         let shutdown = spawn_signal_task(guard.clone())?;
         server::serve(state, guard, shutdown).await
     })
+}
+
+/// The `Network.setup()` sysctl half: enable IPv4 (always) and IPv6 (when
+/// configured) forwarding. Failures are logged, not fatal: the Python
+/// daemon dies here without CAP_NET_ADMIN, which would break the
+/// container/CI boots increment 2 deliberately supports (ledgered).
+fn enable_forwarding_sysctls(settings: &Settings) {
+    let enable = |path: &str| {
+        match std::fs::read_to_string(path) {
+            Ok(current) if current.trim() == "1" => {}
+            Ok(_) => {
+                if let Err(error) = std::fs::write(path, "1") {
+                    tracing::error!(path, %error, "cannot enable forwarding");
+                }
+            }
+            Err(error) => tracing::error!(path, %error, "cannot read the forwarding state"),
+        };
+    };
+    enable("/proc/sys/net/ipv4/ip_forward");
+    if settings.ipv6_forwarding_enabled {
+        enable("/proc/sys/net/ipv6/conf/all/forwarding");
+    } else {
+        tracing::warn!("IPv6 forwarding is disabled, VMs will not have internet access on IPv6");
+    }
 }
 
 /// Install SIGTERM/SIGINT handling, the two signals the Python daemon

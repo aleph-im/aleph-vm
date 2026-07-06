@@ -55,6 +55,46 @@ pub struct Settings {
     pub ipv6_allocation_policy: Ipv6AllocationPolicy,
     /// conf.py IPV6_SUBNET_PREFIX, default 124.
     pub ipv6_subnet_prefix: u8,
+    /// conf.py IPV6_FORWARDING_ENABLED, default true.
+    pub ipv6_forwarding_enabled: bool,
+    /// conf.py USE_NDP_PROXY, default true.
+    pub use_ndp_proxy: bool,
+    /// conf.py NFTABLES_CHAIN_PREFIX, default "aleph".
+    pub nftables_chain_prefix: String,
+    /// conf.py START_ID_INDEX, default 4 (first vm_index handed out).
+    pub start_id_index: i64,
+    /// conf.py HOST_MEMORY_RESERVED_MIB, default 2048 (the create-time
+    /// physical-memory backstop).
+    pub host_memory_reserved_mib: u64,
+    /// conf.py ENABLE_QEMU_SUPPORT, default true (check() preconditions).
+    pub enable_qemu_support: bool,
+    /// conf.py FIRECRACKER_PATH, default /opt/firecracker/firecracker.
+    pub firecracker_path: PathBuf,
+    /// conf.py JAILER_PATH, default /opt/firecracker/jailer.
+    pub jailer_path: PathBuf,
+    /// conf.py LINUX_PATH, default /opt/firecracker/vmlinux.bin.
+    pub linux_path: PathBuf,
+    /// conf.py JAILER_BASE_DIR; like the pydantic __init__, an unset (or
+    /// emptied) value derives EXECUTION_ROOT/jailer, so it always holds a
+    /// path (it is written into every controller config).
+    pub jailer_base_dir: PathBuf,
+    /// conf.py DNS_NAMESERVERS, default None (resolved at startup through
+    /// DNS_RESOLUTION when host networking is on; pydantic parses the env
+    /// value as a JSON list).
+    pub dns_nameservers: Option<Vec<String>>,
+    /// conf.py DNS_RESOLUTION, default detect.
+    pub dns_resolution: DnsResolution,
+}
+
+/// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsResolution {
+    /// Try resolvectl, fall back to /etc/resolv.conf.
+    Detect,
+    /// Parse /etc/resolv.conf.
+    ResolvConf,
+    /// `resolvectl dns -i <interface>`.
+    Resolvectl,
 }
 
 impl Settings {
@@ -128,6 +168,57 @@ impl Settings {
             }
         };
         let ipv6_subnet_prefix = env.get_int("IPV6_SUBNET_PREFIX")?.unwrap_or(124);
+        let ipv6_forwarding_enabled = env.get_bool("IPV6_FORWARDING_ENABLED")?.unwrap_or(true);
+        let use_ndp_proxy = env.get_bool("USE_NDP_PROXY")?.unwrap_or(true);
+        let nftables_chain_prefix = env
+            .get("NFTABLES_CHAIN_PREFIX")
+            .unwrap_or_else(|| "aleph".to_string());
+        let start_id_index = env.get_i64("START_ID_INDEX")?.unwrap_or(4);
+        let host_memory_reserved_mib = env
+            .get_i64("HOST_MEMORY_RESERVED_MIB")?
+            .map(|value| u64::try_from(value).unwrap_or(0))
+            .unwrap_or(2048);
+        let enable_qemu_support = env.get_bool("ENABLE_QEMU_SUPPORT")?.unwrap_or(true);
+        let firecracker_path = env
+            .get("FIRECRACKER_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/firecracker/firecracker"));
+        let jailer_path = env
+            .get("JAILER_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/firecracker/jailer"));
+        let linux_path = env
+            .get("LINUX_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/firecracker/vmlinux.bin"));
+        let jailer_base_dir = match env.get("JAILER_BASE_DIR") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => execution_root.join("jailer"),
+        };
+        // pydantic parses list-typed env vars as JSON.
+        let dns_nameservers = match env.get("DNS_NAMESERVERS") {
+            None => None,
+            Some(value) => Some(serde_json::from_str::<Vec<String>>(&value).map_err(|_| {
+                DaemonError::InvalidSetting {
+                    key: format!("{ENV_PREFIX}DNS_NAMESERVERS"),
+                    value,
+                    expected: "a JSON list of addresses",
+                }
+            })?),
+        };
+        let dns_resolution = match env.get("DNS_RESOLUTION") {
+            None => DnsResolution::Detect,
+            Some(value) if value == "detect" => DnsResolution::Detect,
+            Some(value) if value == "resolv.conf" => DnsResolution::ResolvConf,
+            Some(value) if value == "resolvectl" => DnsResolution::Resolvectl,
+            Some(value) => {
+                return Err(DaemonError::InvalidSetting {
+                    key: format!("{ENV_PREFIX}DNS_RESOLUTION"),
+                    value,
+                    expected: "detect, resolv.conf or resolvectl",
+                });
+            }
+        };
 
         Ok(Self {
             execution_root,
@@ -142,6 +233,18 @@ impl Settings {
             ipv6_address_pool,
             ipv6_allocation_policy,
             ipv6_subnet_prefix,
+            ipv6_forwarding_enabled,
+            use_ndp_proxy,
+            nftables_chain_prefix,
+            start_id_index,
+            host_memory_reserved_mib,
+            enable_qemu_support,
+            firecracker_path,
+            jailer_path,
+            linux_path,
+            jailer_base_dir,
+            dns_nameservers,
+            dns_resolution,
         })
     }
 }
@@ -181,6 +284,22 @@ impl EnvSlice {
     /// Integer parsing; an unparseable value is a startup error, as it is
     /// for pydantic's int fields.
     fn get_int(&self, name: &str) -> Result<Option<u8>, DaemonError> {
+        self.get(name)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| DaemonError::InvalidSetting {
+                        key: format!("{ENV_PREFIX}{name}"),
+                        value,
+                        expected: "an integer",
+                    })
+            })
+            .transpose()
+    }
+
+    /// Like [`Self::get_int`] for wider integer settings.
+    fn get_i64(&self, name: &str) -> Result<Option<i64>, DaemonError> {
         self.get(name)
             .map(|value| {
                 value
@@ -244,6 +363,69 @@ mod tests {
             Ipv6AllocationPolicy::Static
         );
         assert_eq!(settings.ipv6_subnet_prefix, 124);
+        assert!(settings.ipv6_forwarding_enabled);
+        assert!(settings.use_ndp_proxy);
+        assert_eq!(settings.nftables_chain_prefix, "aleph");
+        assert_eq!(settings.start_id_index, 4);
+        assert_eq!(settings.host_memory_reserved_mib, 2048);
+        assert!(settings.enable_qemu_support);
+        assert_eq!(
+            settings.firecracker_path,
+            PathBuf::from("/opt/firecracker/firecracker")
+        );
+        assert_eq!(
+            settings.jailer_path,
+            PathBuf::from("/opt/firecracker/jailer")
+        );
+        assert_eq!(
+            settings.linux_path,
+            PathBuf::from("/opt/firecracker/vmlinux.bin")
+        );
+        assert_eq!(
+            settings.jailer_base_dir,
+            PathBuf::from("/var/lib/aleph/vm/jailer")
+        );
+        assert_eq!(settings.dns_nameservers, None);
+        assert_eq!(settings.dns_resolution, DnsResolution::Detect);
+    }
+
+    #[test]
+    fn increment_3_settings_are_read() {
+        let settings = Settings::from_vars(vars(&[
+            ("ALEPH_VM_IPV6_FORWARDING_ENABLED", "false"),
+            ("ALEPH_VM_USE_NDP_PROXY", "false"),
+            ("ALEPH_VM_NFTABLES_CHAIN_PREFIX", "test"),
+            ("ALEPH_VM_START_ID_INDEX", "10"),
+            ("ALEPH_VM_HOST_MEMORY_RESERVED_MIB", "512"),
+            ("ALEPH_VM_ENABLE_QEMU_SUPPORT", "false"),
+            ("ALEPH_VM_FIRECRACKER_PATH", "/tmp/fc"),
+            ("ALEPH_VM_JAILER_PATH", "/tmp/jail"),
+            ("ALEPH_VM_LINUX_PATH", "/tmp/vmlinux"),
+            ("ALEPH_VM_JAILER_BASE_DIR", "/tmp/jbd"),
+            ("ALEPH_VM_DNS_NAMESERVERS", "[\"1.1.1.1\", \"8.8.8.8\"]"),
+            ("ALEPH_VM_DNS_RESOLUTION", "resolv.conf"),
+        ]))
+        .unwrap();
+        assert!(!settings.ipv6_forwarding_enabled);
+        assert!(!settings.use_ndp_proxy);
+        assert_eq!(settings.nftables_chain_prefix, "test");
+        assert_eq!(settings.start_id_index, 10);
+        assert_eq!(settings.host_memory_reserved_mib, 512);
+        assert!(!settings.enable_qemu_support);
+        assert_eq!(settings.firecracker_path, PathBuf::from("/tmp/fc"));
+        assert_eq!(settings.jailer_base_dir, PathBuf::from("/tmp/jbd"));
+        assert_eq!(
+            settings.dns_nameservers,
+            Some(vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()])
+        );
+        assert_eq!(settings.dns_resolution, DnsResolution::ResolvConf);
+
+        // pydantic list parsing: a non-JSON value is a startup error.
+        let error =
+            Settings::from_vars(vars(&[("ALEPH_VM_DNS_NAMESERVERS", "1.1.1.1")])).unwrap_err();
+        assert!(error.to_string().contains("DNS_NAMESERVERS"));
+        let error = Settings::from_vars(vars(&[("ALEPH_VM_DNS_RESOLUTION", "guess")])).unwrap_err();
+        assert!(error.to_string().contains("DNS_RESOLUTION"));
     }
 
     #[test]

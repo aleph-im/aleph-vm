@@ -1,0 +1,1 @@
+{"ethernets":{"eth0":{"addresses":["",""],"gateway4":"","gateway6":"","match":{"driver":"virtio_net"},"nameservers":{"addresses":null}}},"version":2}

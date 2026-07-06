@@ -10,11 +10,14 @@
 //! section 7). Deliberate differences from the oracle live in
 //! docs/plans/rust-port-divergences.md.
 
+pub mod checks;
+pub mod cloudinit;
 pub mod config;
 pub mod controller_config;
 pub mod envfile;
 pub mod error;
 pub mod host;
+pub mod lifecycle;
 pub mod logs;
 pub mod lspci;
 pub mod ndppd;

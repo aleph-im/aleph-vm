@@ -42,8 +42,8 @@ const SEV_ES_POLICY_BIT: u32 = 0x4;
 
 /// Host facts resolved once at daemon startup, exactly when the Python
 /// daemon resolves them: host_ipv4 at Network construction (pool.__init__),
-/// the GPU inventory in pool.setup(). A failure aborts startup, as it does
-/// in Python.
+/// the GPU inventory in pool.setup(), DNS in settings.setup(). A failure
+/// aborts startup, as it does in Python.
 #[derive(Debug, Clone)]
 pub struct HostState {
     pub settings: Settings,
@@ -51,24 +51,46 @@ pub struct HostState {
     /// disabled (ALLOW_VM_NETWORKING=false, where the Python pool has no
     /// Network object).
     pub host_ipv4: String,
+    /// The resolved external interface name, `settings.NETWORK_INTERFACE`
+    /// after conf.py setup(); None only when host networking is off and no
+    /// default route exists.
+    pub network_interface: Option<String>,
     /// Raw lspci inventory; empty unless ENABLE_GPU_SUPPORT is set.
     pub gpus: Vec<GpuDevice>,
+    /// conf.py DNS_NAMESERVERS after setup(): the configured list, or the
+    /// resolver-derived one; feeds the cloud-init network config.
+    pub dns_nameservers: Option<Vec<String>>,
 }
 
 impl HostState {
     pub fn initialize(settings: Settings) -> Result<Self, DaemonError> {
+        // conf.py setup(): NETWORK_INTERFACE defaults to the default-route
+        // interface, resolved regardless of ALLOW_VM_NETWORKING (DNS
+        // detection uses it too); only host_ipv4 requires it to exist.
+        let network_interface = match &settings.network_interface {
+            Some(name) => Some(name.clone()),
+            None => net::default_interface()?,
+        };
         let host_ipv4 = if settings.allow_vm_networking {
-            let interface = match &settings.network_interface {
-                Some(name) => name.clone(),
-                // conf.py setup(): NETWORK_INTERFACE defaults to the default
-                // route interface; check() aborts when there is none.
-                None => net::default_interface()?.ok_or(DaemonError::NoNetworkInterface)?,
-            };
-            let address = net::get_interface_ipv4(&interface)?;
+            let interface = network_interface
+                .as_deref()
+                .ok_or(DaemonError::NoNetworkInterface)?;
+            let address = net::get_interface_ipv4(interface)?;
             tracing::info!(interface, address, "resolved host IPv4");
             address
         } else {
             String::new()
+        };
+
+        // conf.py setup(): DNS_NAMESERVERS resolves through DNS_RESOLUTION
+        // when unset; a failure aborts startup, like the Python setup().
+        let dns_nameservers = match (&settings.dns_nameservers, &network_interface) {
+            (Some(configured), _) => Some(configured.clone()),
+            (None, Some(interface)) => Some(
+                net::obtain_dns_ips(settings.dns_resolution, interface)
+                    .map_err(DaemonError::Internal)?,
+            ),
+            (None, None) => None,
         };
 
         let gpus = if settings.enable_gpu_support {
@@ -82,19 +104,60 @@ impl HostState {
         Ok(Self {
             settings,
             host_ipv4,
+            network_interface,
             gpus,
+            dns_nameservers,
         })
     }
 }
 
 /// Everything the RPC handlers read: the boot-time host facts, the world
-/// view (read-only in increment 2; increments 3+ mutate it, hence the
-/// RwLock), and the two host-dependency seams.
+/// view, and the host-dependency seams (systemd, journald, nftables, tap
+/// devices, ndppd).
 pub struct DaemonState {
     pub host: HostState,
     pub world: tokio::sync::RwLock<WorldView>,
     pub units: Arc<dyn UnitStateSource>,
     pub logs: Arc<dyn LogSource>,
+    pub nft: Arc<dyn crate::nft::NftExecutor>,
+    pub taps: Arc<dyn crate::tap::TapBackend>,
+    /// Present when host networking and USE_NDP_PROXY are both on, like the
+    /// Python `Network.ndp_proxy`.
+    pub ndp: Option<Arc<crate::ndppd::NdpProxy>>,
+    /// The fast host-port allocation cursor (Python module global).
+    pub port_cursor: crate::ports::PortCursor,
+    /// Python `pool.creation_lock`: one create at a time, held across the
+    /// whole boot wait.
+    pub creation_lock: std::sync::Mutex<()>,
+    /// Per-VM mutation locks (the Python per-execution lock granularity).
+    pub vm_locks: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
+    /// Poll/sleep pacing for the lifecycle waits; tests shrink it.
+    pub pacing: crate::lifecycle::Pacing,
+}
+
+impl DaemonState {
+    /// State over hermetic in-memory seams: unit tests and callers that
+    /// override individual seams afterwards.
+    pub fn hermetic(
+        host: HostState,
+        world: WorldView,
+        units: Arc<dyn UnitStateSource>,
+        logs: Arc<dyn LogSource>,
+    ) -> Self {
+        Self {
+            host,
+            world: tokio::sync::RwLock::new(world),
+            units,
+            logs,
+            nft: Arc::new(crate::nft::StaticRuleset::default()),
+            taps: Arc::new(crate::tap::FakeTapBackend::new()),
+            ndp: None,
+            port_cursor: crate::ports::PortCursor::default(),
+            creation_lock: std::sync::Mutex::new(()),
+            vm_locks: std::sync::Mutex::new(HashMap::new()),
+            pacing: crate::lifecycle::Pacing::instant(),
+        }
+    }
 }
 
 pub struct SupervisorService {
@@ -240,7 +303,7 @@ fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
 }
 
 /// `_to_vm_info` for an adopted execution.
-fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInfo {
+pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInfo {
     let times = &entry.times;
     // `_uptime_secs`: seconds since started_at while running, else 0.
     let uptime_secs = if running && times.started_at_ns != 0 {
@@ -285,20 +348,35 @@ fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInfo {
         stopping_at_ns: times.stopping_at_ns,
         stopped_at_ns: times.stopped_at_ns,
         confidential_mode: confidential_mode as i32,
-        // Python parity: the reattach path never rebuilds execution.gpus,
-        // so an adopted VM reports no attached GPUs even when its config
-        // carries them (the world view still withholds them from
-        // GetHostInfo.available_gpus_json; ledger entry 14).
-        gpus: Vec::new(),
+        // `_to_vm_info` maps execution.gpus: rebuilt at adoption for
+        // running VMs (post-#1023 Python; ledger entry 14, closed) and set
+        // from the validated request at create. `model` rides empty: the
+        // Python HostGPU carries model=None on both paths.
+        gpus: entry
+            .gpus
+            .iter()
+            .map(|gpu| pb::GpuDevice {
+                pci_host: gpu.pci_host.clone(),
+                device_id: gpu.device_id.clone(),
+                model: String::new(),
+                supports_x_vga: gpu.supports_x_vga,
+            })
+            .collect(),
         guest_channel_path: String::new(),
         guest_ready_payload: Vec::new(),
         awaiting_confidential_init,
     }
 }
 
-/// The VmSpec a restarted Python daemon serves for an adopted VM:
-/// `spec_from_controller_configuration` + `create_vm_spec_to_pb`.
-fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
+/// The VmSpec served by GetVmSpec (and compared by CreateVm idempotency):
+/// the original spec for VMs created on this daemon instance
+/// (`execution.vm_spec` in a live Python daemon), otherwise the
+/// `spec_from_controller_configuration` + `create_vm_spec_to_pb`
+/// reconstruction a restarted Python daemon holds for adopted VMs.
+pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
+    if let Some(spec) = &entry.spec {
+        return spec.clone();
+    }
     let config = &entry.config;
     let mut disks = vec![pb::DiskConfig {
         path: config.image_path.clone(),
@@ -452,9 +530,36 @@ fn vm_not_found_status(vm_id: &str) -> Status {
 /// what the Python client keys on).
 fn unimplemented_status(rpc: &str) -> Status {
     let message = format!(
-        "{rpc} is not implemented yet by the Rust supervisor daemon (increment 2 serves the host and read-only VM RPCs)"
+        "{rpc} is not implemented yet by the Rust supervisor daemon (increment 3 serves the host, read-only and persistent lifecycle RPCs)"
     );
     status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
+}
+
+/// The lifecycle error vocabulary onto the Python STATUS_CODE_BY_ERROR
+/// table (grpc_server.py) plus the matching ErrorDetail trailer codes.
+fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
+    use crate::lifecycle::RpcError;
+    match error {
+        RpcError::NotFound(vm_id) => vm_not_found_status(&vm_id),
+        RpcError::AlreadyExists(message) => {
+            status_with_error_detail(Code::AlreadyExists, pb::ErrorCode::VmAlreadyExists, message)
+        }
+        RpcError::InsufficientResources(message) => status_with_error_detail(
+            Code::ResourceExhausted,
+            pb::ErrorCode::InsufficientResources,
+            message,
+        ),
+        RpcError::InvalidBackend(message) => status_with_error_detail(
+            Code::InvalidArgument,
+            pb::ErrorCode::InvalidBackend,
+            message,
+        ),
+        RpcError::Unimplemented(message) => {
+            // NotImplementedSupervisorError: UNIMPLEMENTED, trailer INTERNAL.
+            status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
+        }
+        RpcError::Internal(message) => internal_status(DaemonError::Internal(message)),
+    }
 }
 
 type UnimplementedStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -489,12 +594,17 @@ impl Supervisor for SupervisorService {
             .map_err(internal_status)
     }
 
-    // ── VM lifecycle (create/delete/start/stop land in increments 3-4) ──
+    // ── VM lifecycle (persistent QEMU; ephemeral programs are increment
+    // 4, confidential creation increment 6) ──
     async fn create_vm(
         &self,
-        _request: Request<pb::VmSpec>,
+        request: Request<pb::VmSpec>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("CreateVm"))
+        let state = self.state.clone();
+        let spec = request.into_inner();
+        let (entry, running) =
+            run_lifecycle(move || crate::lifecycle::create_vm(&state, spec)).await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     async fn get_vm(
@@ -553,37 +663,69 @@ impl Supervisor for SupervisorService {
 
     async fn delete_vm(
         &self,
-        _request: Request<pb::DeleteVmRequest>,
+        request: Request<pb::DeleteVmRequest>,
     ) -> Result<Response<pb::DeleteVmResponse>, Status> {
-        Err(unimplemented_status("DeleteVm"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        run_lifecycle(move || {
+            crate::lifecycle::delete_vm(
+                &state,
+                &request.vm_id,
+                request.wipe,
+                request.keep_port_mappings,
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::DeleteVmResponse {}))
     }
 
     async fn stop_vm(
         &self,
-        _request: Request<pb::StopVmRequest>,
+        request: Request<pb::StopVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("StopVm"))
+        let state = self.state.clone();
+        let vm_id = request.into_inner().vm_id;
+        let entry = run_lifecycle(move || crate::lifecycle::stop_vm(&state, &vm_id)).await?;
+        // Python stop_vm reports running=False unconditionally.
+        Ok(Response::new(vm_info_message(&entry, false, now_ns())))
     }
 
     async fn start_vm(
         &self,
-        _request: Request<pb::StartVmRequest>,
+        request: Request<pb::StartVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("StartVm"))
+        let state = self.state.clone();
+        let vm_id = request.into_inner().vm_id;
+        let (entry, running) =
+            run_lifecycle(move || crate::lifecycle::start_vm(&state, &vm_id)).await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     async fn reboot_vm(
         &self,
-        _request: Request<pb::RebootVmRequest>,
+        request: Request<pb::RebootVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("RebootVm"))
+        let state = self.state.clone();
+        let vm_id = request.into_inner().vm_id;
+        let (entry, running) =
+            run_lifecycle(move || crate::lifecycle::reboot_vm(&state, &vm_id)).await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     async fn reinstall_vm(
         &self,
-        _request: Request<pb::ReinstallVmRequest>,
+        request: Request<pb::ReinstallVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("ReinstallVm"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        // `optional bool`: an unset field takes the Python ABC's default
+        // (wipe_volumes=True), as the proto documents.
+        let wipe_volumes = request.wipe_volumes.unwrap_or(true);
+        let (entry, running) = run_lifecycle(move || {
+            crate::lifecycle::reinstall_vm(&state, &request.vm_id, wipe_volumes)
+        })
+        .await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     async fn run_program_code(
@@ -600,19 +742,34 @@ impl Supervisor for SupervisorService {
         Err(unimplemented_status("RestoreFromImage"))
     }
 
-    // ── Port forwarding (mutations land in increment 3) ──
+    // ── Port forwarding ──
     async fn add_port_forward(
         &self,
-        _request: Request<pb::AddPortForwardRequest>,
+        request: Request<pb::AddPortForwardRequest>,
     ) -> Result<Response<pb::PortForwardInfo>, Status> {
-        Err(unimplemented_status("AddPortForward"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let info =
+            run_lifecycle(move || crate::lifecycle::add_port_forward(&state, &request)).await?;
+        Ok(Response::new(info))
     }
 
     async fn remove_port_forward(
         &self,
-        _request: Request<pb::RemovePortForwardRequest>,
+        request: Request<pb::RemovePortForwardRequest>,
     ) -> Result<Response<pb::RemovePortForwardResponse>, Status> {
-        Err(unimplemented_status("RemovePortForward"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        run_lifecycle(move || {
+            crate::lifecycle::remove_port_forward(
+                &state,
+                &request.vm_id,
+                request.host_port,
+                request.protocol(),
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::RemovePortForwardResponse {}))
     }
 
     async fn list_port_forwards(
@@ -763,13 +920,34 @@ impl Supervisor for SupervisorService {
         Err(unimplemented_status("InjectSecret"))
     }
 
-    // ── Network (increment 3) ──
+    // ── Network ──
     async fn recreate_network(
         &self,
         _request: Request<pb::RecreateNetworkRequest>,
     ) -> Result<Response<pb::RecreateNetworkResponse>, Status> {
-        Err(unimplemented_status("RecreateNetwork"))
+        let state = self.state.clone();
+        let summary = run_lifecycle(move || crate::lifecycle::recreate_network(&state)).await?;
+        Ok(Response::new(pb::RecreateNetworkResponse {
+            summary_json: summary.to_string(),
+        }))
     }
+}
+
+/// Run one blocking lifecycle operation on the blocking pool and map its
+/// error vocabulary onto the wire statuses. Mirrors the Python daemon,
+/// where these flows run on the event loop but block it only at await
+/// points; here they own a thread for their whole duration.
+async fn run_lifecycle<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, crate::lifecycle::RpcError> + Send + 'static,
+) -> Result<T, Status> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            internal_status(DaemonError::Internal(format!(
+                "the lifecycle task failed: {error}"
+            )))
+        })?
+        .map_err(rpc_error_status)
 }
 
 #[cfg(test)]
@@ -820,6 +998,8 @@ mod tests {
             } else {
                 Vec::new()
             },
+            gpus: Vec::new(),
+            spec: None,
         }
     }
 
