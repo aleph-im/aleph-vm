@@ -41,8 +41,8 @@ GPU_ENV = {"ALEPH_VM_ENABLE_GPU_SUPPORT": "1" if HAVE_LSPCI else "0"}
 
 
 @pytest.fixture
-def rust_daemon(start_daemon, tmp_path: Path):
-    with start_daemon(tmp_path, GPU_ENV) as started:
+def rust_daemon(start_daemon, execution_root: Path):
+    with start_daemon(execution_root, GPU_ENV) as started:
         yield started
 
 
@@ -145,16 +145,16 @@ async def test_unported_rpcs_raise_not_implemented(rust_daemon):
     _, socket_path = rust_daemon
     client = GrpcSupervisor(socket_path)
     try:
-        # StopVm is an increment 3 lifecycle RPC (GetVm is served since
-        # increment 2 and answers NOT_FOUND instead).
+        # Backups are increment 5 (the lifecycle RPCs are served since
+        # increment 3 and answer NOT_FOUND or a real error instead).
         with pytest.raises(NotImplementedSupervisorError):
-            await client.stop_vm(VmId("a" * 64))
+            await client.start_backup(VmId("a" * 64))
     finally:
         await client.close()
 
 
-def test_sigterm_unlinks_the_socket(start_daemon, tmp_path: Path):
-    with start_daemon(tmp_path, GPU_ENV) as (process, socket_path):
+def test_sigterm_unlinks_the_socket(start_daemon, execution_root: Path):
+    with start_daemon(execution_root, GPU_ENV) as (process, socket_path):
         # Day-one hardening: the socket is chmod 0700.
         assert stat.S_IMODE(socket_path.stat().st_mode) == 0o700
         process.send_signal(signal.SIGTERM)

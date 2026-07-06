@@ -9,8 +9,10 @@ guards live in each test module's pytestmark.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,6 +33,27 @@ def daemon_binary() -> Path:
     return DAEMON_BINARY
 
 
+def _hypervisor_stub_env(execution_root: Path) -> dict[str, str]:
+    """Stub FIRECRACKER_PATH/JAILER_PATH/LINUX_PATH files for settings.check().
+
+    The daemon runs the Python `settings.check()` slice at startup since
+    increment 3; like Python, it only tests `isfile` on these paths, so
+    stub files keep the suite hermetic on runners without /opt/firecracker.
+    """
+    stub_dir = execution_root / "hypervisor-stubs"
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    env = {}
+    for setting, name in (
+        ("ALEPH_VM_FIRECRACKER_PATH", "firecracker"),
+        ("ALEPH_VM_JAILER_PATH", "jailer"),
+        ("ALEPH_VM_LINUX_PATH", "vmlinux.bin"),
+    ):
+        stub = stub_dir / name
+        stub.write_bytes(b"stub")
+        env[setting] = str(stub)
+    return env
+
+
 @contextmanager
 def _running_daemon(binary: Path, execution_root: Path, extra_env: dict[str, str] | None = None):
     """Start the daemon on a fresh EXECUTION_ROOT and wait for its socket."""
@@ -39,6 +62,7 @@ def _running_daemon(binary: Path, execution_root: Path, extra_env: dict[str, str
     # the conformance configuration.
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("ALEPH_VM_")}
     env["ALEPH_VM_EXECUTION_ROOT"] = str(execution_root)
+    env.update(_hypervisor_stub_env(execution_root))
     env.setdefault("RUST_LOG", "info")
     env.update(extra_env or {})
 
@@ -84,3 +108,16 @@ def start_daemon(daemon_binary: Path):
             yield started
 
     return _start
+
+
+@pytest.fixture
+def execution_root():
+    """A SHORT execution root instead of pytest's tmp_path: EXECUTION_ROOT
+    prefixes qemu's control socket paths and sun_path caps them at 108
+    bytes; settings.check() (ported in increment 3) rejects pytest's long
+    tmp paths, exactly like the Python daemon would."""
+    root = Path(tempfile.mkdtemp(prefix="avm-conf-", dir="/tmp"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

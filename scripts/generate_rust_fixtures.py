@@ -386,7 +386,9 @@ def _capture(ruleset: list[dict], call) -> list[list[dict]]:
     return batches
 
 
-def build_nftables_fixture() -> None:
+def nftables_fixture_payload() -> dict:
+    """The full nftables oracle payload; also imported by the conformance
+    suite to detect drift between firewall.py and the committed fixture."""
     # The values the firewall module reads from settings at call time.
     settings.update(NETWORK_INTERFACE=NFT_IFACE, NFTABLES_CHAIN_PREFIX="aleph", IPV6_FORWARDING_ENABLED=True)
 
@@ -454,15 +456,18 @@ def build_nftables_fixture() -> None:
         for case in predicates["nftables-redirections"]:
             assert firewall.check_nftables_redirections(case["port"]) is case["expected"]
 
-    path = FIXTURES_DIR / "nftables.json"
-    payload = {
+    return {
         "network_interface": NFT_IFACE,
         "chain_prefix": "aleph",
         "rulesets": rulesets,
         "scenarios": scenarios,
         "predicates": predicates,
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def build_nftables_fixture() -> None:
+    path = FIXTURES_DIR / "nftables.json"
+    path.write_text(json.dumps(nftables_fixture_payload(), indent=2) + "\n")
     print(f"wrote {path}")
 
 

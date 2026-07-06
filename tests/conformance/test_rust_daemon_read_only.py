@@ -160,16 +160,16 @@ def _build_database(root: Path) -> None:
 
 
 @pytest.fixture
-def adopted_daemon(start_daemon, tmp_path: Path):
+def adopted_daemon(start_daemon, execution_root: Path):
     """The daemon booted on an EXECUTION_ROOT holding three model-written
     controller configs and a model-written port-mapping store."""
-    configurations = _build_configurations(tmp_path)
-    _build_database(tmp_path)
+    configurations = _build_configurations(execution_root)
+    _build_database(execution_root)
     # Hermetic: with networking left on (the conf.py default) the daemon
     # resolves the default-route interface at boot and aborts on a runner
     # without one. The fixture VMs are all stopped, so nothing in the
     # read-only assertions needs host networking.
-    with start_daemon(tmp_path, {"ALEPH_VM_ALLOW_VM_NETWORKING": "false"}) as (process, socket_path):
+    with start_daemon(execution_root, {"ALEPH_VM_ALLOW_VM_NETWORKING": "false"}) as (process, socket_path):
         yield configurations, socket_path
 
 
