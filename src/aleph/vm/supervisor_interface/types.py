@@ -412,7 +412,7 @@ class HostInfo:
     cpu_frequency_mhz: int = 0
     memory_type: str = ""
     memory_clock_mhz: int = 0
-    # Reservation-aware figures the agent's /about endpoints surface. The
+    # Usage-aware figures the agent's /about endpoints surface. The
     # embedded engine fills them from the pool. ``gpu_inventory`` /
     # ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
     # device_class) as plain dicts so the public usage endpoint does not

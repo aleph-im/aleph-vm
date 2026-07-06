@@ -348,7 +348,7 @@ class HostInfo(google.protobuf.message.Message):
     primary external IPv4 of the host; empty when host networking is disabled
     """
     available_disk_bytes: builtins.int
-    """Reservation-aware figures the agent's /about endpoints surface"""
+    """Usage-aware figures the agent's /about endpoints surface"""
     gpu_inventory_json: builtins.str
     """list[dict] as JSON; rich agent GPU inventory"""
     available_gpus_json: builtins.str
@@ -459,7 +459,6 @@ class VmSpec(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
-    OWNER_ID_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -477,8 +476,6 @@ class VmSpec(google.protobuf.message.Message):
     """Guest hostname for provisioning (cloud-init). Naming is the client's
     business; empty falls back to a mechanical derivation from vm_id.
     """
-    owner_id: builtins.str
-    """opaque VM-owner id (the supervisor does not interpret it); engine consumes this owner's GPU reservation"""
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -521,10 +518,9 @@ class VmSpec(google.protobuf.message.Message):
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
         hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
-        owner_id: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "owner_id", b"owner_id", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload
@@ -675,24 +671,16 @@ class GpuConfig(google.protobuf.message.Message):
 
     PCI_HOST_FIELD_NUMBER: builtins.int
     SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
-    DEVICE_ID_FIELD_NUMBER: builtins.int
-    MODEL_FIELD_NUMBER: builtins.int
     pci_host: builtins.str
-    """RESOLVED concrete address; empty in a request"""
+    """resolved concrete address, always set"""
     supports_x_vga: builtins.bool
-    device_id: builtins.str
-    """REQUEST: vendor:device, e.g. "10de:2504" """
-    model: builtins.str
-    """REQUEST: human label"""
     def __init__(
         self,
         *,
         pci_host: builtins.str = ...,
         supports_x_vga: builtins.bool = ...,
-        device_id: builtins.str = ...,
-        model: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
 global___GpuConfig = GpuConfig
 
@@ -1694,64 +1682,6 @@ class RecreateNetworkResponse(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["summary_json", b"summary_json"]) -> None: ...
 
 global___RecreateNetworkResponse = RecreateNetworkResponse
-
-@typing.final
-class ReserveResourcesRequest(google.protobuf.message.Message):
-    """── Reservation ──────────────────────────────────────────────────────────"""
-
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    OWNER_ID_FIELD_NUMBER: builtins.int
-    VCPUS_FIELD_NUMBER: builtins.int
-    MEMORY_MIB_FIELD_NUMBER: builtins.int
-    DISK_MIB_FIELD_NUMBER: builtins.int
-    IS_INSTANCE_FIELD_NUMBER: builtins.int
-    GPUS_FIELD_NUMBER: builtins.int
-    owner_id: builtins.str
-    """same opaque id as VmSpec.owner_id; the later CreateVm consumes THIS owner's reservation"""
-    vcpus: builtins.int
-    memory_mib: builtins.int
-    disk_mib: builtins.int
-    is_instance: builtins.bool
-    """Instance vs program memory bucket. VmInfo deliberately carries no
-    instance/program marker (client vocabulary, derivable from the client's
-    own records), but a reservation precedes the VM and carries no Backend,
-    so the bucket cannot be derived here: the client must state it. The
-    engine accounts instance and program memory separately.
-    """
-    @property
-    def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]:
-        """request: matched by device_id"""
-
-    def __init__(
-        self,
-        *,
-        owner_id: builtins.str = ...,
-        vcpus: builtins.int = ...,
-        memory_mib: builtins.int = ...,
-        disk_mib: builtins.int = ...,
-        is_instance: builtins.bool = ...,
-        gpus: collections.abc.Iterable[global___GpuConfig] | None = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["disk_mib", b"disk_mib", "gpus", b"gpus", "is_instance", b"is_instance", "memory_mib", b"memory_mib", "owner_id", b"owner_id", "vcpus", b"vcpus"]) -> None: ...
-
-global___ReserveResourcesRequest = ReserveResourcesRequest
-
-@typing.final
-class ReserveResourcesResponse(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    EXPIRY_UNIX_NS_FIELD_NUMBER: builtins.int
-    expiry_unix_ns: builtins.int
-    """reservation expiry, unix ns UTC"""
-    def __init__(
-        self,
-        *,
-        expiry_unix_ns: builtins.int = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["expiry_unix_ns", b"expiry_unix_ns"]) -> None: ...
-
-global___ReserveResourcesResponse = ReserveResourcesResponse
 
 @typing.final
 class ErrorDetail(google.protobuf.message.Message):
