@@ -8,9 +8,6 @@ from typing import Any
 from aleph_message.models import ItemHash
 
 from aleph.vm.network.interfaces import TapInterface
-from aleph.vm.supervisor.controllers.firecracker.snapshots import (
-    CompressedDiskVolumeSnapshot,
-)
 from aleph.vm.supervisor_interface.types import HardwareResources
 from aleph.vm.utils.logs import get_past_vm_logs, make_logs_queue
 
@@ -31,8 +28,6 @@ class AlephVmControllerInterface(ABC):
     enable_networking: bool
     """enable networking for this VM"""
     hardware_resources: HardwareResources
-    support_snapshot: bool
-    """Does this controller support snapshotting"""
     guest_api_process: Process | None = None
     tap_interface: TapInterface | None = None
     """Network interface used for this VM"""
@@ -89,10 +84,6 @@ class AlephVmControllerInterface(ABC):
         raise NotImplementedError()
 
     async def teardown(self) -> Coroutine:
-        raise NotImplementedError()
-
-    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
-        """Must be implement if self.support_snapshot is True"""
         raise NotImplementedError()
 
     def get_log_queue(self) -> asyncio.Queue:

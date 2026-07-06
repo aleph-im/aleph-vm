@@ -23,7 +23,6 @@ def _make_pool() -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
     pool.network = None
-    pool.snapshot_manager = None
     pool.systemd_manager = MagicMock()
     pool.systemd_manager.get_services_active_states = MagicMock(return_value={})
     return pool

@@ -45,7 +45,7 @@ def _spec() -> CreateVmSpec:
 
 
 def test_allocated_properties_from_spec():
-    execution = VmExecution.from_spec(_spec(), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(_spec(), systemd_manager=None)
     assert execution.allocated_memory_mib == 1024
     assert execution.allocated_vcpus == 2
 
@@ -91,7 +91,7 @@ async def test_restart_persistent_vm_confirms_controller_before_returning(monkey
 
     events: list[str] = []
 
-    execution = VmExecution.from_spec(_spec(), snapshot_manager=None, systemd_manager=MagicMock())
+    execution = VmExecution.from_spec(_spec(), systemd_manager=MagicMock())
     execution.save = AsyncMock()
     execution.wait_for_controller_ready = AsyncMock(side_effect=lambda: events.append("wait_ready"))
     monkeypatch.setattr(pool_module, "get_port_mappings", AsyncMock(return_value=[]))

@@ -2,9 +2,6 @@ import pytest
 
 from aleph.vm.supervisor.error_mapping import translate_exception, translating_errors
 from aleph.vm.supervisor_interface.errors import (
-    FileTooLargeError as SupFileTooLargeError,
-)
-from aleph.vm.supervisor_interface.errors import (
     HostNotFoundError as SupHostNotFoundError,
 )
 from aleph.vm.supervisor_interface.errors import (
@@ -34,14 +31,6 @@ def test_translate_known_internal_exceptions():
     translated = translate_exception(InsufficientResourcesError("no ram", required={"mem": 1}, available={"mem": 0}))
     assert isinstance(translated, SupInsufficientResourcesError)
     assert translated.code is ErrorCode.INSUFFICIENT_RESOURCES
-
-
-def test_translate_file_too_large():
-    from aleph.vm.supervisor.controllers.firecracker.program import FileTooLargeError
-
-    translated = translate_exception(FileTooLargeError("too big"))
-    assert isinstance(translated, SupFileTooLargeError)
-    assert translated.code is ErrorCode.FILE_TOO_LARGE
 
 
 def test_translate_host_not_found():

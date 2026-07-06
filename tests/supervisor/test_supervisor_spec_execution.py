@@ -51,7 +51,7 @@ def make_spec(*, internet: bool = True, vcpus: int = 4, memory_mib: int = 2048) 
 
 
 def test_spec_properties_for_qemu_instance():
-    execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(make_spec(), systemd_manager=None)
 
     assert execution.is_instance is True
     assert execution.is_program is False
@@ -59,7 +59,7 @@ def test_spec_properties_for_qemu_instance():
 
 
 def test_from_spec_sets_spec():
-    execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(make_spec(), systemd_manager=None)
 
     assert execution.spec is not None
     assert execution.vm_spec is execution.spec
@@ -71,7 +71,7 @@ def test_from_spec_sets_spec():
 
 @pytest.mark.asyncio
 async def test_prepare_builds_resources_without_download(monkeypatch):
-    execution = VmExecution.from_spec(make_spec(), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(make_spec(), systemd_manager=None)
 
     # The agent downloader must never be invoked on the spec path (the holder
     # is built from the spec via from_spec; download lives agent-side now).
@@ -96,7 +96,6 @@ async def test_prepare_builds_resources_without_download(monkeypatch):
 async def test_create_builds_qemu_instance_from_spec():
     execution = VmExecution.from_spec(
         make_spec(internet=False, vcpus=3, memory_mib=1024),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     await execution.prepare()
@@ -114,7 +113,7 @@ async def test_create_builds_qemu_instance_from_spec():
 async def test_start_skips_configure_for_spec(monkeypatch):
     systemd = MagicMock()
     systemd.enable_and_start = AsyncMock()
-    execution = VmExecution.from_spec(make_spec(internet=False), snapshot_manager=None, systemd_manager=systemd)
+    execution = VmExecution.from_spec(make_spec(internet=False), systemd_manager=systemd)
     await execution.prepare()
     execution.create(vm_index=7, tap_interface=None)
 
