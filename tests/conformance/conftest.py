@@ -9,6 +9,7 @@ guards live in each test module's pytestmark.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import time
 from contextlib import contextmanager
@@ -41,11 +42,20 @@ def _running_daemon(binary: Path, execution_root: Path, extra_env: dict[str, str
     env.setdefault("RUST_LOG", "info")
     env.update(extra_env or {})
 
+    def is_socket(path: Path) -> bool:
+        # A stale regular file may sit at the path until the daemon replaces
+        # it; readiness means an actual socket, like the Rust integration
+        # test's is_socket() check.
+        try:
+            return stat.S_ISSOCK(path.stat().st_mode)
+        except OSError:
+            return False
+
     socket_path = execution_root / "supervisor.sock"
     process = subprocess.Popen([str(binary)], env=env)
     try:
         deadline = time.monotonic() + 10
-        while not socket_path.exists():
+        while not is_socket(socket_path):
             if process.poll() is not None:
                 msg = f"daemon exited early with code {process.returncode}"
                 raise RuntimeError(msg)
