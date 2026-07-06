@@ -136,7 +136,16 @@ class GrpcSupervisor(Supervisor):
 
     def _ensure_stub(self) -> supervisor_pb2_grpc.SupervisorStub:
         if self._stub is None:
-            self._channel = grpc.aio.insecure_channel(f"unix:{self._socket_path}")
+            # For unix targets, gRPC C-core derives the HTTP/2 :authority
+            # from the percent-encoded socket path (e.g.
+            # "var%2Flib%2F...%2Fsupervisor.sock"), which strict HTTP/2
+            # stacks reject as a malformed authority. The Python server
+            # tolerates it; the Rust daemon (hyper/h2) resets the stream.
+            # Pin a well-formed authority: both daemons ignore its value.
+            self._channel = grpc.aio.insecure_channel(
+                f"unix:{self._socket_path}",
+                options=(("grpc.default_authority", "localhost"),),
+            )
             self._stub = supervisor_pb2_grpc.SupervisorStub(self._channel)
         return self._stub
 

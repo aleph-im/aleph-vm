@@ -1,0 +1,6 @@
+# Pinned stable toolchain for the Rust supervisor workspace (design doc
+# 2026-07-04-rust-supervisor-daemon-design.md, section 9). rustup picks this
+# up automatically when cargo runs from inside rust/.
+[toolchain]
+channel = "1.90"
+components = ["rustfmt", "clippy"]
