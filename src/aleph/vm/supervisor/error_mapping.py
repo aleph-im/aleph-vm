@@ -12,7 +12,6 @@ import contextlib
 from collections.abc import Iterator
 
 from aleph.vm.supervisor_interface.errors import (
-    FileTooLargeError,
     HostNotFoundError,
     InsufficientResourcesError,
     InternalSupervisorError,
@@ -36,16 +35,11 @@ def translate_exception(exc: BaseException) -> SupervisorError:
     from aleph.vm.resources import (
         InsufficientResourcesError as _InsufficientResourcesError,
     )
-    from aleph.vm.supervisor.controllers.firecracker.program import (
-        FileTooLargeError as _FileTooLargeError,
-    )
     from aleph.vm.utils import HostNotFoundError as _HostNotFoundError
 
     message = str(exc)
     if isinstance(exc, _InsufficientResourcesError):
         return InsufficientResourcesError(message)
-    if isinstance(exc, _FileTooLargeError):
-        return FileTooLargeError(message)
     if isinstance(exc, _MicroVMFailedInitError):
         return MicroVMInitError(message)
     if isinstance(exc, _HostNotFoundError):

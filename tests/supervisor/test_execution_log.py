@@ -58,7 +58,7 @@ def _spec(persistent: bool = True) -> CreateVmSpec:
 async def test_record_usage_dumps_execution_log_when_enabled(mocker, tmp_path):
     mocker.patch.object(settings, "EXECUTION_LOG_ENABLED", True)
     mocker.patch.object(settings, "EXECUTION_LOG_DIRECTORY", tmp_path / "executions")
-    execution = VmExecution.from_spec(_spec(persistent=True), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(_spec(persistent=True), systemd_manager=None)
 
     await execution.record_usage()
 
@@ -73,7 +73,7 @@ async def test_record_usage_dumps_execution_log_when_enabled(mocker, tmp_path):
 async def test_record_usage_no_dump_when_disabled(mocker, tmp_path):
     mocker.patch.object(settings, "EXECUTION_LOG_ENABLED", False)
     mocker.patch.object(settings, "EXECUTION_LOG_DIRECTORY", tmp_path / "executions")
-    execution = VmExecution.from_spec(_spec(persistent=True), snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(_spec(persistent=True), systemd_manager=None)
 
     await execution.record_usage()
 
@@ -85,11 +85,11 @@ async def test_record_usage_drops_port_mappings_of_non_persistent_vms(mocker, tm
     mocker.patch.object(settings, "EXECUTION_LOG_ENABLED", False)
     delete_mappings = mocker.patch("aleph.vm.models.delete_port_mappings", new_callable=AsyncMock)
 
-    non_persistent = VmExecution.from_spec(_spec(persistent=False), snapshot_manager=None, systemd_manager=None)
+    non_persistent = VmExecution.from_spec(_spec(persistent=False), systemd_manager=None)
     await non_persistent.record_usage()
     delete_mappings.assert_awaited_once_with(non_persistent.vm_id)
 
     delete_mappings.reset_mock()
-    persistent = VmExecution.from_spec(_spec(persistent=True), snapshot_manager=None, systemd_manager=None)
+    persistent = VmExecution.from_spec(_spec(persistent=True), systemd_manager=None)
     await persistent.record_usage()
     delete_mappings.assert_not_awaited()

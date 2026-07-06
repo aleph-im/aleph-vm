@@ -19,9 +19,6 @@ from aleph.vm.network.firewall import teardown_nftables_for_vm
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.program_config import Volume
 from aleph.vm.storage import chown_to_jailman
-from aleph.vm.supervisor.controllers.firecracker.snapshots import (
-    CompressedDiskVolumeSnapshot,
-)
 from aleph.vm.supervisor.controllers.interface import AlephVmControllerInterface
 from aleph.vm.supervisor.controllers.resources import VmResources, disk_usage_delta
 from aleph.vm.supervisor_interface.configuration import (
@@ -101,7 +98,6 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
     persistent: bool
     _firecracker_config: FirecrackerConfig | None = None
     controller_configuration: Configuration | None = None
-    support_snapshot: bool
 
     @property
     def resources_path(self) -> Path:
@@ -271,6 +267,3 @@ class AlephFirecrackerExecutable(Generic[ConfigurationType], AlephVmControllerIn
             if self.tap_interface:
                 await self.tap_interface.delete()
         await self.stop_guest_api()
-
-    async def create_snapshot(self) -> CompressedDiskVolumeSnapshot:
-        raise NotImplementedError()

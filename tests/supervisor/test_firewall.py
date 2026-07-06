@@ -946,7 +946,7 @@ def create_mock_execution(mocker, fake_instance_content):
     and the mocked vm.tap_interface, so the spec content is immaterial here.
     """
     spec = make_spec(vm_hash="decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca", persistent=True)
-    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(spec, systemd_manager=None)
 
     # Mock the vm attribute with tap_interface
     mock_interface = mocker.MagicMock()

@@ -300,7 +300,6 @@ async def test_vm_pool_setup_binds_supervisor_engine(tmp_path, monkeypatch):
     from aleph.vm.supervisor import networking_db
 
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
-    monkeypatch.setattr(settings, "SNAPSHOT_FREQUENCY", 0)
     monkeypatch.setattr(settings, "ENABLE_GPU_SUPPORT", False)
     monkeypatch.setattr(settings, "EXECUTION_DATABASE", tmp_path / "executions.sqlite3")
     monkeypatch.setattr(settings, "SUPERVISOR_DATABASE", tmp_path / "supervisor.sqlite3")
