@@ -18,7 +18,7 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
-from aleph.vm.agent.translate import build_create_vm_spec, build_reservation_request
+from aleph.vm.agent.translate import build_create_vm_spec
 from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.host_volumes import HostVolume
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
@@ -133,9 +133,10 @@ async def test_build_create_vm_spec_happy_path(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_build_create_vm_spec_maps_gpu_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each message.requirements.gpu becomes an unresolved GpuSpec request:
-    device_id is carried, pci_host is left empty for the engine to resolve."""
+async def test_build_create_vm_spec_ignores_gpu_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The message's requested device_ids stop at the agent: the built spec
+    carries no GPUs. The create path resolves the requests to concrete host
+    cards through the CapacityManager and rewrites spec.gpus afterwards."""
     from aleph_message.models.execution.environment import (
         GpuProperties,
         HostRequirements,
@@ -165,9 +166,7 @@ async def test_build_create_vm_spec_maps_gpu_requirements(monkeypatch: pytest.Mo
 
     spec = await build_create_vm_spec(_VM_HASH, message)
 
-    assert len(spec.gpus) == 1
-    assert spec.gpus[0].device_id == "10de:2504"
-    assert str(spec.gpus[0].pci_host) == ""
+    assert spec.gpus == []
 
 
 @pytest.mark.asyncio
@@ -319,41 +318,3 @@ async def test_hypervisor_none_defaults_to_firecracker_raises(monkeypatch: pytes
         await build_create_vm_spec(_VM_HASH, message)
 
     assert not download_called, "download_all must not run when validation fails"
-
-
-# ---------------------------------------------------------------------------
-# build_reservation_request -- message -> message-free resources DTO
-# ---------------------------------------------------------------------------
-
-
-def test_build_reservation_request_extracts_resources() -> None:
-    """build_reservation_request pulls the scalar resources and GPU device_ids
-    out of an Aleph message into a message-free ReservationRequest. No download
-    or message parsing happens supervisor-side."""
-    from aleph_message.models.execution.environment import (
-        GpuProperties,
-        HostRequirements,
-    )
-
-    message = _make_qemu_instance_message(vcpus=2, memory=2048)
-    message = message.model_copy(
-        update={
-            "requirements": HostRequirements(
-                gpu=[
-                    GpuProperties(
-                        vendor="NVIDIA",
-                        device_name="GH100",
-                        device_class="0300",
-                        device_id="10de:2504",
-                    )
-                ]
-            )
-        }
-    )
-
-    req = build_reservation_request(message, "0xUSER")
-
-    assert (req.vcpus, req.memory_mib, req.is_instance, req.owner_id) == (2, 2048, True, "0xUSER")
-    assert [g.device_id for g in req.gpus] == ["10de:2504"]
-    # rootfs size is summed into disk_mib (the message fixture sets size_mib=10000)
-    assert req.disk_mib == 10000

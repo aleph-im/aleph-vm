@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 import msgpack
@@ -17,6 +18,7 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.agent.aggregate import get_user_settings
+from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
@@ -78,12 +80,13 @@ def _is_spec_eligible(content) -> bool:
     """True when the supervisor's message-free create path can handle this message.
 
     Instances are QEMU-only, so every instance reaches build_create_vm_spec.
-    That includes GPU instances (the engine resolves and reserves a concrete
-    host card in pool.create_vm_from_spec) and confidential instances (the spec
-    carries spec.tee and the engine takes the confidential launch path, leaving
-    the VM awaiting its owner's session). An InstanceContent that explicitly
-    requests a Firecracker hypervisor is rejected by build_create_vm_spec with
-    InvalidBackendError: instances do not run on Firecracker.
+    That includes GPU instances (the agent resolves a concrete host card
+    through its CapacityManager before create_vm) and confidential instances
+    (the spec carries spec.tee and the engine takes the confidential launch
+    path, leaving the VM awaiting its owner's session). An InstanceContent that
+    explicitly requests a Firecracker hypervisor is rejected by
+    build_create_vm_spec with InvalidBackendError: instances do not run on
+    Firecracker.
     """
     return isinstance(content, InstanceContent)
 
@@ -219,17 +222,20 @@ async def create_vm_execution(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    capacity: CapacityManager,
     persistent: bool = False,
 ) -> None:
     """Create a VM for the given message.
 
     Every supported content type is created through the Supervisor abstraction:
     programs through the spec program path, instances (QEMU-only, including
-    confidential and GPU instances) through the spec path. The agent records and
-    persists its own knowledge of the VM and returns None; the hypervisor object
-    lives behind the supervisor. The agent never touches a VmPool: there is no
-    legacy pool fallback anymore. An unsupported content type is rejected with a
-    clear error.
+    confidential and GPU instances) through the spec path. Capacity admission
+    (the memory buckets, vCPU overcommit) and GPU resolution are agent policy,
+    run through ``capacity`` before create_vm; the supervisor only enforces its
+    mechanism backstops. The agent records and persists its own knowledge of
+    the VM and returns None; the hypervisor object lives behind the supervisor.
+    The agent never touches a VmPool: there is no legacy pool fallback anymore.
+    An unsupported content type is rejected with a clear error.
     """
     message, original_message = await load_updated_message(vm_hash)
 
@@ -243,6 +249,13 @@ async def create_vm_execution(
         # are created and configured per request there too, so this branch only
         # does eager work for the persistent (scheduled) case.
         spec, _resources = await build_program_create_vm_spec(vm_hash, content)
+        capacity.check_capacity(
+            memory_mib=content.resources.memory,
+            vcpus=content.resources.vcpus,
+            disk_mib=0,
+            is_instance=False,
+            exclude_vm_hash=vm_hash,
+        )
         info = await supervisor.create_vm(spec)
         record = registry.record(
             vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
@@ -270,13 +283,27 @@ async def create_vm_execution(
         # is lost, and the test forgets the instance (which the reconcile then
         # reaps). The endpoint still waits for the VM to reach the awaiting-init
         # state before initializing it; the supervisor machinery never reads this
-        # record. (build_create_vm_spec reads the owner address from
-        # message.address for the engine's own GPU-reservation handling; the agent
-        # touches no reservations.) Spec-eligible VMs are QEMU instances, always
-        # persistent.
+        # record. Spec-eligible VMs are QEMU instances, always persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
             spec = await build_create_vm_spec(vm_hash, content)
+            # Agent-side admission, after the download so a failed download
+            # never consumes a GPU hold: bucket from the message type, then
+            # resolve the requested device_ids to concrete host cards (owner =
+            # message.address, consuming this owner's own holds). This VM's
+            # own registry record (the early owner record above) is excluded
+            # from the committed sums.
+            capacity.check_capacity(
+                memory_mib=content.resources.memory,
+                vcpus=content.resources.vcpus,
+                disk_mib=0,
+                is_instance=True,
+                exclude_vm_hash=vm_hash,
+            )
+            requested_gpus = requested_gpu_ids(content)
+            if requested_gpus:
+                resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
+                spec = replace(spec, gpus=resolved_gpus)
             info = await supervisor.create_vm(spec)
         except Exception:
             # build or create failed: drop the early record so a failed create
@@ -325,6 +352,7 @@ async def create_vm_execution_or_raise_http_error(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    capacity: CapacityManager,
     persistent: bool = False,
 ) -> None:
     # The spec path tears down and forgets a half-started VM inside
@@ -333,7 +361,7 @@ async def create_vm_execution_or_raise_http_error(
     # pool to clean up.
     try:
         return await create_vm_execution(
-            vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=persistent
+            vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=persistent
         )
     except ResourceDownloadError as error:
         logger.exception(error)
@@ -418,6 +446,7 @@ async def _ensure_program_vm(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    capacity: CapacityManager,
     program_client: ProgramGuestClient,
 ) -> VmInfo:
     """Get-or-create a serving-ready program VM through the supervisor.
@@ -451,6 +480,13 @@ async def _ensure_program_vm(
 
         try:
             spec, resources = await build_program_create_vm_spec(vm_hash, content)
+            capacity.check_capacity(
+                memory_mib=content.resources.memory,
+                vcpus=content.resources.vcpus,
+                disk_mib=0,
+                is_instance=False,
+                exclude_vm_hash=vm_hash,
+            )
             await supervisor.create_vm(spec)
             record = registry.record(
                 vm_hash, message=content, original=original, persistent=bool(content.on.persistent)
@@ -533,6 +569,7 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
     expiry: ExpiryManager = request.app["expiry"]
     update_watcher: UpdateWatcher = request.app["update_watcher"]
     registry: AgentVmRegistry = request.app["vm_registry"]
+    capacity: CapacityManager = request.app["capacity"]
     program_client: ProgramGuestClient = request.app["program_client"]
     vm_id = VmId(str(vm_hash))
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
@@ -543,7 +580,13 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
 
     persistent = bool(content.on.persistent)
     info = await _ensure_program_vm(
-        vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
+        vm_hash,
+        content,
+        original,
+        supervisor=supervisor,
+        registry=registry,
+        capacity=capacity,
+        program_client=program_client,
     )
 
     scope: dict = await build_asgi_scope(path, request)
@@ -602,6 +645,7 @@ async def run_code_on_event(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     registry: AgentVmRegistry,
+    capacity: CapacityManager,
     program_client: ProgramGuestClient,
 ):
     """
@@ -616,7 +660,13 @@ async def run_code_on_event(
 
     persistent = bool(content.on.persistent)
     info = await _ensure_program_vm(
-        vm_hash, content, original, supervisor=supervisor, registry=registry, program_client=program_client
+        vm_hash,
+        content,
+        original,
+        supervisor=supervisor,
+        registry=registry,
+        capacity=capacity,
+        program_client=program_client,
     )
 
     scope: dict = await build_event_scope(event)
@@ -669,6 +719,7 @@ async def start_persistent_vm(
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
+    capacity: CapacityManager,
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
 ) -> None:
@@ -710,7 +761,9 @@ async def start_persistent_vm(
 
     if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, persistent=True)
+        await create_vm_execution(
+            vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
+        )
         # A confidential VM is created but left awaiting its owner's session
         # (only the owner can start it via /confidential/initialize). Waiting
         # for RUNNING would block forever, so re-read the status and skip the

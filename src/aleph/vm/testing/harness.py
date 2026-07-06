@@ -19,6 +19,7 @@ from typing import cast
 from aiohttp.web import Request, Response
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.pubsub import PubSub
 from aleph.vm.agent.run import (
@@ -75,6 +76,7 @@ async def benchmark(runs: int):
     await pool.setup()
     bench_supervisor = LocalSupervisor(pool)
     bench_registry = AgentVmRegistry()
+    bench_capacity = CapacityManager(bench_supervisor, bench_registry)
     bench_update_watcher = UpdateWatcher(bench_supervisor, bench_registry)
     bench_expiry = ExpiryManager(bench_supervisor)
     bench_program_client = ProgramGuestClient()
@@ -83,6 +85,7 @@ async def benchmark(runs: int):
         "expiry": bench_expiry,
         "update_watcher": bench_update_watcher,
         "vm_registry": bench_registry,
+        "capacity": bench_capacity,
         "program_client": bench_program_client,
         "pubsub": PubSub(),
     }
@@ -135,6 +138,7 @@ async def benchmark(runs: int):
         expiry=fake_request.app["expiry"],
         update_watcher=bench_update_watcher,
         registry=bench_registry,
+        capacity=bench_capacity,
         program_client=bench_program_client,
     )
     print("Event result", result)
@@ -144,6 +148,7 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> No
     """Run an instance from an InstanceMessage."""
     supervisor = LocalSupervisor(pool)
     registry = AgentVmRegistry()
+    capacity = CapacityManager(supervisor, registry)
     expiry = ExpiryManager(supervisor)
     update_watcher = UpdateWatcher(supervisor, registry)
     expiry.on_reaped = update_watcher.cancel
@@ -153,6 +158,7 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> No
         pubsub,
         supervisor=supervisor,
         registry=registry,
+        capacity=capacity,
         expiry=expiry,
         update_watcher=update_watcher,
     )

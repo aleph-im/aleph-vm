@@ -15,6 +15,7 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
+from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
@@ -259,6 +260,10 @@ def setup_webapp(supervisor: Supervisor):
     app["supervisor"] = supervisor
     app["expiry"] = ExpiryManager(app["supervisor"])
     app["vm_registry"] = AgentVmRegistry()
+    # Admission policy and the GPU reservation ledger are agent-side, owned
+    # alongside the registry: the reserve endpoint and the create paths share
+    # this instance.
+    app["capacity"] = CapacityManager(app["supervisor"], app["vm_registry"])
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
     app["program_client"] = ProgramGuestClient()
 
