@@ -280,12 +280,6 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
         summary = await self._supervisor.recreate_network()
         return pb.RecreateNetworkResponse(summary_json=json.dumps(summary))
 
-    # ── Reservation ──
-    @_translating
-    async def ReserveResources(self, request: pb.ReserveResourcesRequest, context) -> pb.ReserveResourcesResponse:
-        expiry = await self._supervisor.reserve_resources(conv.reservation_request_from_pb(request))
-        return pb.ReserveResourcesResponse(expiry_unix_ns=int(expiry.timestamp() * 1_000_000_000))
-
 
 async def serve_unix(supervisor: Supervisor, socket_path: Path | str) -> grpc.aio.Server:
     """Build and start a gRPC server for `supervisor` on a Unix socket.

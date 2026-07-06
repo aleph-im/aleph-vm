@@ -275,7 +275,6 @@ class CapacityManager:
             GpuSpec(
                 pci_host=PciAddress(gpu.pci_host),
                 supports_x_vga=gpu.has_x_vga_support,
-                device_id=gpu.device_id,
             )
             for gpu in resolved
         ]

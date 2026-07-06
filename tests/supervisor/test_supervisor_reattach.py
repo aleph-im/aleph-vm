@@ -232,10 +232,10 @@ async def test_create_vm_from_spec_short_circuits_to_readopt(monkeypatch):
     pool.creation_lock = asyncio.Lock()
     sentinel = SimpleNamespace(vm_spec=_spec())
     monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(return_value=sentinel))
-    pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
+    pool._check_memory_backstop = MagicMock(side_effect=AssertionError("must not reach fresh create"))
 
     assert await pool.create_vm_from_spec(_spec()) is sentinel
-    pool.check_spec_admission.assert_not_called()
+    pool._check_memory_backstop.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -280,11 +280,11 @@ async def test_create_vm_from_spec_readopt_failure_does_not_fall_through(monkeyp
     pool = _bare_pool()
     pool.creation_lock = asyncio.Lock()
     monkeypatch.setattr(pool, "_readopt_live_controller", AsyncMock(side_effect=RuntimeError("reattach still failing")))
-    pool.check_spec_admission = MagicMock(side_effect=AssertionError("must not reach fresh create"))
+    pool._check_memory_backstop = MagicMock(side_effect=AssertionError("must not reach fresh create"))
 
     with pytest.raises(RuntimeError, match="reattach still failing"):
         await pool.create_vm_from_spec(_spec())
-    pool.check_spec_admission.assert_not_called()
+    pool._check_memory_backstop.assert_not_called()
 
 
 @pytest.mark.asyncio

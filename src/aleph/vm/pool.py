@@ -4,9 +4,8 @@ import asyncio
 import logging
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import psutil
 
@@ -42,13 +41,7 @@ from aleph.vm.supervisor_interface.errors import (
     InvalidBackendError,
     VmAlreadyExistsError,
 )
-from aleph.vm.supervisor_interface.types import (
-    Backend,
-    CreateVmSpec,
-    GpuSpec,
-    PciAddress,
-    VmId,
-)
+from aleph.vm.supervisor_interface.types import Backend, CreateVmSpec, GpuSpec, VmId
 from aleph.vm.systemd import SystemDManager
 from aleph.vm.vm_type import VmType
 
@@ -99,8 +92,6 @@ class VmPool:
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
     gpus: list[GpuDevice]
-    reservations: dict[Any, Reservation]
-    """Resources reserved by an user, before launching (only GPU atm)"""
 
     _draining: bool
     # VMs whose reattach failed and that are awaiting background retry. Keyed by
@@ -109,7 +100,6 @@ class VmPool:
 
     def __init__(self):
         self.executions = {}
-        self.reservations = {}
         self.gpus = []
         self._draining = False
         self._failed_reattach = {}
@@ -162,140 +152,6 @@ class VmPool:
         chains and forwarding rules would break their connectivity.
         Per-VM cleanup (tap + nft rules) happens in execution.stop().
         """
-
-    def check_capacity(self, *, memory_mib: int, vcpus: int, disk_mib: int, is_instance: bool) -> None:
-        """Raise InsufficientResourcesError if these requirements exceed the host caps.
-
-        The numbers-only core of capacity admission, reached via
-        :meth:`check_spec_admission` (the spec path), which reduces its input to
-        scalar requirements and delegates here. It is also reached by the reserve
-        path, via :meth:`LocalSupervisor.reserve_resources`, which keeps the
-        dry-run honest before holding GPUs.
-
-        This is part of the pool's public contract: ``LocalSupervisor`` calls it
-        cross-module against a message-free resources DTO.
-        """
-        required_memory_mib = memory_mib
-        required_vcpus = vcpus
-        required_disk_mib = disk_mib
-
-        committed_instance_memory_mib = 0
-        committed_program_memory_mib = 0
-        committed_vcpus = 0
-        for execution in tuple(self.executions.values()):
-            memory = execution.allocated_memory_mib
-            vcpus = execution.allocated_vcpus
-            if not memory and not vcpus:
-                continue
-            if execution.is_instance:
-                committed_instance_memory_mib += memory
-            else:
-                committed_program_memory_mib += memory
-            committed_vcpus += vcpus
-
-        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
-        physical_cores = psutil.cpu_count() or 1
-        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
-        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
-
-        instance_memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
-        program_memory_cap_mib = program_reserved_mib
-
-        # vCPU overcommit: CPU time is safe to oversubscribe because the
-        # kernel scheduler time-slices it, so the cap is the physical core
-        # count multiplied by the configured factor (e.g. 4 vCPUs per core
-        # with VCPU_OVERCOMMIT_FACTOR=4.0).
-        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
-
-        if is_instance:
-            bucket_name = "instance"
-            committed_memory_mib = committed_instance_memory_mib
-            memory_cap_mib = instance_memory_cap_mib
-        else:
-            bucket_name = "program"
-            committed_memory_mib = committed_program_memory_mib
-            memory_cap_mib = program_memory_cap_mib
-
-        available_disk_mib = self.calculate_available_disk() // (1024 * 1024)
-
-        errors: list[str] = []
-
-        if committed_memory_mib + required_memory_mib > memory_cap_mib:
-            errors.append(
-                f"Memory ({bucket_name} bucket): "
-                f"required {required_memory_mib} MiB, "
-                f"committed {committed_memory_mib} MiB, "
-                f"cap {memory_cap_mib} MiB "
-                f"(physical {physical_memory_mib} MiB, "
-                f"host_reserved {host_reserved_mib} MiB, "
-                f"program_reserved {program_reserved_mib} MiB)"
-            )
-
-        if committed_vcpus + required_vcpus > vcpu_cap:
-            errors.append(
-                f"vCPUs: required {required_vcpus}, "
-                f"committed {committed_vcpus}, "
-                f"cap {vcpu_cap} "
-                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
-            )
-
-        if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
-            errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
-
-        if errors:
-            detail = "Insufficient capacity to create VM. " + "; ".join(errors)
-            available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
-            available_vcpus = max(vcpu_cap - committed_vcpus, 0)
-            raise InsufficientResourcesError(
-                detail,
-                required={
-                    "vcpus": required_vcpus,
-                    "memory_mib": required_memory_mib,
-                    "disk_mib": required_disk_mib,
-                },
-                available={
-                    "vcpus": available_vcpus,
-                    "memory_mib": available_memory_mib,
-                    "disk_mib": available_disk_mib,
-                },
-            )
-
-    def check_spec_admission(self, spec: CreateVmSpec) -> None:
-        """Refuse a message-free CreateVmSpec when it would exceed host capacity.
-
-        Built on the same two-bucket memory accounting and vCPU overcommit
-        ceiling as :meth:`check_capacity`, but reads its requirements from the
-        spec (``spec.memory_mib`` / ``spec.vcpus``). The bucket follows the
-        spec backend: QEMU specs are instances (instance bucket), Firecracker
-        specs are programs (program bucket), so a program routed through the
-        spec path is not starved by the instance ceiling, which can be 0 on a
-        small host with a large program reserve.
-
-        Disk admission is deferred: ``DiskSpec`` carries no ``size_mib`` today,
-        so there is nothing to sum against ``calculate_available_disk``. Revisit
-        when the spec carries disk sizes.
-
-        Called inside :meth:`create_vm_from_spec` under ``creation_lock`` so the
-        check and the subsequent registration are atomic. Reading
-        ``self.executions`` here is safe without locking because this method
-        does not ``await``.
-
-        Raises:
-            InsufficientResourcesError: The memory or vCPU bucket would be
-                exceeded; carries structured ``required`` / ``available`` dicts.
-        """
-        # QEMU specs are instances; Firecracker specs are programs.
-        is_instance = spec.backend is not Backend.FIRECRACKER
-        # Disk admission is deferred (DiskSpec has no size_mib today), so 0 is
-        # passed: check_capacity's disk branch only fires for disk_mib > 0, so
-        # the disk check is skipped and the structured dicts carry disk_mib 0,
-        # exactly as the standalone spec check did.
-        self.check_capacity(
-            memory_mib=spec.memory_mib,
-            vcpus=spec.vcpus,
-            disk_mib=0,
-            is_instance=is_instance,
-        )
 
     def calculate_available_disk(self) -> int:
         """Disk available for the creation of new VM.
@@ -356,51 +212,19 @@ class VmPool:
                 self._require_same_spec(readopted, spec)
                 return readopted
 
-            # Authoritative capacity admission, folded into the create path so
-            # the check and the registration below are atomic under the lock.
-            self.check_spec_admission(spec)
-
-            # GPU reservation, atomic with the registration below. The spec
-            # carries GPU REQUESTS (device_id, empty pci_host); resolve each to
-            # a concrete available host card and rewrite the spec with the
-            # resolved pci_host so build_qemu_configuration / from_spec see it.
-            # The engine
-            # owns reservation handling end to end: it consumes this OWNER's own
-            # reservation (spec.owner_id, made via reserve_resources) and
-            # skips reservations still held by OTHER users.
+            # Mechanism backstops, atomic with the registration below: never
+            # oversubscribe physical memory, never double-attach a GPU. The
+            # admission POLICY (memory buckets, vCPU overcommit, user-scoped
+            # reservations) is the client's business and runs agent-side
+            # before create_vm.
+            self._check_memory_backstop(spec.memory_mib)
             resolved_host_gpus: list[HostGPU] = []
             if spec.gpus:
-                # _resolve_spec_gpus resolves in request order, so requests and
-                # devices zip index-aligned. `model` is a network-derived name
-                # the supervisor does not know: echo whatever the agent
-                # requested rather than inventing one.
-                resolved_devices = self._resolve_spec_gpus(spec.gpus, owner=spec.owner_id)
-                resolved_pairs = list(zip(spec.gpus, resolved_devices, strict=True))
-                spec = replace(
-                    spec,
-                    gpus=[
-                        GpuSpec(
-                            pci_host=PciAddress(device.pci_host),
-                            supports_x_vga=device.has_x_vga_support,
-                            device_id=device.device_id,
-                            model=request.model,
-                        )
-                        for request, device in resolved_pairs
-                    ],
-                )
-                resolved_host_gpus = [
-                    HostGPU(
-                        pci_host=device.pci_host,
-                        supports_x_vga=device.has_x_vga_support,
-                        device_id=device.device_id,
-                        model=request.model or None,
-                    )
-                    for request, device in resolved_pairs
-                ]
+                resolved_host_gpus = self._validate_spec_gpus(spec.gpus)
 
             execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
-            # Attach the resolved GPUs so uses_gpu() holds them against other
-            # creates and _to_vm_info reports them, exactly like the message path.
+            # Attach the validated GPUs so uses_gpu() holds them against other
+            # creates and _to_vm_info reports them.
             execution.gpus = resolved_host_gpus
             self.executions[vm_id] = execution
 
@@ -417,9 +241,9 @@ class VmPool:
                         await tap_interface.delete()
                     await self.network.create_tap(vm_index, tap_interface)
 
-                # Confidential VMs get a QemuConfidentialVMConfiguration; the
-                # GPU resolution above already rewrote spec.gpus with concrete
-                # pci_hosts, so the confidential config carries the resolved
+                # Confidential VMs get a QemuConfidentialVMConfiguration;
+                # spec.gpus already carries concrete pci_hosts (validated
+                # above), so the confidential config carries the resolved
                 # GPUs too. SAFETY-CRITICAL: a build failure (e.g. missing
                 # firmware) propagates and aborts the create; we never fall back
                 # to the plain QemuVMConfiguration, which would boot the VM
@@ -534,8 +358,8 @@ class VmPool:
         Boots the VM from the spec's resolved paths and, when the spec carries
         a guest channel, waits for the guest's ready signal as part of boot.
         The guest-level protocols spoken over the channel are the client's
-        business (VmInfo.guest_channel_path). Capacity admission is enforced by
-        the engine via check_spec_admission, atomically inside this create path.
+        business (VmInfo.guest_channel_path). The engine only enforces its
+        physical-memory backstop, atomically inside this create path.
         """
         if spec.guest_channel is None:
             # Firecracker VMs without a guest channel (full instances under
@@ -550,10 +374,9 @@ class VmPool:
                 self._require_same_spec(current_execution, spec)
                 return current_execution
 
-            # Authoritative capacity admission, atomic with the registration
-            # below. GPU reservation stays on the message path (see the note in
-            # create_vm_from_spec); spec programs carry no GPUs.
-            self.check_spec_admission(spec)
+            # Physical-memory backstop, atomic with the registration below
+            # (spec programs carry no GPUs, so there is nothing to validate).
+            self._check_memory_backstop(spec.memory_mib)
 
             execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
             self.executions[vm_id] = execution
@@ -1011,9 +834,9 @@ class VmPool:
 
         A VM removed from ``self.executions`` may leave behind:
           - A running ``aleph-vm-controller@<hash>.service`` with an active
-            qemu process that still consumes host RAM the admission check
+            qemu process that still consumes host RAM the memory backstop
             does not see, so the host's real free memory is lower than
-            ``check_capacity`` assumes.
+            ``_check_memory_backstop`` assumes.
           - A ``<hash>-controller.json`` file on disk that systemd would
             reuse on the next boot, reviving the orphan.
 
@@ -1196,98 +1019,78 @@ class VmPool:
                 available_gpus.append(gpu)
         return available_gpus
 
-    def get_valid_reservation(self, resource) -> Reservation | None:
-        if resource in self.reservations and self.reservations[resource].is_expired():
-            del self.reservations[resource]
-        return self.reservations.get(resource)
+    def _check_memory_backstop(self, required_memory_mib: int) -> None:
+        """Physical-memory invariant: committed plus requested must fit in
+        physical memory minus the host reserve.
 
-    async def reserve_gpus(self, requested: list[GpuSpec], user: str) -> datetime:
-        """Hold message-free GPU REQUESTS for ``user``, keyed by ``device_id``.
-
-        The message-free twin of reserve_resources: each request matches an
-        available card by device_id, skipping cards held
-        by ANOTHER user. Atomic like the message path: cards are resolved first
-        and committed to ``self.reservations`` only once every request is matched,
-        so a partial request leaves no stray holds. Returns the reservation
-        expiry."""
-        expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=60)
-        if not requested:
-            return expiration_date
-        async with self.creation_lock:
-            available_gpus = self.get_available_gpus()
-            resolved: list[GpuDevice] = []
-            for request in requested:
-                for available_gpu in available_gpus:
-                    if available_gpu.device_id != request.device_id:
-                        continue
-                    reservation = self.get_valid_reservation(available_gpu)
-                    if reservation is not None and reservation.user != user:
-                        continue
-                    available_gpus.remove(available_gpu)
-                    resolved.append(available_gpu)
-                    break
-                else:
-                    raise InsufficientResourcesError(
-                        f"No available GPU matching device_id {request.device_id!r}",
-                        required={"gpu_device_id": request.device_id},
-                        available={"gpus": [g.device_id for g in self.get_available_gpus()]},
-                    )
-            for gpu in resolved:
-                self.reservations[gpu] = Reservation(user=user, expiration=expiration_date, resource=gpu)
-        return expiration_date
-
-    def _resolve_spec_gpus(self, requested: list[GpuSpec], *, owner: str = "") -> list[GpuDevice]:
-        """Resolve message-free GPU REQUESTS to concrete available host cards.
-
-        Matches
-        each request by device_id against get_available_gpus() (cards not used by
-        any current execution). The engine owns reservation handling end to end:
-        a reservation held by THIS owner (``owner`` == spec.owner_id, made
-        via the reserve_resources endpoint) is consumed - the card is taken and
-        its reservation dropped - while a reservation held by ANOTHER user blocks
-        the card. get_valid_reservation drops expired reservations as a side
-        effect, so a stale hold never blocks a request.
-
-        Called inside create_vm_from_spec under creation_lock so resolution and
-        the subsequent registration are atomic (no card is double-assigned).
+        No buckets, no overcommit factors: those are client (agent) policy.
+        This only keeps the host itself alive. Called inside the create paths
+        under ``creation_lock`` so the check and the registration are atomic.
 
         Raises:
-            InsufficientResourcesError: a requested device_id has no available
-                host card free of another user's reservation.
+            InsufficientResourcesError: the request would exceed physical
+                memory; carries structured ``required`` / ``available`` dicts.
         """
-        available_gpus = self.get_available_gpus()
-        resolved: list[GpuDevice] = []
+        committed_memory_mib = sum(execution.allocated_memory_mib for execution in tuple(self.executions.values()))
+        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
+        memory_cap_mib = max(physical_memory_mib - settings.HOST_MEMORY_RESERVED_MIB, 0)
+        if committed_memory_mib + required_memory_mib > memory_cap_mib:
+            detail = (
+                f"Insufficient memory to create VM: required {required_memory_mib} MiB, "
+                f"committed {committed_memory_mib} MiB, cap {memory_cap_mib} MiB "
+                f"(physical {physical_memory_mib} MiB, "
+                f"host_reserved {settings.HOST_MEMORY_RESERVED_MIB} MiB)"
+            )
+            raise InsufficientResourcesError(
+                detail,
+                required={"memory_mib": required_memory_mib},
+                available={"memory_mib": max(memory_cap_mib - committed_memory_mib, 0)},
+            )
+
+    def _validate_spec_gpus(self, requested: list[GpuSpec]) -> list[HostGPU]:
+        """GPU attach invariant: every spec entry names a pci_host that exists
+        in the host inventory and is not attached to any current execution.
+
+        Which card serves which workload is the client's decision (the agent
+        resolves device_ids to concrete cards in its own ledger); the
+        supervisor only refuses impossible attachments. Called inside
+        create_vm_from_spec under ``creation_lock`` so validation and the
+        subsequent registration are atomic (no card is double-assigned).
+
+        Raises:
+            InsufficientResourcesError: a pci_host is unknown to the inventory
+                or already attached to a VM (or claimed twice by this spec).
+        """
+        inventory = {gpu.pci_host: gpu for gpu in self.gpus}
+        validated: list[HostGPU] = []
+        claimed: set[str] = set()
         for request in requested:
-            for available_gpu in available_gpus:
-                if available_gpu.device_id != request.device_id:
-                    continue
-                reservation = self.get_valid_reservation(available_gpu)
-                if reservation is not None and reservation.user != owner:
-                    # Reserved by another user: not available to this owner.
-                    continue
-                if reservation is not None:
-                    # This owner's own reservation: consume it.
-                    del self.reservations[available_gpu]
-                available_gpus.remove(available_gpu)
-                resolved.append(available_gpu)
-                break
-            else:  # for-else: no match for this request
-                detail = f"No available GPU matching device_id {request.device_id!r}"
+            pci_host = str(request.pci_host)
+            device = inventory.get(pci_host)
+            if device is None:
+                detail = f"No GPU at pci_host {pci_host!r} in the host inventory"
                 logger.warning(detail)
                 raise InsufficientResourcesError(
                     detail,
-                    required={"gpu_device_id": request.device_id},
-                    available={"gpus": [gpu.device_id for gpu in self.get_available_gpus()]},
+                    required={"gpu_pci_host": pci_host},
+                    available={"gpus": [gpu.pci_host for gpu in self.get_available_gpus()]},
                 )
-        return resolved
-
-
-class Reservation:
-    def __init__(self, user, resource, expiration):
-        self.user = user
-        self.resource = resource
-        self.expiration = expiration
-
-    def is_expired(self):
-        logger.info(f"{datetime.now(tz=timezone.utc)}, {datetime.now(tz=timezone.utc) > self.expiration}")
-        return datetime.now(tz=timezone.utc) > self.expiration
+            attached = any(execution.uses_gpu(pci_host) for execution in self.executions.values())
+            if attached or pci_host in claimed:
+                detail = f"GPU at pci_host {pci_host!r} is already attached to a VM"
+                logger.warning(detail)
+                raise InsufficientResourcesError(
+                    detail,
+                    required={"gpu_pci_host": pci_host},
+                    available={"gpus": [gpu.pci_host for gpu in self.get_available_gpus()]},
+                )
+            claimed.add(pci_host)
+            validated.append(
+                HostGPU(
+                    pci_host=device.pci_host,
+                    supports_x_vga=device.has_x_vga_support,
+                    device_id=device.device_id,
+                    model=None,
+                )
+            )
+        return validated

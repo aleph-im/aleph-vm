@@ -40,7 +40,7 @@ _HASH = ItemHash("deadbeef" * 8)
 
 
 def _resolved_gpu() -> GpuSpec:
-    return GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True, device_id="10de:1234")
+    return GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)
 
 
 def _spec() -> CreateVmSpec:
