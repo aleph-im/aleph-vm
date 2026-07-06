@@ -6,8 +6,9 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    # The branches below must be a subset of the branches above
-    branches: [main, dev]
+    # od/** covers stacked PRs (increment N+1 based on increment N's
+    # branch), which must carry CI before the stack lands on dev.
+    branches: [main, dev, od/**]
 
 
 jobs:
