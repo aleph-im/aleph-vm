@@ -55,7 +55,6 @@ def _bare_pool() -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
     pool.network = None
-    pool.snapshot_manager = None
     pool.systemd_manager = MagicMock()
     pool._failed_reattach = {}
     return pool
@@ -143,7 +142,7 @@ async def test_restore_running_execution_from_config_registers_execution(monkeyp
     from aleph.vm.models import VmExecution
 
     monkeypatch.setattr(VmExecution, "prepare", AsyncMock())
-    fake_vm = SimpleNamespace(support_snapshot=False, start_guest_api=AsyncMock())
+    fake_vm = SimpleNamespace(start_guest_api=AsyncMock())
     monkeypatch.setattr(VmExecution, "create", MagicMock(return_value=fake_vm))
 
     await pool._restore_running_execution_from_config(config, vm_index=7, vm_id=_HASH)

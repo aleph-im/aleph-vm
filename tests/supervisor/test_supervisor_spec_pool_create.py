@@ -77,7 +77,6 @@ def _bare_pool() -> VmPool:
     pool._failed_reattach = {}
     pool.reservations = {}
     pool.network = None  # exercise the no-network branch
-    pool.snapshot_manager = None
     pool.creation_lock = asyncio.Lock()
     systemd = MagicMock()
     systemd.enable_and_start = AsyncMock()

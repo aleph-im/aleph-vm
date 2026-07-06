@@ -86,7 +86,6 @@ class SpecFirecrackerProgram(AlephFirecrackerExecutable[None]):
 
     resources: SpecProgramResources  # type: ignore[assignment]
     is_instance = False
-    support_snapshot = False
 
     def __init__(
         self,

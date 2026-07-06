@@ -50,7 +50,6 @@ def _bare_pool() -> VmPool:
     pool.executions = {}
     pool.reservations = {}
     pool.network = None
-    pool.snapshot_manager = None
     pool.creation_lock = asyncio.Lock()
     pool.systemd_manager = MagicMock()
     return pool

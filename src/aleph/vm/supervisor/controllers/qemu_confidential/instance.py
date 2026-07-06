@@ -57,7 +57,6 @@ class AlephQemuConfidentialInstance(AlephQemuInstance):
     vm_configuration: ConfigurationType | None
     is_instance: bool
     qemu_process: Process | None
-    support_snapshot = False
     persistent = True
     _queue_cancellers: dict[asyncio.Queue, Callable] = {}
     confidential_policy: int
