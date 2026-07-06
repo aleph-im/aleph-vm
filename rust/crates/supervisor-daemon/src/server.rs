@@ -21,7 +21,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 
 use crate::config::Settings;
 use crate::error::DaemonError;
-use crate::service::{HostState, SupervisorService};
+use crate::service::{DaemonState, SupervisorService};
 
 /// How long in-flight RPCs get to finish after the first shutdown signal,
 /// matching the Python daemon's `server.stop(grace=5)`.
@@ -123,7 +123,7 @@ impl SocketGuard {
 /// Python daemon's `server.stop(grace=5)`), then the server is dropped.
 /// Either way the socket is removed (identity-checked) exactly once.
 pub async fn serve(
-    state: HostState,
+    state: Arc<DaemonState>,
     guard: Arc<SocketGuard>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
@@ -167,7 +167,7 @@ pub async fn serve(
         socket_path.display()
     );
 
-    let service = SupervisorServer::new(SupervisorService::new(Arc::new(state)));
+    let service = SupervisorServer::new(SupervisorService::new(state));
     let serve_future = tonic::transport::Server::builder()
         .add_service(service)
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), {

@@ -1,9 +1,13 @@
-//! aleph-vm-supervisor: the Rust supervisor daemon (increment 1).
+//! aleph-vm-supervisor: the Rust supervisor daemon (increments 1 and 2).
 //!
 //! Serves the aleph.supervisor.v1 contract on the Unix socket at
 //! ALEPH_VM_SUPERVISOR_GRPC_SOCKET (default {EXECUTION_ROOT}/supervisor.sock).
 //! Configuration comes from ALEPH_VM_* environment variables; under systemd
 //! the unit's EnvironmentFile= provides them, for dev runs --env-file does.
+//!
+//! Boot order mirrors the Python daemon (run_daemon): resolve host facts,
+//! rebuild the world view from disk/systemd/sqlite (adoption steps 1-4),
+//! then bind the socket and serve.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -12,8 +16,11 @@ use clap::Parser;
 use supervisor_daemon::config::Settings;
 use supervisor_daemon::envfile::apply_env_file;
 use supervisor_daemon::error::DaemonError;
+use supervisor_daemon::logs::JournalctlLogSource;
 use supervisor_daemon::server::{self, SocketGuard};
-use supervisor_daemon::service::HostState;
+use supervisor_daemon::service::{DaemonState, HostState};
+use supervisor_daemon::units::ZbusUnitStates;
+use supervisor_daemon::world;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -86,7 +93,21 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
 
     server::prepare_directories(&settings)?;
     let guard = Arc::new(SocketGuard::new(settings.supervisor_grpc_socket.clone()));
-    let state = HostState::initialize(settings)?;
+    let host = HostState::initialize(settings)?;
+
+    // Adoption steps 1-4 (design doc section 4), before the socket exists,
+    // like the Python daemon's load_persistent_executions before serve_unix.
+    // Blocking on purpose: no runtime is up yet, and the sources (files,
+    // one D-Bus round trip, sqlite) are all local.
+    let units = Arc::new(ZbusUnitStates::new());
+    let world = world::build_world_view(&host.settings, units.as_ref());
+    tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
+    let state = Arc::new(DaemonState {
+        host,
+        world: tokio::sync::RwLock::new(world),
+        units,
+        logs: Arc::new(JournalctlLogSource),
+    });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

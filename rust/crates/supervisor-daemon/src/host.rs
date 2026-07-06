@@ -64,8 +64,11 @@ fn c_chars_to_string(chars: &[libc::c_char]) -> String {
 
 /// Free disk space for new volumes in bytes: statvfs f_bavail * f_frsize on
 /// PERSISTENT_VOLUMES_DIR, exactly what shutil.disk_usage().free reports in
-/// VmPool.calculate_available_disk (with no executions the reservation delta
-/// is zero, which is always the case in increment 1).
+/// VmPool.calculate_available_disk. The per-execution reservation delta the
+/// Python sum adds is zero for every adopted execution (spec-built resources
+/// carry no requested sizes: message_content is None and volumes have no
+/// size_mib), so free space alone is the exact post-restart figure until the
+/// create path lands in increment 3.
 pub fn available_disk_bytes(path: &Path) -> Result<u64, DaemonError> {
     let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
         DaemonError::Internal(format!("path contains a NUL byte: {}", path.display()))
