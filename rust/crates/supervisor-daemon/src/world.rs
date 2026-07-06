@@ -159,15 +159,27 @@ pub fn build_world_view(settings: &Settings, units: &dyn UnitStateSource) -> Wor
         };
 
     // Adoption step 3's counterpart check: units without a config file are
-    // reported and left alone.
-    let known: std::collections::HashSet<&String> = unit_names.iter().collect();
-    if let Ok(controller_units) = units.controller_units() {
-        for (unit, active) in controller_units {
-            if !known.contains(&unit) {
+    // reported and left alone. Best-effort, and only when the bus already
+    // answered above: a second call on a dead bus would just burn another
+    // method timeout at boot.
+    if active_states.is_some() {
+        let known: std::collections::HashSet<&String> = unit_names.iter().collect();
+        match units.controller_units() {
+            Ok(controller_units) => {
+                for (unit, active) in controller_units {
+                    if !known.contains(&unit) {
+                        tracing::warn!(
+                            unit,
+                            active,
+                            "controller unit has no configuration file; leaving it alone"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
                 tracing::warn!(
-                    unit,
-                    active,
-                    "controller unit has no configuration file; leaving it alone"
+                    error,
+                    "could not list controller units for the orphan check"
                 );
             }
         }
@@ -510,6 +522,12 @@ fn ipv6_dynamic_assignment(
         return Err(format!(
             "subnet prefix /{subnet_prefix} does not subnet the pool {pool}"
         ));
+    }
+    // subnet_prefix 0 would shift step by 128 below (a /0 "subnet" is not a
+    // guest network); reject it so both shifts in this function are provably
+    // in range.
+    if subnet_prefix == 0 {
+        return Err("subnet prefix /0 cannot hold guest networks".to_string());
     }
     let subnet_count = 1u128 << (subnet_prefix - pool_len).min(127);
     let ordinal = ordinal as u128;
@@ -899,5 +917,14 @@ mod tests {
         assert_eq!(pair.network_cidr, "fc00::10/124");
         assert_eq!(pair.address, "fc00::11");
         assert_eq!(pair.gateway, "fc00::10");
+    }
+
+    #[test]
+    fn ipv6_dynamic_math_rejects_a_zero_subnet_prefix() {
+        // Without the guard, `1u128 << (128 - 0)` overflows the shift
+        // (panic in debug builds) instead of failing cleanly.
+        let result = ipv6_dynamic_assignment("::/0", 0, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("/0"));
     }
 }

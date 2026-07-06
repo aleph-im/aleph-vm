@@ -130,6 +130,8 @@ impl ZbusUnitStates {
                 }
             }
         }
+        // `attempt` only takes 0 and 1, and the attempt == 1 arm above
+        // returns unconditionally, so the loop cannot fall through.
         unreachable!("the retry loop returns on its second pass");
     }
 }

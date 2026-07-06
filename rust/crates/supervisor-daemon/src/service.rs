@@ -675,7 +675,9 @@ impl Supervisor for SupervisorService {
         let max_lines = request.max_lines as usize;
         if max_lines > 0 && lines.len() > max_lines {
             if request.from_tail {
-                // Python: chunks[-max_lines:].
+                // Python: chunks[-max_lines:]. Normally a no-op: journalctl
+                // already got -n max_lines for tail reads (journal_tail_bound).
+                // Kept as defense-in-depth against a source that over-returns.
                 lines.drain(..lines.len() - max_lines);
             } else {
                 // Python: chunks[:max_lines].

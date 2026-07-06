@@ -165,7 +165,11 @@ def adopted_daemon(start_daemon, tmp_path: Path):
     controller configs and a model-written port-mapping store."""
     configurations = _build_configurations(tmp_path)
     _build_database(tmp_path)
-    with start_daemon(tmp_path) as (process, socket_path):
+    # Hermetic: with networking left on (the conf.py default) the daemon
+    # resolves the default-route interface at boot and aborts on a runner
+    # without one. The fixture VMs are all stopped, so nothing in the
+    # read-only assertions needs host networking.
+    with start_daemon(tmp_path, {"ALEPH_VM_ALLOW_VM_NETWORKING": "false"}) as (process, socket_path):
         yield configurations, socket_path
 
 
