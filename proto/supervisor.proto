@@ -161,9 +161,6 @@ enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_FIRECRACKER = 1;
   BACKEND_QEMU = 2;
-  // Was BACKEND_QEMU_SEV: it conflated the VMM with the TEE.
-  reserved 3;
-  reserved "BACKEND_QEMU_SEV";
 }
 
 // TEE attestation backend (see TeeConfig).
@@ -229,12 +226,6 @@ message DiskConfig {
   bool readonly = 2;
   Format format = 3;
   DiskRole role = 4;
-  // Was `mount` (guest mount point): where the guest mounts a disk is
-  // workload semantics no hypervisor mechanism consumes — the client owns
-  // it (Firecracker: pushed over the guest channel; QEMU: the guest's own
-  // configuration), keyed by disk order.
-  reserved 5;
-  reserved "mount";
 
   enum Format {
     FORMAT_UNSPECIFIED = 0;
@@ -303,45 +294,32 @@ message VmInfo {
   optional uint32 numa_node = 7;     // effective placement (0-indexed). Unset until status is BOOTING/RUNNING.
   string status_message = 8;         // human-readable, optional
 
-  // Was the flat ipv4_network/ipv6_network pair; folded into IpAssignment.
-  reserved 9, 10;
-  reserved "ipv4_network", "ipv6_network";
-
   // Lifecycle timestamps, unix nanoseconds UTC. 0 = stage not reached.
-  uint64 defined_at_ns = 11;
-  uint64 preparing_at_ns = 12;
-  uint64 prepared_at_ns = 13;
-  uint64 starting_at_ns = 14;
-  uint64 started_at_ns = 15;
-  uint64 stopping_at_ns = 16;
-  uint64 stopped_at_ns = 17;
+  uint64 defined_at_ns = 9;
+  uint64 preparing_at_ns = 10;
+  uint64 prepared_at_ns = 11;
+  uint64 starting_at_ns = 12;
+  uint64 started_at_ns = 13;
+  uint64 stopping_at_ns = 14;
+  uint64 stopped_at_ns = 15;
 
-  // Was `is_instance`: the instance/program distinction is client vocabulary,
-  // derived client-side from its own records (or from the guest channel's
-  // presence as a last resort).
-  reserved 18;
-  reserved "is_instance";
-
-  ConfidentialMode confidential_mode = 19;   // precise TEE mode; NONE for non-confidential VMs
-  repeated GpuDevice gpus = 20;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
+  ConfidentialMode confidential_mode = 16;   // precise TEE mode; NONE for non-confidential VMs
+  repeated GpuDevice gpus = 17;              // exact PCI devices attached to this VM (mirrors HostInfo.gpus)
 
   // Host UDS endpoint of the guest control channel (see
   // VmSpec.guest_channel). The client dials it for guest-level
   // protocols and binds `<path>_<port>` listeners for guest-initiated
   // connections. Empty when the VM was created without a channel.
-  string guest_channel_path = 21;
+  string guest_channel_path = 18;
   // Raw bytes the guest sent with its ready signal, passed through opaquely;
   // empty until the signal arrived (or for VMs without a channel). The client
   // interprets them (the Aleph runtime sends its version handshake here).
-  bytes guest_ready_payload = 22;
-  // Was the flat ipv4_gateway/ipv6_gateway pair; folded into IpAssignment.
-  reserved 23, 24;
-  reserved "ipv4_gateway", "ipv6_gateway";
+  bytes guest_ready_payload = 19;
 
   // True while a confidential VM is started but waiting for its owner to upload
   // the session certificates: not running, but not dead either. The client
   // lists such VMs so the scheduler does not re-allocate them forever.
-  bool awaiting_confidential_init = 25;
+  bool awaiting_confidential_init = 20;
 }
 
 message GetVmRequest      { string vm_id = 1; }
@@ -563,10 +541,11 @@ message ReserveResourcesRequest {
   uint32 vcpus = 2;
   uint64 memory_mib = 3;
   uint64 disk_mib = 4;
-  // Instance vs program memory bucket. Unlike VmInfo (where is_instance is
-  // derivable client-side and was dropped), a reservation precedes the VM and
-  // carries no Backend, so the bucket cannot be derived here: the client must
-  // state it. The engine accounts instance and program memory separately.
+  // Instance vs program memory bucket. VmInfo deliberately carries no
+  // instance/program marker (client vocabulary, derivable from the client's
+  // own records), but a reservation precedes the VM and carries no Backend,
+  // so the bucket cannot be derived here: the client must state it. The
+  // engine accounts instance and program memory separately.
   bool is_instance = 5;
   repeated GpuConfig gpus = 6;        // request: matched by device_id
 }

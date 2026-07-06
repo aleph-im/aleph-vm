@@ -1713,10 +1713,11 @@ class ReserveResourcesRequest(google.protobuf.message.Message):
     memory_mib: builtins.int
     disk_mib: builtins.int
     is_instance: builtins.bool
-    """Instance vs program memory bucket. Unlike VmInfo (where is_instance is
-    derivable client-side and was dropped), a reservation precedes the VM and
-    carries no Backend, so the bucket cannot be derived here: the client must
-    state it. The engine accounts instance and program memory separately.
+    """Instance vs program memory bucket. VmInfo deliberately carries no
+    instance/program marker (client vocabulary, derivable from the client's
+    own records), but a reservation precedes the VM and carries no Backend,
+    so the bucket cannot be derived here: the client must state it. The
+    engine accounts instance and program memory separately.
     """
     @property
     def gpus(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___GpuConfig]:
