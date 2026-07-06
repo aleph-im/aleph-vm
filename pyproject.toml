@@ -244,6 +244,10 @@ omit = [
   # excluded from mypy (see [tool.mypy] exclude below).
   "src/aleph/vm/supervisor_interface/wire/_pb/*",
   "*/supervisor_interface/wire/_pb/*",
+  # Conformance tests drive the Rust daemon: they only run in the Rust CI
+  # job (opt-in via ALEPH_VM_CONFORMANCE=1), which uploads no coverage, so
+  # counting them here only skews the coverage totals.
+  "tests/conformance/*",
 ]
 
 [tool.coverage.paths]
