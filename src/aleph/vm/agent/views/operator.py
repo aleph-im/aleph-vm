@@ -539,6 +539,7 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                         vm_hash=vm_hash,
                         supervisor=supervisor,
                         registry=request.app["vm_registry"],
+                        capacity=request.app["capacity"],
                     )
                 return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
         except VmNotFoundError:
@@ -696,6 +697,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 vm_hash=vm_hash,
                 supervisor=supervisor,
                 registry=request.app["vm_registry"],
+                capacity=request.app["capacity"],
             )
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 

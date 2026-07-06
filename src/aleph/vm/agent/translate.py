@@ -8,7 +8,6 @@ the rest of the supervisor pipeline can work with.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
 from aleph_message.models import ExecutableContent, ItemHash, ProgramContent
@@ -27,11 +26,8 @@ from aleph.vm.supervisor_interface.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
-    GpuSpec,
     GuestChannelSpec,
     NetworkConfig,
-    PciAddress,
-    ReservationRequest,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -43,8 +39,6 @@ from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
 async def build_create_vm_spec(
     vm_hash: ItemHash,
     message: ExecutableContent,
-    *,
-    gpus: Sequence[GpuSpec] | None = None,
 ) -> CreateVmSpec:
     """Translate *message* into a CreateVmSpec, downloading resources as needed.
 
@@ -61,12 +55,10 @@ async def build_create_vm_spec(
     The routing gate ``run._is_spec_eligible`` mirrors these checks to decide
     which messages reach this path; keep the two in sync.
 
-    GPUs cross as a REQUEST: each ``message.requirements.gpu`` entry becomes a
-    ``GpuSpec`` carrying ``device_id`` / ``model`` with an empty ``pci_host``.
-    The engine resolves the concrete host card atomically inside
-    ``pool.create_vm_from_spec`` (see GpuSpec). Callers may pass an explicit
-    ``gpus`` list to override the derivation (the message-free migration path
-    does not, so it derives from the message like the normal create).
+    GPUs are left off the returned spec: the message's requested device_ids
+    stop at the agent. The create path resolves them to concrete host cards
+    through the agent's CapacityManager after this download completes and
+    rewrites ``spec.gpus`` with the resolved cards.
     """
     # --- Validate before any I/O ---
 
@@ -76,23 +68,6 @@ async def build_create_vm_spec(
     effective_hypervisor = message.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
     if effective_hypervisor != HypervisorType.qemu:
         raise InvalidBackendError(f"instances are QEMU-only, got hypervisor {effective_hypervisor!r}")
-
-    # --- GPU request ---
-    # Each requested GPU becomes an unresolved GpuSpec (device_id/model set,
-    # pci_host left empty). The engine binds device_id -> concrete host card
-    # atomically in pool.create_vm_from_spec. The message GPU carries no model
-    # field (it is a network-derived name), so model is left empty here.
-    if gpus is None:
-        requested_gpus = message.requirements.gpu if message.requirements and message.requirements.gpu else []
-        gpus = [
-            GpuSpec(
-                pci_host=PciAddress(""),
-                supports_x_vga=False,
-                device_id=gpu.device_id,
-                model="",
-            )
-            for gpu in requested_gpus
-        ]
 
     # --- Materialise resources ---
 
@@ -152,14 +127,10 @@ async def build_create_vm_spec(
             requested_ipv6="",
             ipv6_prefix_len=0,
         ),
-        gpus=list(gpus),
+        gpus=[],
         numa_node=None,
         persistent=True,
         ssh_authorized_keys=list(message.authorized_keys or []),
-        # The engine consumes this owner's own GPU reservation and skips other
-        # users' valid reservations during create_vm_from_spec. This replaces the
-        # agent-side release_user_reservations call.
-        owner_id=message.address,
         # Aleph's hostname convention (base32 of the item hash) is agent
         # vocabulary; the supervisor applies whatever name it is given.
         hostname=get_hostname_from_hash(vm_hash),
@@ -242,37 +213,3 @@ async def build_program_create_vm_spec(
         ),
     )
     return spec, resources
-
-
-def build_reservation_request(content: ExecutableContent, owner_id: str) -> ReservationRequest:
-    """Extract the resources an Aleph message requests into a message-free DTO.
-
-    Keeps message vocabulary on the agent side: the supervisor reserves against
-    the returned DTO and never parses a message."""
-    is_instance = isinstance(content, InstanceContent)
-    disk_mib = 0
-    if isinstance(content, InstanceContent) and content.rootfs:
-        disk_mib += content.rootfs.size_mib
-    for volume in content.volumes or []:
-        disk_mib += getattr(volume, "size_mib", 0) or 0
-    requested = content.requirements.gpu if content.requirements and content.requirements.gpu else []
-    # Mirror build_create_vm_spec's GPU branch: device_id carries the request,
-    # pci_host is left empty (resolved by the engine), and the message GPU has no
-    # model field (it is a network-derived name) so model stays empty.
-    gpus = [
-        GpuSpec(
-            pci_host=PciAddress(""),
-            supports_x_vga=False,
-            device_id=gpu.device_id,
-            model=getattr(gpu, "model", "") or "",
-        )
-        for gpu in requested
-    ]
-    return ReservationRequest(
-        owner_id=owner_id,
-        vcpus=content.resources.vcpus,
-        memory_mib=content.resources.memory,
-        disk_mib=disk_mib,
-        is_instance=is_instance,
-        gpus=gpus,
-    )

@@ -141,22 +141,16 @@ class NetworkConfig:
 
 @dataclass(frozen=True)
 class GpuSpec:
-    """A GPU on a CreateVmSpec.
+    """A GPU on a CreateVmSpec: a RESOLVED assignment.
 
-    Two roles in one type: the REQUEST and the RESOLVED assignment.
-
-    - ``device_id`` (vendor:device, e.g. "10de:2504") and ``model`` carry the
-      REQUEST. They are what the client (the agent's build_create_vm_spec) sets;
-      they say *which kind* of GPU the VM wants, not which physical card.
-    - ``pci_host`` is the RESOLVED concrete host address. The engine fills it in
-      atomically inside the create path (pool.create_vm_from_spec) by matching
-      ``device_id`` against the host's available GPUs. A request leaves it empty.
+    ``pci_host`` is the concrete host address, always set. Which card serves
+    which workload is the client's decision (the agent resolves its requested
+    device kinds against the host inventory before create); the supervisor
+    only validates that the card exists and is not already attached.
     """
 
     pci_host: PciAddress
     supports_x_vga: bool
-    device_id: str = ""
-    model: str = ""
 
 
 @dataclass(frozen=True)
@@ -200,12 +194,6 @@ class CreateVmSpec:
     numa_node: int | None
     persistent: bool
     ssh_authorized_keys: list[str] = field(default_factory=list)
-    # Opaque VM-owner id (the supervisor does not interpret it). The engine uses
-    # it to consume this owner's own GPU reservation (made via the
-    # reserve_resources endpoint) inside the create path, while skipping
-    # reservations held by OTHER owners. Empty = no owner-scoped reservation
-    # handling (e.g. programs, migration).
-    owner_id: str = ""
     # Guest hostname for provisioning (cloud-init); naming is the client's
     # business. Empty = mechanical fallback derived from vm_id.
     hostname: str = ""
@@ -252,22 +240,6 @@ class HardwareResources:
 
     vcpus: int = 1
     memory: int = 128  # MiB
-
-
-@dataclass(frozen=True)
-class ReservationRequest:
-    """Resources an instance needs, translated from an Aleph message by the
-    agent. The supervisor reserves against this and never sees a message:
-    capacity is checked from the scalar fields, GPUs are held by ``device_id``.
-    A reservation precedes downloads, so this is not a CreateVmSpec (no resolved
-    disk paths yet)."""
-
-    owner_id: str  # same opaque id as CreateVmSpec.owner_id
-    vcpus: int
-    memory_mib: int
-    disk_mib: int
-    is_instance: bool  # instance vs program memory bucket
-    gpus: list[GpuSpec] = field(default_factory=list)  # request: device_id/model
 
 
 @dataclass(frozen=True)
@@ -440,7 +412,7 @@ class HostInfo:
     cpu_frequency_mhz: int = 0
     memory_type: str = ""
     memory_clock_mhz: int = 0
-    # Reservation-aware figures the agent's /about endpoints surface. The
+    # Usage-aware figures the agent's /about endpoints surface. The
     # embedded engine fills them from the pool. ``gpu_inventory`` /
     # ``available_gpus`` carry the rich agent GpuDevice (vendor, device_name,
     # device_class) as plain dicts so the public usage endpoint does not

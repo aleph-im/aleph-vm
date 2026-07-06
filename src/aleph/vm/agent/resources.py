@@ -232,7 +232,7 @@ async def about_system_usage(request: web.Request):
         ),
         disk=DiskUsage(
             total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            # Reservation-aware available disk comes from the supervisor's
+            # Usage-aware available disk comes from the supervisor's
             # HostInfo; the embedded engine fills it from the pool. A gRPC
             # supervisor that has not implemented it yet reports 0.
             available_kB=(

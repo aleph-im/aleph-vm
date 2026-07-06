@@ -45,7 +45,6 @@ from aleph.vm.supervisor_interface.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
-    ReservationRequest,
     SevInfo,
     TeeBackend,
     TeeConfig,
@@ -201,15 +200,12 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.VmSpec:
             pb.GpuConfig(
                 pci_host=str(gpu.pci_host),
                 supports_x_vga=gpu.supports_x_vga,
-                device_id=gpu.device_id,
-                model=gpu.model,
             )
             for gpu in spec.gpus
         ],
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
         hostname=spec.hostname,
-        owner_id=spec.owner_id,
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(
@@ -259,8 +255,6 @@ def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
             GpuSpec(
                 pci_host=PciAddress(gpu.pci_host),
                 supports_x_vga=gpu.supports_x_vga,
-                device_id=gpu.device_id,
-                model=gpu.model,
             )
             for gpu in msg.gpus
         ],
@@ -268,7 +262,6 @@ def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
         persistent=msg.persistent,
         ssh_authorized_keys=list(msg.ssh_authorized_keys),
         hostname=msg.hostname,
-        owner_id=msg.owner_id,
         guest_channel=(
             GuestChannelSpec(
                 ready_port=msg.guest_channel.ready_port,
@@ -295,44 +288,6 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
         device_id=msg.device_id,
         model=msg.model,
         supports_x_vga=msg.supports_x_vga,
-    )
-
-
-def reservation_request_to_pb(req: ReservationRequest) -> pb.ReserveResourcesRequest:
-    return pb.ReserveResourcesRequest(
-        owner_id=req.owner_id,
-        vcpus=req.vcpus,
-        memory_mib=req.memory_mib,
-        disk_mib=req.disk_mib,
-        is_instance=req.is_instance,
-        gpus=[
-            pb.GpuConfig(
-                pci_host=str(g.pci_host),
-                supports_x_vga=g.supports_x_vga,
-                device_id=g.device_id,
-                model=g.model,
-            )
-            for g in req.gpus
-        ],
-    )
-
-
-def reservation_request_from_pb(msg: pb.ReserveResourcesRequest) -> ReservationRequest:
-    return ReservationRequest(
-        owner_id=msg.owner_id,
-        vcpus=msg.vcpus,
-        memory_mib=msg.memory_mib,
-        disk_mib=msg.disk_mib,
-        is_instance=msg.is_instance,
-        gpus=[
-            GpuSpec(
-                pci_host=PciAddress(g.pci_host),
-                supports_x_vga=g.supports_x_vga,
-                device_id=g.device_id,
-                model=g.model,
-            )
-            for g in msg.gpus
-        ],
     )
 
 

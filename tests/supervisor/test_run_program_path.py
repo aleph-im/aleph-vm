@@ -37,6 +37,11 @@ def _content() -> MagicMock:
     return content
 
 
+def _fake_capacity() -> SimpleNamespace:
+    """Agent-side admission stub: capacity always passes."""
+    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+
+
 def _info(status: VmStatus) -> VmInfo:
     return VmInfo(
         vm_id=VM_ID,
@@ -111,7 +116,13 @@ async def test_creates_when_absent(patched_build):
     program_client = FakeProgramClient()
 
     info = await run_module._ensure_program_vm(
-        VM_HASH, _content(), _content(), supervisor=supervisor, registry=registry, program_client=program_client
+        VM_HASH,
+        _content(),
+        _content(),
+        supervisor=supervisor,
+        registry=registry,
+        capacity=_fake_capacity(),
+        program_client=program_client,
     )
 
     assert info.status is VmStatus.RUNNING
@@ -138,6 +149,7 @@ async def test_reuses_running_configured_vm(patched_build):
         _content(),
         supervisor=supervisor,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         program_client=program_client,
     )
 
@@ -163,6 +175,7 @@ async def test_recreates_unconfigured_running_vm(patched_build):
         _content(),
         supervisor=supervisor,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         program_client=program_client,
     )
 
@@ -184,7 +197,13 @@ async def test_setup_failure_tears_down(patched_build):
 
     with pytest.raises(web.HTTPInternalServerError):
         await run_module._ensure_program_vm(
-            VM_HASH, _content(), _content(), supervisor=supervisor, registry=registry, program_client=program_client
+            VM_HASH,
+            _content(),
+            _content(),
+            supervisor=supervisor,
+            registry=registry,
+            capacity=_fake_capacity(),
+            program_client=program_client,
         )
 
     supervisor.delete_vm.assert_awaited()
@@ -220,6 +239,7 @@ async def test_concurrent_cold_requests_create_once(patched_build):
                 _content(),
                 supervisor=supervisor,
                 registry=registry,
+                capacity=_fake_capacity(),
                 program_client=program_client,
             )
             for _ in range(2)
@@ -246,5 +266,6 @@ async def test_insufficient_resources_maps_to_503(patched_build):
             _content(),
             supervisor=supervisor,
             registry=AgentVmRegistry(),
+            capacity=_fake_capacity(),
             program_client=FakeProgramClient(),
         )

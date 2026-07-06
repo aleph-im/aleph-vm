@@ -78,7 +78,6 @@ from aleph.vm.supervisor_interface.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
-    ReservationRequest,
     SevInfo,
     TeeBackend,
     VmEvent,
@@ -1149,21 +1148,3 @@ class LocalSupervisor(Supervisor):
             "recreated_vms": recreated_vms,
             "failed_vms": failed_vms,
         }
-
-    # ── Reservation ──
-    async def reserve_resources(self, request: ReservationRequest) -> datetime:
-        """Run capacity admission, then hold the requested resources for the user.
-
-        ``request`` is a message-free resources DTO the agent built from the
-        Aleph message: check_capacity keeps the dry-run honest (refuse here
-        rather than let the client pay and be rejected by notify_allocation),
-        then reserve_gpus holds the GPUs and returns the reservation expiry.
-        """
-        with translating_errors():
-            self.pool.check_capacity(
-                memory_mib=request.memory_mib,
-                vcpus=request.vcpus,
-                disk_mib=request.disk_mib,
-                is_instance=request.is_instance,
-            )
-            return await self.pool.reserve_gpus(request.gpus, request.owner_id)

@@ -64,14 +64,11 @@ FULL_SPEC = CreateVmSpec(
         GpuSpec(
             pci_host=PciAddress("0000:01:00.0"),
             supports_x_vga=True,
-            device_id="10de:2504",
-            model="RTX 3090",
         )
     ],
     numa_node=1,
     persistent=True,
     ssh_authorized_keys=["ssh-ed25519 AAAA test@host"],
-    owner_id="0xOWNER",
 )
 
 MINIMAL_SPEC = CreateVmSpec(
@@ -273,11 +270,6 @@ def _minimal_spec(**over):
     return CreateVmSpec(**base)
 
 
-def test_create_vm_spec_carries_owner_id():
-    spec = _minimal_spec(owner_id="0xOWNER")
-    assert conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec)).owner_id == "0xOWNER"
-
-
 def test_create_vm_spec_carries_tee_firmware_path():
     spec = _minimal_spec(
         tee=TeeConfig(
@@ -291,12 +283,12 @@ def test_create_vm_spec_carries_tee_firmware_path():
     assert out.tee.firmware_path == Path("/ovmf.fd")
 
 
-def test_create_vm_spec_carries_gpu_request_fields():
+def test_create_vm_spec_carries_resolved_gpu():
     spec = _minimal_spec(
-        gpus=[GpuSpec(pci_host=PciAddress(""), supports_x_vga=True, device_id="10de:2504", model="RTX 3090")],
+        gpus=[GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)],
     )
     out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
-    assert (out.gpus[0].device_id, out.gpus[0].model) == ("10de:2504", "RTX 3090")
+    assert (str(out.gpus[0].pci_host), out.gpus[0].supports_x_vga) == ("0000:01:00.0", True)
 
 
 def test_enum_tables_are_total():

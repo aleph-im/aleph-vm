@@ -75,7 +75,7 @@ def _bare_pool() -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
     pool._failed_reattach = {}
-    pool.reservations = {}
+    pool.gpus = []
     pool.network = None  # exercise the no-network branch
     pool.creation_lock = asyncio.Lock()
     systemd = MagicMock()
@@ -243,8 +243,9 @@ async def test_create_vm_from_spec_confidential_without_firmware_raises_no_plain
 
 @pytest.mark.asyncio
 async def test_create_vm_from_spec_confidential_with_gpu_carries_resolved_gpu(monkeypatch):
-    """Confidential + GPU compose: the GPU request is resolved to a concrete
-    host card and that pci_host lands in the confidential configuration."""
+    """Confidential + GPU compose: the spec's resolved card is validated
+    against the inventory and its pci_host lands in the confidential
+    configuration."""
     from aleph.vm.resources import GpuDevice as ResourceGpuDevice
     from aleph.vm.resources import GpuDeviceClass
     from aleph.vm.supervisor_interface.configuration import (
@@ -262,10 +263,10 @@ async def test_create_vm_from_spec_confidential_with_gpu_carries_resolved_gpu(mo
     pool.gpus = [gpu]
     save_cfg = _patch_confidential_boot(monkeypatch)
 
-    request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
-    execution = await pool.create_vm_from_spec(_spec(tee=_tee(), gpus=[request]))
+    resolved = GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)
+    execution = await pool.create_vm_from_spec(_spec(tee=_tee(), gpus=[resolved]))
 
-    # The resolved GPU is attached to the execution.
+    # The validated GPU is attached to the execution.
     assert execution.gpus[0].pci_host == "0000:01:00.0"
 
     # And carried into the confidential config.
@@ -307,110 +308,3 @@ async def test_create_vm_from_spec_conflicting_spec_raises_already_exists():
 
     with pytest.raises(VmAlreadyExistsError):
         await pool.create_vm_from_spec(replace(spec, memory_mib=4096))
-
-
-# ── pool.reserve_gpus — message-free GPU reservation ───────────────────────
-
-
-def _gpu_device(device_id: str = _DEVICE_ID, pci_host: str = "0000:01:00.0"):
-    from aleph.vm.resources import GpuDevice as ResourceGpuDevice
-    from aleph.vm.resources import GpuDeviceClass
-
-    return ResourceGpuDevice(
-        vendor="NVIDIA",
-        device_name="GH100",
-        device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
-        pci_host=pci_host,
-        device_id=device_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_reserve_gpus_reserves_by_device_id():
-    """reserve_gpus matches a request to a free card by device_id and holds it
-    for the user."""
-    pool = _bare_pool()
-    gpu = _gpu_device()
-    pool.gpus = [gpu]
-
-    request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
-    expiry = await pool.reserve_gpus([request], "0xUSER")
-
-    assert gpu in pool.reservations
-    assert pool.reservations[gpu].user == "0xUSER"
-    assert pool.reservations[gpu].expiration == expiry
-
-
-@pytest.mark.asyncio
-async def test_reserve_gpus_empty_request_holds_nothing():
-    """An empty GPU request returns an expiry without touching reservations."""
-    pool = _bare_pool()
-    pool.gpus = []
-
-    expiry = await pool.reserve_gpus([], "0xUSER")
-
-    assert pool.reservations == {}
-    assert expiry is not None
-
-
-@pytest.mark.asyncio
-async def test_reserve_gpus_raises_when_none_free():
-    """A request whose device_id matches no host card raises
-    InsufficientResourcesError."""
-    from aleph.vm.resources import InsufficientResourcesError
-
-    pool = _bare_pool()
-    pool.gpus = [_gpu_device(device_id="10de:OTHER")]
-
-    request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
-    with pytest.raises(InsufficientResourcesError):
-        await pool.reserve_gpus([request], "0xUSER")
-
-    assert pool.reservations == {}
-
-
-@pytest.mark.asyncio
-async def test_reserve_gpus_respects_another_users_hold():
-    """A card already reserved by another user blocks the request; with only one
-    card the second user gets InsufficientResourcesError."""
-    from datetime import datetime, timedelta, timezone
-
-    from aleph.vm.pool import Reservation
-    from aleph.vm.resources import InsufficientResourcesError
-
-    pool = _bare_pool()
-    gpu = _gpu_device()
-    pool.gpus = [gpu]
-    # First user holds the only matching card.
-    pool.reservations[gpu] = Reservation(
-        user="0xOWNER",
-        expiration=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
-        resource=gpu,
-    )
-
-    request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
-    with pytest.raises(InsufficientResourcesError):
-        await pool.reserve_gpus([request], "0xOTHER")
-
-    # The owner's hold is untouched.
-    assert pool.reservations[gpu].user == "0xOWNER"
-
-
-@pytest.mark.asyncio
-async def test_reserve_gpus_no_partial_commit_when_one_request_unmatched():
-    """A multi-GPU request that cannot be fully satisfied holds nothing: the
-    matched card must not leave a stray reservation when a later request fails."""
-    from aleph.vm.resources import InsufficientResourcesError
-
-    pool = _bare_pool()
-    matching = _gpu_device(device_id=_DEVICE_ID, pci_host="0000:01:00.0")
-    pool.gpus = [matching]
-
-    matched_request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id=_DEVICE_ID, model="")
-    unmatched_request = GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:OTHER", model="")
-
-    with pytest.raises(InsufficientResourcesError):
-        await pool.reserve_gpus([matched_request, unmatched_request], "0xUSER")
-
-    # The card matched by the first request must not have been held.
-    assert pool.reservations == {}
