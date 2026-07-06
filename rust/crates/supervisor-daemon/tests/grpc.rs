@@ -9,8 +9,11 @@ use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use prost::Message;
 use supervisor_daemon::config::Settings;
+use supervisor_daemon::logs::StaticLogSource;
 use supervisor_daemon::server::{self, SocketGuard};
-use supervisor_daemon::service::HostState;
+use supervisor_daemon::service::{DaemonState, HostState};
+use supervisor_daemon::units::StaticUnitStates;
+use supervisor_daemon::world::WorldView;
 use supervisor_proto::ERROR_TRAILER_KEY;
 use supervisor_proto::pb;
 use supervisor_proto::pb::supervisor_client::SupervisorClient;
@@ -19,16 +22,28 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
 fn test_settings(root: &Path) -> Settings {
-    Settings {
-        execution_root: root.to_path_buf(),
-        supervisor_grpc_socket: root.join("supervisor.sock"),
-        persistent_volumes_dir: root.join("volumes").join("persistent"),
-        // Hermetic: no dependency on the test host's routing table. The
-        // Python parity for this configuration is host_ipv4 == "".
-        allow_vm_networking: false,
-        network_interface: None,
-        enable_gpu_support: false,
-    }
+    let mut settings = Settings::from_vars(
+        [(
+            "ALEPH_VM_EXECUTION_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        )]
+        .into_iter(),
+    )
+    .unwrap();
+    // Hermetic: no dependency on the test host's routing table. The
+    // Python parity for this configuration is host_ipv4 == "".
+    settings.allow_vm_networking = false;
+    settings
+}
+
+fn empty_daemon_state(settings: Settings) -> Arc<DaemonState> {
+    let host = HostState::initialize(settings).unwrap();
+    Arc::new(DaemonState {
+        host,
+        world: tokio::sync::RwLock::new(WorldView::default()),
+        units: Arc::new(StaticUnitStates::default()),
+        logs: Arc::new(StaticLogSource::default()),
+    })
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {
@@ -70,7 +85,7 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
     // A stale socket from a "previous run" must be unlinked, not a bind error.
     std::fs::write(&socket_path, b"stale").unwrap();
 
-    let state = HostState::initialize(settings).unwrap();
+    let state = empty_daemon_state(settings);
     let guard = Arc::new(SocketGuard::new(socket_path.clone()));
     // The same first-signal channel main.rs feeds serve with (its SIGTERM
     // handler flips it to true).

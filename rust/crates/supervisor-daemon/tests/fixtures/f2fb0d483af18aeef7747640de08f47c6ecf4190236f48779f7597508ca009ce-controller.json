@@ -1,0 +1,32 @@
+{
+    "vm_id": 4,
+    "vm_hash": "f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce",
+    "settings": {
+        "IPV4_ADDRESS_POOL": "172.16.0.0/12",
+        "IPV4_NETWORK_PREFIX_LENGTH": 24,
+        "IPV6_ADDRESS_POOL": "fc00:1:2:3::/64",
+        "IPV6_ALLOCATION_POLICY": "static",
+        "IPV6_SUBNET_PREFIX": 124,
+        "IPV6_FORWARDING_ENABLED": true,
+        "USE_NDP_PROXY": true
+    },
+    "vm_configuration": {
+        "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+        "cloud_init_drive_path": "/var/lib/aleph/vm/cloud-init-f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce.img",
+        "image_path": "/var/lib/aleph/vm/volumes/persistent/f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce/rootfs.qcow2",
+        "monitor_socket_path": "/var/lib/aleph/vm/f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce-monitor.socket",
+        "qmp_socket_path": "/var/lib/aleph/vm/f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce-qmp.socket",
+        "qga_socket_path": "/var/lib/aleph/vm/f2fb0d483af18aeef7747640de08f47c6ecf4190236f48779f7597508ca009ce-qga.socket",
+        "vcpu_count": 2,
+        "mem_size_mb": 2048,
+        "interface_name": "vmtap4",
+        "host_volumes": [],
+        "gpus": [
+            {
+                "pci_host": "0000:01:00.0",
+                "supports_x_vga": true
+            }
+        ]
+    },
+    "hypervisor": "qemu"
+}
