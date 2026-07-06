@@ -1,7 +1,7 @@
 """The Supervisor abstraction: capability ABCs aggregated into one interface.
 
-Nine capability ABCs, all async (bar the streaming iterators). A concrete
-supervisor (in-process today, gRPC client in 0.D) implements all 30 methods.
+Eight capability ABCs, all async (bar the streaming iterators). A concrete
+supervisor (in-process today, gRPC client in 0.D) implements all 29 methods.
 Migration carries no method of its own: it rides the standard lifecycle RPCs.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from datetime import datetime
 
 from aleph.vm.supervisor_interface.types import (
     BackupChunk,
@@ -25,7 +24,6 @@ from aleph.vm.supervisor_interface.types import (
     PortForwardInfo,
     PortForwardSpec,
     Protocol,
-    ReservationRequest,
     VmEvent,
     VmId,
     VmInfo,
@@ -169,16 +167,6 @@ class NetworkOps(ABC):
         Returns a JSON-serialisable summary of the work done."""
 
 
-class ReservationOps(ABC):
-    @abstractmethod
-    async def reserve_resources(self, request: ReservationRequest) -> datetime:
-        """Hold the resources (GPUs today) an instance requests for a user,
-        returning the reservation expiry. ``request`` is a message-free
-        resources DTO the agent built from the Aleph message; the
-        implementation runs the same capacity admission as the create path
-        before holding anything."""
-
-
 class Supervisor(
     HostOps,
     LifecycleOps,
@@ -188,7 +176,6 @@ class Supervisor(
     BackupOps,
     ConfidentialOps,
     NetworkOps,
-    ReservationOps,
     ABC,
 ):
     """The single agent-to-VM-management interface."""

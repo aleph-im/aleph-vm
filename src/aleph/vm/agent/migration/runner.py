@@ -5,6 +5,7 @@ import logging
 import secrets
 import shutil
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ import aiohttp
 from aleph_message.models import MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
+from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.messages import load_updated_message
 from aleph.vm.agent.migration.helpers import (
     compress_disk,
@@ -184,6 +186,7 @@ async def run_import(
     job: ImportJob,
     supervisor: "Supervisor",
     *,
+    capacity: CapacityManager,
     disk_files: list[DiskFileInfo],
     export_token: str,
     prior_task: asyncio.Task | None = None,
@@ -285,6 +288,20 @@ async def run_import(
             # an already-present host-persistence overlay rather than recreating
             # it, so create_vm reuses the staged disk (no re-download).
             spec = await build_create_vm_spec(job.vm_hash, message.content)
+            # Same agent-side admission as the normal create: bucket from the
+            # message type, GPU requests resolved to concrete host cards on
+            # this destination (owner = message.address).
+            capacity.check_capacity(
+                memory_mib=message.content.resources.memory,
+                vcpus=message.content.resources.vcpus,
+                disk_mib=0,
+                is_instance=True,
+                exclude_vm_hash=job.vm_hash,
+            )
+            requested_gpus = requested_gpu_ids(message.content)
+            if requested_gpus:
+                resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
+                spec = replace(spec, gpus=resolved_gpus)
             await supervisor.create_vm(spec)
 
             # A fresh destination has no persisted port mappings, and

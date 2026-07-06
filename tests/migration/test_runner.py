@@ -20,6 +20,13 @@ from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
 
+def _fake_capacity():
+    """Agent-side admission stub: capacity always passes, no GPUs requested."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+
+
 @pytest.fixture(autouse=True)
 def _reset_semaphore():
     _reset_migration_semaphore_for_tests()
@@ -161,6 +168,7 @@ async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_cre
     fake_message.content.environment.hypervisor = HypervisorType.qemu
     fake_message.content.environment.trusted_execution = None
     fake_message.content.rootfs.parent.ref = "parentref"
+    fake_message.content.requirements = None
 
     async def fake_load_message(_hash):
         return (fake_message, fake_message)
@@ -212,7 +220,7 @@ async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_cre
         )
     ]
 
-    await run_import(job, supervisor, disk_files=disk_files, export_token="t0k3n")
+    await run_import(job, supervisor, capacity=_fake_capacity(), disk_files=disk_files, export_token="t0k3n")
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
@@ -251,6 +259,7 @@ async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, m
     fake_message.content.environment.hypervisor = None  # CLI omits it
     fake_message.content.environment.trusted_execution = None
     fake_message.content.rootfs.parent.ref = "parentref"
+    fake_message.content.requirements = None
 
     async def fake_load_message(_hash):
         return (fake_message, fake_message)
@@ -302,7 +311,7 @@ async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, m
         )
     ]
 
-    await run_import(job, supervisor, disk_files=disk_files, export_token="t0k3n")
+    await run_import(job, supervisor, capacity=_fake_capacity(), disk_files=disk_files, export_token="t0k3n")
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
@@ -338,6 +347,7 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
     await run_import(
         job,
         supervisor,
+        capacity=_fake_capacity(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -391,6 +401,7 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
     await run_import(
         job,
         supervisor,
+        capacity=_fake_capacity(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -454,6 +465,7 @@ async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypa
     await run_import(
         job,
         supervisor,
+        capacity=_fake_capacity(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -516,6 +528,7 @@ async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path,
     await run_import(
         job,
         supervisor,
+        capacity=_fake_capacity(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )

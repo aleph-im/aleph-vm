@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
+from aleph.vm.agent.capacity import CapacityManager, requirements_from_message
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
@@ -42,7 +43,6 @@ from aleph.vm.agent.run import (
     start_persistent_vm,
 )
 from aleph.vm.agent.tasks import COMMUNITY_STREAM_RATIO
-from aleph.vm.agent.translate import build_reservation_request
 from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
@@ -66,9 +66,6 @@ from aleph.vm.chains import STREAM_CHAINS
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import (
-    InsufficientResourcesError as BoundaryInsufficientResourcesError,
-)
 from aleph.vm.supervisor_interface.errors import (
     InternalSupervisorError,
     SupervisorError,
@@ -568,6 +565,7 @@ async def update_allocations(request: web.Request):
     pubsub: PubSub = request.app["pubsub"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
+    capacity = request.app["capacity"]
     expiry = request.app["expiry"]
     update_watcher = request.app["update_watcher"]
 
@@ -654,6 +652,7 @@ async def update_allocations(request: web.Request):
                     pubsub,
                     supervisor=supervisor,
                     registry=registry,
+                    capacity=capacity,
                     expiry=expiry,
                     update_watcher=update_watcher,
                 )
@@ -674,6 +673,7 @@ async def update_allocations(request: web.Request):
                     pubsub,
                     supervisor=supervisor,
                     registry=registry,
+                    capacity=capacity,
                     expiry=expiry,
                     update_watcher=update_watcher,
                 )
@@ -839,14 +839,15 @@ async def notify_allocation(request: web.Request):
     pubsub: PubSub = request.app["pubsub"]
     supervisor = request.app["supervisor"]
     registry = request.app["vm_registry"]
+    capacity = request.app["capacity"]
     expiry = request.app["expiry"]
     update_watcher = request.app["update_watcher"]
 
-    # Capacity admission is no longer checked here: the engine enforces it
-    # atomically inside the create path (pool.check_spec_admission, on the
-    # shared pool.check_capacity core), raising the typed
-    # InsufficientResourcesError. The vm_creation_exceptions / 503 path below
-    # surfaces that error to the caller.
+    # Capacity admission is not checked here: the create path runs the
+    # agent-side policy (CapacityManager.check_capacity) before create_vm,
+    # raising the typed InsufficientResourcesError. The
+    # vm_creation_exceptions / 503 path below surfaces that error to the
+    # caller.
 
     payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
 
@@ -971,6 +972,7 @@ async def notify_allocation(request: web.Request):
             pubsub,
             supervisor=supervisor,
             registry=registry,
+            capacity=capacity,
             expiry=expiry,
             update_watcher=update_watcher,
         )
@@ -1006,7 +1008,7 @@ async def notify_allocation(request: web.Request):
 @require_jwk_authentication
 async def operate_reserve_resources(request: web.Request, authenticated_sender: str) -> web.Response:
     """Reserve a GPU"""
-    supervisor: Supervisor = request.app["supervisor"]
+    capacity: CapacityManager = request.app["capacity"]
     try:
         data = await request.json()
         message = InstanceContent.model_validate(data)
@@ -1015,14 +1017,20 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     except ValidationError as error:
         return web.json_response(data=error.json(), status=web.HTTPBadRequest.status_code)
 
-    # The agent translates the message into a message-free resources DTO; the
-    # supervisor runs capacity admission (keeping the dry-run honest) then holds
-    # the requested resources, returning the reservation expiry. No Aleph message
-    # crosses the supervisor boundary.
-    reservation_request = build_reservation_request(message, authenticated_sender)
+    # Reservation is agent policy: capacity admission keeps the dry-run honest
+    # (refuse here rather than let the client pay and be rejected at create),
+    # then the agent's own ledger holds the requested GPUs. The supervisor is
+    # only consulted for its GPU inventory.
+    requirements = requirements_from_message(message)
     try:
-        expiration_date = await supervisor.reserve_resources(reservation_request)
-    except BoundaryInsufficientResourcesError as error:
+        capacity.check_capacity(
+            memory_mib=requirements.memory_mib,
+            vcpus=requirements.vcpus,
+            disk_mib=requirements.disk_mib,
+            is_instance=requirements.is_instance,
+        )
+        expiration_date = await capacity.reserve_gpus(requirements.gpu_device_ids, authenticated_sender)
+    except InsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(
             reason="Insufficient capacity",

@@ -42,6 +42,13 @@ def _vm_info(
     )
 
 
+def _fake_capacity():
+    """Agent-side admission stub: capacity always passes, no GPUs requested."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+
+
 def _migration_supervisor(get_vm=None, **overrides):
     """A MagicMock supervisor wired with the migration-relevant methods.
 
@@ -446,6 +453,7 @@ class TestMigrationImportEndpoint:
         fake_message.content.environment.hypervisor = HypervisorType.qemu
         fake_message.content.environment.trusted_execution = None
         fake_message.content.rootfs.parent.ref = "parent"
+        fake_message.content.requirements = None
 
         mocker.patch(
             "aleph.vm.agent.migration.runner.load_updated_message",
@@ -480,6 +488,7 @@ class TestMigrationImportEndpoint:
         app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         supervisor = _migration_supervisor()
         app["supervisor"] = supervisor
+        app["capacity"] = _fake_capacity()
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -526,6 +535,7 @@ class TestMigrationImportEndpoint:
         fake_message.content.environment.hypervisor = HypervisorType.qemu
         fake_message.content.environment.trusted_execution = None
         fake_message.content.rootfs.parent.ref = "parent"
+        fake_message.content.requirements = None
 
         mocker.patch(
             "aleph.vm.agent.migration.runner.load_updated_message",
@@ -543,6 +553,7 @@ class TestMigrationImportEndpoint:
 
         app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor()
+        app["capacity"] = _fake_capacity()
         client: TestClient = await aiohttp_client(app)
 
         body = {
@@ -813,6 +824,7 @@ class TestMigrationFailedReset:
         fake_message.content.environment.hypervisor = HypervisorType.qemu
         fake_message.content.environment.trusted_execution = None
         fake_message.content.rootfs.parent.ref = "parent"
+        fake_message.content.requirements = None
 
         mocker.patch(
             "aleph.vm.agent.migration.runner.load_updated_message",
@@ -843,6 +855,7 @@ class TestMigrationFailedReset:
 
         app = setup_webapp(supervisor=LocalSupervisor(mocker.Mock(executions={})))
         app["supervisor"] = _migration_supervisor()
+        app["capacity"] = _fake_capacity()
         client: TestClient = await aiohttp_client(app)
 
         body = {

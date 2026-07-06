@@ -11,7 +11,6 @@ from aleph.vm.supervisor_interface.abc import (
     LogsOps,
     NetworkOps,
     PortForwardingOps,
-    ReservationOps,
     Supervisor,
 )
 
@@ -45,16 +44,15 @@ EXPECTED_METHODS = {
     "get_measurement",
     "inject_secret",
     "recreate_network",
-    "reserve_resources",
 }
 
 STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
 
 
-def test_supervisor_aggregates_all_30_methods():
+def test_supervisor_aggregates_all_29_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 30
+    assert len(EXPECTED_METHODS) == 29
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -100,7 +98,6 @@ def test_capability_abcs_partition_the_surface():
         },
         ConfidentialOps: {"initialize_confidential", "get_measurement", "inject_secret"},
         NetworkOps: {"recreate_network"},
-        ReservationOps: {"reserve_resources"},
     }
     for abc_cls, names in by_abc.items():
         assert names <= abc_cls.__abstractmethods__

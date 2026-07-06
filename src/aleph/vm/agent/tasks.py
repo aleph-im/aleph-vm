@@ -279,7 +279,9 @@ async def start_watch_for_messages_task(app: web.Application):
     pubsub = PubSub()
     supervisor = app["supervisor"]
     registry = app["vm_registry"]
-    reactor = Reactor(pubsub, supervisor, app["expiry"], app["update_watcher"], registry, app["program_client"])
+    reactor = Reactor(
+        pubsub, supervisor, app["expiry"], app["update_watcher"], registry, app["capacity"], app["program_client"]
+    )
 
     # Register an hardcoded initial program
     # TODO: Register all programs with subscriptions
