@@ -18,6 +18,7 @@ pub mod host;
 pub mod logs;
 pub mod lspci;
 pub mod net;
+pub mod nft;
 pub mod ports;
 pub mod server;
 pub mod service;
