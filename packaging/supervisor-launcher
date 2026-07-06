@@ -1,0 +1,23 @@
+#!/bin/sh
+# Supervisor implementation dispatch (design doc
+# 2026-07-04-rust-supervisor-daemon-design.md, section 5).
+#
+# aleph-vm-supervisor.service execs this script; the implementation is
+# selected by ALEPH_VM_SUPERVISOR_IMPL from /etc/aleph-vm/supervisor.env
+# (loaded by the unit's EnvironmentFile). The deb ships both daemons;
+# cutover is a one-line env change, not a packaging event.
+set -eu
+
+case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
+  rust)
+    exec /opt/aleph-vm/bin/aleph-vm-supervisor "$@"
+    ;;
+  python)
+    exec python3 -m aleph.vm.supervisor "$@"
+    ;;
+  *)
+    # An operator typo must not brick the node: log and run the default.
+    echo "supervisor-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
+    exec python3 -m aleph.vm.supervisor "$@"
+    ;;
+esac
