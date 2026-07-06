@@ -10,9 +10,8 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from shutil import copy2, make_archive
+from shutil import make_archive
 from subprocess import CalledProcessError
 
 import aiohttp
@@ -31,7 +30,7 @@ from aleph_message.models.execution.volume import (
     VolumePersistence,
 )
 
-from aleph.vm.conf import SnapshotCompressionAlgorithm, settings
+from aleph.vm.conf import settings
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -486,28 +485,3 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
     else:
         msg = "Only immutable volumes are supported"
         raise NotImplementedError(msg)
-
-
-async def create_volume_snapshot(path: Path) -> Path:
-    new_path = Path(f"{path}.{datetime.now(tz=timezone.utc).date().strftime('%d%m%Y-%H%M%S')}.bak")
-    copy2(path, new_path)
-    return new_path
-
-
-async def compress_volume_snapshot(
-    path: Path,
-    algorithm: SnapshotCompressionAlgorithm = SnapshotCompressionAlgorithm.gz,
-) -> Path:
-    if algorithm != SnapshotCompressionAlgorithm.gz:
-        raise NotImplementedError
-
-    new_path = Path(f"{path}.gz")
-
-    await run_in_subprocess(
-        [
-            "gzip",
-            str(path),
-        ]
-    )
-
-    return new_path

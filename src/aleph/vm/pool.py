@@ -19,7 +19,6 @@ from aleph.vm.resources import (
     InsufficientResourcesError,
     get_gpu_devices,
 )
-from aleph.vm.supervisor.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.supervisor.networking_db import (
     create_supervisor_tables,
     get_port_mappings,
@@ -97,7 +96,6 @@ class VmPool:
 
     executions: dict[VmId, VmExecution]
     network: Network | None
-    snapshot_manager: SnapshotManager | None = None
     systemd_manager: SystemDManager
     creation_lock: asyncio.Lock
     gpus: list[GpuDevice]
@@ -135,8 +133,6 @@ class VmPool:
             else None
         )
         self.systemd_manager = SystemDManager()
-        if settings.SNAPSHOT_FREQUENCY > 0:
-            self.snapshot_manager = SnapshotManager()
 
     async def setup(self) -> None:
         """Set up the VM pool and the network."""
@@ -151,9 +147,6 @@ class VmPool:
         if self.network:
             self.network.setup()
 
-        if self.snapshot_manager:
-            logger.debug("Initializing SnapshotManager ...")
-            self.snapshot_manager.run_in_thread()
         if settings.ENABLE_GPU_SUPPORT:
             # Raw hardware inventory (lspci): network annotation (model name,
             # compatibility) is applied agent-side from the settings aggregate.
@@ -405,11 +398,7 @@ class VmPool:
                     for request, device in resolved_pairs
                 ]
 
-            execution = VmExecution.from_spec(
-                spec,
-                snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-            )
+            execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
             # Attach the resolved GPUs so uses_gpu() holds them against other
             # creates and _to_vm_info reports them, exactly like the message path.
             execution.gpus = resolved_host_gpus
@@ -566,11 +555,7 @@ class VmPool:
             # create_vm_from_spec); spec programs carry no GPUs.
             self.check_spec_admission(spec)
 
-            execution = VmExecution.from_spec(
-                spec,
-                snapshot_manager=self.snapshot_manager,
-                systemd_manager=self.systemd_manager,
-            )
+            execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
             self.executions[vm_id] = execution
 
             tap_interface = None
@@ -959,11 +944,7 @@ class VmPool:
         Sourced entirely from the on-disk controller config -- message-free.
         """
         spec = spec_from_controller_configuration(config)
-        execution = VmExecution.from_spec(
-            spec,
-            snapshot_manager=self.snapshot_manager,
-            systemd_manager=self.systemd_manager,
-        )
+        execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
 
         execution.mapped_ports = await get_port_mappings(vm_id)
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
@@ -977,9 +958,6 @@ class VmPool:
         execution.times.started_at = datetime.now(tz=timezone.utc)
 
         self._schedule_forget_on_stop(execution)
-
-        if vm.support_snapshot and self.snapshot_manager:
-            await self.snapshot_manager.start_for(vm=execution.vm)
 
         if execution.mapped_ports:
             await execution.recreate_port_redirect_rules()

@@ -114,7 +114,7 @@ async def test_create_qemu_instance(mocker):
     mock_systemd_manager = MockSystemDManager()
 
     spec = await build_create_vm_spec(vm_hash, message.content)
-    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
+    execution = VmExecution.from_spec(spec, systemd_manager=None)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_index = 3
@@ -206,7 +206,7 @@ async def test_create_qemu_instance_online(mocker):
     network.setup()
 
     spec = await build_create_vm_spec(vm_hash, message.content)
-    execution = VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=mock_systemd_manager)
+    execution = VmExecution.from_spec(spec, systemd_manager=mock_systemd_manager)
 
     await asyncio.wait_for(execution.prepare(), timeout=60)
     vm_index = 3

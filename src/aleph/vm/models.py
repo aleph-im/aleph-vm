@@ -26,8 +26,6 @@ from aleph.vm.resources import HostGPU
 from aleph.vm.supervisor.controllers.firecracker.executable import (
     AlephFirecrackerExecutable,
 )
-from aleph.vm.supervisor.controllers.firecracker.program import AlephProgramResources
-from aleph.vm.supervisor.controllers.firecracker.snapshot_manager import SnapshotManager
 from aleph.vm.supervisor.controllers.firecracker.spec_program import (
     SpecFirecrackerProgram,
     SpecProgramResources,
@@ -81,9 +79,7 @@ class VmExecution:
     vm_id: VmId
     # The message-free description this execution is built from.
     spec: CreateVmSpec
-    resources: (
-        AlephProgramResources | AlephQemuResources | AlephQemuConfidentialInstance | SpecProgramResources | None
-    ) = None
+    resources: AlephQemuResources | AlephQemuConfidentialResources | SpecProgramResources | None = None
     vm: AlephFirecrackerExecutable | AlephQemuInstance | AlephQemuConfidentialInstance | None = None
     gpus: list[HostGPU]
 
@@ -97,7 +93,6 @@ class VmExecution:
     init_task: asyncio.Task | None
     _forget_task: asyncio.Task | None = None
 
-    snapshot_manager: SnapshotManager | None
     systemd_manager: SystemDManager | None
 
     persistent: bool = False
@@ -338,7 +333,6 @@ class VmExecution:
         self,
         vm_id: VmId,
         vm_spec: CreateVmSpec,
-        snapshot_manager: SnapshotManager | None = None,
         systemd_manager: SystemDManager | None = None,
         persistent: bool = False,
     ):
@@ -354,7 +348,6 @@ class VmExecution:
         self.stop_event = asyncio.Event()  # triggered when the VM is stopped
         self.preparation_pending_lock = asyncio.Lock()
         self.stop_pending_lock = asyncio.Lock()
-        self.snapshot_manager = snapshot_manager
         self.systemd_manager = systemd_manager
         self.persistent = persistent
         self.mapped_ports = {}
@@ -365,7 +358,6 @@ class VmExecution:
         cls,
         spec: CreateVmSpec,
         *,
-        snapshot_manager: SnapshotManager | None,
         systemd_manager: SystemDManager | None,
     ) -> "VmExecution":
         """Construct a message-free execution from a CreateVmSpec.
@@ -375,7 +367,6 @@ class VmExecution:
         return cls(
             vm_id=spec.vm_id,
             vm_spec=spec,
-            snapshot_manager=snapshot_manager,
             systemd_manager=systemd_manager,
             persistent=spec.persistent,
         )
@@ -474,7 +465,6 @@ class VmExecution:
 
             await self.vm.start_guest_api()
 
-            # Start VM and snapshots automatically
             # If the execution is a confidential instance, it is start later in the process when the session certificate
             # files are received from the client via the endpoint /control/machine/{ref}/confidential/initialize endpoint
             if self.persistent and not self.is_confidential and self.systemd_manager:
@@ -487,9 +477,6 @@ class VmExecution:
                 elif not await self.non_blocking_wait_for_boot():
                     msg = f"{self} controller failed to start"
                     raise RuntimeError(msg)
-
-                if self.vm and self.vm.support_snapshot and self.snapshot_manager:
-                    await self.snapshot_manager.start_for(vm=self.vm)
             else:
                 self.times.started_at = datetime.now(tz=timezone.utc)
             self.ready_event.set()
@@ -636,9 +623,6 @@ class VmExecution:
             await self.vm.teardown()
 
             self.times.stopped_at = datetime.now(tz=timezone.utc)
-
-            if self.vm.support_snapshot and self.snapshot_manager:
-                await self.snapshot_manager.stop_for(self.vm_id)
             self.stop_event.set()
             logger.info("%s stopped", self)
 

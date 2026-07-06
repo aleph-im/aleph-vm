@@ -81,7 +81,6 @@ def _bare_pool(gpus: list[ResourceGpuDevice]) -> VmPool:
     pool.reservations = {}
     pool.gpus = gpus
     pool.network = None
-    pool.snapshot_manager = None
     pool.creation_lock = asyncio.Lock()
     systemd = MagicMock()
     systemd.enable_and_start = AsyncMock()

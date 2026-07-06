@@ -70,7 +70,6 @@ async def test_delete_vm_queued_for_reattach_retry_stops_and_dequeues():
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
     pool.network = None
-    pool.snapshot_manager = None
     pool.systemd_manager = MagicMock()
     pool.creation_lock = asyncio.Lock()
     pool._failed_reattach = {VM_ID: _FailedReattach(config=SimpleNamespace(vm_hash=str(VM_ID), vm_id=7), vm_index=7)}

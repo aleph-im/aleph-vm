@@ -90,7 +90,6 @@ class AlephQemuInstance(Generic[ConfigurationType], AlephVmControllerInterface):
     vm_configuration: ConfigurationType | None
     is_instance: bool
     qemu_process: Process | None
-    support_snapshot = False
     persistent = True
 
     def __repr__(self):

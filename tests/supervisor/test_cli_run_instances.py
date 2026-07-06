@@ -29,7 +29,6 @@ async def test_run_instances_sets_up_pool(monkeypatch):
 
     # Keep VmPool() construction host-independent.
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
-    monkeypatch.setattr(settings, "SNAPSHOT_FREQUENCY", 0)
     monkeypatch.setattr(harness.VmPool, "setup", fake_setup)
     monkeypatch.setattr(harness, "start_instance", AsyncMock(side_effect=fake_start_instance))
 

@@ -393,7 +393,6 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool):
 
     execution = VmExecution.from_spec(
         make_spec(vm_hash=hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     pool.executions = {hash: execution}
@@ -435,7 +434,6 @@ async def test_v2_executions_list_confidential_awaiting_init(aiohttp_client, moc
     )
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
-        snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
     execution.times.starting_at = execution.times.defined_at
@@ -471,7 +469,6 @@ async def test_v1_executions_list_includes_confidential_awaiting_init(aiohttp_cl
     )
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
-        snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
     execution.times.starting_at = execution.times.defined_at
@@ -520,7 +517,6 @@ async def test_v1_executions_list_excludes_awaiting_init_without_network(aiohttp
     )
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=True, tee=_views_tee()),
-        snapshot_manager=None,
         systemd_manager=systemd_manager,
     )
     execution.times.starting_at = execution.times.defined_at
@@ -548,7 +544,6 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
 
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     vm_id = 3
@@ -1377,7 +1372,6 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 
     running = VmExecution.from_spec(
         make_spec(vm_hash=running_hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     running.times.starting_at = datetime.now(tz=timezone.utc)
@@ -1392,7 +1386,6 @@ async def test_executions_list_only_running(aiohttp_client, mocker, mock_app_wit
 
     stopped = VmExecution.from_spec(
         make_spec(vm_hash=stopped_hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
 
@@ -1418,7 +1411,6 @@ async def test_v2_executions_list_mapped_ports(aiohttp_client, mocker, mock_app_
 
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     execution.vm = mocker.Mock()
@@ -1448,7 +1440,6 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocke
 
     execution = VmExecution.from_spec(
         make_spec(vm_hash=vm_hash, persistent=False),
-        snapshot_manager=None,
         systemd_manager=None,
     )
     execution.vm = mocker.Mock()

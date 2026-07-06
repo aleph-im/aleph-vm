@@ -15,7 +15,7 @@ FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecade
 def _make_execution(systemd_manager: MagicMock) -> VmExecution:
     """Create a real persistent spec-built VmExecution with a mock systemd_manager."""
     spec = make_spec(vm_hash=str(FAKE_HASH), persistent=True)
-    return VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=systemd_manager)
+    return VmExecution.from_spec(spec, systemd_manager=systemd_manager)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +142,6 @@ class TestWaitForControllerReady:
         # Non-persistent execution
         ex_non_persistent = VmExecution.from_spec(
             make_spec(vm_hash=str(FAKE_HASH), persistent=False),
-            snapshot_manager=None,
             systemd_manager=MagicMock(),
         )
         with pytest.raises(RuntimeError, match="requires a persistent VM"):
@@ -151,7 +150,6 @@ class TestWaitForControllerReady:
         # No systemd_manager
         ex_no_manager = VmExecution.from_spec(
             make_spec(vm_hash=str(FAKE_HASH), persistent=True),
-            snapshot_manager=None,
             systemd_manager=None,
         )
         with pytest.raises(RuntimeError, match="requires a persistent VM"):
@@ -266,7 +264,6 @@ class TestStopWaitsForController:
 
         ex = _make_execution(mgr)
         ex.vm = MagicMock()
-        ex.vm.support_snapshot = False
         ex.vm.teardown = AsyncMock(side_effect=lambda: events.append("teardown"))
         ex.record_usage = AsyncMock()
         ex.removed_all_ports_redirection = AsyncMock()

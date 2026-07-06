@@ -23,7 +23,7 @@ def make_execution(*, mocker, confidential: bool = False, controller_active: boo
     """Build a persistent spec-built execution whose systemd controller state is mocked."""
     spec = make_spec(vm_hash=str(VM_HASH), persistent=True, tee=_tee() if confidential else None)
     systemd_manager = mocker.Mock(is_service_active=mocker.Mock(return_value=controller_active))
-    return VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=systemd_manager)
+    return VmExecution.from_spec(spec, systemd_manager=systemd_manager)
 
 
 def mark_started(execution: VmExecution) -> None:

@@ -22,7 +22,7 @@ FAKE_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecade
 def _make_execution(persistent: bool = False) -> VmExecution:
     """Create a real spec-built VmExecution with minimal dependencies."""
     spec = make_spec(vm_hash=str(FAKE_HASH), persistent=persistent)
-    return VmExecution.from_spec(spec, snapshot_manager=None, systemd_manager=None)
+    return VmExecution.from_spec(spec, systemd_manager=None)
 
 
 def _draining_app(draining: bool = True):
