@@ -128,5 +128,7 @@ def test_validate_spec_gpus_refuses_double_attach(pool):
 def test_validate_spec_gpus_refuses_same_card_twice_in_one_spec(pool):
     pool.gpus = [_gpu_device()]
 
-    with pytest.raises(InsufficientResourcesError):
+    with pytest.raises(InsufficientResourcesError) as excinfo:
         pool._validate_spec_gpus([_resolved_spec_gpu(), _resolved_spec_gpu()])
+
+    assert "claimed twice" in str(excinfo.value)

@@ -48,7 +48,6 @@ def _program_spec(*, persistent: bool) -> CreateVmSpec:
 def _bare_pool() -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
-    pool.reservations = {}
     pool.network = None
     pool.creation_lock = asyncio.Lock()
     pool.systemd_manager = MagicMock()

@@ -291,7 +291,6 @@ class CapacityManager:
 
         ``available_gpus`` is consumed in place. Called under ``self._lock``.
         """
-        unheld_available = list(available_gpus)
         resolved: list[GpuDevice] = []
         for device_id in requested_device_ids:
             for gpu in available_gpus:
@@ -312,6 +311,6 @@ class CapacityManager:
                 raise InsufficientResourcesError(
                     detail,
                     required={"gpu_device_id": device_id},
-                    available={"gpus": [gpu.device_id for gpu in unheld_available]},
+                    available={"gpus": [gpu.device_id for gpu in available_gpus]},
                 )
         return resolved

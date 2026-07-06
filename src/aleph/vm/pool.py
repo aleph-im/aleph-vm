@@ -1077,7 +1077,10 @@ class VmPool:
                 )
             attached = any(execution.uses_gpu(pci_host) for execution in self.executions.values())
             if attached or pci_host in claimed:
-                detail = f"GPU at pci_host {pci_host!r} is already attached to a VM"
+                if pci_host in claimed:
+                    detail = f"GPU at pci_host {pci_host!r} is claimed twice in this spec"
+                else:
+                    detail = f"GPU at pci_host {pci_host!r} is already attached to a VM"
                 logger.warning(detail)
                 raise InsufficientResourcesError(
                     detail,
