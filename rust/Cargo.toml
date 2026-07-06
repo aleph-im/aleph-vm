@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/supervisor-proto", "crates/supervisor-daemon"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/aleph-im/aleph-vm"
+
+[workspace.dependencies]
+supervisor-proto = { path = "crates/supervisor-proto" }
+
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.12"
+tonic-build = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# test-only
+hyper-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
