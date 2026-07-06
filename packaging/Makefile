@@ -1,7 +1,22 @@
 all: debian-package
 
-debian-package: debian-package-resources debian-package-code
+debian-package: debian-package-resources debian-package-code debian-package-rust
 	sudo dpkg-deb --build aleph-vm target/aleph-vm.deb
+
+# Rust supervisor daemon (design doc 2026-07-04-rust-supervisor-daemon-design.md,
+# section 9): built with the toolchain pinned in rust/rust-toolchain.toml
+# (rustup picks it up when cargo runs from inside rust/), installed under
+# /opt/aleph-vm/bin/ next to the supervisor-launcher dispatch script.
+# The deb keeps shipping the full Python tree regardless of the
+# ALEPH_VM_SUPERVISOR_IMPL flag (default python); the Rust daemon is inert
+# until an operator flips /etc/aleph-vm/supervisor.env.
+# Depends on debian-package-code because that target wipes and rebuilds
+# ./aleph-vm/opt/aleph-vm, where the binaries land.
+debian-package-rust: debian-package-code
+	cd ../rust && cargo build --release --locked
+	mkdir -p ./aleph-vm/opt/aleph-vm/bin
+	install -m 0755 ../rust/target/release/aleph-vm-supervisor ./aleph-vm/opt/aleph-vm/bin/aleph-vm-supervisor
+	install -m 0755 ./supervisor-launcher ./aleph-vm/opt/aleph-vm/bin/supervisor-launcher
 
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm
