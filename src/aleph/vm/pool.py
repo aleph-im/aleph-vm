@@ -769,6 +769,12 @@ class VmPool:
         spec = spec_from_controller_configuration(config)
         execution = VmExecution.from_spec(spec, systemd_manager=self.systemd_manager)
 
+        # Rebuild GPU attachments from the config. Without this, an adopted
+        # VM's cards look free: get_available_gpus re-offers them and
+        # _validate_spec_gpus lets a new create double-attach a card the
+        # running guest physically holds.
+        execution.gpus = self._rebuild_reattached_gpus(spec.gpus)
+
         execution.mapped_ports = await get_port_mappings(vm_id)
         logger.info("Loading existing mapped_ports %s", execution.mapped_ports)
 
@@ -1064,6 +1070,50 @@ class VmPool:
                 required={"memory_mib": required_memory_mib},
                 available={"memory_mib": max(memory_cap_mib - committed_memory_mib, 0)},
             )
+
+    def _rebuild_reattached_gpus(self, attached: list[GpuSpec]) -> list[HostGPU]:
+        """Rebuild the HostGPU attachments of a reattached VM from its on-disk
+        controller config.
+
+        Unlike ``_validate_spec_gpus`` this never rejects: the cards are
+        already passed through to a running guest, so the attachment is a
+        fact to record, not a request to admit. A pci_host still present in
+        the host inventory keeps its full device metadata (device_id, x-vga
+        support as the hardware reports it).
+
+        A pci_host absent from the inventory (card removed, or its vfio
+        binding changed while the supervisor was down) is still recorded, as
+        a bare HostGPU carrying only what the config knows (pci_host +
+        supports_x_vga, empty device_id). This is the least-surprising
+        representation the types allow: it is invisible to
+        ``get_available_gpus`` and ``_validate_spec_gpus`` (both only
+        offer/accept inventory cards, so accounting for the cards that DO
+        exist stays correct), while ``uses_gpu()`` keeps holding the address
+        and VM info keeps reporting the passthrough for as long as the VM
+        runs.
+        """
+        inventory = {gpu.pci_host: gpu for gpu in self.gpus}
+        rebuilt: list[HostGPU] = []
+        for gpu_spec in attached:
+            pci_host = str(gpu_spec.pci_host)
+            device = inventory.get(pci_host)
+            if device is not None:
+                rebuilt.append(
+                    HostGPU(
+                        pci_host=device.pci_host,
+                        supports_x_vga=device.has_x_vga_support,
+                        device_id=device.device_id,
+                        model=None,
+                    )
+                )
+            else:
+                logger.warning(
+                    "Reattached VM holds GPU %s which is absent from the host inventory; "
+                    "recording the attachment from the config alone",
+                    pci_host,
+                )
+                rebuilt.append(HostGPU(pci_host=pci_host, supports_x_vga=gpu_spec.supports_x_vga))
+        return rebuilt
 
     def _validate_spec_gpus(self, requested: list[GpuSpec]) -> list[HostGPU]:
         """GPU attach invariant: every spec entry names a pci_host that exists

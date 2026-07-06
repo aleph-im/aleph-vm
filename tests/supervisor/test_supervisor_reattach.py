@@ -10,6 +10,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aleph.vm.pool import VmPool
+from aleph.vm.resources import (
+    GpuDevice,
+    GpuDeviceClass,
+    HostGPU,
+    InsufficientResourcesError,
+)
+from aleph.vm.supervisor_interface.configuration import (
+    Configuration,
+    ControllerSettings,
+    HypervisorType,
+    QemuGPU,
+    QemuVMConfiguration,
+    load_controller_configuration,
+    save_controller_configuration,
+)
 from aleph.vm.supervisor_interface.errors import (
     InternalSupervisorError,
     VmAlreadyExistsError,
@@ -20,7 +35,9 @@ from aleph.vm.supervisor_interface.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    GpuSpec,
     NetworkConfig,
+    PciAddress,
     VmId,
 )
 
@@ -56,6 +73,7 @@ def _bare_pool() -> VmPool:
     pool.executions = {}
     pool.network = None
     pool.systemd_manager = MagicMock()
+    pool.gpus = []
     pool._failed_reattach = {}
     return pool
 
@@ -475,6 +493,115 @@ async def test_retry_loop_returns_immediately_without_failures():
     pool = _bare_pool()
     pool._failed_reattach = {}
     await pool.run_reattach_retry_loop()  # must not hang
+
+
+# ── GPU accounting across reattach ──────────────────────────────────────────
+
+_DEVICE_ID = "10de:2504"
+
+
+def _gpu_device(pci_host: str) -> GpuDevice:
+    return GpuDevice(
+        vendor="NVIDIA",
+        device_name="GH100",
+        device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+        pci_host=pci_host,
+        device_id=_DEVICE_ID,
+    )
+
+
+def _controller_config_with_gpu(pci_host: str, supports_x_vga: bool = True) -> Configuration:
+    return Configuration(
+        vm_id=7,
+        vm_hash=_HASH,
+        settings=ControllerSettings(),
+        vm_configuration=QemuVMConfiguration(
+            qemu_bin_path="/usr/bin/qemu-system-x86_64",
+            image_path="/data/rootfs.qcow2",
+            monitor_socket_path=Path(f"{_HASH}-monitor.socket"),
+            qmp_socket_path=Path(f"{_HASH}-qmp.socket"),
+            vcpu_count=2,
+            mem_size_mb=1024,
+            host_volumes=[],
+            gpus=[QemuGPU(pci_host=pci_host, supports_x_vga=supports_x_vga)],
+        ),
+        hypervisor=HypervisorType.qemu,
+    )
+
+
+async def _restore_from_disk(pool: VmPool, monkeypatch, tmp_path, config: Configuration) -> None:
+    """Round-trip the config through the real on-disk JSON, then run the
+    restore exactly as load_persistent_executions would after a daemon
+    restart. Only the host-touching steps (resource prepare, controller
+    handle, port-mapping DB) are stubbed."""
+    from aleph.vm.conf import settings as vm_settings
+    from aleph.vm.models import VmExecution
+
+    monkeypatch.setattr(vm_settings, "EXECUTION_ROOT", tmp_path)
+    save_controller_configuration(_HASH, config)
+    loaded = load_controller_configuration(_HASH)
+    assert loaded is not None
+
+    monkeypatch.setattr(VmExecution, "prepare", AsyncMock())
+    fake_vm = SimpleNamespace(start_guest_api=AsyncMock())
+    monkeypatch.setattr(VmExecution, "create", MagicMock(return_value=fake_vm))
+    monkeypatch.setattr("aleph.vm.pool.get_port_mappings", AsyncMock(return_value={}))
+
+    await pool._restore_running_execution_from_config(loaded, vm_index=loaded.vm_id, vm_id=VmId(_HASH))
+
+
+@pytest.mark.asyncio
+async def test_reattach_rebuilds_gpu_attachments_from_config(monkeypatch, tmp_path):
+    """After a daemon restart, an adopted VM's GPUs must count as attached:
+    get_available_gpus must not re-offer them, and _validate_spec_gpus must
+    refuse a new spec claiming them (the card is physically passed through
+    to the running guest)."""
+    pool = _bare_pool()
+    free_card = _gpu_device("0000:02:00.0")
+    pool.gpus = [_gpu_device("0000:01:00.0"), free_card]
+
+    await _restore_from_disk(pool, monkeypatch, tmp_path, _controller_config_with_gpu("0000:01:00.0"))
+
+    execution = pool.executions[VmId(_HASH)]
+    # Full inventory metadata is preserved for a card that is still present.
+    assert execution.gpus == [HostGPU(pci_host="0000:01:00.0", supports_x_vga=True, device_id=_DEVICE_ID, model=None)]
+    # (a) the attached card is no longer offered; the free one still is.
+    assert pool.get_available_gpus() == [free_card]
+    # (b) a new create claiming the attached card is refused ...
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        pool._validate_spec_gpus([GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)])
+    assert "already attached" in str(excinfo.value)
+    # ... while the free card still validates.
+    validated = pool._validate_spec_gpus([GpuSpec(pci_host=PciAddress("0000:02:00.0"), supports_x_vga=True)])
+    assert validated[0].pci_host == "0000:02:00.0"
+
+
+@pytest.mark.asyncio
+async def test_reattach_accounts_for_gpu_missing_from_inventory(monkeypatch, tmp_path):
+    """A config GPU absent from the current inventory (card removed or vfio
+    rebind while the daemon was down) is still recorded on the execution,
+    from the config's own data, without disturbing the accounting of the
+    cards that do exist."""
+    pool = _bare_pool()
+    remaining_card = _gpu_device("0000:02:00.0")
+    pool.gpus = [remaining_card]
+
+    await _restore_from_disk(
+        pool, monkeypatch, tmp_path, _controller_config_with_gpu("0000:01:00.0", supports_x_vga=False)
+    )
+
+    execution = pool.executions[VmId(_HASH)]
+    # Bare HostGPU built from the config alone: pci_host and supports_x_vga
+    # survive the JSON round-trip; the device metadata is unknown.
+    assert execution.gpus == [HostGPU(pci_host="0000:01:00.0", supports_x_vga=False, device_id="", model=None)]
+    assert execution.uses_gpu("0000:01:00.0")
+    # The inventory card is untouched: still offered and still admissible.
+    assert pool.get_available_gpus() == [remaining_card]
+    validated = pool._validate_spec_gpus([GpuSpec(pci_host=PciAddress("0000:02:00.0"), supports_x_vga=True)])
+    assert validated[0].pci_host == "0000:02:00.0"
+    # The absent card's address stays inadmissible (not in the inventory).
+    with pytest.raises(InsufficientResourcesError):
+        pool._validate_spec_gpus([GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)])
 
 
 @pytest.mark.asyncio
