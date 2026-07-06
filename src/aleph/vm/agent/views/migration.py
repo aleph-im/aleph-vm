@@ -288,6 +288,7 @@ async def migration_import(request: web.Request) -> web.Response:
         run_import(
             job,
             supervisor,
+            capacity=request.app["capacity"],
             disk_files=params.disk_files,
             export_token=params.export_token,
             prior_task=prior_task,

@@ -97,6 +97,11 @@ class FakeProgramClient:
         self.forgotten.append(str(vm_id))
 
 
+def _fake_capacity() -> SimpleNamespace:
+    """Agent-side admission stub: capacity always passes."""
+    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+
+
 class FakeRequest:
     method = "GET"
     query_string = ""
@@ -132,6 +137,7 @@ def _on_demand_fakes():
         "pubsub": None,
         "update_watcher": None,
         "vm_registry": _registry_with(content),
+        "capacity": _fake_capacity(),
         "program_client": program_client,
     }
     return content, expiry, supervisor, program_client, app
@@ -165,6 +171,7 @@ async def test_request_never_schedules_expiry_for_persistent_vm(reuse_settings):
         "pubsub": None,
         "update_watcher": None,
         "vm_registry": _registry_with(content),
+        "capacity": _fake_capacity(),
         "program_client": FakeProgramClient(OK_RESULT),
     }
 
@@ -190,6 +197,7 @@ async def test_event_rearms_idle_timer_for_on_demand_vm(reuse_settings):
         expiry=expiry,
         update_watcher=None,
         registry=_registry_with(content),
+        capacity=_fake_capacity(),
         program_client=program_client,
     )
 
@@ -215,6 +223,7 @@ async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
         expiry=expiry,
         update_watcher=None,
         registry=_registry_with(content),
+        capacity=_fake_capacity(),
         program_client=FakeProgramClient({"body": "ok"}),
     )
 

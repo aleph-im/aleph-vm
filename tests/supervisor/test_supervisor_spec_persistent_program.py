@@ -48,7 +48,6 @@ def _program_spec(*, persistent: bool) -> CreateVmSpec:
 def _bare_pool() -> VmPool:
     pool = VmPool.__new__(VmPool)
     pool.executions = {}
-    pool.reservations = {}
     pool.network = None
     pool.creation_lock = asyncio.Lock()
     pool.systemd_manager = MagicMock()
@@ -59,7 +58,7 @@ def _bare_pool() -> VmPool:
 @pytest.mark.parametrize("persistent", [True, False])
 async def test_create_firecracker_from_spec_boots_program(monkeypatch, persistent):
     pool = _bare_pool()
-    monkeypatch.setattr(pool, "check_spec_admission", MagicMock())
+    monkeypatch.setattr(pool, "_check_memory_backstop", MagicMock())
     monkeypatch.setattr(pool, "get_unique_vm_index", MagicMock(return_value=7))
     monkeypatch.setattr(pool, "_schedule_forget_on_stop", MagicMock())
 

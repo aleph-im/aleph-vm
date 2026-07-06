@@ -82,8 +82,6 @@ service Supervisor {
   // ── Network ──
   rpc RecreateNetwork(RecreateNetworkRequest) returns (RecreateNetworkResponse);
 
-  // ── Reservation ──
-  rpc ReserveResources(ReserveResourcesRequest) returns (ReserveResourcesResponse);
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────
@@ -133,7 +131,7 @@ message HostInfo {
   // Networking
   string host_ipv4 = 17;             // primary external IPv4 of the host; empty when host networking is disabled
 
-  // Reservation-aware figures the agent's /about endpoints surface
+  // Usage-aware figures the agent's /about endpoints surface
   uint64 available_disk_bytes = 18;
   string gpu_inventory_json = 19;    // list[dict] as JSON; rich agent GPU inventory
   string available_gpus_json = 20;   // list[dict] as JSON
@@ -210,7 +208,6 @@ message VmSpec {
   // signal. What is spoken over the channel is the client's business, opaque
   // to the supervisor.
   optional GuestChannel guest_channel = 14;
-  string owner_id = 16;              // opaque VM-owner id (the supervisor does not interpret it); engine consumes this owner's GPU reservation
 }
 
 message GuestChannel {
@@ -259,10 +256,8 @@ message NetworkConfig {
 }
 
 message GpuConfig {
-  string pci_host = 1;               // RESOLVED concrete address; empty in a request
+  string pci_host = 1;               // resolved concrete address, always set
   bool supports_x_vga = 2;
-  string device_id = 3;              // REQUEST: vendor:device, e.g. "10de:2504"
-  string model = 4;                  // REQUEST: human label
 }
 
 // The confidential-computing mode a VM is actually running under. Precise by
@@ -532,25 +527,6 @@ message InjectSecretResponse {}
 message RecreateNetworkRequest {}
 message RecreateNetworkResponse {
   string summary_json = 1;           // JSON-encoded summary dict from the engine
-}
-
-// ── Reservation ──────────────────────────────────────────────────────────
-
-message ReserveResourcesRequest {
-  string owner_id = 1;               // same opaque id as VmSpec.owner_id; the later CreateVm consumes THIS owner's reservation
-  uint32 vcpus = 2;
-  uint64 memory_mib = 3;
-  uint64 disk_mib = 4;
-  // Instance vs program memory bucket. VmInfo deliberately carries no
-  // instance/program marker (client vocabulary, derivable from the client's
-  // own records), but a reservation precedes the VM and carries no Backend,
-  // so the bucket cannot be derived here: the client must state it. The
-  // engine accounts instance and program memory separately.
-  bool is_instance = 5;
-  repeated GpuConfig gpus = 6;        // request: matched by device_id
-}
-message ReserveResourcesResponse {
-  int64 expiry_unix_ns = 1;          // reservation expiry, unix ns UTC
 }
 
 // ── Wire error vocabulary ────────────────────────────────────────────────

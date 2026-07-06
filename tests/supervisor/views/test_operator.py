@@ -1487,6 +1487,7 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
         vm_hash=vm_hash,
         supervisor=fake_sup,
         registry=app["vm_registry"],
+        capacity=app["capacity"],
     )
 
 
@@ -1677,6 +1678,7 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
         vm_hash=vm_hash,
         supervisor=fake_sup,
         registry=app["vm_registry"],
+        capacity=app["capacity"],
     )
 
 

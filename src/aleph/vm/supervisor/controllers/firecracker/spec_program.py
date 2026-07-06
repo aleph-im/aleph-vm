@@ -68,13 +68,13 @@ class SpecProgramResources:
 
     def get_disk_usage_delta(self) -> int:
         """Disk reserved-but-unused by this execution, summed by the pool's
-        capacity admission (calculate_available_disk) across all executions.
+        calculate_available_disk across all executions.
 
         Spec disk admission is deferred: DiskSpec carries no size yet (the
         program rootfs is a read-only squashfs and extra disks declare no size),
-        so a spec program reserves nothing. Mirrors check_spec_admission passing
-        disk_mib=0. Returning 0 keeps SpecProgramResources usable in the shared
-        admission path that the other resource types implement."""
+        so a spec program reserves nothing. Returning 0 keeps
+        SpecProgramResources usable in the shared accounting path that the
+        other resource types implement."""
         return 0
 
     def to_dict(self):

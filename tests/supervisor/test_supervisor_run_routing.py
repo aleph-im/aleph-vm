@@ -39,8 +39,8 @@ from aleph.vm.supervisor_interface.types import (
 _HASH = ItemHash("deadbeef" * 8)
 
 
-def _gpu_request() -> GpuSpec:
-    return GpuSpec(pci_host=PciAddress(""), supports_x_vga=False, device_id="10de:1234", model="")
+def _resolved_gpu() -> GpuSpec:
+    return GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)
 
 
 def _spec() -> CreateVmSpec:
@@ -80,6 +80,15 @@ def _info(status: VmStatus = VmStatus.RUNNING) -> VmInfo:
     )
 
 
+def _fake_capacity(resolved: list[GpuSpec] | None = None):
+    """Agent-side admission stub: capacity always passes, GPU resolution
+    returns the given resolved cards."""
+    return SimpleNamespace(
+        check_capacity=MagicMock(),
+        resolve_gpus=AsyncMock(return_value=list(resolved or [])),
+    )
+
+
 def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING):
     # The agent is fully pool-free: it drives the supervisor abstraction only and
     # never reaches a pool. No ``pool`` attribute is exposed here on purpose - if
@@ -110,7 +119,9 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+    )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
     # The message is recorded in the agent registry, not on the execution.
@@ -159,7 +170,9 @@ async def test_owner_record_recorded_before_resource_download(monkeypatch):
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
 
-    await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+    await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+    )
 
     assert (
         seen.get("record_present_at_build") is True
@@ -182,7 +195,9 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(asyncio.TimeoutError):
-        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure
@@ -206,7 +221,9 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
 
     supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
     assert registry.get(_HASH) is None  # forgotten on failure
@@ -233,7 +250,9 @@ async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(InvalidBackendError, match="QEMU-only"):
-        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=False)
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=False
+        )
 
     run_module.build_create_vm_spec.assert_awaited_once()
     supervisor.create_vm.assert_not_awaited()
@@ -261,7 +280,9 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     supervisor.create_vm = AsyncMock(return_value=_info(VmStatus.RUNNING))
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+    )
 
     build.assert_awaited_once()
     supervisor.create_vm.assert_awaited_once_with(program_spec)
@@ -299,7 +320,9 @@ async def test_confidential_instance_routed_through_spec_awaiting_init(monkeypat
     supervisor.create_vm = AsyncMock(return_value=awaiting)
     registry = AgentVmRegistry()
 
-    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+    )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
     waited.assert_not_awaited()  # never wait on an awaiting-init VM
@@ -330,9 +353,10 @@ def test_gpu_instance_is_spec_eligible():
 
 @pytest.mark.asyncio
 async def test_gpu_instance_routed_through_supervisor(monkeypatch):
-    """GPU instances reach the spec path. The agent does not touch reservations:
-    it builds a spec carrying owner_id and drives create_vm. The engine
-    consumes this owner's own reservation and skips other users' reservations."""
+    """GPU instances reach the spec path. The agent resolves the message's
+    requested device_ids to concrete host cards through its CapacityManager
+    (owner = message.address) and the spec sent to create_vm carries the
+    RESOLVED cards, not the request."""
     content = _make_qemu_instance_message().model_copy(
         update={
             "requirements": HostRequirements(
@@ -350,9 +374,7 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     message = MagicMock(content=content)
     original_message = MagicMock(content=content)
     monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, original_message)))
-    # The spec carries a GPU request and the owner address; the engine owns the
-    # reservation handling, the agent does not.
-    spec = replace(_spec(), gpus=[_gpu_request()], owner_id=content.address)
+    spec = _spec()
     monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=spec))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
@@ -360,13 +382,20 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
+    resolved = _resolved_gpu()
+    capacity = _fake_capacity([resolved])
 
-    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=True)
+    execution = await run_module.create_vm_execution(
+        _HASH, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
+    )
 
-    # The spec the agent built carries the owner address for engine-side
-    # reservation handling.
-    assert supervisor.create_vm.await_args.args[0].owner_id == content.address
-    supervisor.create_vm.assert_awaited_once_with(spec)
+    # The requested device_ids stopped at the agent: resolution ran against
+    # the ledger with the message owner, and the spec that crossed the
+    # boundary carries the resolved card.
+    capacity.resolve_gpus.assert_awaited_once_with(["10de:1234"], owner=content.address)
+    sent_spec = supervisor.create_vm.await_args.args[0]
+    assert sent_spec.gpus == [resolved]
+    assert sent_spec == replace(spec, gpus=[resolved])
     assert execution is None
 
 
@@ -387,7 +416,9 @@ async def test_unsupported_content_raises_clear_error_no_pool(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(HTTPBadRequest):
-        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, persistent=False)
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=False
+        )
 
     build.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
@@ -406,6 +437,7 @@ async def test_start_persistent_reuses_running(monkeypatch):
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -426,6 +458,7 @@ async def test_start_persistent_creates_when_absent(monkeypatch):
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -451,6 +484,7 @@ async def test_start_persistent_first_create_confidential_skips_wait(monkeypatch
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -472,6 +506,7 @@ async def test_start_persistent_resumes_stopped(monkeypatch):
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -492,6 +527,7 @@ async def test_start_persistent_recreates_after_failed(monkeypatch):
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -516,6 +552,7 @@ async def test_start_persistent_waits_gone_then_recreates_when_stopping(monkeypa
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -551,6 +588,7 @@ async def test_start_persistent_keeps_confidential_awaiting_init(monkeypatch):
         None,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
@@ -571,6 +609,7 @@ async def test_start_persistent_arms_update_watch(monkeypatch):
         pubsub,
         supervisor=sup,
         registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
         expiry=MagicMock(),
         update_watcher=watcher,
     )

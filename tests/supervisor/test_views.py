@@ -853,7 +853,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     resp = await response.json()
     assert "expires" in resp
     assert resp["status"] == "reserved"
-    assert len(app["supervisor"].pool.reservations) == 1
+    assert len(app["capacity"].holds) == 1
 
     # make a second reservation
     response2: web.Response = await client.post("/control/reserve_resources", json=instance_content)
@@ -862,7 +862,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     assert "expires" in resp2
     assert resp2["status"] == "reserved"
     assert resp2["expires"] > resp["expires"]
-    assert len(app["supervisor"].pool.reservations) == 1
+    assert len(app["capacity"].holds) == 1
 
     # another user try to reserve, should return an error
     other_user = "other_user"
@@ -875,7 +875,7 @@ async def test_reserve_resources(aiohttp_client, mocker, mock_app_with_pool):
     # InsufficientResourcesError when no matching card is free (here the only card
     # is held by the first user), which the endpoint maps to 503.
     assert response3.status == 503, await response3.text()
-    assert len(app["supervisor"].pool.reservations) == 1
+    assert len(app["capacity"].holds) == 1
 
     # Try to reserve a GPU that the CRN doesn't have
 
@@ -965,7 +965,7 @@ async def test_reserve_resources_double_fail(aiohttp_client, mocker, mock_app_wi
     # all cards before committing, raises InsufficientResourcesError, and holds
     # nothing. The endpoint maps that to 503.
     assert response.status == 503, await response.text()
-    assert len(app["supervisor"].pool.reservations) == 0
+    assert len(app["capacity"].holds) == 0
 
 
 @pytest.mark.asyncio

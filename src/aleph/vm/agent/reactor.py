@@ -4,6 +4,7 @@ from collections.abc import Coroutine
 from aleph_message.models import AlephMessage
 from aleph_message.models.execution.environment import Subscription
 
+from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
@@ -48,6 +49,7 @@ class Reactor:
     expiry: ExpiryManager
     update_watcher: UpdateWatcher
     registry: AgentVmRegistry
+    capacity: CapacityManager
     listeners: list[AlephMessage]
 
     def __init__(
@@ -57,6 +59,7 @@ class Reactor:
         expiry: ExpiryManager,
         update_watcher: UpdateWatcher,
         registry: AgentVmRegistry,
+        capacity: CapacityManager,
         program_client: ProgramGuestClient,
     ):
         self.pubsub = pubsub
@@ -64,6 +67,7 @@ class Reactor:
         self.expiry = expiry
         self.update_watcher = update_watcher
         self.registry = registry
+        self.capacity = capacity
         self.program_client = program_client
         self.listeners = []
 
@@ -91,6 +95,7 @@ class Reactor:
                             expiry=self.expiry,
                             update_watcher=self.update_watcher,
                             registry=self.registry,
+                            capacity=self.capacity,
                             program_client=self.program_client,
                         )
                     )
