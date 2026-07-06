@@ -1,6 +1,7 @@
 //! The daemon's world view: every VM the host defines, rebuilt from disk,
 //! systemd and sqlite at boot (adoption steps 1-4 of the design doc,
-//! section 4; step 5, the nftables reconcile, is increment 3).
+//! section 4; step 5, the nftables/ndppd reconcile, runs right after in
+//! lifecycle::reconcile_boot).
 //!
 //! Python parity notes. The oracle is the restarted Python daemon
 //! (`VmPool.load_persistent_executions`): it scans
@@ -34,8 +35,8 @@
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
-//! The view is read-only and rebuilt at boot; increments 3+ will mutate it
-//! (hence the RwLock in `DaemonState`).
+//! The view is rebuilt at boot and mutated by the lifecycle RPCs (the
+//! RwLock in `DaemonState`).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};

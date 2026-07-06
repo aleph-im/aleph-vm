@@ -202,7 +202,8 @@ async def test_the_adopted_world_reports_every_fixture_vm_stopped(adopted_daemon
             assert vm.starting_at_ns == 0
             assert vm.started_at_ns == 0
             assert vm.stopping_at_ns == 0
-            # Python parity: adopted executions never rebuild their GPU list.
+            # The fixture VMs are all adopted STOPPED: only VMs adopted
+            # running get their GPU attachments rebuilt (post-#1023).
             assert vm.gpus == []
             assert vm.guest_channel_path == ""
             assert vm.guest_ready_payload == b""

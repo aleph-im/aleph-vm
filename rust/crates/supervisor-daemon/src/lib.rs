@@ -1,5 +1,8 @@
-//! Rust supervisor daemon, increments 1 (Health + GetHostInfo) and 2 (the
-//! read-only world: GetVm, GetVmSpec, ListVms, ListPortForwards, GetLogs).
+//! Rust supervisor daemon, increments 1 (Health + GetHostInfo), 2 (the
+//! read-only world: GetVm, GetVmSpec, ListVms, ListPortForwards, GetLogs)
+//! and 3 (the persistent QEMU lifecycle: CreateVm, StopVm, StartVm,
+//! RebootVm, ReinstallVm, DeleteVm, the port-forward mutations,
+//! RecreateNetwork, and the boot-time nftables/ndppd reconcile).
 //!
 //! The parity oracle is the Python daemon (`python3 -m aleph.vm.supervisor`)
 //! after a restart: same `ALEPH_VM_*` configuration, same socket lifecycle,

@@ -1,4 +1,4 @@
-//! The Supervisor gRPC service, increments 1 and 2.
+//! The Supervisor gRPC service, increments 1-3.
 //!
 //! Health, GetHostInfo, GetVm, GetVmSpec, ListVms, ListPortForwards and
 //! GetLogs are field-for-field ports of the Python LocalSupervisor
@@ -8,7 +8,8 @@
 //! `_is_running`/`_running_states`, and the VmSpec served for an adopted VM
 //! is the `spec_from_controller_configuration` reconstruction
 //! (src/aleph/vm/supervisor/qemu_build.py) the restarted Python daemon
-//! holds. Every other RPC aborts UNIMPLEMENTED the way the Python `_abort`
+//! holds. The lifecycle mutations live in src/lifecycle.rs and run on the
+//! blocking pool. Every other RPC aborts UNIMPLEMENTED the way the Python `_abort`
 //! does for NotImplementedSupervisorError: grpc-status UNIMPLEMENTED plus a
 //! serialized ErrorDetail (code INTERNAL, the wire code of
 //! NotImplementedSupervisorError) in the `aleph-supervisor-error-bin`
@@ -173,9 +174,10 @@ impl SupervisorService {
         let (kernel_version, hostname) = host::uname_release_and_nodename()?;
         let inventory_json = gpu_json(&self.state.host.gpus)?;
         // Available = inventory minus the GPUs the world view's controller
-        // configs attach. Deliberate divergence (ledger entry 14): the
-        // restarted Python daemon rebuilds executions with an empty `gpus`
-        // list, so it reports adopted VMs' GPUs as available.
+        // configs attach (ledger entry 14, closed: post-#1023 Python
+        // rebuilds the attachments for VMs adopted running; the config
+        // union here also withholds adopted-STOPPED VMs' cards, which
+        // Python destroys at startup, entry 11).
         let attached: HashSet<String> = {
             let world = self.state.world.read().await;
             world

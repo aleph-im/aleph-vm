@@ -1,4 +1,4 @@
-//! aleph-vm-supervisor: the Rust supervisor daemon (increments 1 and 2).
+//! aleph-vm-supervisor: the Rust supervisor daemon (increments 1-3).
 //!
 //! Serves the aleph.supervisor.v1 contract on the Unix socket at
 //! ALEPH_VM_SUPERVISOR_GRPC_SOCKET (default {EXECUTION_ROOT}/supervisor.sock).
@@ -6,8 +6,11 @@
 //! the unit's EnvironmentFile= provides them, for dev runs --env-file does.
 //!
 //! Boot order mirrors the Python daemon (run_daemon): resolve host facts,
-//! rebuild the world view from disk/systemd/sqlite (adoption steps 1-4),
-//! then bind the socket and serve.
+//! run the settings.check() preconditions and the pool.setup() counterparts
+//! (store schema, forwarding sysctls, base nftables ruleset), rebuild the
+//! world view from disk/systemd/sqlite (adoption steps 1-4), reconcile the
+//! kernel/service state of running VMs (step 5), then bind the socket and
+//! serve.
 
 use std::process::ExitCode;
 use std::sync::Arc;
