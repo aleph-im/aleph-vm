@@ -17,6 +17,10 @@ pub struct AttestedTlsIdentity {
     pub cert_der: Vec<u8>,
     /// DER-encoded PKCS#8 private key (zeroized on drop).
     pub key_der: Zeroizing<Vec<u8>>,
+    /// Raw bytes of the served public key. This is the exact key the key-bound
+    /// report commits to, and the key the fresh-attestation endpoint must bind
+    /// its nonce to (channel binding). Public material, not secret.
+    pub public_key_raw: Vec<u8>,
     /// The attestation report that was embedded in the certificate.
     /// Retained for programmatic access (e.g. logging, diagnostics).
     #[allow(dead_code)]
@@ -36,8 +40,8 @@ pub fn generate_attested_tls_identity(backend: &dyn TeeBackend) -> Result<Attest
         .context("failed to generate ECDSA P-384 key pair")?;
 
     // 2. Get key-bound attestation report using the raw public key bytes.
-    let public_key_bytes = key_pair.public_key_raw();
-    let report = get_key_bound_report(backend, public_key_bytes)
+    let public_key_raw = key_pair.public_key_raw().to_vec();
+    let report = get_key_bound_report(backend, &public_key_raw)
         .context("failed to get attestation report bound to TLS key")?;
 
     // 3. Encode the attestation report as a DER-encoded X.509 extension value.
@@ -60,6 +64,7 @@ pub fn generate_attested_tls_identity(backend: &dyn TeeBackend) -> Result<Attest
     Ok(AttestedTlsIdentity {
         cert_der,
         key_der,
+        public_key_raw,
         report,
     })
 }
@@ -73,7 +78,11 @@ pub fn generate_attested_tls_identity(backend: &dyn TeeBackend) -> Result<Attest
 /// if that ever changes).
 pub fn build_rustls_config(identity: &AttestedTlsIdentity) -> Result<rustls::ServerConfig> {
     let cert_chain = vec![CertificateDer::from(identity.cert_der.clone())];
-    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from((*identity.key_der).clone()));
+    // rustls takes ownership of the key bytes; keep our transient copy under
+    // Zeroizing so this extra plaintext copy of the private key is wiped once
+    // rustls has consumed it, rather than lingering on the heap.
+    let key_bytes = Zeroizing::new((*identity.key_der).clone());
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.to_vec()));
 
     let config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),

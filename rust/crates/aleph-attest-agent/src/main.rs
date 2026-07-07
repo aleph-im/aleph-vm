@@ -60,8 +60,12 @@ async fn main() -> Result<()> {
     let rustls_config = build_rustls_config(&identity).context("failed to build rustls config")?;
 
     // 5. Create shared application state.
+    // The fresh-attestation endpoint binds the agent's real served public key
+    // into every report, so capture it here before `identity` is consumed.
+    let served_public_key_raw = identity.public_key_raw.clone();
     let app_state = web::Data::new(AppState {
         backend,
+        served_public_key_raw,
         upstream: cli.upstream.clone(),
         http_client: reqwest::Client::new(),
     });
