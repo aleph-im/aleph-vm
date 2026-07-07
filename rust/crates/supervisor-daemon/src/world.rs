@@ -25,7 +25,7 @@
 //! - A `hypervisor: firecracker` config is logged and skipped: Python's
 //!   reattach also fails for it (spec_from_controller_configuration is
 //!   QEMU-only), leaving the VM untracked, so both daemons hide it from
-//!   ListVms; Python just also queues doomed retries.
+//!   ListVms and queue it for (doomed) background retries.
 //! - When the boot-time ListUnits call FAILS (bus unreachable), no VM is
 //!   stamped stopped: unit states are unknown, and each VM's status defers
 //!   to the live per-RPC unit queries until the bus answers (ledger 13).
