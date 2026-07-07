@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/supervisor-proto", "crates/supervisor-daemon"]
+members = [
+    "crates/supervisor-proto",
+    "crates/supervisor-daemon",
+    "crates/supervisor-controller",
+]
 
 [workspace.package]
 edition = "2024"
@@ -28,7 +32,7 @@ sha2 = "0.10"
 tar = "0.4"
 thiserror = "2"
 zbus = "5"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync", "process", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.12"
 tonic-build = "0.12"
