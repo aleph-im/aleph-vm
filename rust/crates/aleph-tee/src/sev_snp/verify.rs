@@ -9,7 +9,7 @@ use sev::certs::snp::builtin;
 use crate::types::{AttestationReport, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
-use super::report::{extract_measurement, parse_sev_snp_report};
+use super::report::{extract_measurement, extract_report_data, parse_sev_snp_report};
 
 /// The signed portion of an SEV-SNP attestation report is bytes 0x000..0x2A0.
 const SIGNED_REPORT_SIZE: usize = 0x2A0;
@@ -100,7 +100,12 @@ pub async fn verify_sev_snp_report(
     // 2. Enforce the privileged-VMPL gate before doing any network work.
     check_vmpl(parsed.inner.vmpl)?;
 
+    // Derive report_data AND measurement from the parsed, about-to-be-AMD-verified
+    // blob. These are the ONLY trustworthy values (once the chain below passes):
+    // callers bind key/nonce commitments against these, never against any
+    // unsigned copy that travelled alongside the blob.
     let measurement = extract_measurement(&parsed).to_vec();
+    let report_data = extract_report_data(&parsed);
 
     // Extract chip_id and TCB version from the parsed report (input to the
     // VCEK fetch below, not a numbered verification stage of its own).
@@ -144,6 +149,7 @@ pub async fn verify_sev_snp_report(
         tee_type: TeeType::SevSnp,
         summary: format!("SEV-SNP report verified successfully (product: {product})"),
         measurement,
+        report_data,
         details: json!({
             "product": product,
             "guest_svn": parsed.inner.guest_svn,
