@@ -2,4 +2,5 @@
 //! integration tests capture output; main.rs passes stdout.
 
 pub mod host;
+pub mod ports;
 pub mod vm;
