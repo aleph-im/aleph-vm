@@ -66,6 +66,26 @@
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
       };
 
+      # Attestation CLI (static musl binary), the client-side SEV-SNP verifier.
+      # Built like the agent (static openssl for the aleph-tee/sev KDS chain) so
+      # it runs on any host regardless of glibc, e.g. a testnets SNP node.
+      attest-cli = craneToolchain.buildPackage {
+        src = workspaceSrc;
+        cargoExtraArgs = "-p aleph-attest-cli";
+        doCheck = false;
+        CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+        CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+        nativeBuildInputs = [ pkgs.pkg-config muslCC ];
+        buildInputs = [ staticOpenssl.dev ];
+        OPENSSL_DIR = "${staticOpenssl.dev}";
+        OPENSSL_LIB_DIR = "${staticOpenssl.out}/lib";
+        OPENSSL_STATIC = "1";
+        OPENSSL_NO_VENDOR = "1";
+        CC_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+        AR_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-ar";
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+      };
+
       # OVMF firmware built with the AmdSev variant (kernel hashing support), so
       # the SEV-SNP launch measurement covers OVMF + kernel + initrd + cmdline.
       ovmf = import ./ovmf.nix { inherit pkgs; };
@@ -159,6 +179,7 @@
       packages.${system} = {
         inherit
           attest-agent
+          attest-cli
           ovmf
           kernel
           initrd
