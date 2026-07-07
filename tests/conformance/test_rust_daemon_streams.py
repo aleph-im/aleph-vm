@@ -112,7 +112,11 @@ async def test_watch_events_fan_out_python_emission_points_no_replay(streams_dae
 
     try:
         consumers = [asyncio.ensure_future(consume(watcher_a)), asyncio.ensure_future(consume(watcher_b))]
-        await asyncio.sleep(0.5)  # let the streams subscribe server-side
+        # No subscription ack exists in the proto (WatchEvents deliberately
+        # has no replay), so a sleep is the only readiness signal available;
+        # a subscription racing the mutations below would lose events (known
+        # flake risk, shared with the integration-tier copy of this pattern).
+        await asyncio.sleep(0.5)
 
         info = await actor.stop_vm(VmId(STOPPED_HASH))
         assert info.status is VmStatus.STOPPED
