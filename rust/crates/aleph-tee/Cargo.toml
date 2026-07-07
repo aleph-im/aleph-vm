@@ -18,3 +18,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Runtime for the #[ignore]d network test that checks the pinned AMD ARK
+# against what the live KDS currently serves. Offline `cargo test` never runs it.
+tokio = { workspace = true }
