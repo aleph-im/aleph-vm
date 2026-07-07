@@ -51,9 +51,17 @@ impl SevHostInfo {
     /// `secure_encryption_info()`. Returns `None` when not on an AMD SEV
     /// platform: the extended leaf is unsupported, or the SEV feature bit is
     /// clear. The launch path turns a `None` into a clear "not an SEV
-    /// platform" refusal (see `rust-port-divergences.md`: the Python only
-    /// refuses when the raw `cpuid` call raises, so a non-SEV host would slip
-    /// through with `cbitpos=0`; the Rust fails closed on the SEV bit instead).
+    /// platform" refusal.
+    ///
+    /// Python's `secure_encryption_info()` returns `None` only when the raw
+    /// `cpuid(0x8000001F)` call raises (the leaf is above the host max extended
+    /// leaf); it never inspects `has_sev`. So on a non-AMD/Intel host the leaf
+    /// is unsupported and both sides refuse identically (not a divergence). The
+    /// extra Rust check on the SEV bit only bites the narrow case of an AMD part
+    /// that implements the leaf but reports `has_sev=0` (e.g. an
+    /// SME-capable-but-not-SEV SoC): Python would read a nonzero `c_bit_position`
+    /// and launch a bogus VM, whereas Rust fails closed (see divergence 58 in
+    /// `rust-port-divergences.md`).
     #[cfg(target_arch = "x86_64")]
     pub fn read() -> Option<Self> {
         // SAFETY: `__cpuid` is safe to execute on any x86_64 CPU; the leaves
