@@ -162,16 +162,23 @@ fn with_entry_mut<R>(
 fn place_vm_numa(
     state: &DaemonState,
     vcpus: u32,
+    memory_mib: u64,
     requested: Option<u32>,
 ) -> Result<Option<crate::numa::NumaPlacement>, RpcError> {
     if !state.numa.is_placement_active() {
         return Ok(None);
     }
+    // Hugepage backing is opt-in (ALEPH_VM_NUMA_HUGEPAGES); when off, the
+    // allocator tracks only vCPUs and never selects a page size, so C2 delivers
+    // just the regular-page NUMA memory binding. The hugepage pools are u32
+    // pages; a memory value beyond u32 MB saturates (no host has that RAM).
+    let uses_hugepages = state.host.settings.numa_hugepages;
+    let memory_mb = memory_mib.min(u32::MAX as u64) as u32;
     let mut ledger = state
         .numa_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match ledger.allocate(vcpus, requested) {
+    match ledger.allocate(vcpus, memory_mb, requested, uses_hugepages) {
         Ok(placement) => Ok(Some(placement)),
         Err(crate::numa::PlacementError::UnknownNode(message)) => {
             // A bad client argument (InvalidArgument on the wire).
@@ -1871,6 +1878,13 @@ fn build_written_config(
             kernel_path,
             initrd_path,
             kernel_cmdline,
+            // NUMA memory binding + hugepages (increment C2) are filled in by
+            // the create path AFTER placement is chosen (place_vm_numa runs
+            // after this builder), so they start None here and are injected
+            // before the config is written to disk. A plain/SEV/no-NUMA config
+            // leaves them None (byte-identical to pre-C2).
+            numa_node: None,
+            hugepage_size: None,
         },
         hypervisor: "qemu",
     })
@@ -2448,7 +2462,7 @@ fn create_vm_inner(
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
     // tap assignment under one world lock.
-    let (vm_index, assignment, written, stale_numa) = {
+    let (vm_index, assignment, mut written, stale_numa) = {
         let mut world = state.world.blocking_write();
         // A stale stopped entry is replaced, like the Python
         // `self.executions[vm_id] = execution` overwrite; a dict overwrite
@@ -2541,17 +2555,26 @@ fn create_vm_inner(
     // before the boot. A placement failure unwinds the just-registered
     // entry, like the boot-failure cleanup below. The chosen cpuset is
     // written as an AllowedCPUs drop-in inside the boot closure.
-    let numa_placement = match place_vm_numa(state, request.vcpus, request.numa_node) {
-        Ok(placement) => placement,
-        Err(error) => {
-            state.world.blocking_write().entries.remove(&vm_id);
-            return Err(error);
-        }
-    };
+    let numa_placement =
+        match place_vm_numa(state, request.vcpus, request.memory_mib, request.numa_node) {
+            Ok(placement) => placement,
+            Err(error) => {
+                state.world.blocking_write().entries.remove(&vm_id);
+                return Err(error);
+            }
+        };
     if let Some(placement) = &numa_placement {
         with_entry_mut(state, &vm_id, |entry| {
             entry.numa_node = Some(placement.node)
         });
+        // Carry the chosen node (and hugepage size, if any) into the controller
+        // config BEFORE it is written to disk below, so the controller binds the
+        // VM's memory to that node. build_written_config left these None; a
+        // no-placement create never enters this branch, so its bytes stay pre-C2.
+        written.vm_configuration.numa_node = Some(placement.node);
+        written.vm_configuration.hugepage_size = placement
+            .hugepage_size
+            .map(|size| size.as_qemu().to_string());
     }
 
     // qemu_build.py appends settings.DEVELOPER_SSH_KEYS when
@@ -5863,6 +5886,65 @@ mod tests {
         numa_harness_with(two_node_topology())
     }
 
+    /// A two-node topology whose nodes carry real 2M/1G hugepage pools, for the
+    /// C2 hugepage selection tests.
+    fn two_node_topology_with_hugepages() -> crate::numa::NumaTopology {
+        crate::numa::NumaTopology {
+            nodes: vec![
+                crate::numa::NumaNode {
+                    id: 0,
+                    cpus: (0..4).collect(),
+                    total_2m_hugepages: 2000,
+                    total_1g_hugepages: 4,
+                    total_ram_mb: 64_000,
+                },
+                crate::numa::NumaNode {
+                    id: 1,
+                    cpus: (4..8).collect(),
+                    total_2m_hugepages: 2000,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 64_000,
+                },
+            ],
+        }
+    }
+
+    /// A two-node NUMA harness with `ALEPH_VM_NUMA_HUGEPAGES` enabled and nodes
+    /// carrying hugepage pools, so the allocator selects a page size.
+    fn numa_hugepages_harness() -> Harness {
+        let (mut host, tmp) = numa_host();
+        host.settings.numa_hugepages = true;
+        let systemd = Arc::new(FakeSystemd::new());
+        let taps = Arc::new(FakeTapBackend::new());
+        let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
+        let mut state = crate::service::DaemonState::hermetic(
+            host,
+            world::WorldView::default(),
+            systemd.clone(),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = nft_executor.clone();
+        state.taps = taps.clone();
+        state.programs = programs.clone();
+        state.with_numa_topology(two_node_topology_with_hugepages());
+        Harness {
+            state: Arc::new(state),
+            systemd,
+            taps,
+            nft: nft_executor,
+            programs,
+            _tmp: tmp,
+        }
+    }
+
+    /// Read the on-disk controller config JSON a create wrote.
+    fn written_config_json(state: &DaemonState, vm_id: &str) -> String {
+        let path =
+            controller_config::controller_config_path(&state.host.settings.execution_root, vm_id);
+        std::fs::read_to_string(path).expect("controller config was written")
+    }
+
     fn allocated(state: &DaemonState, node: u32) -> u32 {
         state
             .numa_ledger
@@ -5955,6 +6037,70 @@ mod tests {
         );
         assert_eq!(allocated(state, 0), 0);
         assert_eq!(allocated(state, 1), 1);
+    }
+
+    #[test]
+    fn create_writes_numa_node_into_the_controller_config() {
+        // C2: a placed VM's controller config binds memory to the node. With
+        // hugepages OFF (the default), no hugepage_size / hugetlb is written.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, Some(0));
+
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let vm = &value["vm_configuration"];
+        assert_eq!(vm["numa_node"], serde_json::json!(0));
+        assert!(
+            vm.get("hugepage_size").is_none(),
+            "hugepages off: no hugepage_size written: {json}"
+        );
+    }
+
+    #[test]
+    fn create_on_a_single_node_host_writes_no_numa_node() {
+        // Parity: a single-node (or non-NUMA) host places nothing, so the
+        // written config carries no numa_node / hugepage_size and its bytes
+        // stay identical to pre-C2.
+        let harness = numa_harness_with(one_node_topology());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, None);
+
+        let json = written_config_json(state, &vm_id);
+        assert!(
+            !json.contains("numa_node") && !json.contains("hugepage_size"),
+            "no NUMA fields on a single-node host: {json}"
+        );
+    }
+
+    #[test]
+    fn create_with_hugepages_enabled_selects_a_page_size() {
+        // C2 opt-in: with ALEPH_VM_NUMA_HUGEPAGES on and hugepages reserved on
+        // the node, a placed VM's config carries a hugepage_size. The default
+        // spec is 256 MB (not 1G-aligned), so 2M is selected.
+        let harness = numa_hugepages_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let vm = &value["vm_configuration"];
+        assert_eq!(vm["numa_node"], serde_json::json!(0));
+        assert_eq!(
+            vm["hugepage_size"],
+            serde_json::json!("2M"),
+            "256 MB is not 1G-aligned, so 2M pages are chosen: {json}"
+        );
     }
 
     #[test]

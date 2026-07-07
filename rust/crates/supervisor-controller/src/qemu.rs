@@ -82,8 +82,38 @@ fn gpu_args(gpus: &[Gpu]) -> Vec<String> {
     args
 }
 
+/// The NUMA / hugetlb option suffix appended to a `memory-backend-memfd`
+/// object. The order is byte-identical to the aleph-tee generator
+/// (`sev_snp_qemu_args`): the hugetlb options FIRST
+/// (`,hugetlb=on,hugetlbsize={1G|2M}`), then the NUMA binding
+/// (`,host-nodes={node},policy=bind`). Empty when neither is set, so a config
+/// without a placement renders no suffix at all. `hugepage_size` is the QEMU
+/// `hugetlbsize` literal ("1G" or "2M") the daemon's allocator selected.
+///
+/// Shared by the plain, SEV/SEV-ES and SNP memory backends so the numa/hugepage
+/// fragment is emitted identically wherever a memory backend appears.
+fn memory_backend_suffix(numa_node: Option<u32>, hugepage_size: Option<&str>) -> String {
+    let mut suffix = String::new();
+    if let Some(size) = hugepage_size {
+        suffix.push_str(&format!(",hugetlb=on,hugetlbsize={size}"));
+    }
+    if let Some(node) = numa_node {
+        suffix.push_str(&format!(",host-nodes={node},policy=bind"));
+    }
+    suffix
+}
+
 /// Build the QEMU argv for a non-confidential persistent VM, byte-identical
 /// to `QemuVM.start()`. `argv[0]` is the qemu binary path (the exec target).
+///
+/// NUMA memory binding (increment C2): when `config.numa_node` is set (the
+/// supervisor placed this VM on a node of a >1-node host), a
+/// `memory-backend-memfd,id=pcram,...` object is added and wired via
+/// `memory-backend=pcram` on the EFFECTIVE (last) `-machine` line, binding guest
+/// RAM to that host node with `policy=bind` (plus optional `hugetlb`). When
+/// `numa_node` is absent the argv is EXACTLY the pre-C2 bytes (no memory
+/// backend, `-m` sizing unchanged), so single-node / no-NUMA hosts are byte
+/// identical to the Python oracle.
 pub fn build_argv(config: &QemuConfig) -> Vec<String> {
     // Q35 when GPUs are attached (i440FX cannot expose PCIe config space);
     // plain `pc` otherwise.
@@ -91,10 +121,27 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
 
     let qga_socket_path = qga_socket_or_none(config);
 
+    // NUMA memory binding (C2): the `,memory-backend=pcram` machine suffix goes
+    // on the LAST `-machine` line QEMU sees. In no-GPU mode that is the
+    // migration-pin `pc-i440fx-6.2` line appended below, so the FIRST machine
+    // takes no suffix; in GPU mode the first (q35) machine is the only one, so
+    // it takes the suffix. Empty when the VM is not NUMA-placed (pre-C2 parity).
+    let numa_active = config.numa_node.is_some();
+    let machine_backend_suffix = if numa_active {
+        ",memory-backend=pcram"
+    } else {
+        ""
+    };
+    let first_machine = if config.gpus.is_empty() {
+        machine_type.to_string()
+    } else {
+        format!("{machine_type}{machine_backend_suffix}")
+    };
+
     let mut args: Vec<String> = vec![
         config.qemu_bin_path.clone(),
         "-machine".into(),
-        machine_type.into(),
+        first_machine,
         "-enable-kvm".into(),
         "-nodefaults".into(),
         "-m".into(),
@@ -126,6 +173,19 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
         "-boot".into(),
         "order=c,reboot-timeout=1".into(),
     ];
+
+    // NUMA memory backend (C2): a memfd bound to the placed host node. Only
+    // emitted when the VM is NUMA-placed; otherwise the argv stays pre-C2. The
+    // `-machine ...,memory-backend=pcram` wiring is added above. `-m` still
+    // carries the sizing; QEMU sizes the backend from `size=` and binds it.
+    if numa_active {
+        args.push("-object".into());
+        args.push(format!(
+            "memory-backend-memfd,id=pcram,size={}M,share=on{}",
+            config.mem_size_mb.count(),
+            memory_backend_suffix(config.numa_node, config.hugepage_size.as_deref())
+        ));
+    }
 
     // NIC: only when interface_name is truthy (Python truthiness, so an empty
     // string is skipped, not just None).
@@ -163,7 +223,9 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
     // last) plus a migratable CPU. GPU mode uses its own -cpu below.
     if config.gpus.is_empty() {
         args.push("-machine".into());
-        args.push("pc-i440fx-6.2".into());
+        // The migration-pin machine is the LAST `-machine`, so the C2 NUMA
+        // memory-backend wiring lands here in no-GPU mode (empty otherwise).
+        args.push(format!("pc-i440fx-6.2{machine_backend_suffix}"));
         args.push("-cpu".into());
         args.push("host,migratable=on".into());
     }
@@ -217,6 +279,17 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
         .expect("confidential config carries sev_policy");
     let sev_policy = format!("0x{policy:x}");
 
+    // NUMA memory binding (C2): a placed confidential VM binds its guest RAM to
+    // the host node via a memfd wired onto the `confidential-guest-support=sev0`
+    // machine line (`memory-backend=pcram`). Absent when unplaced, so the SEV /
+    // SEV-ES argv stays byte-identical to pre-C2.
+    let numa_active = config.numa_node.is_some();
+    let confidential_machine = if numa_active {
+        "q35,confidential-guest-support=sev0,memory-backend=pcram".to_string()
+    } else {
+        "q35,confidential-guest-support=sev0".to_string()
+    };
+
     let mut args: Vec<String> = vec![
         config.qemu_bin_path.clone(),
         "-enable-kvm".into(),
@@ -266,12 +339,23 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
             sev.cbitpos, sev.reduced_phys_bits
         ),
         "-machine".into(),
-        "q35,confidential-guest-support=sev0".into(),
+        confidential_machine,
         // Always host CPU with host-phys-bits-limit (the plain path only did
         // this in GPU mode).
         "-cpu".into(),
         "host,host-phys-bits-limit=0x28".into(),
     ];
+
+    // NUMA memory backend (C2): the memfd the machine line binds to. Only
+    // emitted for a NUMA-placed VM, keeping the unplaced argv pre-C2.
+    if numa_active {
+        args.push("-object".into());
+        args.push(format!(
+            "memory-backend-memfd,id=pcram,size={}M,share=on{}",
+            config.mem_size_mb.count(),
+            memory_backend_suffix(config.numa_node, config.hugepage_size.as_deref())
+        ));
+    }
 
     // NIC WITHOUT rombar=0 (the plain path adds rombar=0). Python truthiness:
     // an empty string is skipped.
@@ -335,17 +419,32 @@ const SNP_REDUCED_PHYS_BITS: u32 = 1;
 /// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
 /// defaulting to 0x30000 upstream when the spec left it empty.
 ///
+/// NUMA memory binding + hugepages (increment C2): when `numa_node` is set the
+/// `ram1` memfd gains `,host-nodes={node},policy=bind`, and when `hugepage_size`
+/// is set it gains `,hugetlb=on,hugetlbsize={1G|2M}` (hugetlb BEFORE host-nodes,
+/// matching the generator). Both absent renders the exact B1 fragment, so an
+/// unplaced SNP VM stays byte-identical to pre-C2. The aleph-tee generator
+/// already carries this logic via `VmConfig.numa_node`/`hugepage_size`, so the
+/// oracle test drives both with the same values.
+///
 /// `pub` so the conformance test can assert byte-parity against the aleph-tee
 /// generator (the oracle).
-pub fn snp_tee_fragment(mem_size_mb: u64, sev_policy: u32, ovmf_path: &str) -> Vec<String> {
+pub fn snp_tee_fragment(
+    mem_size_mb: u64,
+    sev_policy: u32,
+    ovmf_path: &str,
+    numa_node: Option<u32>,
+    hugepage_size: Option<&str>,
+) -> Vec<String> {
     let policy = format!("0x{sev_policy:x}");
+    let suffix = memory_backend_suffix(numa_node, hugepage_size);
     vec![
         "-cpu".into(),
         "EPYC-v4".into(),
         "-machine".into(),
         "q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off".into(),
         "-object".into(),
-        format!("memory-backend-memfd,id=ram1,size={mem_size_mb}M,share=true"),
+        format!("memory-backend-memfd,id=ram1,size={mem_size_mb}M,share=true{suffix}"),
         "-object".into(),
         format!(
             "sev-snp-guest,id=sev0,cbitpos={SNP_CBITPOS},reduced-phys-bits={SNP_REDUCED_PHYS_BITS},\
@@ -471,11 +570,14 @@ pub fn build_snp_argv(config: &QemuConfig) -> Vec<String> {
     }
 
     // The SEV-SNP TEE fragment LAST (donor `build_qemu_command` appends the TEE
-    // args last), byte-identical to the aleph-tee generator.
+    // args last), byte-identical to the aleph-tee generator. NUMA node +
+    // hugepage size (C2) bind the ram1 memfd when the VM was placed.
     args.extend(snp_tee_fragment(
         config.mem_size_mb.count(),
         policy,
         ovmf_path,
+        config.numa_node,
+        config.hugepage_size.as_deref(),
     ));
 
     args
@@ -762,5 +864,179 @@ mod tests {
         };
         let checked = confidential_prelaunch_check(&config, Some(sev)).unwrap();
         assert_eq!(checked, sev);
+    }
+
+    // ── NUMA memory binding + hugepages (increment C2) ──────────────────
+    //
+    // These have NO Python oracle (Python never bound memory to a NUMA node),
+    // so the with-node argv is pinned directly here. The without-node parity
+    // (byte-identical to pre-C2) is proven both by the existing Python-generated
+    // fixtures (which carry no numa_node) and by the explicit diffs below.
+
+    /// A minimal plain config as JSON, with optional numa_node / hugepage_size.
+    fn plain_config(numa_node: Option<u32>, hugepage_size: Option<&str>) -> QemuConfig {
+        let numa = numa_node
+            .map(|node| format!(r#","numa_node":{node}"#))
+            .unwrap_or_default();
+        let huge = hugepage_size
+            .map(|size| format!(r#","hugepage_size":"{size}""#))
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64","image_path":"/img.qcow2",
+                "monitor_socket_path":"/m.sock","qmp_socket_path":"/q.sock",
+                "qga_socket_path":"/g.sock","vcpu_count":2,"mem_size_mb":2048,
+                "host_volumes":[],"gpus":[]{numa}{huge}}}"#
+        );
+        QemuConfig::from_json(&json).expect("plain config parses")
+    }
+
+    #[test]
+    fn plain_without_numa_is_byte_identical_to_pre_c2() {
+        // No numa_node: no memory-backend object, no memory-backend= on either
+        // machine line. This is the pre-C2 argv exactly.
+        let argv = build_argv(&plain_config(None, None));
+        assert!(
+            !argv.iter().any(|arg| arg.contains("memory-backend")),
+            "no memory-backend when unplaced: {argv:?}"
+        );
+        // The effective (last) machine is the bare migration pin.
+        assert!(argv.contains(&"pc-i440fx-6.2".to_string()));
+    }
+
+    #[test]
+    fn plain_with_numa_binds_memory_to_the_node() {
+        let argv = build_argv(&plain_config(Some(1), None));
+        // The memfd object bound to node 1, regular pages (no hugetlb).
+        assert!(
+            argv.contains(
+                &"memory-backend-memfd,id=pcram,size=2048M,share=on,host-nodes=1,policy=bind"
+                    .to_string()
+            ),
+            "{argv:?}"
+        );
+        assert!(!argv.iter().any(|arg| arg.contains("hugetlb")));
+        // Wired onto the effective (last) machine, the no-GPU migration pin.
+        assert!(argv.contains(&"pc-i440fx-6.2,memory-backend=pcram".to_string()));
+        // The first machine keeps its bare form (QEMU takes the last -machine).
+        assert!(argv.contains(&"pc".to_string()));
+        // -m sizing is unchanged.
+        let m = argv.iter().position(|a| a == "-m").unwrap();
+        assert_eq!(argv[m + 1], "2048");
+    }
+
+    #[test]
+    fn plain_with_numa_and_hugepages_adds_hugetlb() {
+        let argv = build_argv(&plain_config(Some(0), Some("1G")));
+        assert!(
+            argv.contains(&"memory-backend-memfd,id=pcram,size=2048M,share=on,hugetlb=on,hugetlbsize=1G,host-nodes=0,policy=bind".to_string()),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn plain_gpu_wires_the_backend_onto_the_q35_machine() {
+        // In GPU mode there is no migration pin, so the memory-backend= wiring
+        // lands on the single q35 machine line.
+        let json = r#"{"qemu_bin_path":"/usr/bin/qemu-system-x86_64","image_path":"/img.qcow2",
+            "monitor_socket_path":"/m.sock","qmp_socket_path":"/q.sock",
+            "qga_socket_path":"/g.sock","vcpu_count":2,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[{"pci_host":"0000:01:00.0"}],"numa_node":1}"#;
+        let argv = build_argv(&QemuConfig::from_json(json).unwrap());
+        assert!(
+            argv.contains(&"q35,memory-backend=pcram".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            argv.contains(
+                &"memory-backend-memfd,id=pcram,size=2048M,share=on,host-nodes=1,policy=bind"
+                    .to_string()
+            )
+        );
+    }
+
+    /// A minimal SEV/SEV-ES confidential config with optional numa_node.
+    fn sev_config(numa_node: Option<u32>) -> QemuConfig {
+        let numa = numa_node
+            .map(|node| format!(r#","numa_node":{node}"#))
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64","image_path":"/img.qcow2",
+                "monitor_socket_path":"/m.sock","qmp_socket_path":"/q.sock",
+                "qga_socket_path":"/g.sock","vcpu_count":2,"mem_size_mb":2048,
+                "host_volumes":[],"gpus":[],"ovmf_path":"/OVMF.fd",
+                "sev_session_file":"/s.b64","sev_dh_cert_file":"/d.b64","sev_policy":1{numa}}}"#
+        );
+        let config = QemuConfig::from_json(&json).expect("sev config parses");
+        assert!(config.is_confidential());
+        config
+    }
+
+    #[test]
+    fn sev_without_numa_is_byte_identical_to_pre_c2() {
+        let sev = SevHostInfo {
+            cbitpos: 51,
+            reduced_phys_bits: 1,
+        };
+        let argv = build_confidential_argv(&sev_config(None), sev);
+        assert!(!argv.iter().any(|arg| arg.contains("memory-backend")));
+        assert!(argv.contains(&"q35,confidential-guest-support=sev0".to_string()));
+    }
+
+    #[test]
+    fn sev_with_numa_binds_memory_on_the_sev0_machine() {
+        let sev = SevHostInfo {
+            cbitpos: 51,
+            reduced_phys_bits: 1,
+        };
+        let argv = build_confidential_argv(&sev_config(Some(1)), sev);
+        assert!(
+            argv.contains(&"q35,confidential-guest-support=sev0,memory-backend=pcram".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            argv.contains(
+                &"memory-backend-memfd,id=pcram,size=2048M,share=on,host-nodes=1,policy=bind"
+                    .to_string()
+            )
+        );
+    }
+
+    /// A complete SNP config with optional numa/hugepage overlay.
+    fn snp_config(numa_node: Option<u32>, hugepage_size: Option<&str>) -> QemuConfig {
+        let numa = numa_node
+            .map(|node| format!(r#","numa_node":{node}"#))
+            .unwrap_or_default();
+        let huge = hugepage_size
+            .map(|size| format!(r#","hugepage_size":"{size}""#))
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64","image_path":"/img.ext4",
+                "monitor_socket_path":"/m.sock","qmp_socket_path":"/q.sock",
+                "qga_socket_path":"/g.sock","vcpu_count":2,"mem_size_mb":2048,
+                "host_volumes":[],"gpus":[],"sev_snp":true,"ovmf_path":"/OVMF.fd",
+                "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+                "kernel_cmdline":"console=ttyS0 roothash=abc"{numa}{huge}}}"#
+        );
+        let config = QemuConfig::from_json(&json).expect("snp config parses");
+        assert!(config.is_snp());
+        config
+    }
+
+    #[test]
+    fn snp_without_numa_leaves_the_ram1_memfd_bare() {
+        let argv = build_snp_argv(&snp_config(None, None));
+        assert!(
+            argv.contains(&"memory-backend-memfd,id=ram1,size=2048M,share=true".to_string()),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn snp_with_numa_and_hugepages_binds_the_ram1_memfd() {
+        let argv = build_snp_argv(&snp_config(Some(1), Some("2M")));
+        assert!(
+            argv.contains(&"memory-backend-memfd,id=ram1,size=2048M,share=true,hugetlb=on,hugetlbsize=2M,host-nodes=1,policy=bind".to_string()),
+            "{argv:?}"
+        );
     }
 }
