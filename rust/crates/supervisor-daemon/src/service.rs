@@ -25,7 +25,7 @@ use prost::Message;
 use supervisor_proto::ERROR_TRAILER_KEY;
 use supervisor_proto::pb;
 use supervisor_proto::pb::supervisor_server::Supervisor;
-use tokio_stream::Stream;
+use tokio_stream::{Stream, StreamExt};
 use tonic::metadata::{MetadataMap, MetadataValue};
 use tonic::{Code, Request, Response, Status};
 
@@ -145,7 +145,23 @@ pub struct DaemonState {
     pub net_lock: std::sync::Mutex<()>,
     /// Poll/sleep pacing for the lifecycle waits; tests shrink it.
     pub pacing: crate::lifecycle::Pacing,
+    /// Lifecycle event fan-out behind WatchEvents (the Python
+    /// `_event_queues` set).
+    pub events: crate::events::EventHub,
+    /// The ephemeral Firecracker launcher (increment 4): programs are
+    /// direct children of the daemon, spawned and reaped through this seam.
+    pub programs: Arc<dyn crate::firecracker::ProgramLauncher>,
+    /// Bounds concurrent StreamLogs follows. Each live follow pins one
+    /// blocking-pool thread for its whole lifetime; unbounded, ~512
+    /// concurrent follows would exhaust tokio's blocking pool and starve
+    /// every lifecycle RPC that hops through spawn_blocking. The cap stays
+    /// far below the pool size; the excess request is rejected
+    /// RESOURCE_EXHAUSTED (Rust-only bound, ledger entry 44).
+    pub log_follows: Arc<tokio::sync::Semaphore>,
 }
+
+/// See [`DaemonState::log_follows`].
+pub const MAX_CONCURRENT_LOG_FOLLOWS: usize = 64;
 
 impl DaemonState {
     /// State over hermetic in-memory seams: unit tests and callers that
@@ -169,6 +185,9 @@ impl DaemonState {
             vm_locks: std::sync::Mutex::new(HashMap::new()),
             net_lock: std::sync::Mutex::new(()),
             pacing: crate::lifecycle::Pacing::instant(),
+            events: crate::events::EventHub::default(),
+            programs: Arc::new(crate::firecracker::FakeProgramLauncher::new()),
+            log_follows: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOG_FOLLOWS)),
         }
     }
 }
@@ -302,7 +321,7 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`, ported literally: the times short-circuit the live flag.
-fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
+pub(crate) fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
     } else if times.stopping_at_ns != 0 {
@@ -345,13 +364,20 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
             })
             .unwrap_or_default()
     };
+    // `_backend_of`: the VMM only (FIRECRACKER for programs, QEMU
+    // otherwise); confidential computing rides confidential_mode.
+    let backend = if entry.is_program {
+        pb::Backend::Firecracker
+    } else {
+        pb::Backend::Qemu
+    };
     pb::VmInfo {
         vm_id: entry.vm_hash.clone(),
         status: vm_status(times, running) as i32,
         ipv4: Some(ip(&entry.ipv4)),
         ipv6: Some(ip(&entry.ipv6)),
         uptime_secs,
-        backend: pb::Backend::Qemu as i32,
+        backend: backend as i32,
         numa_node: None,
         status_message: String::new(),
         defined_at_ns: times.defined_at_ns,
@@ -376,8 +402,18 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
                 supports_x_vga: gpu.supports_x_vga,
             })
             .collect(),
-        guest_channel_path: String::new(),
-        guest_ready_payload: Vec::new(),
+        // `_guest_channel_path` / `_guest_ready_payload`: the MicroVM
+        // facts for programs, empty otherwise.
+        guest_channel_path: entry
+            .program
+            .as_ref()
+            .map(|program| program.vsock_path.clone())
+            .unwrap_or_default(),
+        guest_ready_payload: entry
+            .program
+            .as_ref()
+            .map(|program| program.ready_payload.clone())
+            .unwrap_or_default(),
         awaiting_confidential_init,
     }
 }
@@ -491,20 +527,48 @@ fn journal_tail_bound(max_lines: u32, from_tail: bool) -> Option<u32> {
     }
 }
 
+fn log_chunk_message(entry: crate::logs::LogEntry) -> pb::LogChunk {
+    pb::LogChunk {
+        // Python: whole seconds * 1e9 + microseconds * 1000, which is
+        // the journal's microsecond timestamp times 1000.
+        timestamp_ns: entry.timestamp_us * 1_000,
+        line: entry.message,
+        source: match entry.source {
+            LogStream::Stdout => pb::log_chunk::LogSource::Stdout as i32,
+            LogStream::Stderr => pb::log_chunk::LogSource::Stderr as i32,
+        },
+    }
+}
+
 fn log_chunks(entries: Vec<crate::logs::LogEntry>) -> Vec<pb::LogChunk> {
-    entries
-        .into_iter()
-        .map(|entry| pb::LogChunk {
-            // Python: whole seconds * 1e9 + microseconds * 1000, which is
-            // the journal's microsecond timestamp times 1000.
-            timestamp_ns: entry.timestamp_us * 1_000,
-            line: entry.message,
-            source: match entry.source {
-                LogStream::Stdout => pb::log_chunk::LogSource::Stdout as i32,
-                LogStream::Stderr => pb::log_chunk::LogSource::Stderr as i32,
-            },
-        })
-        .collect()
+    entries.into_iter().map(log_chunk_message).collect()
+}
+
+/// Wraps the StreamLogs channel so dropping the response stream (the client
+/// went away) stops the underlying journal follow, the Python `finally:
+/// unregister_queue` equivalent. The semaphore permit rides along: the
+/// follow slot frees when the stream is dropped.
+struct StreamWithCleanup<S> {
+    inner: S,
+    stopper: Arc<dyn crate::logs::LogFollowStopper>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl<S: Stream + Unpin> Stream for StreamWithCleanup<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(context)
+    }
+}
+
+impl<S> Drop for StreamWithCleanup<S> {
+    fn drop(&mut self) {
+        self.stopper.stop();
+    }
 }
 
 // ── Error statuses ──────────────────────────────────────────────────────
@@ -568,6 +632,11 @@ fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
             pb::ErrorCode::InvalidBackend,
             message,
         ),
+        RpcError::MicroVmInit(message) => {
+            // MicroVMInitError: INTERNAL with the MICROVM_INIT_FAILED
+            // trailer (grpc_server.py STATUS_CODE_BY_ERROR).
+            status_with_error_detail(Code::Internal, pb::ErrorCode::MicrovmInitFailed, message)
+        }
         RpcError::Unimplemented(message) => {
             // NotImplementedSupervisorError: UNIMPLEMENTED, trailer INTERNAL.
             status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
@@ -636,7 +705,13 @@ impl Supervisor for SupervisorService {
                 None => return Err(vm_not_found_status(&vm_id)),
             }
         };
-        let running = self.unit_running(entry.unit_name()).await?;
+        // Python _is_running: systemd for persistent VMs, times for
+        // ephemeral programs.
+        let running = if entry.is_program {
+            entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+        } else {
+            self.unit_running(entry.unit_name()).await?
+        };
         Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
@@ -663,13 +738,23 @@ impl Supervisor for SupervisorService {
             let world = self.state.world.read().await;
             world.ordered_entries().into_iter().cloned().collect()
         };
-        let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
+        // One batched query covers the persistent VMs (`_running_states`);
+        // ephemeral programs are times-based, no unit to ask about.
+        let unit_names: Vec<String> = entries
+            .iter()
+            .filter(|entry| !entry.is_program)
+            .map(|entry| entry.unit_name())
+            .collect();
         let states = self.units_running(unit_names).await?;
         let now = now_ns();
         let vms = entries
             .iter()
             .map(|entry| {
-                let running = states.get(&entry.unit_name()).copied().unwrap_or(false);
+                let running = if entry.is_program {
+                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+                } else {
+                    states.get(&entry.unit_name()).copied().unwrap_or(false)
+                };
                 vm_info_message(entry, running, now)
             })
             .collect();
@@ -745,9 +830,20 @@ impl Supervisor for SupervisorService {
 
     async fn run_program_code(
         &self,
-        _request: Request<pb::RunProgramCodeRequest>,
+        request: Request<pb::RunProgramCodeRequest>,
     ) -> Result<Response<pb::RunProgramCodeResponse>, Status> {
-        Err(unimplemented_status("RunProgramCode"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let reply = run_lifecycle(move || {
+            crate::lifecycle::run_program_code(
+                &state,
+                &request.vm_id,
+                &request.scope_msgpack,
+                request.timeout_secs,
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::RunProgramCodeResponse { reply }))
     }
 
     async fn restore_from_image(
@@ -809,14 +905,19 @@ impl Supervisor for SupervisorService {
         Ok(Response::new(pb::ListPortForwardsResponse { forwards }))
     }
 
-    // ── Events (increment 4) ──
-    type WatchEventsStream = UnimplementedStream<pb::VmEvent>;
+    // ── Events ──
+    type WatchEventsStream = Pin<Box<dyn Stream<Item = Result<pb::VmEvent, Status>> + Send>>;
 
     async fn watch_events(
         &self,
         _request: Request<pb::WatchEventsRequest>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        Err(unimplemented_status("WatchEvents"))
+        // Python watch_events: register a queue and stream it until the
+        // client disconnects; no replay (snapshot with ListVms first, as
+        // the proto documents). Dropping the stream unsubscribes.
+        let receiver = self.state.events.subscribe();
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(receiver).map(Ok);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     // ── Logs (StreamLogs lands in increment 4) ──
@@ -860,13 +961,103 @@ impl Supervisor for SupervisorService {
         Ok(Response::new(pb::GetLogsResponse { lines }))
     }
 
-    type StreamLogsStream = UnimplementedStream<pb::LogChunk>;
+    type StreamLogsStream = Pin<Box<dyn Stream<Item = Result<pb::LogChunk, Status>> + Send>>;
 
     async fn stream_logs(
         &self,
-        _request: Request<pb::StreamLogsRequest>,
+        request: Request<pb::StreamLogsRequest>,
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
-        Err(unimplemented_status("StreamLogs"))
+        let request = request.into_inner();
+        let stdout_id = format!("vm-{}-stdout", request.vm_id);
+        let stderr_id = format!("vm-{}-stderr", request.vm_id);
+        let known = self
+            .state
+            .world
+            .read()
+            .await
+            .entries
+            .contains_key(&request.vm_id);
+
+        if !known {
+            // Python: the live phase requires a tracked execution; an
+            // unknown (or deleted) VM's stream ends after the optional
+            // history, it is NOT an error.
+            if !request.include_history {
+                return Ok(Response::new(Box::pin(tokio_stream::empty())));
+            }
+            let logs = self.state.logs.clone();
+            let history = tokio::task::spawn_blocking(move || {
+                // Server-capped like GetLogs max_lines=0 (ledger entry 16).
+                logs.read_history(&stdout_id, &stderr_id, Some(GET_LOGS_SERVER_CAP))
+            })
+            .await
+            .map_err(|error| {
+                internal_status(DaemonError::Internal(format!(
+                    "the journal task failed: {error}"
+                )))
+            })?
+            .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+            let chunks: Vec<Result<pb::LogChunk, Status>> =
+                log_chunks(history).into_iter().map(Ok).collect();
+            return Ok(Response::new(Box::pin(tokio_stream::iter(chunks))));
+        }
+
+        // Each live follow pins one blocking-pool thread; the semaphore
+        // rejects follows beyond the cap instead of letting them starve the
+        // pool (see DaemonState::log_follows).
+        let permit = match self.state.log_follows.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Err(status_with_error_detail(
+                    Code::ResourceExhausted,
+                    pb::ErrorCode::InsufficientResources,
+                    format!(
+                        "too many concurrent log streams (limit {MAX_CONCURRENT_LOG_FOLLOWS}); \
+                         retry later or use GetLogs"
+                    ),
+                ));
+            }
+        };
+
+        // One journalctl --follow serves both phases gap-free: the bounded
+        // history replay (server cap, ledger entry 16) when asked, then
+        // live entries until the client goes away.
+        let last_lines = if request.include_history {
+            GET_LOGS_SERVER_CAP
+        } else {
+            0
+        };
+        let logs = self.state.logs.clone();
+        let (mut reader, stopper) =
+            tokio::task::spawn_blocking(move || logs.follow(&stdout_id, &stderr_id, last_lines))
+                .await
+                .map_err(|error| {
+                    internal_status(DaemonError::Internal(format!(
+                        "the journal task failed: {error}"
+                    )))
+                })?
+                .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::LogChunk, Status>>(16);
+        let pump_stopper = stopper.clone();
+        tokio::task::spawn_blocking(move || {
+            while let Some(entry) = reader.next_entry() {
+                if sender.blocking_send(Ok(log_chunk_message(entry))).is_err() {
+                    // The client dropped the stream mid-send.
+                    break;
+                }
+            }
+            // Every pump exit path stops (kills AND reaps) the subprocess:
+            // the reader's own EOF-path wait never runs again after a
+            // mid-send break, and stop() is idempotent when the cleanup
+            // guard already fired.
+            pump_stopper.stop();
+        });
+        let stream = StreamWithCleanup {
+            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+            stopper,
+            _permit: permit,
+        };
+        Ok(Response::new(Box::pin(stream)))
     }
 
     // ── Backups (increment 5) ──
@@ -1023,6 +1214,8 @@ mod tests {
             gpus: Vec::new(),
             spec: None,
             ordinal: 0,
+            is_program: false,
+            program: None,
         }
     }
 
@@ -1174,6 +1367,326 @@ mod tests {
         assert_eq!(chunks[0].source, pb::log_chunk::LogSource::Stdout as i32);
         assert_eq!(chunks[1].source, pb::log_chunk::LogSource::Stderr as i32);
         assert_eq!(chunks.len(), 3);
+    }
+
+    fn test_host_state() -> HostState {
+        HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: Vec::new(),
+            dns_nameservers: None,
+        }
+    }
+
+    fn log_fixture_entries() -> Vec<crate::logs::LogEntry> {
+        vec![
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_001,
+                message: "one".into(),
+                source: LogStream::Stdout,
+            },
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_002,
+                message: "two".into(),
+                source: LogStream::Stderr,
+            },
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_003,
+                message: "three".into(),
+                source: LogStream::Stdout,
+            },
+        ]
+    }
+
+    async fn collect_chunks(
+        stream: &mut (impl Stream<Item = Result<pb::LogChunk, Status>> + Unpin),
+    ) -> Vec<pb::LogChunk> {
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.unwrap());
+        }
+        chunks
+    }
+
+    #[tokio::test]
+    async fn stream_logs_replays_bounded_history_then_the_live_feed() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        let mut world = WorldView::default();
+        world.insert_entry(fixture_entry(test_fixtures::QEMU_HASH, true));
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::new(log_fixture_entries())),
+        ));
+        let service = SupervisorService::new(state);
+
+        // include_history: the follow starts with the bounded history (the
+        // fake ends after it; the real journalctl keeps following).
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: test_fixtures::QEMU_HASH.to_string(),
+                include_history: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(
+            chunks.iter().map(|c| c.line.as_str()).collect::<Vec<_>>(),
+            vec!["one", "two", "three"]
+        );
+        assert_eq!(chunks[0].timestamp_ns, 1_000_001_000);
+        assert_eq!(chunks[1].source, pb::log_chunk::LogSource::Stderr as i32);
+
+        // include_history=false: only new lines from now (the fake has
+        // none, so the stream ends empty).
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: test_fixtures::QEMU_HASH.to_string(),
+                include_history: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(collect_chunks(&mut stream).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_logs_for_an_unknown_vm_ends_instead_of_erroring() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        // Python: an unknown (or deleted) VM yields the optional journald
+        // history, then the stream ends; never NOT_FOUND.
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            WorldView::default(),
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::new(log_fixture_entries())),
+        ));
+        let service = SupervisorService::new(state);
+
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: "1".repeat(64),
+                include_history: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(collect_chunks(&mut stream).await.is_empty());
+
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: "1".repeat(64),
+                include_history: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(chunks.len(), 3, "a deleted VM's history is still served");
+    }
+
+    /// A LogSource whose follows are controllable from the test: optional
+    /// canned entries, then either an immediate end or a block until the
+    /// stopper fires; every stop() call is counted.
+    struct ControlledFollowSource {
+        entries: Vec<crate::logs::LogEntry>,
+        hang_after_entries: bool,
+        stops: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct ControlledFollowReader {
+        entries: std::vec::IntoIter<crate::logs::LogEntry>,
+        hang: bool,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::logs::LogFollowReader for ControlledFollowReader {
+        fn next_entry(&mut self) -> Option<crate::logs::LogEntry> {
+            if let Some(entry) = self.entries.next() {
+                return Some(entry);
+            }
+            while self.hang && !self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            None
+        }
+    }
+
+    struct RecordingStopper {
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        stops: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::logs::LogFollowStopper for RecordingStopper {
+        fn stop(&self) {
+            self.stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl crate::logs::LogSource for ControlledFollowSource {
+        fn read_history(
+            &self,
+            _stdout_id: &str,
+            _stderr_id: &str,
+            _last_lines: Option<u32>,
+        ) -> Result<Vec<crate::logs::LogEntry>, String> {
+            Ok(Vec::new())
+        }
+
+        fn follow(
+            &self,
+            _stdout_id: &str,
+            _stderr_id: &str,
+            _last_lines: u32,
+        ) -> Result<crate::logs::LogFollow, String> {
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            Ok((
+                Box::new(ControlledFollowReader {
+                    entries: self.entries.clone().into_iter(),
+                    hang: self.hang_after_entries,
+                    stopped: stopped.clone(),
+                }),
+                Arc::new(RecordingStopper {
+                    stopped,
+                    stops: self.stops.clone(),
+                }),
+            ))
+        }
+    }
+
+    fn stream_service(
+        source: ControlledFollowSource,
+        max_follows: usize,
+    ) -> (SupervisorService, Arc<std::sync::atomic::AtomicUsize>) {
+        use crate::units::StaticUnitStates;
+        let stops = source.stops.clone();
+        let mut world = WorldView::default();
+        world.insert_entry(fixture_entry(test_fixtures::QEMU_HASH, true));
+        let mut state = DaemonState::hermetic(
+            test_host_state(),
+            world,
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(source),
+        );
+        state.log_follows = Arc::new(tokio::sync::Semaphore::new(max_follows));
+        (SupervisorService::new(Arc::new(state)), stops)
+    }
+
+    fn follow_request() -> Request<pb::StreamLogsRequest> {
+        Request::new(pb::StreamLogsRequest {
+            vm_id: test_fixtures::QEMU_HASH.to_string(),
+            include_history: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn stream_logs_rejects_follows_beyond_the_cap() {
+        // R1: each live follow pins one blocking-pool thread; beyond the
+        // semaphore cap the request is rejected RESOURCE_EXHAUSTED instead
+        // of starving the pool, and a freed slot serves again.
+        let (service, _stops) = stream_service(
+            ControlledFollowSource {
+                entries: Vec::new(),
+                hang_after_entries: true,
+                stops: Arc::default(),
+            },
+            1,
+        );
+        let first = service.stream_logs(follow_request()).await.unwrap();
+        let error = match service.stream_logs(follow_request()).await {
+            Err(status) => status,
+            Ok(_) => panic!("the second follow must be rejected"),
+        };
+        assert_eq!(error.code(), Code::ResourceExhausted);
+
+        // Dropping the stream frees the slot.
+        drop(first);
+        let third = service.stream_logs(follow_request()).await;
+        assert!(third.is_ok(), "a freed slot must serve again");
+    }
+
+    #[tokio::test]
+    async fn dropping_a_log_stream_stops_the_underlying_follow() {
+        // C2, the StreamWithCleanup::drop path: the client goes away while
+        // the follow is blocked; only the drop guard can stop (kill and
+        // reap) the subprocess.
+        let (service, stops) = stream_service(
+            ControlledFollowSource {
+                entries: Vec::new(),
+                hang_after_entries: true,
+                stops: Arc::default(),
+            },
+            MAX_CONCURRENT_LOG_FOLLOWS,
+        );
+        let stream = service.stream_logs(follow_request()).await.unwrap();
+        assert_eq!(stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(stream);
+        assert!(
+            stops.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "dropping the response stream must stop the follow"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_pump_stops_the_follow_without_a_client_drop() {
+        // C2, the pump-exit path: when the reader ends (journalctl exited
+        // on its own), the pump itself must stop/reap the subprocess even
+        // though the client still holds the stream.
+        let (service, stops) = stream_service(
+            ControlledFollowSource {
+                entries: log_fixture_entries(),
+                hang_after_entries: false,
+                stops: Arc::default(),
+            },
+            MAX_CONCURRENT_LOG_FOLLOWS,
+        );
+        let mut stream = service
+            .stream_logs(follow_request())
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(chunks.len(), 3);
+        // The channel closed, so the pump already ran its exit cleanup; the
+        // stream itself has NOT been dropped yet.
+        assert_eq!(
+            stops.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pump exit path must stop the follow"
+        );
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn watch_events_streams_hub_emissions() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            WorldView::default(),
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::default()),
+        ));
+        let service = SupervisorService::new(state.clone());
+        let mut stream = service
+            .watch_events(Request::new(pb::WatchEventsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        state
+            .events
+            .emit("aa", pb::VmStatus::Defined, pb::VmStatus::Running);
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.vm_id, "aa");
+        assert_eq!(event.old_status, pb::VmStatus::Defined as i32);
+        assert_eq!(event.new_status, pb::VmStatus::Running as i32);
     }
 
     #[test]

@@ -137,8 +137,11 @@ jobs:
       fail-fast: false
       matrix:
         # The suite is implementation-agnostic: the same tests drive the
-        # Python daemon and the Rust one (which skips the increments it
-        # does not serve yet; see tests/integration/conftest.py).
+        # Python daemon and the Rust one. Since increment 4 the rust leg
+        # runs the full Firecracker surface (boot, port forwards,
+        # WatchEvents, StreamLogs) and may only skip the backup tests
+        # (increment 5); the conftest CI guard fails the job if the FC
+        # prerequisites would silently skip either leg.
         supervisor-impl: [python, rust]
 
     steps:

@@ -164,14 +164,31 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
         .expect_err("an unspecified backend must fail");
     assert_eq!(status.code(), Code::Internal);
 
-    // CreateVm for a Firecracker program: increment 4, UNIMPLEMENTED.
+    // CreateVm for an ephemeral Firecracker program without a guest
+    // channel: the Python InvalidBackendError, before any side effect.
     let status = client
         .create_vm(pb::VmSpec {
             backend: pb::Backend::Firecracker as i32,
             ..Default::default()
         })
         .await
-        .expect_err("Firecracker creation is increment 4");
+        .expect_err("a channel-less Firecracker spec must fail");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(
+        status.message(),
+        "Firecracker spec VMs require a guest_channel"
+    );
+
+    // Persistent Firecracker programs are not ported (they boot under
+    // systemd controller units; ledgered).
+    let status = client
+        .create_vm(pb::VmSpec {
+            backend: pb::Backend::Firecracker as i32,
+            persistent: true,
+            ..Default::default()
+        })
+        .await
+        .expect_err("persistent programs are not ported");
     assert_eq!(status.code(), Code::Unimplemented);
 
     // Graceful shutdown unlinks the socket.

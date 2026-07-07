@@ -7,7 +7,6 @@ import asyncio
 
 import pytest
 from conftest import (
-    SUPERVISOR_IMPL,
     default_route_interface,
     eventually,
     fc_program_spec,
@@ -160,21 +159,20 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
     spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
     info = await supervisor.create_vm(spec)
 
-    # The Rust daemon answers WatchEvents UNIMPLEMENTED until increment 4;
-    # only the event subscription and its assertions are gated on the
-    # implementation, the stop/start/reboot cycle itself runs on both legs.
-    watch_events = SUPERVISOR_IMPL != "rust"
+    # Both daemons serve WatchEvents since increment 4 of the Rust port: the
+    # event assertions run on both matrix legs.
     events: list = []
-    consumer = None
 
     async def consume():
         async for event in supervisor.watch_events():
             if event.vm_id == vm_id:
                 events.append((event.old_status, event.new_status))
 
-    if watch_events:
-        consumer = asyncio.ensure_future(consume())
-        await asyncio.sleep(0.5)  # let the stream subscribe server-side
+    consumer = asyncio.ensure_future(consume())
+    # No subscription ack exists in the proto (WatchEvents has no replay),
+    # so a sleep is the only way to let the stream subscribe server-side
+    # before the first mutation; a too-short sleep loses events (flake risk).
+    await asyncio.sleep(0.5)
     try:
         await wait_for_tcp_banner(info.ipv4.address, 22)
 
@@ -197,19 +195,17 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
         assert rebooted.status is VmStatus.RUNNING
         await wait_for_tcp_banner(rebooted.ipv4.address, 22)
 
-        if watch_events:
-            # Persistent transitions are observable: stop, start, reboot pair.
-            await eventually(lambda: len(events) >= 4, timeout=10, message=f"missing lifecycle events: {events}")
-            assert events == [
-                (VmStatus.RUNNING, VmStatus.STOPPED),  # stop_vm
-                (VmStatus.STOPPED, VmStatus.RUNNING),  # start_vm
-                (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
-                (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
-            ]
+        # Persistent transitions are observable: stop, start, reboot pair.
+        await eventually(lambda: len(events) >= 4, timeout=10, message=f"missing lifecycle events: {events}")
+        assert events == [
+            (VmStatus.RUNNING, VmStatus.STOPPED),  # stop_vm
+            (VmStatus.STOPPED, VmStatus.RUNNING),  # start_vm
+            (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
+            (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
+        ]
     finally:
-        if consumer is not None:
-            consumer.cancel()
-            await asyncio.gather(consumer, return_exceptions=True)
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
         await supervisor.delete_vm(vm_id)
 
 

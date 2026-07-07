@@ -69,13 +69,16 @@ async def test_ephemeral_vm_rejects_stop_start_and_stays_usable(supervisor):
         # The failed calls did not break the VM.
         assert (await supervisor.get_vm(vm_id)).status is VmStatus.RUNNING
 
-        # Backup lookups for ids that were never created.
-        with pytest.raises(BackupNotFoundError):
+        # Backup lookups for ids that were never created. The backup
+        # surface is increment 5 of the Rust port: the RPCs themselves are
+        # UNIMPLEMENTED there, so the existence check is never reached.
+        backup_error = NotImplementedSupervisorError if SUPERVISOR_IMPL == "rust" else BackupNotFoundError
+        with pytest.raises(backup_error):
             await supervisor.get_backup_status(vm_id, BackupId(f"{vm_id}-20200101T000000000000Z"))
-        with pytest.raises(BackupNotFoundError):
+        with pytest.raises(backup_error):
             async for _chunk in supervisor.download_backup(vm_id, BackupId(f"{vm_id}-20200101T000000000000Z")):
                 pass
-        with pytest.raises(BackupNotFoundError):
+        with pytest.raises(backup_error):
             # A backup id of another VM must not resolve through this one.
             await supervisor.get_backup_status(vm_id, BackupId(f"{UNKNOWN_VM}-20200101T000000000000Z"))
     finally:
