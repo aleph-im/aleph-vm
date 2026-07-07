@@ -79,10 +79,11 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // A1 drives the non-confidential QEMU path only. Dispatch with Python's
-    // precedence: the hypervisor field first, then the vm_configuration shape.
-    let qemu_config = match select_qemu_config(&config) {
-        Ok(qemu_config) => qemu_config,
+    // Dispatch with Python's `execute_persistent_vm` precedence: the hypervisor
+    // field first (firecracker rejected), then the confidential-superset shape,
+    // then the plain QEMU path.
+    let target = match select_run_target(&config) {
+        Ok(target) => target,
         Err(error) => {
             tracing::error!("{error}");
             return ExitCode::FAILURE;
@@ -107,7 +108,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(qemu::run(&config.vm_hash, &qemu_config)) {
+    let result = match &target {
+        RunTarget::Plain(qemu_config) => runtime.block_on(qemu::run(&config.vm_hash, qemu_config)),
+        RunTarget::Confidential(qemu_config) => {
+            runtime.block_on(qemu::run_confidential(&config.vm_hash, qemu_config))
+        }
+    };
+    match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!("{error}");
@@ -147,25 +154,34 @@ fn interface_exists(interface_name: &str) -> bool {
         .exists()
 }
 
-/// Select the QEMU runner config, replicating the Python `execute_persistent_vm`
+/// The selected QEMU run path: plain (`QemuVM.start()`) or confidential
+/// (`QemuConfidentialVM.start()`).
+enum RunTarget {
+    Plain(QemuConfig),
+    Confidential(QemuConfig),
+}
+
+/// Select the QEMU run path, replicating the Python `execute_persistent_vm`
 /// precedence: check `config.hypervisor == firecracker` FIRST (fails closed for
 /// a QEMU-shaped payload mislabelled firecracker, and for a config with the
-/// field absent, which defaults to firecracker), then reject a confidential
-/// QEMU payload (that is A2), then run the plain QEMU path. The Rust A1 rejects
-/// where Python would assert/NotImplemented; both fail closed, never open.
-fn select_qemu_config(config: &Configuration) -> Result<QemuConfig, String> {
+/// field absent, which defaults to firecracker), then route a confidential
+/// QEMU payload (all four SEV fields present, the `isinstance
+/// QemuConfidentialVMConfiguration` branch) to the confidential path, then the
+/// plain QEMU path. The Rust rejects where Python would assert; both fail
+/// closed, never open.
+fn select_run_target(config: &Configuration) -> Result<RunTarget, String> {
     if config.hypervisor == HypervisorType::Firecracker {
         return Err(
             "this controller does not run Firecracker VMs (hypervisor=firecracker); \
-             A1 implements the non-confidential QEMU path only"
+             it implements the QEMU (plain and SEV/SEV-ES confidential) paths only"
                 .to_string(),
         );
     }
     match &config.vm_configuration {
-        VmConfiguration::Qemu(qemu_config) if qemu_config.is_confidential() => Err(
-            "confidential VMs are not supported by this controller yet (increment A2)".to_string(),
-        ),
-        VmConfiguration::Qemu(qemu_config) => Ok((**qemu_config).clone()),
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_confidential() => {
+            Ok(RunTarget::Confidential((**qemu_config).clone()))
+        }
+        VmConfiguration::Qemu(qemu_config) => Ok(RunTarget::Plain((**qemu_config).clone())),
         VmConfiguration::Firecracker => {
             Err("this controller only runs QEMU VMs, not Firecracker".to_string())
         }
@@ -189,9 +205,12 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_qemu_config_dispatches_to_the_qemu_runner() {
+    fn a_plain_qemu_config_dispatches_to_the_plain_runner() {
         let config = parse("qemu", QEMU_VM_CONFIG);
-        assert!(select_qemu_config(&config).is_ok());
+        assert!(matches!(
+            select_run_target(&config),
+            Ok(RunTarget::Plain(_))
+        ));
     }
 
     #[test]
@@ -199,7 +218,7 @@ mod tests {
         // Python checks hypervisor==firecracker FIRST and asserts on the shape
         // (fails closed); the Rust must reject, not boot.
         let config = parse("firecracker", QEMU_VM_CONFIG);
-        assert!(select_qemu_config(&config).is_err());
+        assert!(select_run_target(&config).is_err());
     }
 
     #[test]
@@ -212,17 +231,35 @@ mod tests {
         );
         let config = Configuration::from_json(&json).unwrap();
         assert_eq!(config.hypervisor, HypervisorType::Firecracker);
-        assert!(select_qemu_config(&config).is_err());
+        assert!(select_run_target(&config).is_err());
     }
 
     #[test]
-    fn a_confidential_shaped_config_is_rejected() {
+    fn a_confidential_shaped_config_dispatches_to_the_confidential_runner() {
+        // All four SEV fields present: the Python `isinstance
+        // QemuConfidentialVMConfiguration` branch. Routes to the confidential
+        // path, not rejected (was the A1 behavior).
         let confidential = format!(
             r#"{QEMU_VM_CONFIG},"ovmf_path":"o","sev_session_file":"s",
                "sev_dh_cert_file":"d","sev_policy":5"#
         );
         let config = parse("qemu", &confidential);
-        assert!(select_qemu_config(&config).is_err());
+        assert!(matches!(
+            select_run_target(&config),
+            Ok(RunTarget::Confidential(_))
+        ));
+    }
+
+    #[test]
+    fn a_confidential_config_mislabelled_firecracker_is_still_rejected() {
+        // The hypervisor field wins first: a confidential-shaped payload
+        // labelled firecracker fails closed, never boots confidential.
+        let confidential = format!(
+            r#"{QEMU_VM_CONFIG},"ovmf_path":"o","sev_session_file":"s",
+               "sev_dh_cert_file":"d","sev_policy":5"#
+        );
+        let config = parse("firecracker", &confidential);
+        assert!(select_run_target(&config).is_err());
     }
 
     #[test]
@@ -232,6 +269,6 @@ mod tests {
             "jailer_bin_path":"/opt/firecracker/jailer",
             "config_file_path":"/var/lib/aleph/vm/abc.json","init_timeout":5.0"#;
         let config = parse("firecracker", firecracker);
-        assert!(select_qemu_config(&config).is_err());
+        assert!(select_run_target(&config).is_err());
     }
 }
