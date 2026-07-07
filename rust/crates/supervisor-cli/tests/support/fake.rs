@@ -21,7 +21,7 @@ use tonic::{Request, Response, Status};
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
 #[derive(Default)]
-#[allow(dead_code)] // fields used by Tasks 6-9
+#[allow(dead_code)] // remaining fields used by Tasks 7-9
 pub struct FakeSupervisor {
     pub host: pb::HostInfo,
     pub vms: Vec<pb::VmInfo>,
@@ -36,7 +36,6 @@ pub struct FakeSupervisor {
 }
 
 impl FakeSupervisor {
-    #[allow(dead_code)] // used from Task 6 on
     fn find_vm(&self, vm_id: &str) -> Option<&pb::VmInfo> {
         self.vms.iter().find(|vm| vm.vm_id == vm_id)
     }
@@ -44,7 +43,6 @@ impl FakeSupervisor {
 
 /// NOT_FOUND with the same ErrorDetail trailer the real daemon attaches,
 /// so the CLI's trailer decoding is exercised end-to-end.
-#[allow(dead_code)] // used from Task 6 on
 fn not_found(vm_id: &str) -> Status {
     let message = format!("no VM with id {vm_id}");
     let detail = pb::ErrorDetail {
@@ -88,23 +86,32 @@ impl Supervisor for FakeSupervisor {
 
     async fn get_vm(
         &self,
-        _request: Request<pb::GetVmRequest>,
+        request: Request<pb::GetVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        self.find_vm(&vm_id)
+            .map(|vm| Response::new(vm.clone()))
+            .ok_or_else(|| not_found(&vm_id))
     }
 
     async fn get_vm_spec(
         &self,
-        _request: Request<pb::GetVmSpecRequest>,
+        request: Request<pb::GetVmSpecRequest>,
     ) -> Result<Response<pb::VmSpec>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        match &self.spec {
+            Some(spec) if spec.vm_id == vm_id => Ok(Response::new(spec.clone())),
+            _ => Err(not_found(&vm_id)),
+        }
     }
 
     async fn list_vms(
         &self,
         _request: Request<pb::ListVmsRequest>,
     ) -> Result<Response<pb::ListVmsResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
+        Ok(Response::new(pb::ListVmsResponse {
+            vms: self.vms.clone(),
+        }))
     }
 
     async fn delete_vm(
