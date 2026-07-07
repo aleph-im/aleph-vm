@@ -248,6 +248,10 @@ omit = [
   # job (opt-in via ALEPH_VM_CONFORMANCE=1), which uploads no coverage, so
   # counting them here only skews the coverage totals.
   "tests/conformance/*",
+  # Same shape: the integration suite needs root and KVM, so it runs in its
+  # own CI job, which uploads no coverage; the coverage-measured unit-test
+  # job only imports these files and skips every test.
+  "tests/integration/*",
 ]
 
 [tool.coverage.paths]

@@ -736,6 +736,33 @@ def nftables_ruleset() -> str:
     return subprocess.run([nft, "list", "ruleset"], check=True, capture_output=True, text=True).stdout
 
 
+def nftables_dnat_rules(host_port: int) -> list[dict]:
+    """The DNAT rule expressions for a host port, from `nft -j list ruleset`.
+
+    Structural (JSON) matching instead of text: nft's text rendering of dnat
+    varies across versions ("dnat to" vs "dnat ip to")."""
+    if not IS_ROOT:
+        return []
+    nft = shutil.which("nft") or "/usr/sbin/nft"
+    payload = subprocess.run([nft, "-j", "list", "ruleset"], check=True, capture_output=True, text=True).stdout
+    rules = []
+    for item in json.loads(payload).get("nftables", []):
+        expr = item.get("rule", {}).get("expr", [])
+        has_port = any(
+            match.get("match", {}).get("right") == host_port
+            and match.get("match", {}).get("left", {}).get("payload", {}).get("field") == "dport"
+            for match in expr
+        )
+        if has_port and any("dnat" in step for step in expr):
+            rules.append(item["rule"])
+    return rules
+
+
+def default_route_interface() -> str:
+    route = subprocess.run(["ip", "route", "show", "default"], check=True, capture_output=True, text=True).stdout
+    return route.split(" dev ")[1].split()[0]
+
+
 def vm_processes(vm_id: VmId) -> list[str]:
     """Command lines of live processes that reference this VM id (works for
     QEMU/controller processes, whose command lines carry per-VM paths)."""

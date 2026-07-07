@@ -8,10 +8,12 @@ import asyncio
 import pytest
 from conftest import (
     SUPERVISOR_IMPL,
+    default_route_interface,
     eventually,
     fc_program_spec,
     fresh_vm_id,
     make_qemu_rootfs,
+    nftables_dnat_rules,
     nftables_ruleset,
     qemu_instance_spec,
     requires_fc,
@@ -227,22 +229,29 @@ async def test_qemu_port_forward_lands_in_the_host_firewall(supervisor, daemon, 
             PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP)
         )
         assert forward.vm_port == 22
-        # nft renders the rule as `... tcp dport <port> dnat to <ip>:22`
-        # ("dnat ip to" on some nft versions, so match the two halves).
-        ruleset = nftables_ruleset()
-        dport = f"tcp dport {forward.host_port} "
-        dnat_target = f"to {info.ipv4.address}:22"
-        rule_lines = [line for line in ruleset.splitlines() if dport in line and dnat_target in line]
-        assert rule_lines, f"DNAT rule missing from the host firewall:\n{ruleset}"
-        # The redirect works end to end: the SSH banner answers on the
-        # host port too (through the forward, not the guest address).
-        await wait_for_tcp_banner("127.0.0.1", forward.host_port, timeout=60)
+        # The rule matches ingress on the host's external interface
+        # (iifname == NETWORK_INTERFACE), so no single-host probe can
+        # traverse it: locally generated traffic takes the OUTPUT hook and
+        # never reaches the PREROUTING chain, whatever address it targets.
+        # Assert the full rule structure against the live kernel instead;
+        # end-to-end traffic through the redirect is exercised externally by
+        # the aleph-testnets upgrade checks, whose client connects through
+        # the node's public interface.
+        rules = nftables_dnat_rules(forward.host_port)
+        assert rules, "DNAT rule missing from the host firewall"
+        (rule,) = rules
+        expr = rule["expr"]
+        iif_values = [
+            match["match"]["right"]
+            for match in expr
+            if match.get("match", {}).get("left", {}).get("meta", {}).get("key") == "iifname"
+        ]
+        assert iif_values == [default_route_interface()]
+        dnat = next(step["dnat"] for step in expr if "dnat" in step)
+        assert (dnat["addr"], dnat["port"]) == (info.ipv4.address, 22)
 
         await supervisor.remove_port_forward(vm_id, forward.host_port, Protocol.TCP)
-        ruleset = nftables_ruleset()
-        assert not [
-            line for line in ruleset.splitlines() if dport in line and dnat_target in line
-        ], "the DNAT rule survived RemovePortForward"
+        assert not nftables_dnat_rules(forward.host_port), "the DNAT rule survived RemovePortForward"
         assert await supervisor.list_port_forwards(vm_id) == []
     finally:
         await supervisor.delete_vm(vm_id)
