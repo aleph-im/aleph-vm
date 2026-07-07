@@ -21,3 +21,8 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Byte-parity ORACLE for the SEV-SNP TEE argv fragment only (increment B1).
+# aleph-tee is a DEV dependency, never a runtime one: the controller's runtime
+# SNP fragment is self-contained (`qemu::snp_tee_fragment`) precisely so the
+# controller binary does not pull aleph-tee's openssl/reqwest closure.
+aleph-tee = { path = "../aleph-tee" }

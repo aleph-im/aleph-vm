@@ -261,11 +261,12 @@ impl SupervisorService {
                     DaemonError::Internal(format!("the statvfs task failed: {error}"))
                 })??;
         Ok(pb::HostInfo {
-            // Only the fields LocalSupervisor.get_host_info fills; the rest
-            // keep their proto defaults, exactly like the Python HostInfo
-            // dataclass defaults (cpu_architecture, cpu_vendor, cpu_model,
-            // frequencies, memory type, NUMA topology, the narrow gpus list
-            // and the SEV/TDX flags all ride empty today).
+            // Only the fields LocalSupervisor.get_host_info fills, plus
+            // sev_snp_supported (increment B1, the SNP host capability check);
+            // the rest keep their proto defaults, exactly like the Python
+            // HostInfo dataclass defaults (cpu_architecture, cpu_vendor,
+            // cpu_model, frequencies, memory type, NUMA topology, the narrow
+            // gpus list and the remaining SEV/TDX flags still ride empty).
             cpu_count: host::cpu_count(),
             memory_mib: host::memory_total_mib()?,
             kernel_version,
@@ -274,6 +275,7 @@ impl SupervisorService {
             available_disk_bytes,
             gpu_inventory_json: inventory_json,
             available_gpus_json: available_json,
+            sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
             ..Default::default()
         })
     }
@@ -362,14 +364,22 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
         0
     };
     let confidential = entry.config.confidential();
-    let confidential_mode = match &confidential {
-        None => pb::ConfidentialMode::None,
-        Some(config) if config.sev_policy & SEV_ES_POLICY_BIT != 0 => pb::ConfidentialMode::SevEs,
-        Some(_) => pb::ConfidentialMode::Sev,
+    let snp = entry.config.snp();
+    let confidential_mode = if snp.is_some() {
+        pb::ConfidentialMode::SevSnp
+    } else {
+        match &confidential {
+            None => pb::ConfidentialMode::None,
+            Some(config) if config.sev_policy & SEV_ES_POLICY_BIT != 0 => {
+                pb::ConfidentialMode::SevEs
+            }
+            Some(_) => pb::ConfidentialMode::Sev,
+        }
     };
-    // `is_awaiting_confidential_init`, ported literally: confidential,
-    // persistent (every adopted VM is), started but neither stopping nor
-    // observed running.
+    // `is_awaiting_confidential_init`, ported literally: confidential (SEV /
+    // SEV-ES only, via the session/godh slot), persistent (every adopted VM
+    // is), started but neither stopping nor observed running. SNP has no
+    // session handshake, so it is never awaiting: it starts at create.
     let awaiting_confidential_init =
         confidential.is_some() && times.started_at_ns != 0 && times.stopping_at_ns == 0 && !running;
     let ip = |pair: &Option<crate::world::IpPair>| {
