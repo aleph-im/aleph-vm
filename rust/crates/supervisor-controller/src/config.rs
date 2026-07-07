@@ -198,11 +198,31 @@ impl QemuConfig {
             && self.sev_policy.is_some()
     }
 
-    /// True when this is an SEV-SNP measured-boot payload (increment B1). The
-    /// daemon sets `sev_snp: true` and fills `ovmf_path`, `sev_policy`,
-    /// `kernel_path`, `initrd_path` and `kernel_cmdline`; `build_snp_argv`
-    /// relies on that invariant.
+    /// True when this is a COMPLETE SEV-SNP measured-boot payload (increment
+    /// B1): the `sev_snp: true` marker AND every field `build_snp_argv`
+    /// `.expect()`s (`ovmf_path`, `sev_policy`, `kernel_path`, `initrd_path`,
+    /// `kernel_cmdline`). Mirrors [`Self::is_confidential`]'s all-fields pattern
+    /// so the dispatcher only routes to `build_snp_argv` when the invariant its
+    /// `.expect()`s rely on actually holds. A marker-set-but-partial config is
+    /// deliberately NOT snp here (it is [`Self::is_snp_marked`] instead), so it
+    /// cannot be misdispatched into the SNP builder and panic; the dispatcher
+    /// turns that case into a clean refusal. This agrees with the daemon-side
+    /// `QemuVmConfig::snp` soft-fail (marker set, a field missing -> `None`).
     pub fn is_snp(&self) -> bool {
+        self.sev_snp == Some(true)
+            && self.ovmf_path.is_some()
+            && self.sev_policy.is_some()
+            && self.kernel_path.is_some()
+            && self.initrd_path.is_some()
+            && self.kernel_cmdline.is_some()
+    }
+
+    /// True when the SNP backend marker (`sev_snp: true`) is set, REGARDLESS of
+    /// whether the measured-boot fields are complete. The dispatcher uses this
+    /// to tell a partial SNP config (marker set, a field missing) apart from a
+    /// genuine plain/SEV config: a partial SNP config must be a clean refusal,
+    /// never a silent plain or SEV launch.
+    pub fn is_snp_marked(&self) -> bool {
         self.sev_snp == Some(true)
     }
 }
@@ -473,6 +493,46 @@ mod tests {
                 .unwrap()
                 .is_confidential()
         );
+    }
+
+    #[test]
+    fn snp_resolves_only_when_the_marker_and_all_measured_fields_are_present() {
+        let base = r#""qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+            "qmp_socket_path":"p","vcpu_count":2,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[]"#;
+        // The complete SNP payload: marker plus all five measured fields.
+        let complete = format!(
+            r#"{{{base},"sev_snp":true,"ovmf_path":"/OVMF.fd","sev_policy":196608,
+                "kernel_path":"/bzImage","initrd_path":"/initrd",
+                "kernel_cmdline":"console=ttyS0 roothash=abc"}}"#
+        );
+        let config = QemuConfig::from_json(&complete).unwrap();
+        assert!(config.is_snp(), "a complete SNP config resolves as SNP");
+        assert!(config.is_snp_marked());
+
+        // Each of the five measured fields dropped in turn: the marker stays set
+        // (is_snp_marked), but is_snp is false, so the dispatcher never routes
+        // it into build_snp_argv (whose .expect()s would panic).
+        for missing in [
+            "ovmf_path",
+            "sev_policy",
+            "kernel_path",
+            "initrd_path",
+            "kernel_cmdline",
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(&complete).unwrap();
+            value.as_object_mut().unwrap().remove(missing);
+            let partial = serde_json::to_string(&value).unwrap();
+            let config = QemuConfig::from_json(&partial).unwrap();
+            assert!(
+                !config.is_snp(),
+                "an SNP config missing {missing} must NOT resolve as SNP"
+            );
+            assert!(
+                config.is_snp_marked(),
+                "the marker is still set with {missing} missing"
+            );
+        }
     }
 
     #[test]
