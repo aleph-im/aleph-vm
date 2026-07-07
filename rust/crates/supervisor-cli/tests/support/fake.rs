@@ -116,30 +116,44 @@ impl Supervisor for FakeSupervisor {
 
     async fn delete_vm(
         &self,
-        _request: Request<pb::DeleteVmRequest>,
+        request: Request<pb::DeleteVmRequest>,
     ) -> Result<Response<pb::DeleteVmResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let request = request.into_inner();
+        if self.find_vm(&request.vm_id).is_none() {
+            return Err(not_found(&request.vm_id));
+        }
+        self.deleted.lock().unwrap().push(request.vm_id);
+        Ok(Response::new(pb::DeleteVmResponse {}))
     }
 
     async fn stop_vm(
         &self,
-        _request: Request<pb::StopVmRequest>,
+        request: Request<pb::StopVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        self.find_vm(&vm_id)
+            .map(|vm| Response::new(vm.clone()))
+            .ok_or_else(|| not_found(&vm_id))
     }
 
     async fn start_vm(
         &self,
-        _request: Request<pb::StartVmRequest>,
+        request: Request<pb::StartVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        self.find_vm(&vm_id)
+            .map(|vm| Response::new(vm.clone()))
+            .ok_or_else(|| not_found(&vm_id))
     }
 
     async fn reboot_vm(
         &self,
-        _request: Request<pb::RebootVmRequest>,
+        request: Request<pb::RebootVmRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        self.find_vm(&vm_id)
+            .map(|vm| Response::new(vm.clone()))
+            .ok_or_else(|| not_found(&vm_id))
     }
 
     async fn reinstall_vm(

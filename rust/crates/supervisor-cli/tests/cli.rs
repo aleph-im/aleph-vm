@@ -199,3 +199,93 @@ async fn vm_spec_renders_disks_and_network() {
          internet_access: true\n"
     );
 }
+
+#[tokio::test]
+async fn vm_stop_reports_the_returned_status() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::stop(&mut client, &mut out, "vm-1", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "stopped vm-1: now RUNNING\n"
+    );
+}
+
+#[tokio::test]
+async fn vm_delete_aborts_when_not_confirmed() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let deleted = fake.deleted.clone();
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::delete(
+        &mut client,
+        &mut out,
+        &mut "n\n".as_bytes(),
+        "vm-1",
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(String::from_utf8(out).unwrap().ends_with("aborted\n"));
+    assert!(deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn vm_delete_proceeds_on_y() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let deleted = fake.deleted.clone();
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::delete(
+        &mut client,
+        &mut out,
+        &mut "y\n".as_bytes(),
+        "vm-1",
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(String::from_utf8(out).unwrap().ends_with("deleted vm-1\n"));
+    assert_eq!(*deleted.lock().unwrap(), vec!["vm-1".to_string()]);
+}
+
+#[tokio::test]
+async fn vm_delete_with_yes_skips_the_prompt() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let deleted = fake.deleted.clone();
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::delete(
+        &mut client,
+        &mut out,
+        &mut "".as_bytes(),
+        "vm-1",
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "deleted vm-1\n");
+    assert_eq!(*deleted.lock().unwrap(), vec!["vm-1".to_string()]);
+}

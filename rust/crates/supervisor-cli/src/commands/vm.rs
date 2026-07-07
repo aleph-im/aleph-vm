@@ -161,3 +161,98 @@ pub async fn spec(
     }
     Ok(())
 }
+
+pub async fn start(
+    client: &mut SupervisorClient,
+    out: &mut impl Write,
+    vm_id: &str,
+    json: bool,
+) -> Result<()> {
+    let vm = client
+        .start_vm(pb::StartVmRequest {
+            vm_id: vm_id.to_string(),
+        })
+        .await
+        .map_err(status_error)?
+        .into_inner();
+    report_transition(out, "started", &vm, json)
+}
+
+pub async fn stop(
+    client: &mut SupervisorClient,
+    out: &mut impl Write,
+    vm_id: &str,
+    json: bool,
+) -> Result<()> {
+    let vm = client
+        .stop_vm(pb::StopVmRequest {
+            vm_id: vm_id.to_string(),
+        })
+        .await
+        .map_err(status_error)?
+        .into_inner();
+    report_transition(out, "stopped", &vm, json)
+}
+
+pub async fn reboot(
+    client: &mut SupervisorClient,
+    out: &mut impl Write,
+    vm_id: &str,
+    json: bool,
+) -> Result<()> {
+    let vm = client
+        .reboot_vm(pb::RebootVmRequest {
+            vm_id: vm_id.to_string(),
+        })
+        .await
+        .map_err(status_error)?
+        .into_inner();
+    report_transition(out, "rebooted", &vm, json)
+}
+
+fn report_transition(out: &mut impl Write, verb: &str, vm: &pb::VmInfo, json: bool) -> Result<()> {
+    if json {
+        return output::write_json(out, vm);
+    }
+    writeln!(
+        out,
+        "{verb} {}: now {}",
+        vm.vm_id,
+        output::vm_status_name(vm.status)
+    )?;
+    Ok(())
+}
+
+pub async fn delete(
+    client: &mut SupervisorClient,
+    out: &mut impl Write,
+    input: &mut impl std::io::BufRead,
+    vm_id: &str,
+    assume_yes: bool,
+    json: bool,
+) -> Result<()> {
+    if !assume_yes {
+        write!(out, "Delete VM {vm_id}? [y/N] ")?;
+        out.flush()?;
+        let mut answer = String::new();
+        input.read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            writeln!(out, "aborted")?;
+            return Ok(());
+        }
+    }
+    let response = client
+        .delete_vm(pb::DeleteVmRequest {
+            vm_id: vm_id.to_string(),
+            wipe: false,
+            keep_port_mappings: false,
+        })
+        .await
+        .map_err(status_error)?
+        .into_inner();
+    if json {
+        return output::write_json(out, &response);
+    }
+    writeln!(out, "deleted {vm_id}")?;
+    Ok(())
+}
