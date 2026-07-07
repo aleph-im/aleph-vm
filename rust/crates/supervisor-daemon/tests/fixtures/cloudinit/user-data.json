@@ -1,0 +1,2 @@
+#cloud-config
+{"disable_root":false,"hostname":"my-host","package_update":true,"packages":["qemu-guest-agent"],"resize_rootfs":true,"runcmd":["systemctl start qemu-guest-agent.service"],"ssh_authorized_keys":["ssh-ed25519 AAAA test@host"],"ssh_pwauth":false}

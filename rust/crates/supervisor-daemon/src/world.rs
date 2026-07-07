@@ -1,6 +1,7 @@
 //! The daemon's world view: every VM the host defines, rebuilt from disk,
 //! systemd and sqlite at boot (adoption steps 1-4 of the design doc,
-//! section 4; step 5, the nftables reconcile, is increment 3).
+//! section 4; step 5, the nftables/ndppd reconcile, runs right after in
+//! lifecycle::reconcile_boot).
 //!
 //! Python parity notes. The oracle is the restarted Python daemon
 //! (`VmPool.load_persistent_executions`): it scans
@@ -34,8 +35,8 @@
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
-//! The view is read-only and rebuilt at boot; increments 3+ will mutate it
-//! (hence the RwLock in `DaemonState`).
+//! The view is rebuilt at boot and mutated by the lifecycle RPCs (the
+//! RwLock in `DaemonState`).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -75,6 +76,54 @@ pub struct IpPair {
     pub gateway: String,
 }
 
+/// One GPU attachment as `_to_vm_info` reports it: the Python `HostGPU`
+/// rebuilt from the host inventory (post-#1023) or, for a card absent from
+/// the inventory, recorded bare from the config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedGpu {
+    pub pci_host: String,
+    /// vendor:device ids when the card is in the lspci inventory, empty
+    /// otherwise (the bare `HostGPU(pci_host=...)` case).
+    pub device_id: String,
+    pub supports_x_vga: bool,
+}
+
+/// Python `VmPool._rebuild_reattached_gpus`: never rejects (the cards are
+/// facts, not requests); inventory cards keep their metadata and hardware
+/// x-vga flag, unknown cards are recorded from the config alone.
+pub fn rebuild_attached_gpus(
+    config_gpus: &[controller_config::QemuGpu],
+    inventory: &[crate::lspci::GpuDevice],
+) -> Vec<AttachedGpu> {
+    config_gpus
+        .iter()
+        .map(|gpu| {
+            match inventory
+                .iter()
+                .find(|device| device.pci_host == gpu.pci_host)
+            {
+                Some(device) => AttachedGpu {
+                    pci_host: device.pci_host.clone(),
+                    device_id: device.device_id.clone(),
+                    supports_x_vga: device.supports_x_vga(),
+                },
+                None => {
+                    tracing::warn!(
+                        pci_host = gpu.pci_host,
+                        "reattached VM holds a GPU absent from the host inventory; \
+                         recording the attachment from the config alone"
+                    );
+                    AttachedGpu {
+                        pci_host: gpu.pci_host.clone(),
+                        device_id: String::new(),
+                        supports_x_vga: gpu.supports_x_vga,
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
 /// One adopted VM.
 #[derive(Debug, Clone)]
 pub struct VmEntry {
@@ -97,11 +146,33 @@ pub struct VmEntry {
     /// (Python parity: a stopped persistent VM's `mapped_ports` is empty
     /// until StartVm reloads it from the database).
     pub port_forwards: Vec<PortForward>,
+    /// The `execution.gpus` attachments `_to_vm_info` reports: rebuilt from
+    /// the inventory for VMs adopted running (post-#1023 Python, ledger
+    /// entry 14) and set from the validated request at create.
+    pub gpus: Vec<AttachedGpu>,
+    /// The original VmSpec for VMs created through CreateVm on this daemon
+    /// instance: the exact idempotency comparand and GetVmSpec payload,
+    /// like the live Python daemon's `execution.vm_spec`. None for adopted
+    /// VMs, where the reconstruction stands in (the restarted-Python
+    /// behavior).
+    pub spec: Option<supervisor_proto::pb::VmSpec>,
+    /// Insertion position, the Python dict order: adoption in sorted config
+    /// order, then creation order. ListVms/ListPortForwards/RecreateNetwork
+    /// enumerate by it (a BTreeMap walk would sort by hash instead, an
+    /// observable difference after a post-boot create). Assigned by
+    /// [`WorldView::insert_entry`]; a replacement keeps the old position,
+    /// like a Python dict assignment to an existing key.
+    pub ordinal: u64,
 }
 
 impl VmEntry {
     pub fn unit_name(&self) -> String {
         controller_unit_name(&self.vm_hash)
+    }
+
+    /// Python `is_stopping`: stopping_at set, stopped_at not yet.
+    pub fn is_stopping(&self) -> bool {
+        self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0
     }
 }
 
@@ -111,6 +182,18 @@ impl VmEntry {
 #[derive(Debug, Default)]
 pub struct WorldView {
     pub entries: BTreeMap<String, VmEntry>,
+    /// vm_indices claimed by ACTIVE on-disk configs that were NOT adopted
+    /// as entries (hidden VMs: failed IP derivation, duplicate indices,
+    /// Firecracker configs). Their live controllers still own the index
+    /// (tap device, nft chains), so vm_index allocation must skip them,
+    /// like the Python `_failed_reattach` protection in
+    /// `get_unique_vm_index`.
+    pub reserved_vm_indices: std::collections::HashSet<i64>,
+    /// The dynamic IPv6 allocator's position: the Python generator advances
+    /// once per prepare_tap (adoption and create), never rewinds.
+    pub ipv6_dynamic_ordinal: usize,
+    /// The next [`VmEntry::ordinal`] to hand out.
+    pub next_ordinal: u64,
 }
 
 impl WorldView {
@@ -121,6 +204,74 @@ impl WorldView {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Insert (or replace) an entry, maintaining the Python dict insertion
+    /// order: a new key goes last, an existing key keeps its position
+    /// (`self.executions[vm_id] = execution` in the pool).
+    pub fn insert_entry(&mut self, mut entry: VmEntry) {
+        entry.ordinal = match self.entries.get(&entry.vm_hash) {
+            Some(existing) => existing.ordinal,
+            None => {
+                let ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
+                ordinal
+            }
+        };
+        self.entries.insert(entry.vm_hash.clone(), entry);
+    }
+
+    /// Entries in insertion order, the Python `pool.executions.values()`
+    /// enumeration.
+    pub fn ordered_entries(&self) -> Vec<&VmEntry> {
+        let mut entries: Vec<&VmEntry> = self.entries.values().collect();
+        entries.sort_by_key(|entry| entry.ordinal);
+        entries
+    }
+
+    /// Python `get_unique_vm_index`: the first free index from
+    /// START_ID_INDEX, skipping live entries and hidden VMs' claims.
+    pub fn unique_vm_index(&self, start_id_index: i64) -> Result<i64, String> {
+        let used: std::collections::HashSet<i64> = self
+            .entries
+            .values()
+            .map(|entry| entry.vm_index)
+            .chain(self.reserved_vm_indices.iter().copied())
+            .collect();
+        // Python: range(START_ID_INDEX, 255**2).
+        (start_id_index..255 * 255)
+            .find(|candidate| !used.contains(candidate))
+            .ok_or_else(|| "No available value for vm_index.".to_string())
+    }
+}
+
+/// The IPv4/IPv6 pair of a tap, the Python `prepare_tap` derivation.
+/// Advances `ipv6_dynamic_ordinal` under the dynamic policy, like the
+/// Python generator.
+pub fn derive_tap_assignment(
+    settings: &Settings,
+    vm_index: i64,
+    vm_hash: &str,
+    ipv6_dynamic_ordinal: &mut usize,
+) -> Result<(IpPair, IpPair), String> {
+    let ipv4 = ipv4_assignment(
+        &settings.ipv4_address_pool,
+        settings.ipv4_network_prefix_length,
+        vm_index,
+    )?;
+    let ipv6 = match settings.ipv6_allocation_policy {
+        Ipv6AllocationPolicy::Static => {
+            ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash)?
+        }
+        Ipv6AllocationPolicy::Dynamic => {
+            *ipv6_dynamic_ordinal += 1;
+            ipv6_dynamic_assignment(
+                &settings.ipv6_address_pool,
+                settings.ipv6_subnet_prefix,
+                *ipv6_dynamic_ordinal,
+            )?
+        }
+    };
+    Ok((ipv4, ipv6))
 }
 
 /// Unix nanoseconds now, truncated to microsecond precision like the
@@ -135,7 +286,11 @@ pub fn now_ns() -> u64 {
 /// Build the world view: scan configs, query systemd once, load port
 /// mappings. Never fails: every per-VM problem is logged and isolated,
 /// exactly like the Python per-VM reattach isolation.
-pub fn build_world_view(settings: &Settings, units: &dyn UnitStateSource) -> WorldView {
+pub fn build_world_view(
+    settings: &Settings,
+    units: &dyn UnitStateSource,
+    gpu_inventory: &[crate::lspci::GpuDevice],
+) -> WorldView {
     let configs = scan_controller_configs(settings);
 
     let unit_names: Vec<String> = configs
@@ -185,7 +340,7 @@ pub fn build_world_view(settings: &Settings, units: &dyn UnitStateSource) -> Wor
         }
     }
 
-    let mut entries = BTreeMap::new();
+    let mut world = WorldView::default();
     // The dynamic IPv6 allocator hands out pool subnets in allocation order
     // (first subnet reserved for the host); adoption order is the sorted
     // config order, running VMs only, like the Python generator.
@@ -325,24 +480,46 @@ pub fn build_world_view(settings: &Settings, units: &dyn UnitStateSource) -> Wor
             }
         }
 
-        entries.insert(
-            vm_hash.clone(),
-            VmEntry {
-                vm_hash,
-                vm_index: config.vm_index,
-                config: qemu,
-                settings_slice: config.settings,
-                times,
-                adopted_running: running == Some(true),
-                ipv4,
-                ipv6,
-                port_forwards,
-            },
-        );
+        // Post-#1023 Python rebuilds execution.gpus for VMs adopted running
+        // (ledger entry 14, now closed on the Rust side too); stopped
+        // entries keep an empty list until StartVm, like a Python execution
+        // that never reattached.
+        let gpus = if running == Some(true) {
+            rebuild_attached_gpus(&qemu.gpus, gpu_inventory)
+        } else {
+            Vec::new()
+        };
+
+        world.insert_entry(VmEntry {
+            vm_hash,
+            vm_index: config.vm_index,
+            config: qemu,
+            settings_slice: config.settings,
+            times,
+            adopted_running: running == Some(true),
+            ipv4,
+            ipv6,
+            port_forwards,
+            gpus,
+            spec: None,
+            ordinal: 0, // assigned by insert_entry
+        });
     }
 
-    tracing::info!(count = entries.len(), "world view built");
-    WorldView { entries }
+    // Claims without an entry are hidden VMs whose LIVE controllers still
+    // own their index (failed IP derivation, duplicates, Firecracker
+    // configs); vm_index allocation must never hand these out (the Python
+    // `_failed_reattach` protection).
+    let adopted: std::collections::HashSet<i64> =
+        world.entries.values().map(|entry| entry.vm_index).collect();
+    world.reserved_vm_indices = claimed_vm_indices
+        .into_iter()
+        .filter(|index| !adopted.contains(index))
+        .collect();
+    world.ipv6_dynamic_ordinal = dynamic_ordinal;
+
+    tracing::info!(count = world.len(), "world view built");
+    world
 }
 
 /// Sanity cap on one controller config file: real configs are KB-sized, so
@@ -639,7 +816,7 @@ mod tests {
 
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units);
+        let world = build_world_view(&settings, &units, &[]);
 
         assert_eq!(world.len(), 3, "the broken config is skipped");
         let qemu = &world.entries[test_fixtures::QEMU_HASH];
@@ -706,7 +883,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let settings = test_settings(&tmp.path().join("does-not-exist"));
         let units = StaticUnitStates::default();
-        assert!(build_world_view(&settings, &units).is_empty());
+        assert!(build_world_view(&settings, &units, &[]).is_empty());
     }
 
     #[test]
@@ -716,7 +893,7 @@ mod tests {
         let mut settings = test_settings(tmp.path());
         settings.allow_vm_networking = false;
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units);
+        let world = build_world_view(&settings, &units, &[]);
         let qemu = &world.entries[test_fixtures::QEMU_HASH];
         assert_eq!(qemu.ipv4, None);
         assert_eq!(qemu.ipv6, None);
@@ -730,7 +907,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         populate_execution_root(tmp.path());
         let settings = test_settings(tmp.path());
-        let world = build_world_view(&settings, &crate::units::UnreachableBus);
+        let world = build_world_view(&settings, &crate::units::UnreachableBus, &[]);
 
         assert_eq!(world.len(), 3);
         for entry in world.entries.values() {
@@ -759,7 +936,7 @@ mod tests {
 
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units);
+        let world = build_world_view(&settings, &units, &[]);
         assert_eq!(world.len(), 3, "only the three real fixture configs");
     }
 
@@ -776,7 +953,7 @@ mod tests {
         let settings = test_settings(tmp.path());
         // The unit lookup must also use the embedded hash.
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units);
+        let world = build_world_view(&settings, &units, &[]);
 
         assert_eq!(world.len(), 1);
         let entry = &world.entries[test_fixtures::QEMU_HASH];
@@ -813,7 +990,7 @@ mod tests {
         let settings = test_settings(tmp.path());
         let units =
             StaticUnitStates::with_active_vms(&[clone_hash.as_str(), test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units);
+        let world = build_world_view(&settings, &units, &[]);
 
         assert!(world.entries.contains_key(clone_hash.as_str()));
         assert!(
@@ -841,13 +1018,64 @@ mod tests {
 
             let settings = test_settings(tmp.path());
             let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-            let world = build_world_view(&settings, &units);
+            let world = build_world_view(&settings, &units, &[]);
             assert!(
                 !world.entries.contains_key(test_fixtures::QEMU_HASH),
                 "vm_index {bad_index} must hide the VM"
             );
             assert_eq!(world.len(), 2, "the other fixtures are unaffected");
         }
+    }
+
+    #[test]
+    fn entries_enumerate_in_insertion_order_like_the_python_dict() {
+        // Adoption is sorted config order; the fixture hashes sort as
+        // 1806... (confidential), c110... (qemu), f2fb... (gpu). The
+        // ordinals must pin that order for enumeration even though the
+        // BTreeMap would give it anyway; a replacement keeps its position
+        // (Python dict assignment to an existing key).
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let mut world = build_world_view(&settings, &units, &[]);
+
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                test_fixtures::CONFIDENTIAL_HASH,
+                test_fixtures::QEMU_HASH,
+                test_fixtures::GPU_HASH,
+            ]
+        );
+
+        // A new key goes last, whatever its hash sorts like.
+        let mut newcomer = world.entries[test_fixtures::QEMU_HASH].clone();
+        newcomer.vm_hash = "0".repeat(64);
+        newcomer.vm_index = 9;
+        world.insert_entry(newcomer);
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(order.last().copied(), Some("0".repeat(64)).as_deref());
+        assert_eq!(order.len(), 4);
+
+        // Replacing an existing key keeps its position.
+        let replacement = world.entries[test_fixtures::QEMU_HASH].clone();
+        world.insert_entry(replacement);
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(order[1], test_fixtures::QEMU_HASH);
     }
 
     #[test]

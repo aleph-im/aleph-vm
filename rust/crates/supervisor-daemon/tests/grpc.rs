@@ -38,12 +38,12 @@ fn test_settings(root: &Path) -> Settings {
 
 fn empty_daemon_state(settings: Settings) -> Arc<DaemonState> {
     let host = HostState::initialize(settings).unwrap();
-    Arc::new(DaemonState {
+    Arc::new(DaemonState::hermetic(
         host,
-        world: tokio::sync::RwLock::new(WorldView::default()),
-        units: Arc::new(StaticUnitStates::default()),
-        logs: Arc::new(StaticLogSource::default()),
-    })
+        WorldView::default(),
+        Arc::new(StaticUnitStates::default()),
+        Arc::new(StaticLogSource::default()),
+    ))
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {
@@ -144,9 +144,9 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
     // Unported RPCs: UNIMPLEMENTED with the ErrorDetail trailer the Python
     // _abort attaches (wire code INTERNAL for NotImplementedSupervisorError).
     let status = client
-        .create_vm(pb::VmSpec::default())
+        .start_backup(pb::StartBackupRequest::default())
         .await
-        .expect_err("CreateVm must be unimplemented in increment 1");
+        .expect_err("StartBackup must be unimplemented until increment 5");
     assert_eq!(status.code(), Code::Unimplemented);
     let trailer = status
         .metadata()
@@ -154,7 +154,25 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
         .expect("the ErrorDetail trailer must be attached");
     let detail = pb::ErrorDetail::decode(trailer.to_bytes().unwrap().as_ref()).unwrap();
     assert_eq!(detail.code, pb::ErrorCode::Internal as i32);
-    assert!(detail.message.contains("CreateVm"));
+    assert!(detail.message.contains("StartBackup"));
+
+    // CreateVm with an unspecified backend: the Python BACKEND_FROM_PB
+    // KeyError surfaces as INTERNAL.
+    let status = client
+        .create_vm(pb::VmSpec::default())
+        .await
+        .expect_err("an unspecified backend must fail");
+    assert_eq!(status.code(), Code::Internal);
+
+    // CreateVm for a Firecracker program: increment 4, UNIMPLEMENTED.
+    let status = client
+        .create_vm(pb::VmSpec {
+            backend: pb::Backend::Firecracker as i32,
+            ..Default::default()
+        })
+        .await
+        .expect_err("Firecracker creation is increment 4");
+    assert_eq!(status.code(), Code::Unimplemented);
 
     // Graceful shutdown unlinks the socket.
     shutdown_tx.send(true).unwrap();

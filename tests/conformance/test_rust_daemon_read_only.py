@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import cargo_missing
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -56,7 +57,7 @@ pytestmark = [
         os.environ.get("ALEPH_VM_CONFORMANCE") != "1",
         reason="conformance suite is opt-in: set ALEPH_VM_CONFORMANCE=1",
     ),
-    pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not on PATH"),
+    pytest.mark.skipif(cargo_missing(), reason="cargo is not on PATH"),
 ]
 
 
@@ -160,16 +161,16 @@ def _build_database(root: Path) -> None:
 
 
 @pytest.fixture
-def adopted_daemon(start_daemon, tmp_path: Path):
+def adopted_daemon(start_daemon, execution_root: Path):
     """The daemon booted on an EXECUTION_ROOT holding three model-written
     controller configs and a model-written port-mapping store."""
-    configurations = _build_configurations(tmp_path)
-    _build_database(tmp_path)
+    configurations = _build_configurations(execution_root)
+    _build_database(execution_root)
     # Hermetic: with networking left on (the conf.py default) the daemon
     # resolves the default-route interface at boot and aborts on a runner
     # without one. The fixture VMs are all stopped, so nothing in the
     # read-only assertions needs host networking.
-    with start_daemon(tmp_path, {"ALEPH_VM_ALLOW_VM_NETWORKING": "false"}) as (process, socket_path):
+    with start_daemon(execution_root, {"ALEPH_VM_ALLOW_VM_NETWORKING": "false"}) as (process, socket_path):
         yield configurations, socket_path
 
 
@@ -202,7 +203,8 @@ async def test_the_adopted_world_reports_every_fixture_vm_stopped(adopted_daemon
             assert vm.starting_at_ns == 0
             assert vm.started_at_ns == 0
             assert vm.stopping_at_ns == 0
-            # Python parity: adopted executions never rebuild their GPU list.
+            # The fixture VMs are all adopted STOPPED: only VMs adopted
+            # running get their GPU attachments rebuilt (post-#1023).
             assert vm.gpus == []
             assert vm.guest_channel_path == ""
             assert vm.guest_ready_payload == b""

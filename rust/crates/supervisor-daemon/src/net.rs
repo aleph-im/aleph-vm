@@ -129,9 +129,96 @@ pub fn is_global_ipv4(address: Ipv4Addr) -> bool {
     !not_global
 }
 
+// ── DNS nameserver discovery (conf.py obtain_dns_ips) ───────────────────
+
+/// conf.py `etc_resolv_conf_dns_servers`: `nameserver <ip>` lines. The
+/// Python regex is `^nameserver\s+([\w.]+)$`, which misses IPv6 servers
+/// (no ':' in the class); ported as-is.
+fn resolv_conf_dns_servers(contents: &str) -> Vec<String> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("nameserver")?;
+            let candidate = rest.trim();
+            if rest.starts_with([' ', '\t'])
+                && !candidate.is_empty()
+                && candidate
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// conf.py `resolvectl_dns_servers`: `resolvectl dns -i <interface>`,
+/// splitting the "Link N (iface): a b c" output on the first colon.
+fn resolvectl_dns_servers(interface: &str) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("/usr/bin/resolvectl")
+        .args(["dns", "-i", interface])
+        .output()
+        .map_err(|error| format!("cannot run resolvectl: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "resolvectl dns -i {interface} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (_, servers) = text
+        .split_once(':')
+        .ok_or_else(|| format!("unexpected resolvectl output: {text:?}"))?;
+    Ok(servers.split_whitespace().map(str::to_string).collect())
+}
+
+/// conf.py `obtain_dns_ips`, called at startup like `settings.setup()`
+/// (only when DNS_NAMESERVERS is unset and an interface was resolved). An
+/// unresolvable configuration is a startup error, as in Python.
+pub fn obtain_dns_ips(
+    resolution: crate::config::DnsResolution,
+    interface: &str,
+) -> Result<Vec<String>, String> {
+    use crate::config::DnsResolution;
+    match resolution {
+        DnsResolution::Detect => match resolvectl_dns_servers(interface) {
+            Ok(servers) => Ok(servers),
+            Err(error) => {
+                let path = std::path::Path::new("/etc/resolv.conf");
+                if path.exists() {
+                    let contents = std::fs::read_to_string(path)
+                        .map_err(|error| format!("cannot read /etc/resolv.conf: {error}"))?;
+                    Ok(resolv_conf_dns_servers(&contents))
+                } else {
+                    Err(format!("No DNS resolver found ({error})"))
+                }
+            }
+        },
+        DnsResolution::ResolvConf => {
+            let contents = std::fs::read_to_string("/etc/resolv.conf")
+                .map_err(|error| format!("cannot read /etc/resolv.conf: {error}"))?;
+            Ok(resolv_conf_dns_servers(&contents))
+        }
+        DnsResolution::Resolvectl => resolvectl_dns_servers(interface),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolv_conf_parsing_mirrors_the_python_regex() {
+        let contents = "# comment\nnameserver 127.0.0.53\nnameserver\t9.9.9.9\n\
+                        nameserver fe80::1\nsearch lan\nnameserver 1.1.1.1 trailing\n";
+        assert_eq!(
+            resolv_conf_dns_servers(contents),
+            vec!["127.0.0.53".to_string(), "9.9.9.9".to_string()],
+            "the Python [\\w.]+ pattern skips IPv6 and trailing tokens"
+        );
+    }
 
     #[test]
     fn default_route_is_detected_in_proc_net_route() {

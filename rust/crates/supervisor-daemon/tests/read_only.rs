@@ -65,11 +65,11 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
     let units = Arc::new(StaticUnitStates::with_active_vms(&[
         test_fixtures::QEMU_HASH,
     ]));
-    let world = build_world_view(&settings, units.as_ref());
 
     let host = HostState {
         settings,
         host_ipv4: String::new(),
+        network_interface: None,
         // A fake inventory holding the GPU the fixture VM attaches plus a
         // free one, to observe the available-GPU exclusion.
         gpus: vec![
@@ -88,12 +88,14 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 device_id: "10de:26b1".to_string(),
             },
         ],
+        dns_nameservers: None,
     };
-    Arc::new(DaemonState {
+    let world = build_world_view(&host.settings, units.as_ref(), &host.gpus);
+    Arc::new(DaemonState::hermetic(
         host,
-        world: tokio::sync::RwLock::new(world),
+        world,
         units,
-        logs: Arc::new(StaticLogSource::new(vec![
+        Arc::new(StaticLogSource::new(vec![
             LogEntry {
                 timestamp_us: 1_751_790_000_123_456,
                 message: "guest booted".to_string(),
@@ -110,7 +112,7 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 source: LogStream::Stdout,
             },
         ])),
-    })
+    ))
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {

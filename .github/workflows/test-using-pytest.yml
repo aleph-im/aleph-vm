@@ -129,9 +129,17 @@ jobs:
           slug: aleph-im/aleph-vm
 
   tests-integration:
-    name: "Supervisor integration tests"
+    name: "Supervisor integration tests (${{ matrix.supervisor-impl }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The suite is implementation-agnostic: the same tests drive the
+        # Python daemon and the Rust one (which skips the increments it
+        # does not serve yet; see tests/integration/conftest.py).
+        supervisor-impl: [python, rust]
 
     steps:
       - uses: actions/checkout@v4
@@ -170,14 +178,32 @@ jobs:
       - name: Download the QEMU cloud image (Ubuntu 24.04)
         run: cd runtimes/instance-rootfs && sudo ./create-ubuntu-24-04-qemu-disk.sh
 
+      - name: Install the pinned Rust toolchain
+        if: matrix.supervisor-impl == 'rust'
+        working-directory: rust
+        run: |
+          sudo apt-get install -y protobuf-compiler
+          rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.supervisor-impl == 'rust'
+        with:
+          workspaces: rust
+
+      - name: Build the Rust supervisor daemon
+        if: matrix.supervisor-impl == 'rust'
+        working-directory: rust
+        run: cargo build --locked
+
       - name: Run supervisor integration tests
         env:
           # Guests resolve through the supervisor-provided resolver; the
           # runner's systemd-resolved (127.0.0.53) is unreachable from a VM,
           # so pin public nameservers (same as the droplet CI).
           ALEPH_VM_DNS_NAMESERVERS: '["1.1.1.1","8.8.8.8"]'
+          ALEPH_VM_SUPERVISOR_IMPL: ${{ matrix.supervisor-impl }}
         run: |-
-          sudo --preserve-env=ALEPH_VM_DNS_NAMESERVERS \
+          sudo --preserve-env=ALEPH_VM_DNS_NAMESERVERS,ALEPH_VM_SUPERVISOR_IMPL \
             env AVM_ITEST=1 \
             AVM_ITEST_QEMU_IMAGE="$PWD/runtimes/instance-rootfs/rootfs.img" \
             hatch run testing:python -m pytest -v -p no:cacheprovider --durations=10 tests/integration

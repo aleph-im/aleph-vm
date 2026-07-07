@@ -3,7 +3,7 @@ survive the wire (translate_rpc_error rebuilds it class-exact), and failed
 calls must not corrupt the supervisor's state for subsequent ones."""
 
 import pytest
-from conftest import fc_program_spec, fresh_vm_id, requires_fc
+from conftest import SUPERVISOR_IMPL, fc_program_spec, fresh_vm_id, requires_fc
 
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
@@ -40,8 +40,14 @@ async def test_operations_on_unknown_vm_raise_vm_not_found(supervisor):
         await supervisor.start_vm(UNKNOWN_VM)
     with pytest.raises(VmNotFoundError):
         await supervisor.reboot_vm(UNKNOWN_VM)
-    with pytest.raises(VmNotFoundError):
-        await supervisor.start_backup(UNKNOWN_VM)
+    if SUPERVISOR_IMPL == "rust":
+        # Backups are increment 5 of the Rust port: the RPC itself is
+        # UNIMPLEMENTED, so the existence check is never reached.
+        with pytest.raises(NotImplementedSupervisorError):
+            await supervisor.start_backup(UNKNOWN_VM)
+    else:
+        with pytest.raises(VmNotFoundError):
+            await supervisor.start_backup(UNKNOWN_VM)
     with pytest.raises(VmNotFoundError):
         await supervisor.add_port_forward(
             PortForwardSpec(vm_id=UNKNOWN_VM, host_port=HostPort(0), vm_port=GuestPort(8080), protocol=Protocol.TCP)
