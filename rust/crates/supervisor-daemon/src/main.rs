@@ -1,4 +1,4 @@
-//! aleph-vm-supervisor: the Rust supervisor daemon (increments 1 and 2).
+//! aleph-vm-supervisor: the Rust supervisor daemon (increments 1-3).
 //!
 //! Serves the aleph.supervisor.v1 contract on the Unix socket at
 //! ALEPH_VM_SUPERVISOR_GRPC_SOCKET (default {EXECUTION_ROOT}/supervisor.sock).
@@ -6,8 +6,11 @@
 //! the unit's EnvironmentFile= provides them, for dev runs --env-file does.
 //!
 //! Boot order mirrors the Python daemon (run_daemon): resolve host facts,
-//! rebuild the world view from disk/systemd/sqlite (adoption steps 1-4),
-//! then bind the socket and serve.
+//! run the settings.check() preconditions and the pool.setup() counterparts
+//! (store schema, forwarding sysctls, base nftables ruleset), rebuild the
+//! world view from disk/systemd/sqlite (adoption steps 1-4), reconcile the
+//! kernel/service state of running VMs (step 5), then bind the socket and
+//! serve.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -16,11 +19,15 @@ use clap::Parser;
 use supervisor_daemon::config::Settings;
 use supervisor_daemon::envfile::apply_env_file;
 use supervisor_daemon::error::DaemonError;
+use supervisor_daemon::lifecycle::{self, Pacing};
 use supervisor_daemon::logs::JournalctlLogSource;
+use supervisor_daemon::ndppd::{NdpProxy, SystemNdppd};
+use supervisor_daemon::nft::NftCli;
 use supervisor_daemon::server::{self, SocketGuard};
 use supervisor_daemon::service::{DaemonState, HostState};
+use supervisor_daemon::tap::IpCommand;
 use supervisor_daemon::units::ZbusUnitStates;
-use supervisor_daemon::world;
+use supervisor_daemon::{checks, ports, world};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,30 +102,129 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     let guard = Arc::new(SocketGuard::new(settings.supervisor_grpc_socket.clone()));
     let host = HostState::initialize(settings)?;
 
+    // settings.check() slice: the startup preconditions the lifecycle RPCs
+    // depend on. Aborts like daemon.py main(), after setup.
+    checks::check(&host.settings, host.network_interface.as_deref())
+        .map_err(DaemonError::Internal)?;
+
+    // pool.setup() counterparts: the port-mapping store schema, the legacy
+    // port-mapping migration, the forwarding sysctls, the NDP proxy, the
+    // base nftables ruleset.
+    ports::ensure_schema(&host.settings.supervisor_database).map_err(DaemonError::Internal)?;
+    // Before adoption, like pool.setup(): a node upgraded from the
+    // pre-split layout and flipped straight to this daemon must adopt its
+    // VMs with their persisted forwards, not with zero forwards.
+    ports::migrate_port_mappings_from_legacy_db(
+        &host.settings.execution_database,
+        &host.settings.supervisor_database,
+    )
+    .map_err(DaemonError::Internal)?;
+    let ndp = if host.settings.allow_vm_networking {
+        enable_forwarding_sysctls(&host.settings);
+        host.settings.use_ndp_proxy.then(|| {
+            Arc::new(NdpProxy::new(
+                host.network_interface.clone().unwrap_or_default(),
+                Arc::new(SystemNdppd),
+            ))
+        })
+    } else {
+        None
+    };
+
     // Adoption steps 1-4 (design doc section 4), before the socket exists,
     // like the Python daemon's load_persistent_executions before serve_unix.
     // Blocking on purpose: no runtime is up yet, and the sources (files,
     // one D-Bus round trip, sqlite) are all local.
     let units = Arc::new(ZbusUnitStates::new());
-    let world = world::build_world_view(&host.settings, units.as_ref());
+    let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus);
     tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
+    let allow_networking = host.settings.allow_vm_networking;
     let state = Arc::new(DaemonState {
         host,
         world: tokio::sync::RwLock::new(world),
         units,
         logs: Arc::new(JournalctlLogSource),
+        nft: Arc::new(NftCli),
+        taps: Arc::new(IpCommand),
+        ndp,
+        port_cursor: Default::default(),
+        creation_lock: std::sync::Mutex::new(()),
+        vm_locks: std::sync::Mutex::new(Default::default()),
+        net_lock: std::sync::Mutex::new(()),
+        pacing: Pacing::default(),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        // Base ruleset + adoption step 5 inside the runtime (the ndppd
+        // debounce and the blocking-pool hops need it), still before the
+        // socket exists, like the Python network.setup() +
+        // load_persistent_executions before serve_unix.
+        if allow_networking {
+            let boot_state = state.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = lifecycle::initialize_nftables(&boot_state) {
+                    // The Python execute edge only logs nft failures too.
+                    tracing::error!(error, "failed to initialize nftables");
+                }
+                lifecycle::reconcile_boot(&boot_state);
+            })
+            .await
+            .map_err(|error| {
+                DaemonError::Internal(format!("the boot reconcile task failed: {error}"))
+            })?;
+        }
+
         // Handlers must be installed before the socket is bound: a client
         // that sees the socket may send SIGTERM right away, and an
         // uninstalled handler would mean death without cleanup.
         let shutdown = spawn_signal_task(guard.clone())?;
         server::serve(state, guard, shutdown).await
     })
+}
+
+/// The `Network.setup()` sysctl half: enable IPv4 (always) and IPv6 (when
+/// configured) forwarding. Python writes "1" only when the CURRENT value
+/// parses as int 0 (`if not get_ipv6_forwarding_state()`), so a host whose
+/// IPv6 forwarding sysctl is "2" (forwarding with RA acceptance) is left
+/// alone; clobbering it to "1" would silently drop the host's accept-RA
+/// behavior. Failures (unreadable, unparseable or unwritable files) are
+/// logged, not fatal: the Python daemon dies here without CAP_NET_ADMIN,
+/// which would break the container/CI boots increment 2 deliberately
+/// supports (ledger entry 20).
+fn enable_forwarding_sysctls(settings: &Settings) {
+    enable_forwarding_sysctl(std::path::Path::new("/proc/sys/net/ipv4/ip_forward"));
+    if settings.ipv6_forwarding_enabled {
+        enable_forwarding_sysctl(std::path::Path::new(
+            "/proc/sys/net/ipv6/conf/all/forwarding",
+        ));
+    } else {
+        tracing::warn!("IPv6 forwarding is disabled, VMs will not have internet access on IPv6");
+    }
+}
+
+/// One sysctl: write "1" only when the current value parses as int 0.
+fn enable_forwarding_sysctl(path: &std::path::Path) {
+    match std::fs::read_to_string(path) {
+        // Python: int(value); only a current value of exactly 0 is
+        // "disabled" and gets the write.
+        Ok(current) => match current.trim().parse::<i64>() {
+            Ok(0) => {
+                if let Err(error) = std::fs::write(path, "1") {
+                    tracing::error!(path = %path.display(), %error, "cannot enable forwarding");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(path = %path.display(), %error, "cannot parse the forwarding state");
+            }
+        },
+        Err(error) => {
+            tracing::error!(path = %path.display(), %error, "cannot read the forwarding state");
+        }
+    }
 }
 
 /// Install SIGTERM/SIGINT handling, the two signals the Python daemon
@@ -153,4 +259,32 @@ fn spawn_signal_task(
         std::process::exit(0);
     });
     Ok(shutdown_rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_forwarding_sysctl_write_matches_the_python_falsy_gate() {
+        // Python enable_ipv6_forwarding: write "1" only when int(current)
+        // is 0. A value of "2" (forwarding with RA acceptance) must be
+        // LEFT ALONE; clobbering it to "1" turns off the host's accept-RA.
+        let tmp = tempfile::tempdir().unwrap();
+        let sysctl = tmp.path().join("forwarding");
+        for (current, expected) in [("0\n", "1"), ("1\n", "1\n"), ("2\n", "2\n")] {
+            std::fs::write(&sysctl, current).unwrap();
+            enable_forwarding_sysctl(&sysctl);
+            assert_eq!(
+                std::fs::read_to_string(&sysctl).unwrap(),
+                expected,
+                "current {current:?}"
+            );
+        }
+        // Unparseable values are logged and left alone (the Python int()
+        // would raise and kill the daemon; graceful here, ledger entry 20).
+        std::fs::write(&sysctl, "garbage").unwrap();
+        enable_forwarding_sysctl(&sysctl);
+        assert_eq!(std::fs::read_to_string(&sysctl).unwrap(), "garbage");
+    }
 }

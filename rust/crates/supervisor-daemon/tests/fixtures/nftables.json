@@ -1,0 +1,2009 @@
+{
+  "network_interface": "eth0",
+  "chain_prefix": "aleph",
+  "rulesets": {
+    "empty": [],
+    "bare-host": [
+      {
+        "table": {
+          "family": "ip",
+          "name": "raw",
+          "handle": 1
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "raw",
+          "name": "PREROUTING",
+          "handle": 1,
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -300,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip",
+          "name": "nat",
+          "handle": 2
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "PREROUTING",
+          "handle": 1,
+          "type": "nat",
+          "hook": "prerouting",
+          "prio": -100,
+          "policy": "accept"
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "POSTROUTING",
+          "handle": 2,
+          "type": "nat",
+          "hook": "postrouting",
+          "prio": 100,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip",
+          "name": "filter",
+          "handle": 3
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "filter",
+          "name": "FORWARD",
+          "handle": 1,
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip6",
+          "name": "filter",
+          "handle": 1
+        }
+      },
+      {
+        "chain": {
+          "family": "ip6",
+          "table": "filter",
+          "name": "FORWARD",
+          "handle": 1,
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "accept"
+        }
+      }
+    ],
+    "typical": [
+      {
+        "table": {
+          "family": "ip",
+          "name": "raw",
+          "handle": 1
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "raw",
+          "name": "PREROUTING",
+          "handle": 1,
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -300,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip",
+          "name": "nat",
+          "handle": 2
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "PREROUTING",
+          "handle": 1,
+          "type": "nat",
+          "hook": "prerouting",
+          "prio": -100,
+          "policy": "accept"
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "POSTROUTING",
+          "handle": 2,
+          "type": "nat",
+          "hook": "postrouting",
+          "prio": 100,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip",
+          "name": "filter",
+          "handle": 3
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "filter",
+          "name": "FORWARD",
+          "handle": 1,
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "accept"
+        }
+      },
+      {
+        "table": {
+          "family": "ip6",
+          "name": "filter",
+          "handle": 1
+        }
+      },
+      {
+        "chain": {
+          "family": "ip6",
+          "table": "filter",
+          "name": "FORWARD",
+          "handle": 1,
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "accept"
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "aleph-supervisor-nat",
+          "handle": 10
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "nat",
+          "chain": "POSTROUTING",
+          "handle": 11,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-supervisor-nat"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "aleph-supervisor-prerouting",
+          "handle": 12
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "nat",
+          "chain": "PREROUTING",
+          "handle": 13,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-supervisor-prerouting"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "nat",
+          "name": "aleph-vm-nat-3",
+          "handle": 14
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "nat",
+          "chain": "aleph-supervisor-nat",
+          "handle": 15,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-vm-nat-3"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "nat",
+          "chain": "aleph-vm-nat-3",
+          "handle": 16,
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "vmtap3"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "masquerade": null
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "nat",
+          "chain": "aleph-supervisor-prerouting",
+          "handle": 17,
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "dport"
+                  }
+                },
+                "right": 24000
+              }
+            },
+            {
+              "dnat": {
+                "addr": "172.16.3.2",
+                "port": 22
+              }
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "filter",
+          "name": "aleph-supervisor-filter",
+          "handle": 20
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "filter",
+          "chain": "FORWARD",
+          "handle": 21,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-supervisor-filter"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "filter",
+          "chain": "aleph-supervisor-filter",
+          "handle": 22,
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": [
+                  "established",
+                  "related"
+                ]
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip",
+          "table": "filter",
+          "name": "aleph-vm-filter-3",
+          "handle": 23
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "filter",
+          "chain": "aleph-supervisor-filter",
+          "handle": 24,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-vm-filter-3"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "filter",
+          "chain": "aleph-vm-filter-3",
+          "handle": 25,
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "vmtap3"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip",
+          "table": "filter",
+          "chain": "aleph-vm-filter-3",
+          "handle": 26,
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "dport"
+                  }
+                },
+                "right": 22
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip6",
+          "table": "filter",
+          "name": "aleph-supervisor-filter",
+          "handle": 10
+        }
+      },
+      {
+        "rule": {
+          "family": "ip6",
+          "table": "filter",
+          "chain": "FORWARD",
+          "handle": 11,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-supervisor-filter"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip6",
+          "table": "filter",
+          "chain": "aleph-supervisor-filter",
+          "handle": 12,
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": [
+                  "established",
+                  "related"
+                ]
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      },
+      {
+        "chain": {
+          "family": "ip6",
+          "table": "filter",
+          "name": "aleph-vm-filter-3",
+          "handle": 13
+        }
+      },
+      {
+        "rule": {
+          "family": "ip6",
+          "table": "filter",
+          "chain": "aleph-supervisor-filter",
+          "handle": 14,
+          "expr": [
+            {
+              "jump": {
+                "target": "aleph-vm-filter-3"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "rule": {
+          "family": "ip6",
+          "table": "filter",
+          "chain": "aleph-vm-filter-3",
+          "handle": 15,
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "vmtap3"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "scenarios": {
+    "initialize-empty": {
+      "ruleset": "empty",
+      "batches": [
+        [
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "PREROUTING",
+                "type": "nat",
+                "hook": "prerouting",
+                "prio": -100,
+                "policy": "accept"
+              }
+            }
+          },
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "POSTROUTING",
+                "type": "nat",
+                "hook": "postrouting",
+                "prio": 100
+              }
+            }
+          },
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "FORWARD",
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-nat"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-filter"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "in",
+                      "left": {
+                        "ct": {
+                          "key": "state"
+                        }
+                      },
+                      "right": [
+                        "established",
+                        "related"
+                      ]
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-prerouting"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "PREROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-prerouting"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        [
+          {
+            "add": {
+              "table": {
+                "family": "ip6",
+                "name": "filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "FORWARD",
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-filter"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "in",
+                      "left": {
+                        "ct": {
+                          "key": "state"
+                        }
+                      },
+                      "right": [
+                        "established",
+                        "related"
+                      ]
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "initialize-bare-host": {
+      "ruleset": "bare-host",
+      "batches": [
+        [
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-nat"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-filter"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "in",
+                      "left": {
+                        "ct": {
+                          "key": "state"
+                        }
+                      },
+                      "right": [
+                        "established",
+                        "related"
+                      ]
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-prerouting"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "PREROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-prerouting"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        [
+          {
+            "add": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-filter"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "in",
+                      "left": {
+                        "ct": {
+                          "key": "state"
+                        }
+                      },
+                      "right": [
+                        "established",
+                        "related"
+                      ]
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "initialize-typical": {
+      "ruleset": "typical",
+      "batches": [
+        [],
+        []
+      ]
+    },
+    "setup-vm-new": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-vm-nat-4"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-nat",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-vm-nat-4"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-vm-filter-4"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-vm-filter-4"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-vm-nat-4",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "vmtap4"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "oifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "masquerade": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-4",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "vmtap4"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "oifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-vm-filter-4"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-vm-filter-4"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-vm-filter-4",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "vmtap4"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "oifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "setup-vm-existing": {
+      "ruleset": "typical",
+      "batches": [
+        []
+      ]
+    },
+    "add-redirect-new": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 24010
+                    }
+                  },
+                  {
+                    "dnat": {
+                      "addr": "172.16.3.2",
+                      "port": 8080
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 8080
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "add-redirect-existing": {
+      "ruleset": "typical",
+      "batches": [
+        []
+      ]
+    },
+    "remove-redirect": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "handle": 17
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "handle": 26
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "teardown-vm": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-nat",
+                "handle": 15
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-vm-nat-3"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 24
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 14
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "remove-all-aleph-chains": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "handle": 11
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-nat"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "PREROUTING",
+                "handle": 13
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-prerouting"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-nat",
+                "handle": 15
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-vm-nat-3"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 21
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 11
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 24
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 14
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 21
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "FORWARD",
+                "handle": 11
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          }
+        ],
+        [
+          {
+            "delete": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 24
+              }
+            }
+          },
+          {
+            "delete": {
+              "rule": {
+                "family": "ip6",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "handle": 14
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          },
+          {
+            "delete": {
+              "chain": {
+                "family": "ip6",
+                "table": "filter",
+                "name": "aleph-vm-filter-3"
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "recreate-redirects-both-protocols": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 24610
+                    }
+                  },
+                  {
+                    "dnat": {
+                      "addr": "172.16.3.2",
+                      "port": 8080
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 8080
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "tcp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 24610
+                    }
+                  },
+                  {
+                    "dnat": {
+                      "addr": "172.16.3.2",
+                      "port": 8080
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "tcp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 8080
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "initialize-empty-no-ipv6": {
+      "ruleset": "empty",
+      "batches": [
+        [
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "PREROUTING",
+                "type": "nat",
+                "hook": "prerouting",
+                "prio": -100,
+                "policy": "accept"
+              }
+            }
+          },
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "POSTROUTING",
+                "type": "nat",
+                "hook": "postrouting",
+                "prio": 100
+              }
+            }
+          },
+          {
+            "add": {
+              "table": {
+                "family": "ip",
+                "name": "filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "FORWARD",
+                "type": "filter",
+                "hook": "forward",
+                "prio": 0
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-nat"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "POSTROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-nat"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "filter",
+                "name": "aleph-supervisor-filter"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "FORWARD",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-filter"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-supervisor-filter",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "in",
+                      "left": {
+                        "ct": {
+                          "key": "state"
+                        }
+                      },
+                      "right": [
+                        "established",
+                        "related"
+                      ]
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "chain": {
+                "family": "ip",
+                "table": "nat",
+                "name": "aleph-supervisor-prerouting"
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "PREROUTING",
+                "expr": [
+                  {
+                    "jump": {
+                      "target": "aleph-supervisor-prerouting"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    }
+  },
+  "predicates": {
+    "table-for-hook": {
+      "bare-host": {
+        "prerouting/ip": "nat",
+        "postrouting/ip": "nat",
+        "forward/ip": "filter",
+        "forward/ip6": "filter"
+      },
+      "typical": {
+        "prerouting/ip": "nat",
+        "postrouting/ip": "nat",
+        "forward/ip": "filter",
+        "forward/ip6": "filter"
+      }
+    },
+    "port-redirect-exists": [
+      {
+        "args": [
+          24000,
+          "172.16.3.2",
+          22,
+          "tcp"
+        ],
+        "expected": true
+      },
+      {
+        "args": [
+          24000,
+          "172.16.3.2",
+          22,
+          "udp"
+        ],
+        "expected": false
+      },
+      {
+        "args": [
+          24010,
+          "172.16.3.2",
+          8080,
+          "udp"
+        ],
+        "expected": false
+      }
+    ],
+    "nftables-redirections": [
+      {
+        "port": 24000,
+        "expected": true
+      },
+      {
+        "port": 22,
+        "expected": true
+      },
+      {
+        "port": 24010,
+        "expected": false
+      }
+    ],
+    "all-aleph-chains": [
+      "aleph-supervisor-nat",
+      "aleph-supervisor-prerouting",
+      "aleph-vm-nat-3",
+      "aleph-supervisor-filter",
+      "aleph-vm-filter-3",
+      "aleph-supervisor-filter",
+      "aleph-vm-filter-3"
+    ]
+  }
+}

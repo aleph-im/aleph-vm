@@ -19,6 +19,7 @@ prost.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -29,5 +30,4 @@ zbus.workspace = true
 
 [dev-dependencies]
 hyper-util.workspace = true
-tempfile.workspace = true
 tower.workspace = true

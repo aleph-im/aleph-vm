@@ -9,8 +9,10 @@ guards live in each test module's pytestmark.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +24,25 @@ RUST_DIR = REPO_ROOT / "rust"
 DAEMON_BINARY = RUST_DIR / "target" / "debug" / "aleph-vm-supervisor"
 
 
+def cargo_missing() -> bool:
+    """Skip predicate for the per-module pytestmarks.
+
+    Locally a missing cargo skips the suite; in CI (CI=true) with the
+    conformance suite explicitly requested (ALEPH_VM_CONFORMANCE=1) it
+    FAILS collection instead: an all-skipped suite would pass the job
+    silently while covering nothing.
+    """
+    if shutil.which("cargo") is not None:
+        return False
+    if os.environ.get("CI") == "true" and os.environ.get("ALEPH_VM_CONFORMANCE") == "1":
+        msg = (
+            "CI=true and ALEPH_VM_CONFORMANCE=1 but cargo is not on PATH; "
+            "refusing to skip-pass the conformance suite"
+        )
+        raise RuntimeError(msg)
+    return True
+
+
 @pytest.fixture(scope="session")
 def daemon_binary() -> Path:
     # cwd=RUST_DIR so rustup picks up rust/rust-toolchain.toml; the target
@@ -29,6 +50,27 @@ def daemon_binary() -> Path:
     subprocess.run(["cargo", "build", "--locked"], cwd=RUST_DIR, check=True)
     assert DAEMON_BINARY.exists()
     return DAEMON_BINARY
+
+
+def _hypervisor_stub_env(execution_root: Path) -> dict[str, str]:
+    """Stub FIRECRACKER_PATH/JAILER_PATH/LINUX_PATH files for settings.check().
+
+    The daemon runs the Python `settings.check()` slice at startup since
+    increment 3; like Python, it only tests `isfile` on these paths, so
+    stub files keep the suite hermetic on runners without /opt/firecracker.
+    """
+    stub_dir = execution_root / "hypervisor-stubs"
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    env = {}
+    for setting, name in (
+        ("ALEPH_VM_FIRECRACKER_PATH", "firecracker"),
+        ("ALEPH_VM_JAILER_PATH", "jailer"),
+        ("ALEPH_VM_LINUX_PATH", "vmlinux.bin"),
+    ):
+        stub = stub_dir / name
+        stub.write_bytes(b"stub")
+        env[setting] = str(stub)
+    return env
 
 
 @contextmanager
@@ -39,6 +81,7 @@ def _running_daemon(binary: Path, execution_root: Path, extra_env: dict[str, str
     # the conformance configuration.
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("ALEPH_VM_")}
     env["ALEPH_VM_EXECUTION_ROOT"] = str(execution_root)
+    env.update(_hypervisor_stub_env(execution_root))
     env.setdefault("RUST_LOG", "info")
     env.update(extra_env or {})
 
@@ -84,3 +127,16 @@ def start_daemon(daemon_binary: Path):
             yield started
 
     return _start
+
+
+@pytest.fixture
+def execution_root():
+    """A SHORT execution root instead of pytest's tmp_path: EXECUTION_ROOT
+    prefixes qemu's control socket paths and sun_path caps them at 108
+    bytes; settings.check() (ported in increment 3) rejects pytest's long
+    tmp paths, exactly like the Python daemon would."""
+    root = Path(tempfile.mkdtemp(prefix="avm-conf-", dir="/tmp"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

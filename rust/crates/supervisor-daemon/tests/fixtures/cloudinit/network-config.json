@@ -1,0 +1,1 @@
+{"ethernets":{"eth0":{"addresses":["172.16.4.2/24","fc00:1:2:3:3:aaaa:bbbb:cc01/124"],"gateway4":"172.16.4.1","gateway6":"fc00:1:2:3:3:aaaa:bbbb:cc00","match":{"driver":"virtio_net"},"nameservers":{"addresses":["1.1.1.1","8.8.8.8"]}}},"version":2}

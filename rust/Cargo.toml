@@ -26,9 +26,9 @@ tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.12"
 tonic-build = "0.12"
 tracing = "0.1"
+tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # test-only
 hyper-util = "0.1"
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
