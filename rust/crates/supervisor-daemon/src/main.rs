@@ -27,7 +27,7 @@ use supervisor_daemon::server::{self, SocketGuard};
 use supervisor_daemon::service::{DaemonState, HostState};
 use supervisor_daemon::tap::IpCommand;
 use supervisor_daemon::units::ZbusUnitStates;
-use supervisor_daemon::{checks, ports, world};
+use supervisor_daemon::{checks, numa, ports, world};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -139,6 +139,18 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus);
     tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
     let allow_networking = host.settings.allow_vm_networking;
+    // NUMA topology (increment C1): detected once. A detection failure (no
+    // sysfs, unreadable) disables CPU pinning rather than aborting the
+    // daemon, mirroring how the other host-capability probes degrade.
+    let numa = numa::NumaTopology::detect().unwrap_or_else(|error| {
+        tracing::warn!(
+            error,
+            "NUMA topology detection failed; CPU pinning disabled"
+        );
+        numa::NumaTopology::empty()
+    });
+    tracing::info!(nodes = numa.num_nodes(), "detected NUMA topology");
+    let numa_ledger = std::sync::Mutex::new(numa::NumaAllocator::new(numa.clone()));
     // The ephemeral Firecracker launcher (increment 4): programs are direct
     // children of this daemon (design doc decision 8).
     let launcher: Arc<dyn supervisor_daemon::firecracker::ProgramLauncher> = Arc::new(
@@ -167,12 +179,30 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         )),
         disk_tools: Arc::new(supervisor_daemon::backup::QemuImgTools),
         backups: supervisor_daemon::backup::BackupRegistry::default(),
+        numa,
+        numa_ledger,
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        // Rebuild the NUMA placement ledger from adopted VMs' effective
+        // AllowedCPUs drop-ins (increment C1), before serving and
+        // independent of networking: the ledger must be consistent even
+        // with ALLOW_VM_NETWORKING off. Adopted VMs with no drop-in stay
+        // unpinned (design section 8: unknown placement is not node 0).
+        {
+            let numa_state = state.clone();
+            tokio::task::spawn_blocking(move || {
+                lifecycle::reconcile_numa_ledger(&numa_state);
+            })
+            .await
+            .map_err(|error| {
+                DaemonError::Internal(format!("the NUMA reconcile task failed: {error}"))
+            })?;
+        }
+
         // Base ruleset + adoption step 5 inside the runtime (the ndppd
         // debounce and the blocking-pool hops need it), still before the
         // socket exists, like the Python network.setup() +
