@@ -227,6 +227,32 @@ impl HugePageSize {
             HugePageSize::Size2M => "2M",
         }
     }
+
+    /// Parse the QEMU `hugetlbsize=` literal ("1G" / "2M") back into a
+    /// [`HugePageSize`], the inverse of [`Self::as_qemu`]. Used on release and
+    /// adoption to recover the size a VM's written config recorded so the same
+    /// page pool can be adjusted. Any other string maps to `None` (treated as
+    /// regular pages).
+    pub fn from_qemu(literal: &str) -> Option<Self> {
+        match literal {
+            "1G" => Some(HugePageSize::Size1G),
+            "2M" => Some(HugePageSize::Size2M),
+            _ => None,
+        }
+    }
+
+    /// Number of pages of this size that back `memory_mb` MB of guest memory.
+    /// This is the SINGLE definition of the page count used by reserve, release
+    /// and adoption, so the pool is incremented and decremented by exactly the
+    /// same amount: 1G pages cover 1024 MB each (a 1G size is only ever selected
+    /// for 1G-aligned memory), 2M pages cover 2 MB each (rounded up to cover the
+    /// request).
+    pub fn pages_for(self, memory_mb: u32) -> u32 {
+        match self {
+            HugePageSize::Size1G => memory_mb / 1024,
+            HugePageSize::Size2M => memory_mb.div_ceil(2),
+        }
+    }
 }
 
 /// Placement decision: which NUMA node, what cpuset string to pin, and (when
@@ -383,7 +409,7 @@ impl NumaAllocator {
     ) -> Option<HugePageSize> {
         // 1G pages first when the request is 1G-aligned.
         if memory_mb.is_multiple_of(1024) {
-            let needed = memory_mb / 1024;
+            let needed = HugePageSize::Size1G.pages_for(memory_mb);
             let available = total_1g.saturating_sub(self.allocated_1g_pages[index]);
             if needed <= available {
                 self.allocated_1g_pages[index] += needed;
@@ -391,7 +417,7 @@ impl NumaAllocator {
             }
         }
         // Fall back to 2M pages (round up to cover the request).
-        let needed = memory_mb.div_ceil(2);
+        let needed = HugePageSize::Size2M.pages_for(memory_mb);
         let available = total_2m.saturating_sub(self.allocated_2m_pages[index]);
         if needed <= available {
             self.allocated_2m_pages[index] += needed;
@@ -401,11 +427,59 @@ impl NumaAllocator {
         None
     }
 
-    /// Re-register `vcpus` on a known node without running the placement
-    /// policy, for rebuilding the ledger from an adopted VM's effective
-    /// placement at boot. Unknown node IDs are ignored (a drop-in cpuset
-    /// that no longer maps to any node cannot be counted).
-    pub fn register(&mut self, node: u32, vcpus: u32) {
+    /// Return a VM's reserved hugepages to the node's pool, the inverse of the
+    /// increment [`Self::reserve_hugepages`] made: decrement the SAME pool
+    /// (`allocated_1g_pages` or `allocated_2m_pages`) by the SAME count
+    /// ([`HugePageSize::pages_for`]) for that VM's `memory_mb`. Saturating so a
+    /// double release (or a release after the pool was rebuilt) can never
+    /// underflow. No-op for `None` (a regular-page VM reserved nothing).
+    fn release_hugepages(&mut self, index: usize, memory_mb: u32, size: Option<HugePageSize>) {
+        match size {
+            Some(HugePageSize::Size1G) => {
+                let pages = HugePageSize::Size1G.pages_for(memory_mb);
+                self.allocated_1g_pages[index] =
+                    self.allocated_1g_pages[index].saturating_sub(pages);
+            }
+            Some(HugePageSize::Size2M) => {
+                let pages = HugePageSize::Size2M.pages_for(memory_mb);
+                self.allocated_2m_pages[index] =
+                    self.allocated_2m_pages[index].saturating_sub(pages);
+            }
+            None => {}
+        }
+    }
+
+    /// Re-add a VM's hugepage usage to the node's pool at adoption/reconcile,
+    /// mirroring what [`Self::reserve_hugepages`] originally reserved from the
+    /// VM's written config (`hugepage_size` + `memory_mb`). Without this the
+    /// pool would reset to 0 across a daemon restart and the same pages could be
+    /// handed out twice (over-commit). No-op for `None`.
+    fn reregister_hugepages(&mut self, index: usize, memory_mb: u32, size: Option<HugePageSize>) {
+        match size {
+            Some(HugePageSize::Size1G) => {
+                self.allocated_1g_pages[index] += HugePageSize::Size1G.pages_for(memory_mb);
+            }
+            Some(HugePageSize::Size2M) => {
+                self.allocated_2m_pages[index] += HugePageSize::Size2M.pages_for(memory_mb);
+            }
+            None => {}
+        }
+    }
+
+    /// Re-register `vcpus` (and, when `hugepage_size` is `Some`, that VM's
+    /// hugepage usage for `memory_mb`) on a known node without running the
+    /// placement policy, for rebuilding the ledger from an adopted VM's
+    /// effective placement at boot. Recomputing the hugepage pool here keeps it
+    /// correct across a daemon restart instead of resetting to 0 (which would
+    /// let the same pages be handed out twice). Unknown node IDs are ignored (a
+    /// drop-in cpuset that no longer maps to any node cannot be counted).
+    pub fn register(
+        &mut self,
+        node: u32,
+        vcpus: u32,
+        memory_mb: u32,
+        hugepage_size: Option<HugePageSize>,
+    ) {
         if let Some(index) = self
             .topology
             .nodes
@@ -413,11 +487,22 @@ impl NumaAllocator {
             .position(|entry| entry.id == node)
         {
             self.allocated_vcpus[index] += vcpus;
+            self.reregister_hugepages(index, memory_mb, hugepage_size);
         }
     }
 
-    /// Release previously allocated vCPUs on a node (saturating subtract).
-    pub fn release(&mut self, node: u32, vcpus: u32) {
+    /// Release previously allocated vCPUs on a node (saturating subtract), and
+    /// when `hugepage_size` is `Some`, return that VM's reserved hugepages to
+    /// the same node's pool for `memory_mb`. Passing the VM's `hugepage_size`
+    /// (from its written config or placement) is what prevents the pool from
+    /// leaking on every delete/failed-create.
+    pub fn release(
+        &mut self,
+        node: u32,
+        vcpus: u32,
+        memory_mb: u32,
+        hugepage_size: Option<HugePageSize>,
+    ) {
         if let Some(index) = self
             .topology
             .nodes
@@ -425,6 +510,7 @@ impl NumaAllocator {
             .position(|entry| entry.id == node)
         {
             self.allocated_vcpus[index] = self.allocated_vcpus[index].saturating_sub(vcpus);
+            self.release_hugepages(index, memory_mb, hugepage_size);
         }
     }
 
@@ -435,6 +521,28 @@ impl NumaAllocator {
             .iter()
             .position(|entry| entry.id == node)
             .map(|index| self.allocated_vcpus[index])
+            .unwrap_or(0)
+    }
+
+    /// Currently allocated 2 MiB hugepages on a node (for tests and
+    /// introspection).
+    pub fn allocated_2m_pages(&self, node: u32) -> u32 {
+        self.topology
+            .nodes
+            .iter()
+            .position(|entry| entry.id == node)
+            .map(|index| self.allocated_2m_pages[index])
+            .unwrap_or(0)
+    }
+
+    /// Currently allocated 1 GiB hugepages on a node (for tests and
+    /// introspection).
+    pub fn allocated_1g_pages(&self, node: u32) -> u32 {
+        self.topology
+            .nodes
+            .iter()
+            .position(|entry| entry.id == node)
+            .map(|index| self.allocated_1g_pages[index])
             .unwrap_or(0)
     }
 
@@ -876,7 +984,7 @@ mod tests {
         // Node 0 full: the next placement spills to node 1.
         assert_eq!(alloc.allocate(1, 2048, None, false).unwrap().node, 1);
         // Free node 0, and the next placement packs there again.
-        alloc.release(0, 4);
+        alloc.release(0, 4, 0, None);
         assert_eq!(alloc.allocate(1, 2048, None, false).unwrap().node, 0);
     }
 
@@ -917,6 +1025,62 @@ mod tests {
     }
 
     #[test]
+    fn release_returns_hugepages_to_the_pool_no_leak() {
+        // FIX 1: with hugepages enabled, allocate then release must return the
+        // node's page pool to its pre-allocate value (no monotonic leak).
+        let mut alloc = NumaAllocator::new(two_nodes_with_hugepages(
+            &[0, 1, 2, 3],
+            4096,
+            2,
+            &[4, 5, 6, 7],
+            4096,
+            0,
+        ));
+
+        // 2048 MB, 1G-aligned, takes 2 x 1G pages on node 0.
+        let placement = alloc.allocate(2, 2048, Some(0), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size1G));
+        assert_eq!(alloc.allocated_1g_pages(0), 2);
+        // Release with the reserved size + memory returns the pages.
+        alloc.release(0, 2, 2048, placement.hugepage_size);
+        assert_eq!(alloc.allocated_1g_pages(0), 0, "1G pool leaked on release");
+        assert_eq!(alloc.allocated_vcpus(0), 0);
+
+        // A 2M-backed VM (1500 MB, not 1G-aligned) round-trips the 2M pool too.
+        let placement = alloc.allocate(1, 1500, Some(0), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size2M));
+        assert_eq!(alloc.allocated_2m_pages(0), 750); // 1500.div_ceil(2)
+        alloc.release(0, 1, 1500, placement.hugepage_size);
+        assert_eq!(alloc.allocated_2m_pages(0), 0, "2M pool leaked on release");
+    }
+
+    #[test]
+    fn register_recomputes_hugepages_across_a_restart() {
+        // FIX 1: adoption/reconcile must re-register a hugepage-backed VM's page
+        // usage from its written config, not reset the pool to 0 (which would
+        // over-commit the same pages to a new VM).
+        let mut alloc = NumaAllocator::new(two_nodes_with_hugepages(
+            &[0, 1, 2, 3],
+            4096,
+            2,
+            &[4, 5, 6, 7],
+            4096,
+            0,
+        ));
+
+        // Simulate adoption of a 1G-backed VM (2048 MB -> 2 x 1G pages, 2 vCPUs).
+        alloc.register(0, 2, 2048, Some(HugePageSize::Size1G));
+        assert_eq!(alloc.allocated_1g_pages(0), 2);
+        assert_eq!(alloc.allocated_vcpus(0), 2);
+
+        // The node's 1G pool (2 total) is now exhausted, so a fresh 1G-aligned
+        // request on node 0 must NOT get a 1G page (no over-commit); it falls
+        // back to 2M.
+        let placement = alloc.allocate(1, 2048, Some(0), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size2M));
+    }
+
+    #[test]
     fn register_and_node_for_cpuset_support_reconcile() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
         assert_eq!(alloc.node_for_cpuset("4-7"), Some(1));
@@ -927,7 +1091,7 @@ mod tests {
 
         // Re-registering a reconciled placement keeps pack-first correct:
         // node 0 already has 3 of its 4 vCPUs used, so a 2-vCPU VM spills.
-        alloc.register(0, 3);
+        alloc.register(0, 3, 0, None);
         assert_eq!(alloc.allocated_vcpus(0), 3);
         assert_eq!(alloc.allocate(2, 2048, None, false).unwrap().node, 1);
     }
