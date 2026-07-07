@@ -699,43 +699,74 @@ pub fn delete_vm(
     wipe: bool,
     keep_port_mappings: bool,
 ) -> Result<(), RpcError> {
+    {
+        let lock = vm_lock(state, vm_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entry_snapshot(state, vm_id).is_some() {
+            return delete_tracked_vm(state, vm_id, wipe, keep_port_mappings);
+        }
+    }
+
+    // Python `discard_failed_reattach`: a VM the daemon never adopted
+    // (hidden at boot) may still have a live controller and an on-disk
+    // definition; honor the delete by stopping and removing both, instead
+    // of letting NOT_FOUND leave an unmanageable instance that the retry
+    // loop resurrects. Serialize with the retry pass under creation_lock
+    // (the Python method takes it for the same reason); lock order
+    // creation_lock then vm_lock, so the vm_lock above was released first.
+    let _create_guard = state
+        .creation_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let lock = vm_lock(state, vm_id);
     let _guard = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let root = &state.host.settings.execution_root;
+    if entry_snapshot(state, vm_id).is_some() {
+        // A concurrent retry pass adopted the VM while we waited for the
+        // creation lock; the delete goes through the tracked path.
+        return delete_tracked_vm(state, vm_id, wipe, keep_port_mappings);
+    }
 
-    let Some(entry) = entry_snapshot(state, vm_id) else {
-        // Python `discard_failed_reattach`: a VM the daemon never adopted
-        // (hidden at boot) may still have a live controller and an on-disk
-        // definition; honor the delete by stopping and removing both,
-        // instead of letting NOT_FOUND leave an unmanageable instance.
-        let config_path = controller_config::controller_config_path(root, vm_id);
-        if !config_path.exists() {
-            return Err(RpcError::NotFound(vm_id.into()));
-        }
-        tracing::info!(
-            vm_id,
-            "deleting an untracked VM (failed adoption): stopping its controller"
-        );
-        let unit = controller_unit_name(vm_id);
-        if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-            tracing::warn!(unit, error, "failed to stop/disable the stale controller");
-        }
-        // Release the hidden VM's vm_index claim before the config goes.
+    let root = &state.host.settings.execution_root;
+    let config_path = controller_config::controller_config_path(root, vm_id);
+    if !config_path.exists() {
+        return Err(RpcError::NotFound(vm_id.into()));
+    }
+    tracing::info!(
+        vm_id,
+        "deleting an untracked VM (failed adoption): stopping its controller"
+    );
+    let unit = controller_unit_name(vm_id);
+    if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
+        tracing::warn!(unit, error, "failed to stop/disable the stale controller");
+    }
+    // Release the hidden VM's vm_index claim (and its retry-queue entry,
+    // the Python `_failed_reattach.pop`) before the config goes.
+    {
+        let mut world = state.world.blocking_write();
+        world.failed_reattach.remove(vm_id);
         if let Ok(contents) = std::fs::read_to_string(&config_path)
             && let Ok(config) = parse_controller_config(&contents)
         {
-            state
-                .world
-                .blocking_write()
-                .reserved_vm_indices
-                .remove(&config.vm_index);
+            world.reserved_vm_indices.remove(&config.vm_index);
         }
-        controller_config::remove_controller_configuration(root, vm_id)
-            .map_err(RpcError::Internal)?;
-        return Ok(());
-    };
+    }
+    controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
+    Ok(())
+}
+
+/// The tracked half of DeleteVm; the caller holds the VM's lock.
+fn delete_tracked_vm(
+    state: &DaemonState,
+    vm_id: &str,
+    wipe: bool,
+    keep_port_mappings: bool,
+) -> Result<(), RpcError> {
+    let root = &state.host.settings.execution_root;
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
 
     stop_vm_execution(state, vm_id)?;
     state.world.blocking_write().entries.remove(vm_id);
@@ -1283,6 +1314,10 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         }
         return Err(RpcError::Internal(error));
     }
+    // The VM may also be queued for background retry (or given up on): drop
+    // the queue entry now that it is tracked again, like the Python
+    // `_failed_reattach.pop(vm_id)` after a successful readopt.
+    state.world.blocking_write().failed_reattach.remove(vm_id);
     entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))
 }
 
@@ -1615,6 +1650,34 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 .map(|unit| (unit.clone(), false))
                 .collect()
         });
+    // Rederive missing IP assignments before filtering (ledger entry 24,
+    // closed): entries adopted during a bus outage carry no derived IPs
+    // (world.rs stamps nothing when unit states are unknown), and without
+    // this an operator could not heal their chains through RecreateNetwork.
+    // tap_assignment derives from vm_index/vm_hash (both known) and stores
+    // the result on the entry.
+    let mut entries = entries;
+    for entry in &mut entries {
+        if entry.ipv4.is_some()
+            || !networking_enabled(state, entry)
+            || !states.get(&entry.unit_name()).copied().unwrap_or(false)
+        {
+            continue;
+        }
+        match tap_assignment(state, &entry.vm_hash) {
+            Ok(tap) => {
+                entry.ipv4 = Some(tap.ipv4);
+                entry.ipv6 = Some(tap.ipv6);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    vm_hash = entry.vm_hash,
+                    error,
+                    "cannot rederive the IP assignment; skipping the VM"
+                );
+            }
+        }
+    }
     let running: Vec<&VmEntry> = entries
         .iter()
         .filter(|entry| {
@@ -1774,8 +1837,149 @@ pub fn reconcile_boot(state: &DaemonState) {
             let mut world = state.world.blocking_write();
             if let Some(entry) = world.entries.remove(&vm_id) {
                 world.reserved_vm_indices.insert(entry.vm_index);
+                // Queue it for background retry (run_reattach_retry_loop):
+                // a transient cause may clear and let us adopt it without
+                // downtime, like the Python `_failed_reattach` queue.
+                world
+                    .failed_reattach
+                    .insert(vm_id, world::FailedReattach::new(entry.vm_index));
             }
         }
+    }
+}
+
+// ── The reattach retry loop (pool.py run_reattach_retry_loop) ───────────
+
+/// Python `REATTACH_RETRY_INTERVAL_SECONDS`.
+pub const REATTACH_RETRY_INTERVAL_SECONDS: u64 = 30;
+/// Python `REATTACH_RETRY_MAX_ATTEMPTS`.
+pub const REATTACH_RETRY_MAX_ATTEMPTS: u32 = 5;
+
+/// Whether any queued failed reattach still wants a retry pass. The Python
+/// loop condition: `any(not state.exhausted for state in _failed_reattach)`.
+pub fn has_pending_reattach(state: &DaemonState) -> bool {
+    state
+        .world
+        .blocking_read()
+        .failed_reattach
+        .values()
+        .any(|queued| !queued.exhausted)
+}
+
+/// One pass of the Python `_retry_failed_reattachments_once`: re-attempt
+/// adoption for every queued VM not yet exhausted. A VM that succeeds is
+/// dropped from the queue; one that fails has its attempt count bumped and
+/// is marked exhausted at the cap (its controller keeps running, the daemon
+/// just cannot manage it; operator intervention required).
+pub fn retry_failed_reattachments_once(state: &DaemonState) {
+    let queued: Vec<String> = state
+        .world
+        .blocking_read()
+        .failed_reattach
+        .keys()
+        .cloned()
+        .collect();
+    for vm_id in queued {
+        {
+            let mut world = state.world.blocking_write();
+            if world.entries.contains_key(&vm_id) {
+                // Adopted in the meantime (e.g. by an on-demand create).
+                // Checked before the exhausted skip so even a given-up
+                // entry is dropped once another path tracks the VM.
+                world.failed_reattach.remove(&vm_id);
+                continue;
+            }
+            match world.failed_reattach.get(&vm_id) {
+                None => continue,
+                Some(queued) if queued.exhausted => continue,
+                Some(_) => {}
+            }
+        }
+        // Serialize with CreateVm (and the delete of hidden VMs) so the
+        // adoption paths never rebuild the same VM concurrently.
+        let _create_guard = state
+            .creation_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        {
+            let mut world = state.world.blocking_write();
+            if world.entries.contains_key(&vm_id) {
+                // Adopted while we waited for the lock.
+                world.failed_reattach.remove(&vm_id);
+                continue;
+            }
+            if !world.failed_reattach.contains_key(&vm_id) {
+                // Deleted while we waited for the lock.
+                continue;
+            }
+        }
+        // Liveness gate: the controller was alive at startup, but it may
+        // have died since. Restoring a dead one would register a phantom
+        // "running" entry (the restore never talks to the guest).
+        let unit = controller_unit_name(&vm_id);
+        let active_state = state.units.get_active_state(&unit);
+        match active_state.as_str() {
+            "inactive" | "failed" | "not-loaded" => {
+                // Positively dead: clean up the stale unit and stop
+                // retrying (the Python `_handle_dead_controller` stop; the
+                // on-disk config stays, entry 11's no-destruction rule kept
+                // by both daemons on this path).
+                tracing::warn!(
+                    vm_id,
+                    active_state,
+                    "controller of queued VM died since startup; cleaning it up \
+                     and dropping it from reattach retries"
+                );
+                if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
+                    tracing::warn!(unit, error, "failed to stop/disable the stale controller");
+                }
+                let mut world = state.world.blocking_write();
+                if let Some(queued) = world.failed_reattach.remove(&vm_id) {
+                    world.reserved_vm_indices.remove(&queued.vm_index);
+                }
+            }
+            "active" => match readopt_live_controller(state, &vm_id) {
+                Ok(_) => {
+                    // readopt dropped the queue entry itself.
+                    tracing::info!(vm_id, "re-adopted previously-failed VM on retry");
+                }
+                Err(error) => {
+                    tracing::warn!(vm_id, ?error, "reattach retry failed");
+                    note_reattach_retry_failure(state, &vm_id);
+                }
+            },
+            // "unknown" (a D-Bus error) or a transitional state
+            // (activating/deactivating): not proof of death, so treat it
+            // exactly like a failed restore attempt and retry later.
+            _ => note_reattach_retry_failure(state, &vm_id),
+        }
+    }
+}
+
+/// Python `_note_reattach_retry_failure`: spend one attempt; mark the VM
+/// exhausted at the cap.
+fn note_reattach_retry_failure(state: &DaemonState, vm_id: &str) {
+    let mut world = state.world.blocking_write();
+    let Some(queued) = world.failed_reattach.get_mut(vm_id) else {
+        return;
+    };
+    queued.attempts += 1;
+    if queued.attempts >= REATTACH_RETRY_MAX_ATTEMPTS {
+        queued.exhausted = true;
+        tracing::error!(
+            vm_id,
+            attempts = queued.attempts,
+            "giving up reattaching the VM; its controller is still running but \
+             the supervisor cannot manage it; the VM is NOT auto-stopped, \
+             operator intervention required"
+        );
+    } else {
+        tracing::warn!(
+            vm_id,
+            attempts = queued.attempts,
+            max = REATTACH_RETRY_MAX_ATTEMPTS,
+            "reattach retry failed; will retry"
+        );
     }
 }
 
@@ -2924,5 +3128,248 @@ mod tests {
             "the recreate batch must match the Python capture exactly \
              (protocol order included)"
         );
+    }
+
+    // ── Reattach retry loop (ledger entry 23, closed with increment 4) ──
+
+    /// A hidden VM as adoption leaves it: config on disk, vm_index claim
+    /// reserved, queued for background retry.
+    fn seed_hidden_vm(harness: &Harness) -> String {
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = test_fixtures::QEMU_HASH.to_string();
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        let mut world = state.world.blocking_write();
+        world.reserved_vm_indices.insert(3);
+        world
+            .failed_reattach
+            .insert(vm_id.clone(), world::FailedReattach::new(3));
+        vm_id
+    }
+
+    #[test]
+    fn the_retry_pass_readopts_a_live_hidden_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let vm_id = seed_hidden_vm(&harness);
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        assert!(has_pending_reattach(state));
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        let entry = world.entries.get(&vm_id).expect("the VM was re-adopted");
+        assert_eq!(entry.vm_index, 3);
+        assert_ne!(entry.times.started_at_ns, 0);
+        assert!(world.failed_reattach.is_empty(), "the queue entry is gone");
+        assert!(
+            !world.reserved_vm_indices.contains(&3),
+            "the adopted entry owns its index again"
+        );
+        assert!(harness.taps.interface_exists("vmtap3"));
+        drop(world);
+        assert!(!has_pending_reattach(state));
+    }
+
+    #[test]
+    fn the_retry_pass_cleans_up_a_dead_hidden_vm() {
+        // Python: a queued controller that died since startup is stopped,
+        // disabled and dropped from the retries; the on-disk config stays
+        // (no destruction, entry 11's rule).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = seed_hidden_vm(&harness);
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "inactive");
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(world.entries.is_empty(), "a dead VM is never resurrected");
+        assert!(world.failed_reattach.is_empty());
+        assert!(
+            !world.reserved_vm_indices.contains(&3),
+            "the dead controller's index claim is released"
+        );
+        assert!(
+            root.join(format!("{vm_id}-controller.json")).exists(),
+            "the definition is never destroyed on this path"
+        );
+        assert!(!harness.systemd.is_enabled(&controller_unit_name(&vm_id)));
+    }
+
+    #[test]
+    fn retries_exhaust_after_the_attempt_cap() {
+        // A transitional state is not proof of death: each pass spends one
+        // attempt; at the cap the VM is exhausted and left alone, its index
+        // claim intact (the controller may still be running).
+        let harness = harness();
+        let state = &harness.state;
+        let vm_id = seed_hidden_vm(&harness);
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "activating");
+
+        for _ in 0..10 {
+            retry_failed_reattachments_once(state);
+        }
+
+        let world = state.world.blocking_read();
+        let queued = world.failed_reattach.get(&vm_id).expect("still queued");
+        assert!(queued.exhausted);
+        assert_eq!(
+            queued.attempts, REATTACH_RETRY_MAX_ATTEMPTS,
+            "attempts stop counting once exhausted"
+        );
+        assert!(
+            world.reserved_vm_indices.contains(&3),
+            "an exhausted VM keeps its vm_index claim out of the allocator"
+        );
+        drop(world);
+        assert!(
+            !has_pending_reattach(state),
+            "the retry loop terminates once everything is exhausted"
+        );
+    }
+
+    #[test]
+    fn a_failed_retry_bumps_the_attempt_count() {
+        // A live controller whose restore fails (here: the tap creation)
+        // stays queued with a bumped attempt count.
+        let harness = harness();
+        let state = &harness.state;
+        let vm_id = seed_hidden_vm(&harness);
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        harness.taps.fail_create("injected tap failure");
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(world.entries.is_empty());
+        let queued = world.failed_reattach.get(&vm_id).expect("still queued");
+        assert_eq!(queued.attempts, 2);
+        assert!(!queued.exhausted);
+        assert!(
+            world.reserved_vm_indices.contains(&3),
+            "the failed restore re-reserves the index"
+        );
+    }
+
+    #[test]
+    fn delete_of_a_queued_hidden_vm_dequeues_it() {
+        // The discard_failed_reattach port: DeleteVm on a queued hidden VM
+        // stops the controller, drops the definition and the queue entry,
+        // so the retry loop cannot resurrect a deleted VM.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = seed_hidden_vm(&harness);
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+
+        let world = state.world.blocking_read();
+        assert!(world.failed_reattach.is_empty());
+        assert!(!world.reserved_vm_indices.contains(&3));
+        assert!(!root.join(format!("{vm_id}-controller.json")).exists());
+        assert_eq!(
+            harness
+                .systemd
+                .get_active_state(&controller_unit_name(&vm_id)),
+            "inactive"
+        );
+        drop(world);
+        // The queue is empty: a follow-up pass has nothing to resurrect.
+        retry_failed_reattachments_once(state);
+        assert!(state.world.blocking_read().entries.is_empty());
+    }
+
+    #[test]
+    fn a_failed_boot_reconcile_queues_the_vm_for_retry() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = test_fixtures::QEMU_HASH.to_string();
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        let adopted = world::build_world_view(
+            &state.host.settings,
+            harness.systemd.as_ref(),
+            &state.host.gpus,
+        );
+        *state.world.blocking_write() = adopted;
+        harness.taps.fail_create("injected tap failure");
+
+        reconcile_boot(state);
+
+        let world = state.world.blocking_read();
+        assert!(world.entries.is_empty(), "the VM is hidden");
+        assert!(world.reserved_vm_indices.contains(&3));
+        let queued = world.failed_reattach.get(&vm_id).expect("queued for retry");
+        assert_eq!(queued.attempts, 1);
+    }
+
+    // ── RecreateNetwork IP rederivation (ledger entry 24, closed) ───────
+
+    #[test]
+    fn recreate_network_rederives_ips_after_a_bus_outage_adoption() {
+        // Entries adopted while the bus was unreachable carry no derived
+        // IPs; RecreateNetwork must rederive them (from vm_index/vm_hash)
+        // and rebuild their chains instead of skipping them.
+        let harness = harness_with_ruleset(typical_ruleset());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = test_fixtures::QEMU_HASH.to_string();
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        let adopted = world::build_world_view(
+            &state.host.settings,
+            &crate::units::UnreachableBus,
+            &state.host.gpus,
+        );
+        *state.world.blocking_write() = adopted;
+        {
+            let world = state.world.blocking_read();
+            assert_eq!(world.entries[&vm_id].ipv4, None, "bus-outage adoption");
+        }
+        // The bus answers now and the unit is active.
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+
+        let summary = recreate_network(state).unwrap();
+        assert_eq!(summary["recreated_count"], 1);
+        assert_eq!(summary["recreated_vms"][0], vm_id);
+        assert_eq!(summary["success"], true);
+
+        let world = state.world.blocking_read();
+        let entry = &world.entries[&vm_id];
+        assert_eq!(
+            entry.ipv4.as_ref().map(|pair| pair.address.as_str()),
+            Some("172.16.3.2"),
+            "the assignment was rederived from vm_index 3"
+        );
+        assert!(entry.ipv6.is_some());
     }
 }

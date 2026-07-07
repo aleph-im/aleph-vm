@@ -177,6 +177,11 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
             })?;
         }
 
+        // Retry VMs whose reattach failed above (e.g. host networking not
+        // ready yet); self-terminates once nothing is left to retry, like
+        // the Python run_reattach_retry_loop task.
+        spawn_reattach_retry_loop(state.clone());
+
         // Handlers must be installed before the socket is bound: a client
         // that sees the socket may send SIGTERM right away, and an
         // uninstalled handler would mean death without cleanup.
@@ -225,6 +230,38 @@ fn enable_forwarding_sysctl(path: &std::path::Path) {
             tracing::error!(path = %path.display(), %error, "cannot read the forwarding state");
         }
     }
+}
+
+/// The background reattach retry loop (Python pool.run_reattach_retry_loop):
+/// while any queued failed reattach is not exhausted, sleep the interval and
+/// run one retry pass on the blocking pool. A clean startup (no failures)
+/// returns immediately, exactly like the Python task.
+fn spawn_reattach_retry_loop(state: Arc<DaemonState>) {
+    tokio::spawn(async move {
+        loop {
+            let pending = {
+                let state = state.clone();
+                tokio::task::spawn_blocking(move || lifecycle::has_pending_reattach(&state))
+                    .await
+                    .unwrap_or(false)
+            };
+            if !pending {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(
+                lifecycle::REATTACH_RETRY_INTERVAL_SECONDS,
+            ))
+            .await;
+            let state = state.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                lifecycle::retry_failed_reattachments_once(&state)
+            })
+            .await
+            {
+                tracing::error!(%error, "the reattach retry pass panicked");
+            }
+        }
+    });
 }
 
 /// Install SIGTERM/SIGINT handling, the two signals the Python daemon

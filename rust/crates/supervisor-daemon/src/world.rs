@@ -176,6 +176,29 @@ impl VmEntry {
     }
 }
 
+/// Python `_FailedReattach` (pool.py): a VM left running-but-untracked
+/// after a failed adoption, awaiting background retry
+/// (`lifecycle::retry_failed_reattachments_once`). `attempts` counts TOTAL
+/// attempts including the startup one; once it reaches
+/// `REATTACH_RETRY_MAX_ATTEMPTS` the VM is `exhausted`: the daemon stops
+/// retrying and leaves the live controller alone (operator intervention).
+#[derive(Debug, Clone)]
+pub struct FailedReattach {
+    pub vm_index: i64,
+    pub attempts: u32,
+    pub exhausted: bool,
+}
+
+impl FailedReattach {
+    pub fn new(vm_index: i64) -> Self {
+        Self {
+            vm_index,
+            attempts: 1,
+            exhausted: false,
+        }
+    }
+}
+
 /// The in-memory map, keyed and iterated by vm_hash. The BTreeMap order
 /// equals the Python pool's insertion order (sorted config paths), so
 /// ListVms enumerates identically.
@@ -189,6 +212,11 @@ pub struct WorldView {
     /// like the Python `_failed_reattach` protection in
     /// `get_unique_vm_index`.
     pub reserved_vm_indices: std::collections::HashSet<i64>,
+    /// Hidden VMs with a LIVE controller queued for background reattach
+    /// retry, the Python `VmPool._failed_reattach` dict. Keyed by vm_hash;
+    /// entries are removed once re-adopted (retry pass, readopt or an
+    /// explicit delete), kept exhausted once given up.
+    pub failed_reattach: std::collections::HashMap<String, FailedReattach>,
     /// The dynamic IPv6 allocator's position: the Python generator advances
     /// once per prepare_tap (adoption and create), never rewinds.
     pub ipv6_dynamic_ordinal: usize,
@@ -379,6 +407,15 @@ pub fn build_world_view(
                     "skipping non-QEMU controller config (adoption is QEMU-only, \
                      as in the Python reattach); leaving the VM alone"
                 );
+                // Python queues every failed reattach of an ACTIVE
+                // controller for background retry, including these doomed
+                // ones (spec_from_controller_configuration is QEMU-only on
+                // every retry too); they exhaust after the attempt cap.
+                if running == Some(true) {
+                    world
+                        .failed_reattach
+                        .insert(vm_hash, FailedReattach::new(config.vm_index));
+                }
                 continue;
             }
         };
@@ -418,6 +455,9 @@ pub fn build_world_view(
                                 "cannot compute the IPv4 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
+                            world
+                                .failed_reattach
+                                .insert(vm_hash, FailedReattach::new(config.vm_index));
                             continue;
                         }
                     }
@@ -443,6 +483,9 @@ pub fn build_world_view(
                                 "cannot compute the IPv6 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
+                            world
+                                .failed_reattach
+                                .insert(vm_hash, FailedReattach::new(config.vm_index));
                             continue;
                         }
                     }
