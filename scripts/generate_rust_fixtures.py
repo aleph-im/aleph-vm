@@ -278,6 +278,56 @@ def build_written_controller_config() -> None:
     print(f"wrote {path}")
 
 
+def firecracker_config_payload() -> str:
+    """The exact bytes MicroVM.save_configuration_file writes for an
+    ephemeral spec program (SpecFirecrackerProgram.setup() inputs, pydantic
+    serialization, unjailed paths). The Rust launcher's config builder must
+    reproduce them byte-for-byte. Field values mirror setup(): the rootfs
+    drive is always read-only and root, extra disks get vdb onwards
+    (MicroVM.compute_device_name), the console is enabled
+    (PRINT_SYSTEM_LOGS), the boot args are BootSource.args(True, False),
+    vsock is the default and the network interface rides the tap device."""
+    from aleph.vm.hypervisors.firecracker.config import (
+        BootSource,
+        Drive,
+        FirecrackerConfig,
+        MachineConfig,
+        NetworkInterface,
+        Vsock,
+    )
+
+    config = FirecrackerConfig(
+        boot_source=BootSource(
+            kernel_image_path=Path("/opt/firecracker/vmlinux.bin"),
+            boot_args=BootSource.args(enable_console=True, writable=False),
+        ),
+        drives=[
+            Drive(
+                drive_id="rootfs",
+                path_on_host=Path("/var/cache/aleph/runtime.squashfs"),
+                is_root_device=True,
+                is_read_only=True,
+            ),
+            Drive(
+                drive_id="vdb",
+                path_on_host=Path("/var/cache/aleph/data.img"),
+                is_root_device=False,
+                is_read_only=False,
+            ),
+        ],
+        machine_config=MachineConfig(vcpu_count=1, mem_size_mib=256),
+        vsock=Vsock(),
+        network_interfaces=[NetworkInterface(iface_id="eth0", host_dev_name="vmtap4")],
+    )
+    return config.model_dump_json(by_alias=True, exclude_none=True, indent=4)
+
+
+def build_firecracker_config() -> None:
+    path = FIXTURES_DIR / "firecracker-config.json"
+    path.write_text(firecracker_config_payload())
+    print(f"wrote {path}")
+
+
 # ── nftables oracle ────────────────────────────────────────────────────────
 #
 # Canned `nft -j list ruleset` snapshots (ip and ip6 merged, the shape
@@ -554,6 +604,7 @@ def main() -> None:
     build_database()
     build_legacy_database()
     build_written_controller_config()
+    build_firecracker_config()
     build_nftables_fixture()
 
 

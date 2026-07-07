@@ -849,6 +849,7 @@ pub struct StaticRuleset {
     pub entries: Vec<Value>,
     pub batches: std::sync::Mutex<Vec<Vec<Value>>>,
     event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
+    fail_matching: std::sync::Mutex<Option<String>>,
 }
 
 impl StaticRuleset {
@@ -857,12 +858,22 @@ impl StaticRuleset {
             entries,
             batches: std::sync::Mutex::new(Vec::new()),
             event_log: std::sync::OnceLock::new(),
+            fail_matching: std::sync::Mutex::new(None),
         }
     }
 
     /// Attach a shared chronological event log.
     pub fn set_event_log(&self, log: crate::test_fixtures::EventLog) {
         let _ = self.event_log.set(log);
+    }
+
+    /// Failure injection: every run_commands whose serialized batch
+    /// contains `needle` errors instead of recording.
+    pub fn fail_batches_containing(&self, needle: &str) {
+        *self
+            .fail_matching
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(needle.to_string());
     }
 }
 
@@ -891,6 +902,17 @@ impl NftExecutor for StaticRuleset {
                 "nft: batch {}",
                 serde_json::to_string(commands).unwrap_or_default()
             ));
+        }
+        if let Some(needle) = self
+            .fail_matching
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            && serde_json::to_string(commands)
+                .unwrap_or_default()
+                .contains(needle)
+        {
+            return Err(format!("injected nft failure (matched {needle:?})"));
         }
         self.batches
             .lock()

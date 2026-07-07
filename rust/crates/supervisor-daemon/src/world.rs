@@ -25,7 +25,7 @@
 //! - A `hypervisor: firecracker` config is logged and skipped: Python's
 //!   reattach also fails for it (spec_from_controller_configuration is
 //!   QEMU-only), leaving the VM untracked, so both daemons hide it from
-//!   ListVms; Python just also queues doomed retries.
+//!   ListVms and queue it for (doomed) background retries.
 //! - When the boot-time ListUnits call FAILS (bus unreachable), no VM is
 //!   stamped stopped: unit states are unknown, and each VM's status defers
 //!   to the live per-RPC unit queries until the bus answers (ledger 13).
@@ -124,12 +124,47 @@ pub fn rebuild_attached_gpus(
         .collect()
 }
 
+/// The ephemeral-program half of a VmEntry (spec.backend FIRECRACKER,
+/// increment 4): the MicroVM-derived facts the Python execution carries.
+#[derive(Debug, Clone)]
+pub struct ProgramEntry {
+    /// Host UDS endpoint of the guest channel (`MicroVM.vsock_path`).
+    pub vsock_path: String,
+    /// Raw bytes from the guest's ready signal (`MicroVM.init_payload`).
+    pub ready_payload: Vec<u8>,
+    /// Handle on the firecracker child; teardown is kill-based, idempotent.
+    pub handle: std::sync::Arc<dyn crate::firecracker::ProgramHandle>,
+}
+
+/// Python `VmType`: the vm-type hextet of the static IPv6 scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmType {
+    Microvm,
+    Instance,
+}
+
+impl VmType {
+    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`.
+    fn prefix(self) -> u16 {
+        match self {
+            VmType::Microvm => 0x1,
+            VmType::Instance => 0x3,
+        }
+    }
+}
+
 /// One adopted VM.
 #[derive(Debug, Clone)]
 pub struct VmEntry {
     pub vm_hash: String,
     /// `Configuration.vm_id`, the tap/IPv4-range index.
     pub vm_index: i64,
+    /// The controller configuration for QEMU VMs. For ephemeral programs
+    /// (`is_program`) this holds a SYNTHESIZED record
+    /// (`QemuVmConfig::for_program`: memory + interface name only, never
+    /// written to disk) so the shared accounting paths (memory backstop,
+    /// networking_enabled, GPU exclusion) read one shape; anything beyond
+    /// those fields must branch on `is_program` instead.
     pub config: QemuVmConfig,
     pub settings_slice: controller_config::ControllerSettingsSlice,
     pub times: VmTimes,
@@ -163,6 +198,14 @@ pub struct VmEntry {
     /// [`WorldView::insert_entry`]; a replacement keeps the old position,
     /// like a Python dict assignment to an existing key.
     pub ordinal: u64,
+    /// True for an ephemeral Firecracker program created on this daemon
+    /// instance (spec.backend FIRECRACKER, never persistent, never
+    /// adopted: an ephemeral program cannot outlive the daemon that
+    /// spawned it). Liveness is times-based (the Python non-persistent
+    /// `_is_running`), never a systemd unit query.
+    pub is_program: bool,
+    /// Set once the program booted (the ready handshake completed).
+    pub program: Option<ProgramEntry>,
 }
 
 impl VmEntry {
@@ -173,6 +216,29 @@ impl VmEntry {
     /// Python `is_stopping`: stopping_at set, stopped_at not yet.
     pub fn is_stopping(&self) -> bool {
         self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0
+    }
+}
+
+/// Python `_FailedReattach` (pool.py): a VM left running-but-untracked
+/// after a failed adoption, awaiting background retry
+/// (`lifecycle::retry_failed_reattachments_once`). `attempts` counts TOTAL
+/// attempts including the startup one; once it reaches
+/// `REATTACH_RETRY_MAX_ATTEMPTS` the VM is `exhausted`: the daemon stops
+/// retrying and leaves the live controller alone (operator intervention).
+#[derive(Debug, Clone)]
+pub struct FailedReattach {
+    pub vm_index: i64,
+    pub attempts: u32,
+    pub exhausted: bool,
+}
+
+impl FailedReattach {
+    pub fn new(vm_index: i64) -> Self {
+        Self {
+            vm_index,
+            attempts: 1,
+            exhausted: false,
+        }
     }
 }
 
@@ -189,6 +255,11 @@ pub struct WorldView {
     /// like the Python `_failed_reattach` protection in
     /// `get_unique_vm_index`.
     pub reserved_vm_indices: std::collections::HashSet<i64>,
+    /// Hidden VMs with a LIVE controller queued for background reattach
+    /// retry, the Python `VmPool._failed_reattach` dict. Keyed by vm_hash;
+    /// entries are removed once re-adopted (retry pass, readopt or an
+    /// explicit delete), kept exhausted once given up.
+    pub failed_reattach: std::collections::HashMap<String, FailedReattach>,
     /// The dynamic IPv6 allocator's position: the Python generator advances
     /// once per prepare_tap (adoption and create), never rewinds.
     pub ipv6_dynamic_ordinal: usize,
@@ -251,6 +322,7 @@ pub fn derive_tap_assignment(
     settings: &Settings,
     vm_index: i64,
     vm_hash: &str,
+    vm_type: VmType,
     ipv6_dynamic_ordinal: &mut usize,
 ) -> Result<(IpPair, IpPair), String> {
     let ipv4 = ipv4_assignment(
@@ -260,7 +332,7 @@ pub fn derive_tap_assignment(
     )?;
     let ipv6 = match settings.ipv6_allocation_policy {
         Ipv6AllocationPolicy::Static => {
-            ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash)?
+            ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash, vm_type)?
         }
         Ipv6AllocationPolicy::Dynamic => {
             *ipv6_dynamic_ordinal += 1;
@@ -379,6 +451,15 @@ pub fn build_world_view(
                     "skipping non-QEMU controller config (adoption is QEMU-only, \
                      as in the Python reattach); leaving the VM alone"
                 );
+                // Python queues every failed reattach of an ACTIVE
+                // controller for background retry, including these doomed
+                // ones (spec_from_controller_configuration is QEMU-only on
+                // every retry too); they exhaust after the attempt cap.
+                if running == Some(true) {
+                    world
+                        .failed_reattach
+                        .insert(vm_hash, FailedReattach::new(config.vm_index));
+                }
                 continue;
             }
         };
@@ -418,13 +499,18 @@ pub fn build_world_view(
                                 "cannot compute the IPv4 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
+                            world
+                                .failed_reattach
+                                .insert(vm_hash, FailedReattach::new(config.vm_index));
                             continue;
                         }
                     }
                     let ipv6_result = match settings.ipv6_allocation_policy {
-                        Ipv6AllocationPolicy::Static => {
-                            ipv6_static_assignment(&settings.ipv6_address_pool, &vm_hash)
-                        }
+                        Ipv6AllocationPolicy::Static => ipv6_static_assignment(
+                            &settings.ipv6_address_pool,
+                            &vm_hash,
+                            VmType::Instance,
+                        ),
                         Ipv6AllocationPolicy::Dynamic => {
                             dynamic_ordinal += 1;
                             ipv6_dynamic_assignment(
@@ -443,6 +529,9 @@ pub fn build_world_view(
                                 "cannot compute the IPv6 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
+                            world
+                                .failed_reattach
+                                .insert(vm_hash, FailedReattach::new(config.vm_index));
                             continue;
                         }
                     }
@@ -503,6 +592,8 @@ pub fn build_world_view(
             gpus,
             spec: None,
             ordinal: 0, // assigned by insert_entry
+            is_program: false,
+            program: None,
         });
     }
 
@@ -649,9 +740,10 @@ fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, Stri
 }
 
 /// StaticIPv6Allocator: the /124 subnet is the pool's first four hextets,
-/// the instance vm-type prefix (3), then 44 bits of the item hash with a
-/// trailing zero nibble. guest = network+1, gateway = network address.
-fn ipv6_static_assignment(pool: &str, vm_hash: &str) -> Result<IpPair, String> {
+/// the vm-type prefix hextet (1 for microvms, 3 for instances), then 44
+/// bits of the item hash with a trailing zero nibble. guest = network+1,
+/// gateway = network address.
+fn ipv6_static_assignment(pool: &str, vm_hash: &str, vm_type: VmType) -> Result<IpPair, String> {
     let (base, pool_len) = parse_ipv6_cidr(pool)?;
     if pool_len != 56 && pool_len != 64 {
         // Python: StaticIPv6Allocator refuses anything but /56 or /64.
@@ -676,8 +768,7 @@ fn ipv6_static_assignment(pool: &str, vm_hash: &str) -> Result<IpPair, String> {
         segments[1],
         segments[2],
         segments[3],
-        // VmType.instance prefix; reattach is QEMU-instance only.
-        0x3,
+        vm_type.prefix(),
         hextet(slice(0..4)?)?,
         hextet(slice(4..8)?)?,
         hextet(&format!("{}0", slice(8..11)?))?,
@@ -1110,6 +1201,7 @@ mod tests {
         let pair = ipv6_static_assignment(
             "2a01:240:2:c8::/64",
             "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            VmType::Instance,
         )
         .unwrap();
         assert_eq!(pair.network_cidr, "2a01:240:2:c8:3:abcd:ef01:2340/124");
@@ -1117,10 +1209,12 @@ mod tests {
         assert_eq!(pair.gateway, "2a01:240:2:c8:3:abcd:ef01:2340");
 
         assert!(
-            ipv6_static_assignment("fc00::/48", "aabbccddeeff").is_err(),
+            ipv6_static_assignment("fc00::/48", "aabbccddeeff", VmType::Instance).is_err(),
             "the static scheme requires a /56 or /64 pool"
         );
-        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----").is_err());
+        assert!(
+            ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----", VmType::Instance).is_err()
+        );
     }
 
     #[test]
@@ -1129,12 +1223,29 @@ mod tests {
         // character; the checked path must return the error instead (the
         // hash becomes request-reachable in increment 3).
         // U+00E9 spans bytes 3..5, so 0..4 is not a char boundary.
-        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abc\u{00e9}56789012345").is_err());
+        assert!(
+            ipv6_static_assignment(
+                "fc00:1:2:3::/64",
+                "abc\u{00e9}56789012345",
+                VmType::Instance
+            )
+            .is_err()
+        );
         // A long enough hash whose 8..11 range splits a character
         // (U+00E9 spans bytes 10..12 here).
-        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abcdef0123\u{00e9}45678").is_err());
+        assert!(
+            ipv6_static_assignment(
+                "fc00:1:2:3::/64",
+                "abcdef0123\u{00e9}45678",
+                VmType::Instance
+            )
+            .is_err()
+        );
         // Multibyte characters past the sliced ranges do not matter.
-        assert!(ipv6_static_assignment("fc00:1:2:3::/64", "abcdef01234\u{00e9}").is_ok());
+        assert!(
+            ipv6_static_assignment("fc00:1:2:3::/64", "abcdef01234\u{00e9}", VmType::Instance)
+                .is_ok()
+        );
     }
 
     #[test]

@@ -49,6 +49,7 @@ from aleph.vm.supervisor_interface.types import (
     DiskRole,
     DiskSpec,
     GpuSpec,
+    GuestChannelSpec,
     HostPort,
     NetworkConfig,
     PciAddress,
@@ -173,9 +174,21 @@ async def test_create_vm_rejections_carry_the_python_error_vocabulary(lifecycle_
     _, socket_path = lifecycle_daemon
     client = GrpcSupervisor(socket_path)
     try:
-        # Ephemeral Firecracker programs are increment 4.
-        with pytest.raises(NotImplementedSupervisorError):
+        # Ephemeral Firecracker programs (increment 4): a channel-less spec
+        # is the Python InvalidBackendError, before any side effect;
+        # persistent programs remain UNIMPLEMENTED (controller port).
+        with pytest.raises(InvalidBackendError) as excinfo:
             await client.create_vm(_spec(UNKNOWN_HASH, backend=Backend.FIRECRACKER, persistent=False))
+        assert str(excinfo.value) == "Firecracker spec VMs require a guest_channel"
+        with pytest.raises(NotImplementedSupervisorError):
+            await client.create_vm(
+                _spec(
+                    UNKNOWN_HASH,
+                    backend=Backend.FIRECRACKER,
+                    persistent=True,
+                    guest_channel=GuestChannelSpec(ready_port=52, ready_timeout_secs=1),
+                )
+            )
 
         # Confidential creation is increment 6.
         with pytest.raises(NotImplementedSupervisorError):
@@ -363,6 +376,27 @@ def test_the_committed_written_config_fixture_matches_the_live_models():
     committed = (repo_root / "rust/crates/supervisor-daemon/tests/fixtures/written-controller-config.json").read_text()
     assert module.written_controller_config_payload() == committed, (
         "the pydantic Configuration model and the committed fixture diverged; "
+        "run scripts/generate_rust_fixtures.py and commit the result"
+    )
+
+
+def test_the_committed_firecracker_config_fixture_matches_the_live_models():
+    """Drift guard: the committed Firecracker-config fixture must be exactly
+    what the current pydantic FirecrackerConfig model serializes (the Rust
+    launcher reproduces the fixture byte-for-byte, so a model change without
+    regeneration would hide a divergence)."""
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "scripts" / "generate_rust_fixtures.py"
+    spec = importlib.util.spec_from_file_location("generate_rust_fixtures", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    committed = (repo_root / "rust/crates/supervisor-daemon/tests/fixtures/firecracker-config.json").read_text()
+    assert module.firecracker_config_payload() == committed, (
+        "the pydantic FirecrackerConfig model and the committed fixture diverged; "
         "run scripts/generate_rust_fixtures.py and commit the result"
     )
 
