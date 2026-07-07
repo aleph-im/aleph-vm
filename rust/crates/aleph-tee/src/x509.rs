@@ -135,6 +135,20 @@ mod tests {
     }
 
     #[test]
+    fn test_attestation_oid_value() {
+        // Pin the OID arc-by-arc so a change (e.g. 60000 -> 60001) is caught.
+        assert_eq!(ATTESTATION_OID, &[1, 3, 6, 1, 4, 1, 60000, 1, 1]);
+        // And the string form must agree with the numeric form.
+        let joined = ATTESTATION_OID
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        assert_eq!(joined, ATTESTATION_OID_STR);
+        assert_eq!(ATTESTATION_OID_STR, "1.3.6.1.4.1.60000.1.1");
+    }
+
+    #[test]
     fn test_decode_invalid_der() {
         let result = decode_attestation_extension(&[0xFF, 0xFF]);
         assert!(result.is_err(), "invalid DER should fail");
