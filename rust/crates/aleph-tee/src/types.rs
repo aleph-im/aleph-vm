@@ -9,15 +9,33 @@ pub enum TeeType {
     None,
 }
 
+/// An attestation report as transported between the in-guest agent and the
+/// verifying client.
+///
+/// # Trust model: `data` is the ONLY source of truth
+///
+/// `data` is the raw AMD-signed report blob (1184 bytes for SEV-SNP). It is the
+/// ONLY field AMD's signature covers, and it internally carries its own
+/// `report_data` (the 64 free bytes the guest chose) and `measurement` (the
+/// launch digest). Verifiers MUST derive those values by PARSING `data` (see
+/// `aleph_tee::sev_snp::report::{extract_report_data, extract_measurement}`)
+/// and MUST run the full AMD certificate chain over `data` before trusting any
+/// of it.
+///
+/// This type deliberately does NOT carry standalone `report_data` /
+/// `measurement` copies. Earlier revisions (and the aleph-cvm donor) serialized
+/// those alongside `data`, but they are unsigned: an attacker can replay any
+/// genuine AMD-signed blob as `data` and set the JSON copies to whatever passes
+/// a check. Removing them makes it structurally impossible to gate trust on the
+/// unsigned copies. This is a deliberate divergence from the donor; see the
+/// rust-port-divergences ledger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
     pub tee_type: TeeType,
+    /// The raw AMD-signed report blob. Single source of truth for
+    /// `report_data` and `measurement`; both are derived by parsing this.
     #[serde(with = "hex_serde")]
     pub data: Vec<u8>,
-    #[serde(with = "hex_serde_array")]
-    pub report_data: [u8; 64],
-    #[serde(with = "hex_serde")]
-    pub measurement: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,8 +43,15 @@ pub struct VerificationResult {
     pub valid: bool,
     pub tee_type: TeeType,
     pub summary: String,
+    /// Launch measurement, derived from the AMD-verified blob (NOT a
+    /// caller-supplied copy).
     #[serde(with = "hex_serde")]
     pub measurement: Vec<u8>,
+    /// The 64-byte `report_data`, derived from the AMD-verified blob (NOT a
+    /// caller-supplied copy). Callers bind key/nonce commitments against THIS
+    /// value, never against any unsigned copy.
+    #[serde(with = "hex_serde_array")]
+    pub report_data: [u8; 64],
     pub details: serde_json::Value,
 }
 
@@ -159,8 +184,6 @@ mod tests {
         let report = AttestationReport {
             tee_type: TeeType::SevSnp,
             data: vec![0xde, 0xad, 0xbe, 0xef],
-            report_data: [0x42; 64],
-            measurement: vec![0x01, 0x02, 0x03],
         };
 
         let json = serde_json::to_string(&report).unwrap();
@@ -168,13 +191,12 @@ mod tests {
 
         assert_eq!(deserialized.tee_type, report.tee_type);
         assert_eq!(deserialized.data, report.data);
-        assert_eq!(deserialized.report_data, report.report_data);
-        assert_eq!(deserialized.measurement, report.measurement);
 
-        // Verify hex encoding is present in the JSON
+        // Verify hex encoding is present in the JSON.
         assert!(json.contains("deadbeef"));
-        assert!(json.contains(&"42".repeat(64)));
-        assert!(json.contains("010203"));
+        // The unsigned copies are gone: only `data` (and tee_type) are carried.
+        assert!(!json.contains("report_data"));
+        assert!(!json.contains("measurement"));
     }
 
     #[test]

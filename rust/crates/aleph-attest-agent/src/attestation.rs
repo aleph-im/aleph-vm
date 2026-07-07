@@ -56,11 +56,13 @@ mod tests {
         }
 
         fn get_report(&self, report_data: &[u8; 64]) -> Result<AttestationReport> {
+            // On real hardware `report_data` is embedded INSIDE the signed blob
+            // (`data`). The mock echoes it into `data` so tests can assert which
+            // report_data the agent committed to, mirroring that single-source-of
+            // -truth layout (the standalone field no longer exists).
             Ok(AttestationReport {
                 tee_type: TeeType::SevSnp,
-                data: vec![0xAA; 16],
-                report_data: *report_data,
-                measurement: vec![0xBB; 48],
+                data: report_data.to_vec(),
             })
         }
 
@@ -84,10 +86,11 @@ mod tests {
 
         let report = get_key_bound_report(&backend, pubkey).unwrap();
 
-        // report_data must be exactly the canonical key-bound scheme.
+        // report_data (committed into the blob, echoed into `data` by the mock)
+        // must be exactly the canonical key-bound scheme.
         assert_eq!(
-            report.report_data,
-            aleph_tee::report_data::key_bound_report_data(pubkey)
+            report.data,
+            aleph_tee::report_data::key_bound_report_data(pubkey).to_vec()
         );
     }
 
@@ -101,8 +104,8 @@ mod tests {
 
         // report_data must be exactly the canonical fresh scheme (key + nonce).
         assert_eq!(
-            report.report_data,
-            aleph_tee::report_data::fresh_report_data(served_key, nonce)
+            report.data,
+            aleph_tee::report_data::fresh_report_data(served_key, nonce).to_vec()
         );
     }
 
@@ -112,12 +115,8 @@ mod tests {
         let nonce = b"same-nonce";
 
         // Changing the served key changes the report_data (channel binding).
-        let a = get_fresh_report(&backend, b"key-A", nonce)
-            .unwrap()
-            .report_data;
-        let b = get_fresh_report(&backend, b"key-B", nonce)
-            .unwrap()
-            .report_data;
+        let a = get_fresh_report(&backend, b"key-A", nonce).unwrap().data;
+        let b = get_fresh_report(&backend, b"key-B", nonce).unwrap().data;
         assert_ne!(a, b);
     }
 
@@ -134,10 +133,8 @@ mod tests {
         let malicious_nonce = Sha384::digest(attacker_key);
         let fresh = get_fresh_report(&backend, served_key, &malicious_nonce)
             .unwrap()
-            .report_data;
-        let attacker_key_bound = get_key_bound_report(&backend, attacker_key)
-            .unwrap()
-            .report_data;
+            .data;
+        let attacker_key_bound = get_key_bound_report(&backend, attacker_key).unwrap().data;
         assert_ne!(fresh, attacker_key_bound);
     }
 }
