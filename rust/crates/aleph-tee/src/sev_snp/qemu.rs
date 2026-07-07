@@ -126,6 +126,41 @@ mod tests {
     }
 
     #[test]
+    fn test_sev_snp_confidential_guest_parameters() {
+        // These values are load-bearing for SEV-SNP: cbitpos=51 and
+        // reduced-phys-bits=1 are the AMD EPYC C-bit position, and the machine
+        // must bind confidential-guest-support=sev0. Assert them by exact value.
+        let config = make_config(2048, None);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+
+        let sev_arg = args
+            .iter()
+            .find(|a| a.contains("sev-snp-guest"))
+            .expect("should have sev-snp-guest arg");
+        assert!(
+            sev_arg.contains("cbitpos=51"),
+            "cbitpos must be 51 but got: {sev_arg}"
+        );
+        assert!(
+            sev_arg.contains("reduced-phys-bits=1"),
+            "reduced-phys-bits must be 1 but got: {sev_arg}"
+        );
+        assert!(
+            sev_arg.contains("id=sev0"),
+            "sev object id must be sev0 but got: {sev_arg}"
+        );
+
+        let machine_arg = args
+            .iter()
+            .find(|a| a.contains("confidential-guest-support"))
+            .expect("should have machine arg");
+        assert!(
+            machine_arg.contains("confidential-guest-support=sev0"),
+            "machine must bind sev0 but got: {machine_arg}"
+        );
+    }
+
+    #[test]
     fn test_memory_backend_matches_config() {
         let config = make_config(4096, None);
         let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
