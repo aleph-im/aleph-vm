@@ -186,6 +186,15 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
 /// confidential-shaped config, so their absence is an internal invariant
 /// violation.
 pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
+    // The four `.expect()`s below rely on `select_run_target` only dispatching a
+    // confidential-shaped config here (all four SEV fields present). A future
+    // unguarded caller trips this in debug builds instead of panicking
+    // cryptically on one of the `.expect()`s. Release behavior is unchanged.
+    debug_assert!(
+        config.is_confidential(),
+        "build_confidential_argv requires a confidential config (all four SEV fields present)"
+    );
+
     let qga_socket_path = qga_socket_or_none(config);
     let ovmf_path = config
         .ovmf_path
@@ -308,15 +317,43 @@ pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
 /// paused (`-S`); this controller does NOT inject the launch secret or resume
 /// the CPU (that is the supervisor session flow).
 pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
-    // Pre-launch guard (a): must be on an AMD SEV platform. The Python
-    // `secure_encryption_info()` returning None raises
-    // "Not running on an AMD SEV platform?"; our reader returns None off-SEV.
-    let sev =
-        SevHostInfo::read().ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+    // Read the host SEV info, then run the two pre-launch guards (factored into
+    // `confidential_prelaunch_check` so they are unit-testable off-SEV). The
+    // real read returns None off-SEV, which the check turns into the platform
+    // refusal; on a real SEV host the behavior is unchanged.
+    let sev = confidential_prelaunch_check(config, SevHostInfo::read())?;
+    let argv = build_confidential_argv(config, sev);
+    spawn_and_supervise(vm_hash, config, argv).await
+}
 
-    // Pre-launch guard (b): the guest-owner certificate + session files must
-    // exist (Python raises FileNotFoundError otherwise). The dispatcher only
-    // routes a confidential-shaped config here, so both fields are present.
+/// The two confidential pre-launch guards, factored out as a pure function so
+/// they are testable without SEV hardware. `sev` is the result of
+/// `SevHostInfo::read()`:
+///
+/// - `None` (not an AMD SEV platform) becomes the platform refusal the Python
+///   `secure_encryption_info()` returning None raises ("Not running on an AMD
+///   SEV platform?").
+/// - a `godh` or session file that does not exist as a file becomes the
+///   missing-certificate refusal (Python raises `FileNotFoundError`).
+/// - otherwise the `SevHostInfo` passes through unchanged.
+fn confidential_prelaunch_check(
+    config: &QemuConfig,
+    sev: Option<SevHostInfo>,
+) -> Result<SevHostInfo, String> {
+    // The two `.expect()`s rely on `select_run_target` only dispatching a
+    // confidential-shaped config here; a future unguarded caller trips this in
+    // debug builds instead of panicking cryptically.
+    debug_assert!(
+        config.is_confidential(),
+        "confidential_prelaunch_check requires a confidential config (all four SEV fields present)"
+    );
+
+    // Guard (a): must be on an AMD SEV platform.
+    let sev = sev.ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+
+    // Guard (b): the guest-owner certificate + session files must exist. The
+    // dispatcher only routes a confidential-shaped config here, so both fields
+    // are present.
     let godh = config
         .sev_dh_cert_file
         .as_deref()
@@ -329,8 +366,7 @@ pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32,
         return Err("Missing guest owner certificates, cannot start the VM.".to_string());
     }
 
-    let argv = build_confidential_argv(config, sev);
-    spawn_and_supervise(vm_hash, config, argv).await
+    Ok(sev)
 }
 
 /// The shared spawn + supervise lifecycle for both the plain and confidential
@@ -462,5 +498,81 @@ mod tests {
     fn the_qmp_call_budget_is_well_under_the_graceful_wait() {
         assert!(QMP_CALL_BUDGET < GRACEFUL_SHUTDOWN_TIMEOUT);
         assert!(QMP_CALL_BUDGET >= qmp::COMMAND_DEADLINE);
+    }
+
+    /// Build a minimal confidential `QemuConfig` with the given godh / session
+    /// paths, so the pre-launch guard can be exercised off-SEV.
+    fn confidential_config(godh: &str, session: &str) -> QemuConfig {
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64",
+                "image_path":"/img.qcow2","monitor_socket_path":"/m.sock",
+                "qmp_socket_path":"/q.sock","vcpu_count":2,"mem_size_mb":2048,
+                "host_volumes":[],"gpus":[],"ovmf_path":"/OVMF_CODE.fd",
+                "sev_session_file":{session:?},"sev_dh_cert_file":{godh:?},
+                "sev_policy":1}}"#
+        );
+        let config = QemuConfig::from_json(&json).expect("confidential config parses");
+        assert!(config.is_confidential());
+        config
+    }
+
+    /// Guard (a): `sev = None` (not an AMD SEV platform) yields the platform
+    /// refusal, before any certificate check.
+    #[test]
+    fn prelaunch_check_refuses_when_not_on_a_sev_platform() {
+        let config = confidential_config("/nonexistent/godh.b64", "/nonexistent/session.b64");
+        let error = confidential_prelaunch_check(&config, None).unwrap_err();
+        assert_eq!(error, "Not running on an AMD SEV platform?");
+    }
+
+    /// Guard (b): a missing godh OR session file yields the missing-certificate
+    /// refusal even on a (simulated) SEV platform. A tempdir holds one file
+    /// present and one absent, covering both halves of the `||`.
+    #[test]
+    fn prelaunch_check_refuses_when_a_certificate_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let godh = dir.path().join("vm_godh.b64");
+        let session = dir.path().join("vm_session.b64");
+        let sev = SevHostInfo {
+            cbitpos: 51,
+            reduced_phys_bits: 1,
+        };
+
+        // godh present, session absent.
+        std::fs::write(&godh, b"cert").unwrap();
+        let config = confidential_config(godh.to_str().unwrap(), session.to_str().unwrap());
+        let error = confidential_prelaunch_check(&config, Some(sev)).unwrap_err();
+        assert_eq!(
+            error,
+            "Missing guest owner certificates, cannot start the VM."
+        );
+
+        // session present, godh absent.
+        std::fs::remove_file(&godh).unwrap();
+        std::fs::write(&session, b"blob").unwrap();
+        let config = confidential_config(godh.to_str().unwrap(), session.to_str().unwrap());
+        let error = confidential_prelaunch_check(&config, Some(sev)).unwrap_err();
+        assert_eq!(
+            error,
+            "Missing guest owner certificates, cannot start the VM."
+        );
+    }
+
+    /// Happy path: on a SEV platform with both certificate files present, the
+    /// injected `SevHostInfo` passes through unchanged.
+    #[test]
+    fn prelaunch_check_passes_when_platform_and_certificates_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let godh = dir.path().join("vm_godh.b64");
+        let session = dir.path().join("vm_session.b64");
+        std::fs::write(&godh, b"cert").unwrap();
+        std::fs::write(&session, b"blob").unwrap();
+        let config = confidential_config(godh.to_str().unwrap(), session.to_str().unwrap());
+        let sev = SevHostInfo {
+            cbitpos: 51,
+            reduced_phys_bits: 1,
+        };
+        let checked = confidential_prelaunch_check(&config, Some(sev)).unwrap();
+        assert_eq!(checked, sev);
     }
 }

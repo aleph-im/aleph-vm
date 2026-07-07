@@ -57,12 +57,19 @@ CONFIDENTIAL_OUTPUT_DIR = (
     / "rust/crates/supervisor-controller/tests/conformance/controller_argv_confidential"
 )
 
-# Fixed host-CPUID values the confidential fixtures pin, injected on the Rust
-# side as an identical SevHostInfo. The Rust argv builder takes these by
+# Default host-CPUID values most confidential fixtures pin, injected on the
+# Rust side as an identical SevHostInfo. The Rust argv builder takes these by
 # injection (a non-SEV CI host cannot read them from CPUID). 51 / 1 are the
 # values a real SEV host reports and match the aleph-cvm SNP donor.
-FIXED_CBITPOS = 51
-FIXED_REDUCED_PHYS_BITS = 1
+DEFAULT_CBITPOS = 51
+DEFAULT_REDUCED_PHYS_BITS = 1
+
+# Mutated before each confidential argv capture so the injected cbitpos /
+# reduced-phys-bits are load-bearing: at least one case (distinct_sev_host_info)
+# uses a DISTINCT pair, so a Rust mutant that hardcodes 51 / 1 in the builder
+# (ignoring the injected SevHostInfo) survives every default-pair fixture but
+# is killed by that one.
+_sev_values = {"cbitpos": DEFAULT_CBITPOS, "reduced_phys_bits": DEFAULT_REDUCED_PHYS_BITS}
 
 _captured: dict[str, list] = {}
 
@@ -72,10 +79,16 @@ class _Abort(Exception):
 
 
 class _FakeSevInfo:
-    """Stand-in for cpuid.features.SecureEncryptionInfo with fixed fields."""
+    """Stand-in for cpuid.features.SecureEncryptionInfo, reading the per-case
+    values held in _sev_values (set just before each confidential capture)."""
 
-    c_bit_position = FIXED_CBITPOS
-    phys_addr_reduction = FIXED_REDUCED_PHYS_BITS
+    @property
+    def c_bit_position(self):
+        return _sev_values["cbitpos"]
+
+    @property
+    def phys_addr_reduction(self):
+        return _sev_values["reduced_phys_bits"]
 
 
 def _fake_secure_encryption_info():
@@ -218,33 +231,64 @@ def _confidential_base(**overrides) -> QemuConfidentialVMConfiguration:
     return QemuConfidentialVMConfiguration(**fields)
 
 
-def _confidential_cases() -> dict[str, QemuConfidentialVMConfiguration]:
+def _confidential_cases() -> dict[str, tuple[QemuConfidentialVMConfiguration, int, int]]:
+    """Confidential cases as (config, cbitpos, reduced_phys_bits). Most pin the
+    default 51 / 1 host-CPUID pair; distinct_sev_host_info uses a DISTINCT pair
+    so the injected values are load-bearing (see _sev_values)."""
     data = "/var/lib/aleph/vm/volumes/persistent/testhash"
+    default = (DEFAULT_CBITPOS, DEFAULT_REDUCED_PHYS_BITS)
     return {
         # Minimal SEV (policy 0x1): no NIC, no cloud-init, no volumes, no GPU.
-        "minimal": _confidential_base(),
+        "minimal": (_confidential_base(), *default),
         # A NIC (confidential NIC has NO rombar=0).
-        "with_nic": _confidential_base(interface_name="vmtap3"),
+        "with_nic": (_confidential_base(interface_name="vmtap3"), *default),
         # A cloud-init drive.
-        "with_cloud_init": _confidential_base(cloud_init_drive_path="/var/lib/aleph/vm/cloud-init-testhash.img"),
+        "with_cloud_init": (
+            _confidential_base(cloud_init_drive_path="/var/lib/aleph/vm/cloud-init-testhash.img"),
+            *default,
+        ),
         # One read-only host volume (reuses the base _get_host_volumes_args).
-        "host_volume": _confidential_base(host_volumes=[_volume(f"{data}/ro.qcow2", True)]),
+        "host_volume": (_confidential_base(host_volumes=[_volume(f"{data}/ro.qcow2", True)]), *default),
         # A GPU (reuses the base _get_gpu_args; the confidential base already
         # carries a -cpu host,host-phys-bits-limit line, so this repeats it).
-        "gpu": _confidential_base(gpus=[QemuGPU(pci_host="0000:01:00.0")]),
+        "gpu": (_confidential_base(gpus=[QemuGPU(pci_host="0000:01:00.0")]), *default),
         # SEV-ES policy (0x5): pins the hex() policy rendering for the ES mode.
-        "sev_es_policy": _confidential_base(sev_policy=0x5),
+        "sev_es_policy": (_confidential_base(sev_policy=0x5), *default),
+        # sev_policy=0 renders hex(0) == "0x0" (pins the zero-policy corner).
+        "sev_policy_zero": (_confidential_base(sev_policy=0x0), *default),
+        # DISTINCT injected host-CPUID pair (47 / 2, not the default 51 / 1):
+        # this is what makes the injected cbitpos / reduced-phys-bits
+        # load-bearing against a hardcoding Rust mutant.
+        "distinct_sev_host_info": (_confidential_base(), 47, 2),
     }
 
 
-def _write_battery(output_dir: Path, cases, argv_fn, extra=None) -> None:
+def _write_battery(output_dir: Path, cases, argv_fn) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, config in cases.items():
         expected_argv = argv_fn(config)
         config_json = json.loads(config.model_dump_json())
         payload = {"config_json": config_json, "expected_argv": expected_argv}
-        if extra:
-            payload.update(extra)
+        out = output_dir / f"{name}.json"
+        out.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"wrote {out.relative_to(output_dir.parent.parent.parent.parent.parent)}")
+
+
+def _write_confidential_battery(output_dir: Path, cases) -> None:
+    """Like _write_battery, but sets the injected host-CPUID pair PER case
+    (mutating _sev_values, which _FakeSevInfo reads) and records that exact pair
+    under sev_host_info so the Rust test injects the identical SevHostInfo."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name, (config, cbitpos, reduced_phys_bits) in cases.items():
+        _sev_values["cbitpos"] = cbitpos
+        _sev_values["reduced_phys_bits"] = reduced_phys_bits
+        expected_argv = _confidential_argv_for(config)
+        config_json = json.loads(config.model_dump_json())
+        payload = {
+            "config_json": config_json,
+            "expected_argv": expected_argv,
+            "sev_host_info": {"cbitpos": cbitpos, "reduced_phys_bits": reduced_phys_bits},
+        }
         out = output_dir / f"{name}.json"
         out.write_text(json.dumps(payload, indent=2) + "\n")
         print(f"wrote {out.relative_to(output_dir.parent.parent.parent.parent.parent)}")
@@ -256,25 +300,15 @@ def main() -> None:
     _write_battery(OUTPUT_DIR, _cases(), _argv_for)
 
     # The SEV / SEV-ES confidential battery. Monkeypatch the host-CPUID reader
-    # so cbitpos / reduced-phys-bits are deterministic (recorded in each fixture
-    # so the Rust test injects the identical SevHostInfo), and Path.is_file so
-    # the godh / session existence guard passes without real files on disk.
+    # so cbitpos / reduced-phys-bits are deterministic (recorded per fixture so
+    # the Rust test injects the identical SevHostInfo), and Path.is_file so the
+    # godh / session existence guard passes without real files on disk.
     confidential_module.asyncio.create_subprocess_exec = _fake_create_subprocess_exec
     confidential_module.secure_encryption_info = _fake_secure_encryption_info
     original_is_file = Path.is_file
     Path.is_file = lambda self: True  # type: ignore[method-assign]
     try:
-        _write_battery(
-            CONFIDENTIAL_OUTPUT_DIR,
-            _confidential_cases(),
-            _confidential_argv_for,
-            extra={
-                "sev_host_info": {
-                    "cbitpos": FIXED_CBITPOS,
-                    "reduced_phys_bits": FIXED_REDUCED_PHYS_BITS,
-                }
-            },
-        )
+        _write_confidential_battery(CONFIDENTIAL_OUTPUT_DIR, _confidential_cases())
     finally:
         Path.is_file = original_is_file  # type: ignore[method-assign]
 

@@ -76,6 +76,13 @@ parity_case!(with_cloud_init, "with_cloud_init");
 parity_case!(host_volume, "host_volume");
 parity_case!(gpu, "gpu");
 parity_case!(sev_es_policy, "sev_es_policy");
+// hex(0) == "0x0": pins the zero-policy rendering corner.
+parity_case!(sev_policy_zero, "sev_policy_zero");
+// A DISTINCT injected host-CPUID pair (47 / 2, not the shared 51 / 1): this is
+// the fixture that makes the injected cbitpos / reduced-phys-bits load-bearing.
+// A builder that hardcoded 51 / 1 (ignoring the SevHostInfo) would pass every
+// other confidential fixture but fail this one.
+parity_case!(distinct_sev_host_info, "distinct_sev_host_info");
 
 /// Every fixture in the directory is covered by a named case above; guard
 /// against a fixture being added to the battery without a matching assertion.
@@ -88,6 +95,8 @@ fn every_confidential_fixture_has_a_case() {
         "host_volume",
         "gpu",
         "sev_es_policy",
+        "sev_policy_zero",
+        "distinct_sev_host_info",
     ];
     let mut on_disk: Vec<String> = std::fs::read_dir(fixture_dir())
         .unwrap()
