@@ -21,7 +21,6 @@ use tonic::{Request, Response, Status};
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
 #[derive(Default)]
-#[allow(dead_code)] // remaining fields used by Tasks 7-9
 pub struct FakeSupervisor {
     pub host: pb::HostInfo,
     pub vms: Vec<pb::VmInfo>,
@@ -207,9 +206,12 @@ impl Supervisor for FakeSupervisor {
 
     async fn get_logs(
         &self,
-        _request: Request<pb::GetLogsRequest>,
+        request: Request<pb::GetLogsRequest>,
     ) -> Result<Response<pb::GetLogsResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
+        self.log_requests.lock().unwrap().push(request.into_inner());
+        Ok(Response::new(pb::GetLogsResponse {
+            lines: self.logs.clone(),
+        }))
     }
 
     async fn start_backup(
@@ -280,7 +282,9 @@ impl Supervisor for FakeSupervisor {
         &self,
         _request: Request<pb::WatchEventsRequest>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let events: Vec<Result<pb::VmEvent, Status>> =
+            self.events.iter().cloned().map(Ok).collect();
+        Ok(Response::new(Box::pin(tokio_stream::iter(events))))
     }
 
     type StreamLogsStream = BoxStream<pb::LogChunk>;
@@ -288,7 +292,8 @@ impl Supervisor for FakeSupervisor {
         &self,
         _request: Request<pb::StreamLogsRequest>,
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let chunks: Vec<Result<pb::LogChunk, Status>> = self.logs.iter().cloned().map(Ok).collect();
+        Ok(Response::new(Box::pin(tokio_stream::iter(chunks))))
     }
 
     type DownloadBackupStream = BoxStream<pb::BackupChunk>;
