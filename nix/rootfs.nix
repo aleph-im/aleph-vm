@@ -57,7 +57,9 @@ INIT
   truncate -s ''${size}M $out
   # Note: the hash seed must be NON-zero. mke2fs treats an all-zero hash_seed as
   # "unset" and generates a random one (leaving s_hash_seed + the superblock
-  # checksum nondeterministic), so a fixed non-zero UUID is used here.
+  # checksum nondeterministic), so a fixed NON-zero hash_seed is used below. The
+  # UUID is deliberately all-zero (-U 00000000-...); it is the hash_seed, not the
+  # UUID, that must be non-zero for reproducibility.
   mkfs.ext4 -b 4096 -U 00000000-0000-0000-0000-000000000000 \
     -E hash_seed=a1e5c0de-1111-2222-3333-444455556666,lazy_itable_init=0,lazy_journal_init=0 \
     -O ^has_journal \

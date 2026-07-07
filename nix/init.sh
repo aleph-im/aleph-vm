@@ -72,18 +72,58 @@ fi
 
 /bin/busybox mkdir -p /mnt/root
 
-# Prepare the chroot environment: bind-mount /proc, /sys, /dev and set up DNS.
-# Called after mounting rootfs, before starting /sbin/init.
+# Prepare the chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
+# and set up DNS. Called after mounting rootfs, before starting /sbin/init.
 prepare_chroot() {
     /bin/busybox mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev /mnt/root/etc
     /bin/busybox mount --bind /proc /mnt/root/proc
     /bin/busybox mount --bind /sys /mnt/root/sys
     /bin/busybox mount --bind /dev /mnt/root/dev
+    # Secret delivery: the attest-agent writes injected secrets under /tmp/secrets
+    # in THIS (initramfs) mount namespace, but the workload runs chrooted into
+    # /mnt/root, where /tmp/secrets is a different filesystem. Bind-mount the
+    # agent's secret dir into the chroot so the app reads exactly what the agent
+    # writes. The source path matches the agent's DEFAULT_SECRETS_DIR
+    # (/tmp/secrets in secrets.rs); pre-create it 0700 so the agent's hardened
+    # directory check accepts it (real dir, agent-owned, owner-only).
+    /bin/busybox mkdir -m 0700 -p /tmp/secrets
+    /bin/busybox mkdir -m 0700 -p /mnt/root/tmp/secrets
+    /bin/busybox mount --bind /tmp/secrets /mnt/root/tmp/secrets
     # DNS: use gateway as nameserver (common for VM bridges).
     if [ -n "$gateway" ]; then
         echo "nameserver ${gateway}" > /mnt/root/etc/resolv.conf
     fi
-    echo "init: chroot environment prepared (proc, sys, dev, DNS)"
+    echo "init: chroot environment prepared (proc, sys, dev, secrets, DNS)"
+}
+
+# Install a minimal guest firewall so only the attested TLS port is reachable
+# from outside the VM. Everything the workload binds (e.g. the upstream on
+# 127.0.0.1:8080, or anything it accidentally binds on 0.0.0.0) stays
+# unreachable, so a client cannot bypass the attest-agent and hit the raw app.
+# Loopback stays fully open (the agent proxies to the upstream over lo).
+#
+# The ruleset is STATELESS on purpose: for a TCP connection to the server the
+# inbound packets always carry dport 8443, so `tcp dport 8443 accept` covers the
+# whole flow without a conntrack module. Load order matches modules.dep.
+setup_firewall() {
+    /bin/busybox insmod /lib/modules/nfnetlink.ko 2>&1 || echo "init: warning: insmod nfnetlink.ko failed"
+    /bin/busybox insmod /lib/modules/libcrc32c.ko 2>&1 || echo "init: warning: insmod libcrc32c.ko failed"
+    /bin/busybox insmod /lib/modules/nf_tables.ko 2>&1 || echo "init: warning: insmod nf_tables.ko failed"
+    if /bin/nft -f - <<'NFT'
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy drop;
+		iif "lo" accept
+		tcp dport 8443 accept
+	}
+}
+NFT
+    then
+        echo "init: firewall active (drop inbound except tcp/8443 and loopback)"
+    else
+        echo "init: FATAL: failed to install guest firewall"
+        exec /bin/busybox poweroff -f
+    fi
 }
 
 # Load dm-verity kernel modules if verity is requested.
@@ -138,6 +178,11 @@ else
 fi
 
 prepare_chroot
+
+# Install the guest firewall BEFORE starting the workload, so the app can never
+# be reached directly even during the window before the agent is up.
+setup_firewall
+
 if [ -x /mnt/root/sbin/init ]; then
     echo "init: starting /sbin/init from rootfs"
     /bin/busybox chroot /mnt/root /sbin/init &
