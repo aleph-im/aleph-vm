@@ -321,3 +321,112 @@ async fn ports_list_filters_by_vm_and_renders_a_table() {
          vm-1   24001      22       TCP\n"
     );
 }
+
+fn log_chunk(line: &str) -> pb::LogChunk {
+    pb::LogChunk {
+        timestamp_ns: 1_700_000_000_000_000_000,
+        line: line.to_string(),
+        source: pb::log_chunk::LogSource::Serial as i32,
+    }
+}
+
+#[tokio::test]
+async fn logs_prints_plain_lines() {
+    let fake = FakeSupervisor {
+        logs: vec![log_chunk("boot ok"), log_chunk("ready")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::logs(&mut client, &mut out, "vm-1", false, None, false)
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "boot ok\nready\n");
+}
+
+#[tokio::test]
+async fn logs_tail_maps_to_max_lines_from_tail() {
+    let fake = FakeSupervisor::default();
+    let requests = fake.log_requests.clone();
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::logs(&mut client, &mut out, "vm-1", false, Some(50), false)
+        .await
+        .unwrap();
+    let recorded = requests.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].vm_id, "vm-1");
+    assert_eq!(recorded[0].max_lines, 50);
+    assert!(recorded[0].from_tail);
+}
+
+#[tokio::test]
+async fn logs_follow_streams_until_the_server_closes() {
+    let fake = FakeSupervisor {
+        logs: vec![log_chunk("line-1"), log_chunk("line-2")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::logs(&mut client, &mut out, "vm-1", true, None, false)
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "line-1\nline-2\n");
+}
+
+#[tokio::test]
+async fn events_prints_one_transition_per_line() {
+    let fake = FakeSupervisor {
+        events: vec![pb::VmEvent {
+            vm_id: "vm-1".to_string(),
+            old_status: pb::VmStatus::Booting as i32,
+            new_status: pb::VmStatus::Running as i32,
+            timestamp_ns: 0,
+        }],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::events(&mut client, &mut out, false)
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "vm-1 BOOTING -> RUNNING\n");
+}
+
+#[tokio::test]
+async fn events_json_is_ndjson() {
+    let fake = FakeSupervisor {
+        events: vec![
+            pb::VmEvent {
+                vm_id: "vm-1".to_string(),
+                old_status: pb::VmStatus::Booting as i32,
+                new_status: pb::VmStatus::Running as i32,
+                timestamp_ns: 0,
+            },
+            pb::VmEvent {
+                vm_id: "vm-2".to_string(),
+                old_status: pb::VmStatus::Running as i32,
+                new_status: pb::VmStatus::Stopped as i32,
+                timestamp_ns: 0,
+            },
+        ],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::events(&mut client, &mut out, true)
+        .await
+        .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2);
+    for line in lines {
+        let value: serde_json::Value = serde_json::from_str(line).expect("one JSON per line");
+        assert!(value["vm_id"].is_string());
+    }
+}
