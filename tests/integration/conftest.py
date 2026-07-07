@@ -149,12 +149,23 @@ def pytest_collection_modifyitems(config, items):
             if Path(item.fspath).parent == HERE:
                 item.add_marker(skip)
         return
-    if os.environ.get("CI") == "true" and any(Path(item.fspath).parent == HERE for item in items):
-        # In CI an all-skipped suite passes silently and hides a broken
-        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the
-        # job. The Firecracker surface is mandatory on BOTH matrix legs
-        # since increment 4: a leg silently skipping the FC tests would
-        # pass while covering nothing.
+    if os.environ.get("AVM_ITEST") == "1" and any(Path(item.fspath).parent == HERE for item in items):
+        # Anti-silent-skip guard. Once we are in the integration run an
+        # all-skipped suite passes silently and hides a broken droplet image;
+        # a missing /dev/kvm or QEMU binary must FAIL the job. The Firecracker
+        # surface is mandatory on BOTH matrix legs since increment 4: a leg
+        # silently skipping the FC tests would pass while covering nothing.
+        #
+        # We gate on AVM_ITEST, NOT on CI: CI runs pytest under
+        # `sudo ... env AVM_ITEST=1 ...` (see test-using-pytest.yml), and
+        # sudo's env_reset strips CI, so a `CI == "true"` check here would be
+        # dead in the actual CI process and every persistent-QEMU test (the
+        # Rust-controller boot/re-adopt anchors included) would silently skip
+        # on a broken image while the job still reported green. AVM_ITEST is
+        # set past sudo (via `env AVM_ITEST=1`) and IS visible here, so it is
+        # the reliable "this is the integration run" signal. Non-integration
+        # runs (AVM_ITEST unset) already returned above, so their per-test
+        # skipif markers still apply and local skips remain allowed.
         problems = []
         if not HAS_KVM:
             problems.append("/dev/kvm is missing or not accessible")
@@ -170,7 +181,7 @@ def pytest_collection_modifyitems(config, items):
         if QEMU_IMAGE is None or not QEMU_IMAGE.exists():
             problems.append("the QEMU cloud image (AVM_ITEST_QEMU_IMAGE) is missing")
         if problems:
-            msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
+            msg = f"AVM_ITEST=1 but the integration prerequisites are broken: {'; '.join(problems)}"
             raise RuntimeError(msg)
     if SUPERVISOR_IMPL == "rust":
         skip = pytest.mark.skip(reason="not ported to the Rust daemon yet (increments 4-5)")
@@ -819,6 +830,12 @@ def assert_controller_matches_impl(vm_id: VmId) -> None:
     test drop-in that mirrors it) ever regresses to the wrong controller: the
     controller command line carries the per-VM config path, so it shows up in
     vm_processes(vm_id) next to the qemu child it spawned.
+
+    Scope: this asserts a LIVE controller of the right kind for this vm_id is
+    present (callers run it after the boot-banner wait, so the controller has
+    reached steady state). It does NOT assert the parent/child link to the
+    specific QEMU that served the request: it matches on the config path in the
+    process list, not on a verified controller->qemu ancestry.
     """
     lines = vm_processes(vm_id)
     if SUPERVISOR_IMPL == "rust":
