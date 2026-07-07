@@ -151,7 +151,17 @@ pub struct DaemonState {
     /// The ephemeral Firecracker launcher (increment 4): programs are
     /// direct children of the daemon, spawned and reaped through this seam.
     pub programs: Arc<dyn crate::firecracker::ProgramLauncher>,
+    /// Bounds concurrent StreamLogs follows. Each live follow pins one
+    /// blocking-pool thread for its whole lifetime; unbounded, ~512
+    /// concurrent follows would exhaust tokio's blocking pool and starve
+    /// every lifecycle RPC that hops through spawn_blocking. The cap stays
+    /// far below the pool size; the excess request is rejected
+    /// RESOURCE_EXHAUSTED (Rust-only bound, ledger entry 44).
+    pub log_follows: Arc<tokio::sync::Semaphore>,
 }
+
+/// See [`DaemonState::log_follows`].
+pub const MAX_CONCURRENT_LOG_FOLLOWS: usize = 64;
 
 impl DaemonState {
     /// State over hermetic in-memory seams: unit tests and callers that
@@ -177,6 +187,7 @@ impl DaemonState {
             pacing: crate::lifecycle::Pacing::instant(),
             events: crate::events::EventHub::default(),
             programs: Arc::new(crate::firecracker::FakeProgramLauncher::new()),
+            log_follows: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOG_FOLLOWS)),
         }
     }
 }
@@ -535,10 +546,12 @@ fn log_chunks(entries: Vec<crate::logs::LogEntry>) -> Vec<pb::LogChunk> {
 
 /// Wraps the StreamLogs channel so dropping the response stream (the client
 /// went away) stops the underlying journal follow, the Python `finally:
-/// unregister_queue` equivalent.
+/// unregister_queue` equivalent. The semaphore permit rides along: the
+/// follow slot frees when the stream is dropped.
 struct StreamWithCleanup<S> {
     inner: S,
     stopper: Arc<dyn crate::logs::LogFollowStopper>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl<S: Stream + Unpin> Stream for StreamWithCleanup<S> {
@@ -989,6 +1002,23 @@ impl Supervisor for SupervisorService {
             return Ok(Response::new(Box::pin(tokio_stream::iter(chunks))));
         }
 
+        // Each live follow pins one blocking-pool thread; the semaphore
+        // rejects follows beyond the cap instead of letting them starve the
+        // pool (see DaemonState::log_follows).
+        let permit = match self.state.log_follows.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Err(status_with_error_detail(
+                    Code::ResourceExhausted,
+                    pb::ErrorCode::InsufficientResources,
+                    format!(
+                        "too many concurrent log streams (limit {MAX_CONCURRENT_LOG_FOLLOWS}); \
+                         retry later or use GetLogs"
+                    ),
+                ));
+            }
+        };
+
         // One journalctl --follow serves both phases gap-free: the bounded
         // history replay (server cap, ledger entry 16) when asked, then
         // live entries until the client goes away.
@@ -1008,18 +1038,24 @@ impl Supervisor for SupervisorService {
                 })?
                 .map_err(|error| internal_status(DaemonError::Internal(error)))?;
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::LogChunk, Status>>(16);
+        let pump_stopper = stopper.clone();
         tokio::task::spawn_blocking(move || {
             while let Some(entry) = reader.next_entry() {
                 if sender.blocking_send(Ok(log_chunk_message(entry))).is_err() {
-                    // The client dropped the stream; the cleanup guard has
-                    // already stopped the subprocess.
+                    // The client dropped the stream mid-send.
                     break;
                 }
             }
+            // Every pump exit path stops (kills AND reaps) the subprocess:
+            // the reader's own EOF-path wait never runs again after a
+            // mid-send break, and stop() is idempotent when the cleanup
+            // guard already fired.
+            pump_stopper.stop();
         });
         let stream = StreamWithCleanup {
             inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
             stopper,
+            _permit: permit,
         };
         Ok(Response::new(Box::pin(stream)))
     }
@@ -1452,6 +1488,180 @@ mod tests {
             .into_inner();
         let chunks = collect_chunks(&mut stream).await;
         assert_eq!(chunks.len(), 3, "a deleted VM's history is still served");
+    }
+
+    /// A LogSource whose follows are controllable from the test: optional
+    /// canned entries, then either an immediate end or a block until the
+    /// stopper fires; every stop() call is counted.
+    struct ControlledFollowSource {
+        entries: Vec<crate::logs::LogEntry>,
+        hang_after_entries: bool,
+        stops: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct ControlledFollowReader {
+        entries: std::vec::IntoIter<crate::logs::LogEntry>,
+        hang: bool,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::logs::LogFollowReader for ControlledFollowReader {
+        fn next_entry(&mut self) -> Option<crate::logs::LogEntry> {
+            if let Some(entry) = self.entries.next() {
+                return Some(entry);
+            }
+            while self.hang && !self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            None
+        }
+    }
+
+    struct RecordingStopper {
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        stops: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::logs::LogFollowStopper for RecordingStopper {
+        fn stop(&self) {
+            self.stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl crate::logs::LogSource for ControlledFollowSource {
+        fn read_history(
+            &self,
+            _stdout_id: &str,
+            _stderr_id: &str,
+            _last_lines: Option<u32>,
+        ) -> Result<Vec<crate::logs::LogEntry>, String> {
+            Ok(Vec::new())
+        }
+
+        fn follow(
+            &self,
+            _stdout_id: &str,
+            _stderr_id: &str,
+            _last_lines: u32,
+        ) -> Result<crate::logs::LogFollow, String> {
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            Ok((
+                Box::new(ControlledFollowReader {
+                    entries: self.entries.clone().into_iter(),
+                    hang: self.hang_after_entries,
+                    stopped: stopped.clone(),
+                }),
+                Arc::new(RecordingStopper {
+                    stopped,
+                    stops: self.stops.clone(),
+                }),
+            ))
+        }
+    }
+
+    fn stream_service(
+        source: ControlledFollowSource,
+        max_follows: usize,
+    ) -> (SupervisorService, Arc<std::sync::atomic::AtomicUsize>) {
+        use crate::units::StaticUnitStates;
+        let stops = source.stops.clone();
+        let mut world = WorldView::default();
+        world.insert_entry(fixture_entry(test_fixtures::QEMU_HASH, true));
+        let mut state = DaemonState::hermetic(
+            test_host_state(),
+            world,
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(source),
+        );
+        state.log_follows = Arc::new(tokio::sync::Semaphore::new(max_follows));
+        (SupervisorService::new(Arc::new(state)), stops)
+    }
+
+    fn follow_request() -> Request<pb::StreamLogsRequest> {
+        Request::new(pb::StreamLogsRequest {
+            vm_id: test_fixtures::QEMU_HASH.to_string(),
+            include_history: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn stream_logs_rejects_follows_beyond_the_cap() {
+        // R1: each live follow pins one blocking-pool thread; beyond the
+        // semaphore cap the request is rejected RESOURCE_EXHAUSTED instead
+        // of starving the pool, and a freed slot serves again.
+        let (service, _stops) = stream_service(
+            ControlledFollowSource {
+                entries: Vec::new(),
+                hang_after_entries: true,
+                stops: Arc::default(),
+            },
+            1,
+        );
+        let first = service.stream_logs(follow_request()).await.unwrap();
+        let error = match service.stream_logs(follow_request()).await {
+            Err(status) => status,
+            Ok(_) => panic!("the second follow must be rejected"),
+        };
+        assert_eq!(error.code(), Code::ResourceExhausted);
+
+        // Dropping the stream frees the slot.
+        drop(first);
+        let third = service.stream_logs(follow_request()).await;
+        assert!(third.is_ok(), "a freed slot must serve again");
+    }
+
+    #[tokio::test]
+    async fn dropping_a_log_stream_stops_the_underlying_follow() {
+        // C2, the StreamWithCleanup::drop path: the client goes away while
+        // the follow is blocked; only the drop guard can stop (kill and
+        // reap) the subprocess.
+        let (service, stops) = stream_service(
+            ControlledFollowSource {
+                entries: Vec::new(),
+                hang_after_entries: true,
+                stops: Arc::default(),
+            },
+            MAX_CONCURRENT_LOG_FOLLOWS,
+        );
+        let stream = service.stream_logs(follow_request()).await.unwrap();
+        assert_eq!(stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(stream);
+        assert!(
+            stops.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "dropping the response stream must stop the follow"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_pump_stops_the_follow_without_a_client_drop() {
+        // C2, the pump-exit path: when the reader ends (journalctl exited
+        // on its own), the pump itself must stop/reap the subprocess even
+        // though the client still holds the stream.
+        let (service, stops) = stream_service(
+            ControlledFollowSource {
+                entries: log_fixture_entries(),
+                hang_after_entries: false,
+                stops: Arc::default(),
+            },
+            MAX_CONCURRENT_LOG_FOLLOWS,
+        );
+        let mut stream = service
+            .stream_logs(follow_request())
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(chunks.len(), 3);
+        // The channel closed, so the pump already ran its exit cleanup; the
+        // stream itself has NOT been dropped yet.
+        assert_eq!(
+            stops.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pump exit path must stop the follow"
+        );
+        drop(stream);
     }
 
     #[tokio::test]

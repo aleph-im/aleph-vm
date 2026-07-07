@@ -159,6 +159,9 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         pacing: Pacing::default(),
         events: supervisor_daemon::events::EventHub::default(),
         programs: launcher,
+        log_follows: Arc::new(tokio::sync::Semaphore::new(
+            supervisor_daemon::service::MAX_CONCURRENT_LOG_FOLLOWS,
+        )),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
