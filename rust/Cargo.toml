@@ -5,6 +5,7 @@ members = [
     "crates/supervisor-daemon",
     "crates/supervisor-controller",
     "crates/aleph-tee",
+    "crates/aleph-attest-agent",
 ]
 
 [workspace.package]
@@ -64,3 +65,19 @@ der = { version = "0.7", features = ["alloc"] }
 openssl = "0.10"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
+
+# aleph-attest-agent (B2a): in-guest attested-TLS HTTPS sidecar ported from
+# aleph-cvm. actix-web serves the reverse proxy + attestation/inject-secret
+# endpoints; the rustls-0_23 feature wires in tokio-rustls for bind_rustls_0_23.
+actix-web = { version = "4", features = ["rustls-0_23"] }
+# rustls provider reconciliation: default-features are OFF and only the ring
+# provider is enabled (rustls' default features would additionally pull the
+# aws_lc_rs provider and its aws-lc-sys C build). Declaring rustls directly at
+# the workspace level like this unifies the whole tree onto ring: actix-web's
+# rustls-0_23 (via tokio-rustls) and reqwest's rustls-tls both resolve to this
+# same aws_lc_rs-free rustls, so aws-lc-rs never enters the dependency tree at
+# all. This is stricter than the aleph-cvm donor (whose lock carried both ring
+# and aws-lc-rs and disambiguated only at runtime); here ring is the sole
+# provider present. tls.rs still installs the ring CryptoProvider by name.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging", "ring"] }
+zeroize = { version = "1", features = ["derive"] }
