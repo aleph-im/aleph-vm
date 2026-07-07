@@ -495,20 +495,46 @@ fn journal_tail_bound(max_lines: u32, from_tail: bool) -> Option<u32> {
     }
 }
 
+fn log_chunk_message(entry: crate::logs::LogEntry) -> pb::LogChunk {
+    pb::LogChunk {
+        // Python: whole seconds * 1e9 + microseconds * 1000, which is
+        // the journal's microsecond timestamp times 1000.
+        timestamp_ns: entry.timestamp_us * 1_000,
+        line: entry.message,
+        source: match entry.source {
+            LogStream::Stdout => pb::log_chunk::LogSource::Stdout as i32,
+            LogStream::Stderr => pb::log_chunk::LogSource::Stderr as i32,
+        },
+    }
+}
+
 fn log_chunks(entries: Vec<crate::logs::LogEntry>) -> Vec<pb::LogChunk> {
-    entries
-        .into_iter()
-        .map(|entry| pb::LogChunk {
-            // Python: whole seconds * 1e9 + microseconds * 1000, which is
-            // the journal's microsecond timestamp times 1000.
-            timestamp_ns: entry.timestamp_us * 1_000,
-            line: entry.message,
-            source: match entry.source {
-                LogStream::Stdout => pb::log_chunk::LogSource::Stdout as i32,
-                LogStream::Stderr => pb::log_chunk::LogSource::Stderr as i32,
-            },
-        })
-        .collect()
+    entries.into_iter().map(log_chunk_message).collect()
+}
+
+/// Wraps the StreamLogs channel so dropping the response stream (the client
+/// went away) stops the underlying journal follow, the Python `finally:
+/// unregister_queue` equivalent.
+struct StreamWithCleanup<S> {
+    inner: S,
+    stopper: Arc<dyn crate::logs::LogFollowStopper>,
+}
+
+impl<S: Stream + Unpin> Stream for StreamWithCleanup<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(context)
+    }
+}
+
+impl<S> Drop for StreamWithCleanup<S> {
+    fn drop(&mut self) {
+        self.stopper.stop();
+    }
 }
 
 // ── Error statuses ──────────────────────────────────────────────────────
@@ -869,13 +895,80 @@ impl Supervisor for SupervisorService {
         Ok(Response::new(pb::GetLogsResponse { lines }))
     }
 
-    type StreamLogsStream = UnimplementedStream<pb::LogChunk>;
+    type StreamLogsStream = Pin<Box<dyn Stream<Item = Result<pb::LogChunk, Status>> + Send>>;
 
     async fn stream_logs(
         &self,
-        _request: Request<pb::StreamLogsRequest>,
+        request: Request<pb::StreamLogsRequest>,
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
-        Err(unimplemented_status("StreamLogs"))
+        let request = request.into_inner();
+        let stdout_id = format!("vm-{}-stdout", request.vm_id);
+        let stderr_id = format!("vm-{}-stderr", request.vm_id);
+        let known = self
+            .state
+            .world
+            .read()
+            .await
+            .entries
+            .contains_key(&request.vm_id);
+
+        if !known {
+            // Python: the live phase requires a tracked execution; an
+            // unknown (or deleted) VM's stream ends after the optional
+            // history, it is NOT an error.
+            if !request.include_history {
+                return Ok(Response::new(Box::pin(tokio_stream::empty())));
+            }
+            let logs = self.state.logs.clone();
+            let history = tokio::task::spawn_blocking(move || {
+                // Server-capped like GetLogs max_lines=0 (ledger entry 16).
+                logs.read_history(&stdout_id, &stderr_id, Some(GET_LOGS_SERVER_CAP))
+            })
+            .await
+            .map_err(|error| {
+                internal_status(DaemonError::Internal(format!(
+                    "the journal task failed: {error}"
+                )))
+            })?
+            .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+            let chunks: Vec<Result<pb::LogChunk, Status>> =
+                log_chunks(history).into_iter().map(Ok).collect();
+            return Ok(Response::new(Box::pin(tokio_stream::iter(chunks))));
+        }
+
+        // One journalctl --follow serves both phases gap-free: the bounded
+        // history replay (server cap, ledger entry 16) when asked, then
+        // live entries until the client goes away.
+        let last_lines = if request.include_history {
+            GET_LOGS_SERVER_CAP
+        } else {
+            0
+        };
+        let logs = self.state.logs.clone();
+        let (mut reader, stopper) =
+            tokio::task::spawn_blocking(move || logs.follow(&stdout_id, &stderr_id, last_lines))
+                .await
+                .map_err(|error| {
+                    internal_status(DaemonError::Internal(format!(
+                        "the journal task failed: {error}"
+                    )))
+                })?
+                .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::LogChunk, Status>>(16);
+        tokio::task::spawn_blocking(move || {
+            while let Some(entry) = reader.next_entry() {
+                if sender.blocking_send(Ok(log_chunk_message(entry))).is_err() {
+                    // The client dropped the stream; the cleanup guard has
+                    // already stopped the subprocess.
+                    break;
+                }
+            }
+        });
+        let stream = StreamWithCleanup {
+            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+            stopper,
+        };
+        Ok(Response::new(Box::pin(stream)))
     }
 
     // ── Backups (increment 5) ──
@@ -1183,6 +1276,152 @@ mod tests {
         assert_eq!(chunks[0].source, pb::log_chunk::LogSource::Stdout as i32);
         assert_eq!(chunks[1].source, pb::log_chunk::LogSource::Stderr as i32);
         assert_eq!(chunks.len(), 3);
+    }
+
+    fn test_host_state() -> HostState {
+        HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: Vec::new(),
+            dns_nameservers: None,
+        }
+    }
+
+    fn log_fixture_entries() -> Vec<crate::logs::LogEntry> {
+        vec![
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_001,
+                message: "one".into(),
+                source: LogStream::Stdout,
+            },
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_002,
+                message: "two".into(),
+                source: LogStream::Stderr,
+            },
+            crate::logs::LogEntry {
+                timestamp_us: 1_000_003,
+                message: "three".into(),
+                source: LogStream::Stdout,
+            },
+        ]
+    }
+
+    async fn collect_chunks(
+        stream: &mut (impl Stream<Item = Result<pb::LogChunk, Status>> + Unpin),
+    ) -> Vec<pb::LogChunk> {
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.unwrap());
+        }
+        chunks
+    }
+
+    #[tokio::test]
+    async fn stream_logs_replays_bounded_history_then_the_live_feed() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        let mut world = WorldView::default();
+        world.insert_entry(fixture_entry(test_fixtures::QEMU_HASH, true));
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::new(log_fixture_entries())),
+        ));
+        let service = SupervisorService::new(state);
+
+        // include_history: the follow starts with the bounded history (the
+        // fake ends after it; the real journalctl keeps following).
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: test_fixtures::QEMU_HASH.to_string(),
+                include_history: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(
+            chunks.iter().map(|c| c.line.as_str()).collect::<Vec<_>>(),
+            vec!["one", "two", "three"]
+        );
+        assert_eq!(chunks[0].timestamp_ns, 1_000_001_000);
+        assert_eq!(chunks[1].source, pb::log_chunk::LogSource::Stderr as i32);
+
+        // include_history=false: only new lines from now (the fake has
+        // none, so the stream ends empty).
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: test_fixtures::QEMU_HASH.to_string(),
+                include_history: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(collect_chunks(&mut stream).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_logs_for_an_unknown_vm_ends_instead_of_erroring() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        // Python: an unknown (or deleted) VM yields the optional journald
+        // history, then the stream ends; never NOT_FOUND.
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            WorldView::default(),
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::new(log_fixture_entries())),
+        ));
+        let service = SupervisorService::new(state);
+
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: "1".repeat(64),
+                include_history: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(collect_chunks(&mut stream).await.is_empty());
+
+        let mut stream = service
+            .stream_logs(Request::new(pb::StreamLogsRequest {
+                vm_id: "1".repeat(64),
+                include_history: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let chunks = collect_chunks(&mut stream).await;
+        assert_eq!(chunks.len(), 3, "a deleted VM's history is still served");
+    }
+
+    #[tokio::test]
+    async fn watch_events_streams_hub_emissions() {
+        use crate::logs::StaticLogSource;
+        use crate::units::StaticUnitStates;
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            WorldView::default(),
+            Arc::new(StaticUnitStates::default()),
+            Arc::new(StaticLogSource::default()),
+        ));
+        let service = SupervisorService::new(state.clone());
+        let mut stream = service
+            .watch_events(Request::new(pb::WatchEventsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        state
+            .events
+            .emit("aa", pb::VmStatus::Defined, pb::VmStatus::Running);
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.vm_id, "aa");
+        assert_eq!(event.old_status, pb::VmStatus::Defined as i32);
+        assert_eq!(event.new_status, pb::VmStatus::Running as i32);
     }
 
     #[test]
