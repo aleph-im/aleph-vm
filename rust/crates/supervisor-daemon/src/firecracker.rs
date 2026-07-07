@@ -307,29 +307,116 @@ fn jailman_ids() -> Result<(u32, u32), String> {
     unsafe { Ok(((*record).pw_uid, (*record).pw_gid)) }
 }
 
-/// Hardlink `source` to `{jailer_root}/opt/{filename}`, copying across
-/// devices; an existing target is tolerated (Python enable_kernel /
-/// enable_file_rootfs / enable_drive). Returns the in-jail path.
-fn stage_into_jail(jailer_root: &Path, source: &str) -> Result<String, String> {
+/// Hardlink `source` to `{jailer_root}/opt/{filename}`. Returns the in-jail
+/// path. An existing target is tolerated in every case: Python's
+/// enable_kernel and enable_file_rootfs catch FileExistsError, and
+/// enable_drive's bare `except OSError` swallows EEXIST too, so a duplicate
+/// basename silently aliases the earlier staged file in both daemons
+/// (shared wart, ledger entry 42). `exdev_copies` selects the cross-device
+/// behavior: enable_file_rootfs and enable_drive fall back to a copy on
+/// EXDEV, enable_kernel catches only FileExistsError and propagates EXDEV.
+fn stage_into_jail(jailer_root: &Path, source: &str, exdev_copies: bool) -> Result<String, String> {
+    stage_into_jail_with(
+        jailer_root,
+        source,
+        exdev_copies,
+        |from, to| std::fs::hard_link(from, to),
+        |from, to| std::fs::copy(from, to).map(|_| ()),
+    )
+}
+
+/// The staging decision logic behind [`stage_into_jail`], with the
+/// filesystem calls injected so the EXDEV branches are unit-testable.
+fn stage_into_jail_with(
+    jailer_root: &Path,
+    source: &str,
+    exdev_copies: bool,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    copy: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<String, String> {
     let source_path = Path::new(source);
     let file_name = source_path
         .file_name()
         .ok_or_else(|| format!("path {source} has no file name"))?;
     let jail_relative = format!("/opt/{}", file_name.to_string_lossy());
     let target = jailer_root.join(&jail_relative[1..]);
-    match std::fs::hard_link(source_path, &target) {
+    match link(source_path, &target) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             tracing::debug!(path = jail_relative, "file already exists in the jail");
         }
-        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-            // Cross-device link: copy instead, like the Python EXDEV branch.
-            std::fs::copy(source_path, &target)
+        Err(error) if error.raw_os_error() == Some(libc::EXDEV) && exdev_copies => {
+            // Cross-device link: copy instead, like the Python EXDEV branch
+            // of enable_file_rootfs / enable_drive. enable_kernel has no
+            // such branch: the OSError propagates and fails the create.
+            copy(source_path, &target)
                 .map_err(|error| format!("cannot copy {source} into the jail: {error}"))?;
         }
         Err(error) => return Err(format!("cannot link {source} into the jail: {error}")),
     }
     Ok(jail_relative)
+}
+
+// ── msgpack shape validation (msgpack.unpackb parity) ───────────────────
+
+/// Python `msgpack.unpackb(data, raw=False)` parity for shape validation:
+/// exactly one msgpack value consuming the whole buffer (ExtraData
+/// otherwise), and every map key at any depth is a str or bin
+/// (`strict_map_key=True`, the msgpack-python default). The validated
+/// payload is still forwarded as the client's raw bytes, never re-encoded.
+pub fn validate_msgpack(data: &[u8]) -> Result<rmpv::Value, String> {
+    let mut cursor = std::io::Cursor::new(data);
+    let value = rmpv::decode::read_value(&mut cursor)
+        .map_err(|error| format!("invalid msgpack payload: {error}"))?;
+    if (cursor.position() as usize) != data.len() {
+        return Err("invalid msgpack payload: extra data after the first object".to_string());
+    }
+    check_strict_map_keys(&value)?;
+    Ok(value)
+}
+
+fn check_strict_map_keys(value: &rmpv::Value) -> Result<(), String> {
+    match value {
+        rmpv::Value::Map(entries) => {
+            for (key, nested) in entries {
+                if !matches!(key, rmpv::Value::String(_) | rmpv::Value::Binary(_)) {
+                    return Err(format!(
+                        "invalid msgpack payload: map key {key} is not a str or bin"
+                    ));
+                }
+                check_strict_map_keys(nested)?;
+            }
+            Ok(())
+        }
+        rmpv::Value::Array(items) => {
+            for item in items {
+                check_strict_map_keys(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The Python `wait_for_init` connected callback: an empty payload is an
+/// older runtime (accepted with the 1.0.0 default), anything else must be
+/// one whole msgpack map carrying a "version" key (`msgpack.loads(data)` +
+/// `config_dict["version"]`); any other shape raises inside the callback,
+/// the queue stays empty and the server keeps accepting connections until a
+/// parseable payload arrives or the init timeout fires.
+fn ready_payload_is_valid(payload: &[u8]) -> bool {
+    if payload.is_empty() {
+        return true;
+    }
+    let Ok(value) = validate_msgpack(payload) else {
+        return false;
+    };
+    match value {
+        rmpv::Value::Map(entries) => entries
+            .iter()
+            .any(|(key, _)| key.as_str() == Some("version")),
+        _ => false,
+    }
 }
 
 /// sd_journal_stream_fd(3): a stream socket to journald carrying the
@@ -352,6 +439,10 @@ struct FcState {
     journal_stdout: Option<UnixStream>,
     journal_stderr: Option<UnixStream>,
     ready_listener: Option<UnixListener>,
+    /// Set only on the jailed path, like `MicroVM.config_file_path` (only
+    /// start_jailed_firecracker records it); teardown unlinks it, and the
+    /// unjailed temp file is deliberately left behind (Python parity).
+    config_file_path: Option<PathBuf>,
     torn_down: bool,
 }
 
@@ -360,11 +451,35 @@ struct FcState {
 struct FirecrackerHandle {
     paths: MicroVmPaths,
     vsock_path: String,
-    /// Set only on the jailed path, like `MicroVM.config_file_path`; the
-    /// unjailed temp file is deliberately left behind (Python parity).
-    config_file_path: Option<PathBuf>,
     state: Mutex<FcState>,
     teardown_grace: Duration,
+}
+
+/// `UnixStream::connect` with an upper bound. The Python teardown wraps the
+/// whole shutdown exchange in `asyncio.wait_for(..., timeout=5)`; the Rust
+/// socket read/write timeouts bound everything but the connect itself,
+/// which can block when the guest channel's backlog is full. The worker
+/// thread is detached on timeout; it holds nothing but the path.
+fn connect_with_timeout(path: String, timeout: Duration) -> std::io::Result<UnixStream> {
+    blocking_with_timeout(timeout, move || UnixStream::connect(&path))
+}
+
+/// Run a blocking task on a detached thread, bounded by `timeout`; the
+/// timeout surfaces as `ErrorKind::TimedOut`.
+fn blocking_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    task: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(task());
+    });
+    receiver.recv_timeout(timeout).unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "connect timed out",
+        ))
+    })
 }
 
 impl std::fmt::Debug for FirecrackerHandle {
@@ -382,7 +497,7 @@ impl FirecrackerHandle {
     /// every failure is a warning.
     fn shutdown(&self) {
         let deadline = Duration::from_secs(5);
-        let stream = match UnixStream::connect(&self.vsock_path) {
+        let stream = match connect_with_timeout(self.vsock_path.clone(), deadline) {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!(
@@ -457,11 +572,12 @@ impl ProgramHandle for FirecrackerHandle {
         state.journal_stdout.take();
         state.journal_stderr.take();
         state.ready_listener.take();
+        let config_file_path = state.config_file_path.take();
         drop(state);
 
         // Removing files: the jailed config path (unjailed temp files stay
         // behind, Python parity) and the whole namespace directory.
-        if let Some(config) = &self.config_file_path
+        if let Some(config) = &config_file_path
             && let Err(error) = std::fs::remove_file(config)
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -486,13 +602,13 @@ impl FirecrackerLauncher {
         // the chroot when jailed, pass host paths through otherwise. Block
         // device rootfs (the Python device-mapper branch) is not ported:
         // the spec path only ever stages regular files (ledgered).
-        let rootfs_metadata = std::fs::metadata(&request.rootfs_path).map_err(|error| {
-            format!(
-                "Not a file or a block device: {}: {error}",
-                request.rootfs_path
-            )
-        })?;
-        if !rootfs_metadata.is_file() {
+        // Python enable_rootfs: is_file() and is_block_device() both answer
+        // False for a missing path, so the ValueError message is the bare
+        // path, without any OS error appended.
+        let rootfs_is_file = std::fs::metadata(&request.rootfs_path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+        if !rootfs_is_file {
             return Err(format!(
                 "Not a file or a block device: {}",
                 request.rootfs_path
@@ -501,8 +617,10 @@ impl FirecrackerLauncher {
         let jailer_root = paths.jailer_root();
         let (kernel_path, rootfs_path) = if paths.use_jailer {
             (
-                stage_into_jail(&jailer_root, &request.kernel_path)?,
-                stage_into_jail(&jailer_root, &request.rootfs_path)?,
+                // enable_kernel catches only FileExistsError: a cross-device
+                // kernel propagates the EXDEV OSError and fails the create.
+                stage_into_jail(&jailer_root, &request.kernel_path, false)?,
+                stage_into_jail(&jailer_root, &request.rootfs_path, true)?,
             )
         } else {
             (request.kernel_path.clone(), request.rootfs_path.clone())
@@ -515,7 +633,7 @@ impl FirecrackerLauncher {
         }];
         for (index, (path, read_only)) in request.extra_disks.iter().enumerate() {
             let path_on_host = if paths.use_jailer {
-                stage_into_jail(&jailer_root, path)?
+                stage_into_jail(&jailer_root, path, true)?
             } else {
                 path.clone()
             };
@@ -679,8 +797,12 @@ impl FirecrackerLauncher {
         Ok(())
     }
 
-    /// `MicroVM.wait_for_init`: bind `{vsock}_{ready_port}`, wait for the
-    /// guest's connection and keep its raw payload.
+    /// `MicroVM.wait_for_init`: bind `{vsock}_{ready_port}`, wait for a
+    /// guest connection whose payload validates (a msgpack map with a
+    /// "version" key, or nothing at all for older runtimes) and keep the
+    /// raw payload. Like the Python asyncio server, connections keep being
+    /// accepted until a parseable payload arrives or the timeout fires: an
+    /// unparseable payload only fails that one connected callback.
     fn wait_for_init(
         &self,
         paths: &MicroVmPaths,
@@ -711,60 +833,74 @@ impl FirecrackerLauncher {
         listener.set_nonblocking(true).map_err(|error| {
             ProgramBootError::Failed(format!("cannot configure the ready socket: {error}"))
         })?;
-
-        let deadline = Instant::now() + timeout;
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        tracing::warn!(
-                            vm_index = paths.vm_index,
-                            "never received signal from init"
-                        );
-                        state.ready_listener = Some(listener);
-                        return Err(ProgramBootError::InitTimeout);
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => {
-                    state.ready_listener = Some(listener);
-                    return Err(ProgramBootError::Failed(format!(
-                        "the ready socket failed: {error}"
-                    )));
-                }
-            }
-        };
-        // The Python callback reads up to 1 MB in one StreamReader.read.
-        stream.set_nonblocking(false).ok();
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let _ = stream.set_read_timeout(Some(remaining.max(Duration::from_millis(1))));
-        let mut payload = vec![0u8; 1_000_000];
-        let mut stream = stream;
-        let read = match stream.read(&mut payload) {
-            Ok(size) => size,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                state.ready_listener = Some(listener);
-                return Err(ProgramBootError::InitTimeout);
-            }
-            Err(error) => {
-                state.ready_listener = Some(listener);
-                return Err(ProgramBootError::Failed(format!(
-                    "reading the ready signal failed: {error}"
-                )));
-            }
-        };
-        payload.truncate(read);
         // The listener stays open for the VM's lifetime, like the Python
         // server (closed at teardown).
         state.ready_listener = Some(listener);
-        tracing::debug!(vm_index = paths.vm_index, "signal from init received");
-        Ok(payload)
+        let listener = state
+            .ready_listener
+            .as_ref()
+            .expect("the listener was just stored");
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            tracing::warn!(
+                                vm_index = paths.vm_index,
+                                "never received signal from init"
+                            );
+                            return Err(ProgramBootError::InitTimeout);
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        return Err(ProgramBootError::Failed(format!(
+                            "the ready socket failed: {error}"
+                        )));
+                    }
+                }
+            };
+            // The Python callback reads up to 1 MB in one StreamReader.read.
+            stream.set_nonblocking(false).ok();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let _ = stream.set_read_timeout(Some(remaining.max(Duration::from_millis(1))));
+            let mut payload = vec![0u8; 1_000_000];
+            let mut stream = stream;
+            let read = match stream.read(&mut payload) {
+                Ok(size) => size,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    // A guest that connected but stalled past the deadline:
+                    // asyncio.wait_for fires exactly like the silent case.
+                    tracing::warn!(vm_index = paths.vm_index, "never received signal from init");
+                    return Err(ProgramBootError::InitTimeout);
+                }
+                Err(error) => {
+                    return Err(ProgramBootError::Failed(format!(
+                        "reading the ready signal failed: {error}"
+                    )));
+                }
+            };
+            payload.truncate(read);
+            if ready_payload_is_valid(&payload) {
+                tracing::debug!(vm_index = paths.vm_index, "signal from init received");
+                return Ok(payload);
+            }
+            // msgpack.loads / config_dict["version"] raised inside the
+            // Python callback: that connection is discarded and the server
+            // keeps accepting until the timeout.
+            tracing::warn!(
+                vm_index = paths.vm_index,
+                "unparseable ready payload from init; waiting for another connection"
+            );
+        }
     }
 }
 
@@ -779,7 +915,6 @@ impl ProgramLauncher for FirecrackerLauncher {
         let handle = Arc::new(FirecrackerHandle {
             paths: paths.clone(),
             vsock_path: paths.vsock_path(),
-            config_file_path: None,
             state: Mutex::new(FcState::default()),
             teardown_grace: self.teardown_grace,
         });
@@ -801,6 +936,11 @@ impl ProgramLauncher for FirecrackerLauncher {
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.use_jailer {
+                    // Python records config_file_path only in
+                    // start_jailed_firecracker; teardown unlinks it.
+                    state.config_file_path = Some(config_path.clone());
+                }
                 self.spawn(&paths, request, &config_path, &mut state)
                     .map_err(ProgramBootError::Failed)?;
                 self.wait_for_init(&paths, request.ready_port, request.init_timeout, &mut state)
@@ -820,6 +960,23 @@ impl ProgramLauncher for FirecrackerLauncher {
                 Err(error)
             }
         }
+    }
+}
+
+/// `Duration::from_secs_f64` panics on huge finite values where Python's
+/// asyncio.wait_for accepts any float (a 1e250-second timeout just never
+/// fires). Clamp to 100 years, which is "never" without the panic, and to
+/// zero for negative or NaN inputs (`wait_for(..., timeout<=0)` fires
+/// immediately). Both untrusted request timeouts and settings-sourced ones
+/// go through here.
+pub fn duration_from_secs_clamped(secs: f64) -> Duration {
+    const MAX: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+    match Duration::try_from_secs_f64(secs) {
+        Ok(duration) => duration.min(MAX),
+        // try_from_secs_f64 rejects negative, NaN and overflowing values;
+        // only the overflow cases (huge finite, +inf) saturate high.
+        Err(_) if secs > 0.0 => MAX,
+        Err(_) => Duration::ZERO,
     }
 }
 
@@ -863,7 +1020,7 @@ pub fn run_code_over_channel(
         // asyncio.wait_for(..., timeout=0) times out immediately.
         return Err(ChannelError::Timeout);
     }
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
+    let deadline = Instant::now() + duration_from_secs_clamped(timeout_secs);
     let remaining = |now: Instant| deadline.saturating_duration_since(now);
 
     let mut payload = format!("CONNECT {RUNTIME_CONTROL_PORT}\n").into_bytes();
@@ -1151,6 +1308,125 @@ mod tests {
         assert!(state.ready_listener.is_some());
     }
 
+    fn exdev() -> std::io::Error {
+        std::io::Error::from_raw_os_error(libc::EXDEV)
+    }
+
+    #[test]
+    fn kernel_staging_propagates_exdev_like_python_enable_kernel() {
+        // enable_kernel catches only FileExistsError: a kernel on a
+        // different filesystem than JAILER_BASE_DIR fails the create with
+        // the EXDEV OSError instead of falling back to a copy.
+        let result = stage_into_jail_with(
+            Path::new("/jail/root"),
+            "/other-device/vmlinux.bin",
+            false,
+            |_, _| Err(exdev()),
+            |_, _| panic!("the kernel path must never copy"),
+        );
+        let error = result.unwrap_err();
+        assert!(
+            error.starts_with("cannot link /other-device/vmlinux.bin"),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn rootfs_and_drive_staging_copy_on_exdev() {
+        // The enable_file_rootfs / enable_drive EXDEV branch: fall back to
+        // a copy and serve the in-jail path.
+        let copied = std::cell::Cell::new(false);
+        let staged = stage_into_jail_with(
+            Path::new("/jail/root"),
+            "/other-device/data.img",
+            true,
+            |_, _| Err(exdev()),
+            |_, _| {
+                copied.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(staged, "/opt/data.img");
+        assert!(copied.get(), "EXDEV must fall back to a copy");
+    }
+
+    #[test]
+    fn a_duplicate_staged_basename_aliases_the_earlier_file_like_python() {
+        // Shared wart (ledger entry 42): Python tolerates EEXIST in every
+        // staging helper (enable_drive's bare `except OSError` swallows it),
+        // so the colliding file silently aliases the earlier one.
+        let already = || std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        for exdev_copies in [false, true] {
+            let staged = stage_into_jail_with(
+                Path::new("/jail/root"),
+                "/elsewhere/rootfs.squashfs",
+                exdev_copies,
+                |_, _| Err(already()),
+                |_, _| panic!("EEXIST must not copy"),
+            )
+            .unwrap();
+            assert_eq!(staged, "/opt/rootfs.squashfs");
+        }
+    }
+
+    #[test]
+    fn a_missing_rootfs_fails_with_the_bare_python_message() {
+        // Python enable_rootfs: ValueError("Not a file or a block device:
+        // {path}"), no OS error appended.
+        let tmp = tempfile::tempdir().unwrap();
+        let launcher = FirecrackerLauncher {
+            firecracker_path: PathBuf::from("/bin/false"),
+            jailer_path: PathBuf::from("/bin/false"),
+            jailer_base_dir: tmp.path().to_path_buf(),
+            use_jailer: false,
+            enable_console: false,
+            teardown_grace: Duration::ZERO,
+        };
+        let paths = MicroVmPaths {
+            vm_index: 902,
+            firecracker_bin: PathBuf::from("firecracker"),
+            jailer_base_dir: tmp.path().to_path_buf(),
+            use_jailer: false,
+        };
+        let request = ProgramBootRequest {
+            vm_index: 902,
+            vm_hash: "aa".to_string(),
+            kernel_path: "/k".to_string(),
+            rootfs_path: "/nonexistent/rootfs.squashfs".to_string(),
+            extra_disks: vec![],
+            vcpus: 1,
+            memory_mib: 128,
+            tap_device: None,
+            ready_port: 52,
+            init_timeout: Duration::from_secs(1),
+        };
+        let error = launcher.build_config(&paths, &request).unwrap_err();
+        assert_eq!(
+            error,
+            "Not a file or a block device: /nonexistent/rootfs.squashfs"
+        );
+    }
+
+    #[test]
+    fn validate_msgpack_matches_the_unpackb_gates() {
+        // One whole value: valid maps pass.
+        assert!(validate_msgpack(b"\x81\xa4path\xa1/").is_ok());
+        // A truncated map (header promises one entry, body missing).
+        assert!(validate_msgpack(b"\x81\xa4path").is_err());
+        // Known rmpv lenience, deliberately tolerated: the reserved byte
+        // 0xc1 decodes as Nil here where msgpack-python raises FormatError
+        // (a crafted-input edge; the payload is still forwarded raw).
+        assert!(validate_msgpack(b"\xc1").is_ok());
+        // ExtraData: trailing bytes after the first object.
+        assert!(validate_msgpack(b"\x80\x80").is_err());
+        // strict_map_key=True: an int map key raises, even nested.
+        assert!(validate_msgpack(b"\x81\x01\x01").is_err());
+        assert!(validate_msgpack(b"\x81\xa3key\x81\x01\x01").is_err());
+        // An empty buffer is not one msgpack value.
+        assert!(validate_msgpack(b"").is_err());
+    }
+
     #[test]
     fn a_silent_guest_times_out_as_microvm_init_failed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1176,11 +1452,233 @@ mod tests {
         }
     }
 
+    /// A jailed-shaped launcher/paths pair over a fresh tempdir, for the
+    /// ready-handshake tests (the unjailed vsock path is the fixed
+    /// /tmp/v.sock, unusable in parallel tests).
+    fn handshake_fixture(
+        tmp: &tempfile::TempDir,
+        vm_index: i64,
+    ) -> (FirecrackerLauncher, MicroVmPaths) {
+        let launcher = FirecrackerLauncher {
+            firecracker_path: PathBuf::from("/bin/false"),
+            jailer_path: PathBuf::from("/bin/false"),
+            jailer_base_dir: tmp.path().to_path_buf(),
+            use_jailer: false,
+            enable_console: false,
+            teardown_grace: Duration::ZERO,
+        };
+        let paths = MicroVmPaths {
+            vm_index,
+            firecracker_bin: PathBuf::from("firecracker"),
+            jailer_base_dir: tmp.path().to_path_buf(),
+            use_jailer: true,
+        };
+        std::fs::create_dir_all(paths.jailer_root().join("tmp")).unwrap();
+        (launcher, paths)
+    }
+
+    /// Connect to the ready socket (retrying until it exists) and run the
+    /// guest half of the handshake.
+    fn fake_guest(ready_path: String, act: impl FnOnce(UnixStream) + Send + 'static) {
+        std::thread::spawn(move || {
+            for _ in 0..200 {
+                if let Ok(stream) = UnixStream::connect(&ready_path) {
+                    act(stream);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("the ready socket never appeared");
+        });
+    }
+
+    #[test]
+    fn a_non_msgpack_ready_payload_times_out_as_microvm_init_failed() {
+        // Python: msgpack.loads(b"ok") raises in the connected callback, the
+        // queue stays empty and wait_for times out (MICROVM_INIT_FAILED).
+        let tmp = tempfile::tempdir().unwrap();
+        let (launcher, paths) = handshake_fixture(&tmp, 903);
+        fake_guest(format!("{}_52", paths.vsock_path()), |mut stream| {
+            stream.write_all(b"ok").unwrap();
+        });
+        let mut state = FcState::default();
+        match launcher.wait_for_init(&paths, 52, Duration::from_millis(300), &mut state) {
+            Err(ProgramBootError::InitTimeout) => {}
+            other => panic!("expected InitTimeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_msgpack_payload_without_a_version_key_times_out() {
+        // config_dict["version"] raises KeyError in the Python callback.
+        let tmp = tempfile::tempdir().unwrap();
+        let (launcher, paths) = handshake_fixture(&tmp, 904);
+        fake_guest(format!("{}_52", paths.vsock_path()), |mut stream| {
+            // msgpack {"name": "x"}: a valid map, wrong key.
+            stream.write_all(b"\x81\xa4name\xa1x").unwrap();
+        });
+        let mut state = FcState::default();
+        match launcher.wait_for_init(&paths, 52, Duration::from_millis(300), &mut state) {
+            Err(ProgramBootError::InitTimeout) => {}
+            other => panic!("expected InitTimeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_server_keeps_accepting_until_a_valid_payload_arrives() {
+        // Python's asyncio server outlives one bad callback: a garbage
+        // connection followed by a valid one succeeds.
+        let tmp = tempfile::tempdir().unwrap();
+        let (launcher, paths) = handshake_fixture(&tmp, 905);
+        let ready_path = format!("{}_52", paths.vsock_path());
+        fake_guest(ready_path.clone(), move |mut stream| {
+            stream.write_all(b"garbage").unwrap();
+            drop(stream);
+            let mut second = UnixStream::connect(&ready_path).unwrap();
+            second.write_all(b"\x81\xa7version\xa52.0.0").unwrap();
+        });
+        let mut state = FcState::default();
+        let payload = launcher
+            .wait_for_init(&paths, 52, Duration::from_secs(5), &mut state)
+            .unwrap();
+        assert_eq!(payload, b"\x81\xa7version\xa52.0.0");
+    }
+
+    #[test]
+    fn an_empty_ready_payload_is_an_older_runtime_and_succeeds() {
+        // Python: no data means RuntimeConfiguration(version="1.0.0").
+        let tmp = tempfile::tempdir().unwrap();
+        let (launcher, paths) = handshake_fixture(&tmp, 906);
+        fake_guest(format!("{}_52", paths.vsock_path()), drop);
+        let mut state = FcState::default();
+        let payload = launcher
+            .wait_for_init(&paths, 52, Duration::from_secs(5), &mut state)
+            .unwrap();
+        assert_eq!(payload, b"");
+    }
+
+    #[test]
+    fn a_guest_that_connects_then_stalls_times_out_as_microvm_init_failed() {
+        // The read phase has its own deadline: a connected-but-silent guest
+        // must not hang CreateVm (which holds the creation lock) beyond the
+        // init timeout.
+        let tmp = tempfile::tempdir().unwrap();
+        let (launcher, paths) = handshake_fixture(&tmp, 907);
+        let (hold_sender, hold_receiver) = std::sync::mpsc::channel::<()>();
+        fake_guest(format!("{}_52", paths.vsock_path()), move |stream| {
+            // Keep the connection open, send nothing, until the test ends.
+            let _ = hold_receiver.recv_timeout(Duration::from_secs(10));
+            drop(stream);
+        });
+        let mut state = FcState::default();
+        let started = Instant::now();
+        match launcher.wait_for_init(&paths, 52, Duration::from_millis(100), &mut state) {
+            Err(ProgramBootError::InitTimeout) => {}
+            other => panic!("expected InitTimeout, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the stalled read must time out, not hang"
+        );
+        drop(hold_sender);
+    }
+
+    #[test]
+    fn teardown_removes_the_jailed_config_file() {
+        // MicroVM.teardown unlinks config_file_path (recorded only by
+        // start_jailed_firecracker) before removing the namespace.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MicroVmPaths {
+            vm_index: 908,
+            firecracker_bin: PathBuf::from("firecracker"),
+            jailer_base_dir: tmp.path().to_path_buf(),
+            use_jailer: true,
+        };
+        let config = paths.jailer_root().join("tmp/config.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, b"{}").unwrap();
+        let handle = FirecrackerHandle {
+            paths: paths.clone(),
+            vsock_path: paths.vsock_path(),
+            state: Mutex::new(FcState {
+                config_file_path: Some(config.clone()),
+                ..FcState::default()
+            }),
+            teardown_grace: Duration::ZERO,
+        };
+        handle.teardown();
+        assert!(!config.exists(), "the config file must be unlinked");
+        assert!(
+            !paths.namespace_path().exists(),
+            "the namespace directory must be removed"
+        );
+    }
+
+    #[test]
+    fn the_teardown_connect_is_bounded_like_the_python_wait_for() {
+        // A wedged guest channel (connect never completing) must not hang
+        // teardown: Python bounds the whole shutdown exchange in
+        // asyncio.wait_for(..., 5). The hang is simulated with a task that
+        // outlives the timeout.
+        let started = Instant::now();
+        let result: std::io::Result<()> = blocking_with_timeout(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(10));
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        // The fast path passes the connection through.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("v.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        assert!(connect_with_timeout(path, Duration::from_secs(5)).is_ok());
+    }
+
+    #[test]
+    fn duration_clamping_never_panics() {
+        assert_eq!(duration_from_secs_clamped(1.5), Duration::from_millis(1500));
+        assert_eq!(duration_from_secs_clamped(-5.0), Duration::ZERO);
+        assert_eq!(duration_from_secs_clamped(f64::NAN), Duration::ZERO);
+        // The from_secs_f64 panic case: huge finite values saturate.
+        let hundred_years = Duration::from_secs(100 * 365 * 24 * 3600);
+        assert_eq!(duration_from_secs_clamped(1e250), hundred_years);
+        assert_eq!(duration_from_secs_clamped(f64::INFINITY), hundred_years);
+    }
+
+    #[test]
+    fn run_code_with_a_huge_timeout_completes_instead_of_panicking() {
+        // timeout_secs is an untrusted client double: 1e250 must behave
+        // like Python's asyncio.wait_for (a timeout that never fires), not
+        // panic in Duration::from_secs_f64.
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = tmp.path().join("v.sock");
+        let listener = UnixListener::bind(&channel).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = vec![0u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(b"OK 52\n").unwrap();
+            stream.write_all(b"reply").unwrap();
+        });
+        let reply = run_code_over_channel(channel.to_str().unwrap(), b"\x80", 1e250).unwrap();
+        assert_eq!(reply, b"reply");
+        server.join().unwrap();
+    }
+
     #[test]
     fn run_code_wraps_the_scope_opaquely_and_reads_the_reply() {
         // A fake runtime: reads the request, answers with an ack line and
         // a reply, closes. The daemon must send CONNECT 52 plus the
         // msgpack {"scope": <raw scope bytes>} and return the raw reply.
+        //
+        // The ack line is NOT the aleph runtime's: it is Firecracker's
+        // vsock host-initiated-connection protocol ("OK <assigned_port>\n"
+        // after a "CONNECT <port>\n"), which the Python client also reads
+        // with one readline() and discards (microvm.py shutdown reads the
+        // same ack). "OK 52\n" here matches that documented shape; the CI
+        // Firecracker leg exercises the real thing.
         let tmp = tempfile::tempdir().unwrap();
         let channel = tmp.path().join("v.sock");
         let listener = UnixListener::bind(&channel).unwrap();
