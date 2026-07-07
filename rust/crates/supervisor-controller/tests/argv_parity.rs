@@ -62,6 +62,11 @@ parity_case!(gpu_no_x_vga, "gpu_no_x_vga");
 parity_case!(gpu_multiple, "gpu_multiple");
 parity_case!(no_gpu_full, "no_gpu_full");
 parity_case!(gpu_full, "gpu_full");
+// Falsy corners (mutation coverage): the qga `path=None` wart, and the
+// empty-string skips of the NIC and cloud-init blocks.
+parity_case!(qga_socket_none, "qga_socket_none");
+parity_case!(interface_empty, "interface_empty");
+parity_case!(cloud_init_empty, "cloud_init_empty");
 
 /// Every fixture in the directory is covered by a named case above; guard
 /// against a fixture being added to the battery without a matching assertion.
@@ -79,6 +84,9 @@ fn every_fixture_has_a_case() {
         "gpu_multiple",
         "no_gpu_full",
         "gpu_full",
+        "qga_socket_none",
+        "interface_empty",
+        "cloud_init_empty",
     ];
     let mut on_disk: Vec<String> = std::fs::read_dir(fixture_dir())
         .unwrap()

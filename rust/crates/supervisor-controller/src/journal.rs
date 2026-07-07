@@ -57,9 +57,65 @@ pub fn stream(identifier: &str) -> Stdio {
 ///   6. forward-to-kmsg flag
 ///   7. forward-to-console flag
 fn connect_journal_stream(identifier: &str) -> std::io::Result<OwnedFd> {
-    let mut stream = UnixStream::connect(JOURNAL_STDOUT_SOCKET)?;
+    connect_journal_stream_at(JOURNAL_STDOUT_SOCKET, identifier)
+}
+
+/// [`connect_journal_stream`] against an explicit socket path (tests bind a
+/// fake listener; production always passes [`JOURNAL_STDOUT_SOCKET`]).
+fn connect_journal_stream_at<P: AsRef<std::path::Path>>(
+    socket_path: P,
+    identifier: &str,
+) -> std::io::Result<OwnedFd> {
+    let mut stream = UnixStream::connect(socket_path)?;
     let header = format!("{identifier}\n\n{LOG_INFO}\n0\n0\n0\n0\n");
     stream.write_all(header.as_bytes())?;
     stream.flush()?;
     Ok(OwnedFd::from(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+    use std::thread;
+
+    #[test]
+    fn it_writes_the_exact_sd_journal_stream_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("stdout.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut received = Vec::new();
+            // The header is exactly 7 newline-terminated lines; read them.
+            let mut newlines = 0;
+            let mut byte = [0u8; 1];
+            while newlines < 7 {
+                if stream.read(&mut byte).unwrap() == 0 {
+                    break;
+                }
+                if byte[0] == b'\n' {
+                    newlines += 1;
+                }
+                received.push(byte[0]);
+            }
+            received
+        });
+        let fd = connect_journal_stream_at(&socket, "vm-abc-stdout").unwrap();
+        // Drop the write end so the reader is not left blocking on payload.
+        drop(fd);
+        let received = server.join().unwrap();
+        // identifier, empty unit, priority 6, level_prefix 0, three zero flags.
+        assert_eq!(received, b"vm-abc-stdout\n\n6\n0\n0\n0\n0\n");
+    }
+
+    #[test]
+    fn an_absent_socket_yields_the_inherit_fallback_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("nope.sock");
+        // The connect fails, which is what makes `stream` fall back to
+        // Stdio::inherit rather than aborting the launch.
+        assert!(connect_journal_stream_at(&absent, "vm-abc-stdout").is_err());
+    }
 }
