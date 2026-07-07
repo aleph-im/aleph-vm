@@ -34,6 +34,17 @@ pub struct Settings {
     pub supervisor_grpc_socket: PathBuf,
     /// conf.py PERSISTENT_VOLUMES_DIR, default {EXECUTION_ROOT}/volumes/persistent.
     pub persistent_volumes_dir: PathBuf,
+    /// conf.py BACKUP_DIRECTORY, default {EXECUTION_ROOT}/backups (increment 5).
+    pub backup_directory: PathBuf,
+    /// conf.py CONFIDENTIAL_SESSION_DIRECTORY, default {EXECUTION_ROOT}/sessions
+    /// (increment 6): where InitializeConfidential writes the owner's session
+    /// certificates and confidential CreateVm points the controller config.
+    pub confidential_session_directory: PathBuf,
+    /// conf.py ENABLE_CONFIDENTIAL_COMPUTING, default false (check()
+    /// preconditions: SEV_CTL_PATH plus the SEV/SEV-ES kernel-module gates).
+    pub enable_confidential_computing: bool,
+    /// conf.py SEV_CTL_PATH, default /opt/sevctl.
+    pub sev_ctl_path: PathBuf,
     /// conf.py ALLOW_VM_NETWORKING, default true. When false the Python pool
     /// has no Network object and host_ipv4 is served empty.
     pub allow_vm_networking: bool,
@@ -160,6 +171,25 @@ impl Settings {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => execution_root.join("volumes").join("persistent"),
         };
+        // conf.py setup(): BACKUP_DIRECTORY defaults to EXECUTION_ROOT/backups,
+        // CONFIDENTIAL_SESSION_DIRECTORY to EXECUTION_ROOT/sessions, when unset
+        // (or emptied, matching the empty-string-is-unset family, entry 4).
+        let backup_directory = match env.get("BACKUP_DIRECTORY") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => execution_root.join("backups"),
+        };
+        let confidential_session_directory = match env.get("CONFIDENTIAL_SESSION_DIRECTORY") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => execution_root.join("sessions"),
+        };
+        let enable_confidential_computing = env
+            .get_bool("ENABLE_CONFIDENTIAL_COMPUTING")?
+            .unwrap_or(false);
+        let sev_ctl_path = env
+            .get("SEV_CTL_PATH")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/sevctl"));
         let allow_vm_networking = env.get_bool("ALLOW_VM_NETWORKING")?.unwrap_or(true);
         let enable_gpu_support = env.get_bool("ENABLE_GPU_SUPPORT")?.unwrap_or(false);
         // Python treats an empty NETWORK_INTERFACE as unset (`if not
@@ -274,6 +304,10 @@ impl Settings {
             execution_root,
             supervisor_grpc_socket,
             persistent_volumes_dir,
+            backup_directory,
+            confidential_session_directory,
+            enable_confidential_computing,
+            sev_ctl_path,
             allow_vm_networking,
             network_interface,
             enable_gpu_support,

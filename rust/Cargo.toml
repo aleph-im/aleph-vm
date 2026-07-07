@@ -22,6 +22,10 @@ rmpv = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# backup archives (increment 5): the same uncompressed-tar + sha256 sidecar
+# format the Python controller writes (aleph.vm.supervisor.controllers.qemu.backup).
+sha2 = "0.10"
+tar = "0.4"
 thiserror = "2"
 zbus = "5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync"] }

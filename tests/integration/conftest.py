@@ -123,9 +123,11 @@ requires_qemu = pytest.mark.skipif(
 requires_root = pytest.mark.skipif(not IS_ROOT, reason="needs root (TAP networking / nftables)")
 
 # Tests of RPC surfaces the Rust daemon does not serve yet (see the design
-# doc's increment table). Increment 4 un-skipped the Firecracker surface,
-# WatchEvents and StreamLogs; only the backup surface remains.
-_RUST_UNPORTED_FILES = {"test_backup_restore.py"}  # increment 5
+# doc's increment table). Increments 5 and 6 completed the port: the backup
+# surface and the confidential mutations are served, so nothing remains
+# unported. The backup/restore cycle runs on the rust leg (KVM-gated), the
+# confidential launch path is Tier-2 (SEV hardware).
+_RUST_UNPORTED_FILES: set[str] = set()
 _RUST_UNPORTED_TESTS: set[str] = set()
 
 

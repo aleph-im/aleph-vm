@@ -162,6 +162,8 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         log_follows: Arc::new(tokio::sync::Semaphore::new(
             supervisor_daemon::service::MAX_CONCURRENT_LOG_FOLLOWS,
         )),
+        disk_tools: Arc::new(supervisor_daemon::backup::QemuImgTools),
+        backups: supervisor_daemon::backup::BackupRegistry::default(),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

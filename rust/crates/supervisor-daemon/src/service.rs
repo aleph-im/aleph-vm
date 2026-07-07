@@ -1,4 +1,4 @@
-//! The Supervisor gRPC service, increments 1-3.
+//! The Supervisor gRPC service (the full contract, increments 1-6).
 //!
 //! Health, GetHostInfo, GetVm, GetVmSpec, ListVms, ListPortForwards and
 //! GetLogs are field-for-field ports of the Python LocalSupervisor
@@ -8,14 +8,13 @@
 //! `_is_running`/`_running_states`, and the VmSpec served for an adopted VM
 //! is the `spec_from_controller_configuration` reconstruction
 //! (src/aleph/vm/supervisor/qemu_build.py) the restarted Python daemon
-//! holds. The lifecycle mutations live in src/lifecycle.rs and run on the
-//! blocking pool. Every other RPC aborts UNIMPLEMENTED the way the Python `_abort`
-//! does for NotImplementedSupervisorError: grpc-status UNIMPLEMENTED plus a
-//! serialized ErrorDetail (code INTERNAL, the wire code of
-//! NotImplementedSupervisorError) in the `aleph-supervisor-error-bin`
-//! trailer. The Python client maps UNIMPLEMENTED to
-//! NotImplementedSupervisorError before reading the trailer, so both
-//! encodings agree.
+//! holds. The lifecycle mutations live in src/lifecycle.rs, the backup
+//! surface in src/backup.rs and the confidential mutations in
+//! src/confidential.rs; all run on the blocking pool. The only remaining
+//! UNIMPLEMENTED path is a persistent Firecracker CreateVm (ledger entry 39),
+//! which aborts the Python way (grpc-status UNIMPLEMENTED plus a serialized
+//! ErrorDetail, wire code INTERNAL, in the `aleph-supervisor-error-bin`
+//! trailer; the Python client keys the exception type on the status code).
 
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
@@ -158,6 +157,11 @@ pub struct DaemonState {
     /// far below the pool size; the excess request is rejected
     /// RESOURCE_EXHAUSTED (Rust-only bound, ledger entry 44).
     pub log_follows: Arc<tokio::sync::Semaphore>,
+    /// The `qemu-img` seam (increment 5): backup convert/check/virtual-size.
+    pub disk_tools: Arc<dyn crate::backup::DiskTools>,
+    /// Backup job bookkeeping (increment 5): the Python `_backup_jobs` /
+    /// `_backup_tasks` / `_backup_locks` triple.
+    pub backups: crate::backup::BackupRegistry,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -188,6 +192,8 @@ impl DaemonState {
             events: crate::events::EventHub::default(),
             programs: Arc::new(crate::firecracker::FakeProgramLauncher::new()),
             log_follows: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOG_FOLLOWS)),
+            disk_tools: Arc::new(crate::backup::FakeDiskTools::default()),
+            backups: crate::backup::BackupRegistry::default(),
         }
     }
 }
@@ -603,16 +609,6 @@ fn vm_not_found_status(vm_id: &str) -> Status {
     status_with_error_detail(Code::NotFound, pb::ErrorCode::VmNotFound, vm_id.to_string())
 }
 
-/// UNIMPLEMENTED with the trailer NotImplementedSupervisorError carries
-/// (wire code INTERNAL; the status code alone distinguishes it, which is
-/// what the Python client keys on).
-fn unimplemented_status(rpc: &str) -> Status {
-    let message = format!(
-        "{rpc} is not implemented yet by the Rust supervisor daemon (increment 3 serves the host, read-only and persistent lifecycle RPCs)"
-    );
-    status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
-}
-
 /// The lifecycle error vocabulary onto the Python STATUS_CODE_BY_ERROR
 /// table (grpc_server.py) plus the matching ErrorDetail trailer codes.
 fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
@@ -632,6 +628,11 @@ fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
             pb::ErrorCode::InvalidBackend,
             message,
         ),
+        RpcError::BackupNotFound(message) => {
+            // BackupNotFoundError: NOT_FOUND, trailer BACKUP_NOT_FOUND
+            // (grpc_server.py STATUS_CODE_BY_ERROR).
+            status_with_error_detail(Code::NotFound, pb::ErrorCode::BackupNotFound, message)
+        }
         RpcError::MicroVmInit(message) => {
             // MicroVMInitError: INTERNAL with the MICROVM_INIT_FAILED
             // trailer (grpc_server.py STATUS_CODE_BY_ERROR).
@@ -645,7 +646,9 @@ fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
     }
 }
 
-type UnimplementedStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+/// A boxed, `Send` gRPC server-stream of `T` (the DownloadBackup chunks and,
+/// historically, the not-yet-served streaming RPCs).
+type BoxGrpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
 // The unimplemented methods are written out explicitly (no macro): tonic's
 // async_trait attribute rewrites the impl block before declarative macros
@@ -848,9 +851,20 @@ impl Supervisor for SupervisorService {
 
     async fn restore_from_image(
         &self,
-        _request: Request<pb::RestoreFromImageRequest>,
+        request: Request<pb::RestoreFromImageRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("RestoreFromImage"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let (entry, running) = run_lifecycle(move || {
+            crate::lifecycle::restore_from_image(
+                &state,
+                &request.vm_id,
+                &request.image_path,
+                request.max_virtual_size_bytes,
+            )
+        })
+        .await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     // ── Port forwarding ──
@@ -1063,68 +1077,185 @@ impl Supervisor for SupervisorService {
     // ── Backups (increment 5) ──
     async fn start_backup(
         &self,
-        _request: Request<pb::StartBackupRequest>,
+        request: Request<pb::StartBackupRequest>,
     ) -> Result<Response<pb::BackupInfo>, Status> {
-        Err(unimplemented_status("StartBackup"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        // spawn_blocking (not run_lifecycle's helper) because start_backup
+        // itself launches the background run via the current runtime handle,
+        // which is only available inside the runtime context.
+        let info = tokio::task::spawn_blocking(move || {
+            crate::backup::start_backup(
+                state,
+                &request.vm_id,
+                request.quiesce_guest,
+                request.include_volumes,
+            )
+        })
+        .await
+        .map_err(|error| {
+            internal_status(DaemonError::Internal(format!(
+                "the backup task failed: {error}"
+            )))
+        })?
+        .map_err(rpc_error_status)?;
+        Ok(Response::new(info))
     }
 
     async fn get_backup_status(
         &self,
-        _request: Request<pb::GetBackupStatusRequest>,
+        request: Request<pb::GetBackupStatusRequest>,
     ) -> Result<Response<pb::BackupInfo>, Status> {
-        Err(unimplemented_status("GetBackupStatus"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let info = run_lifecycle(move || {
+            crate::backup::get_backup_status(&state, &request.vm_id, &request.backup_id)
+        })
+        .await?;
+        Ok(Response::new(info))
     }
 
     async fn list_backups(
         &self,
-        _request: Request<pb::ListBackupsRequest>,
+        request: Request<pb::ListBackupsRequest>,
     ) -> Result<Response<pb::ListBackupsResponse>, Status> {
-        Err(unimplemented_status("ListBackups"))
+        let state = self.state.clone();
+        let vm_id = request.into_inner().vm_id;
+        let backups = run_lifecycle(move || {
+            // empty vm_id = all VMs (proto: ListBackupsRequest.vm_id).
+            let filter = (!vm_id.is_empty()).then_some(vm_id.as_str());
+            crate::backup::list_backups(&state, filter)
+        })
+        .await?;
+        Ok(Response::new(pb::ListBackupsResponse { backups }))
     }
 
-    type DownloadBackupStream = UnimplementedStream<pb::BackupChunk>;
+    type DownloadBackupStream = BoxGrpcStream<pb::BackupChunk>;
 
     async fn download_backup(
         &self,
-        _request: Request<pb::DownloadBackupRequest>,
+        request: Request<pb::DownloadBackupRequest>,
     ) -> Result<Response<Self::DownloadBackupStream>, Status> {
-        Err(unimplemented_status("DownloadBackup"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let tar_path = {
+            let state = state.clone();
+            let vm_id = request.vm_id.clone();
+            let backup_id = request.backup_id.clone();
+            run_lifecycle(move || crate::backup::resolve_download(&state, &vm_id, &backup_id))
+                .await?
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::BackupChunk, Status>>(16);
+        tokio::task::spawn_blocking(move || {
+            let mut file = match std::fs::File::open(&tar_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(internal_status(DaemonError::Internal(
+                        format!("cannot open the backup archive: {error}"),
+                    ))));
+                    return;
+                }
+            };
+            let mut offset: u64 = 0;
+            let mut buffer = vec![0u8; crate::backup::BACKUP_DOWNLOAD_CHUNK_BYTES];
+            loop {
+                let read = match std::io::Read::read(&mut file, &mut buffer) {
+                    Ok(0) => return,
+                    Ok(read) => read,
+                    Err(error) => {
+                        let _ = sender.blocking_send(Err(internal_status(DaemonError::Internal(
+                            format!("cannot read the backup archive: {error}"),
+                        ))));
+                        return;
+                    }
+                };
+                let chunk = pb::BackupChunk {
+                    data: buffer[..read].to_vec(),
+                    offset,
+                };
+                if sender.blocking_send(Ok(chunk)).is_err() {
+                    // The client dropped the stream.
+                    return;
+                }
+                offset += read as u64;
+            }
+        });
+        let stream = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn delete_backup(
         &self,
-        _request: Request<pb::DeleteBackupRequest>,
+        request: Request<pb::DeleteBackupRequest>,
     ) -> Result<Response<pb::DeleteBackupResponse>, Status> {
-        Err(unimplemented_status("DeleteBackup"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        run_lifecycle(move || {
+            crate::backup::delete_backup(&state, &request.vm_id, &request.backup_id)
+        })
+        .await?;
+        Ok(Response::new(pb::DeleteBackupResponse {}))
     }
 
     async fn restore_backup(
         &self,
-        _request: Request<pb::RestoreBackupRequest>,
+        request: Request<pb::RestoreBackupRequest>,
     ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(unimplemented_status("RestoreBackup"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let (entry, running) = run_lifecycle(move || {
+            crate::lifecycle::restore_backup(&state, &request.vm_id, &request.backup_id)
+        })
+        .await?;
+        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
     // ── Confidential (increment 6) ──
     async fn initialize_confidential(
         &self,
-        _request: Request<pb::InitializeConfidentialRequest>,
+        request: Request<pb::InitializeConfidentialRequest>,
     ) -> Result<Response<pb::InitializeConfidentialResponse>, Status> {
-        Err(unimplemented_status("InitializeConfidential"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        run_lifecycle(move || {
+            crate::confidential::initialize_confidential(
+                &state,
+                &request.vm_id,
+                &request.session_bytes,
+                &request.godh_bytes,
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::InitializeConfidentialResponse {}))
     }
 
     async fn get_measurement(
         &self,
-        _request: Request<pb::GetMeasurementRequest>,
+        request: Request<pb::GetMeasurementRequest>,
     ) -> Result<Response<pb::Measurement>, Status> {
-        Err(unimplemented_status("GetMeasurement"))
+        let state = self.state.clone();
+        let vm_id = request.into_inner().vm_id;
+        let measurement =
+            run_lifecycle(move || crate::confidential::get_measurement(&state, &vm_id)).await?;
+        Ok(Response::new(measurement))
     }
 
     async fn inject_secret(
         &self,
-        _request: Request<pb::InjectSecretRequest>,
+        request: Request<pb::InjectSecretRequest>,
     ) -> Result<Response<pb::InjectSecretResponse>, Status> {
-        Err(unimplemented_status("InjectSecret"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        run_lifecycle(move || {
+            crate::confidential::inject_secret(
+                &state,
+                &request.vm_id,
+                &request.secret_header_bytes,
+                &request.secret_bytes,
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::InjectSecretResponse {}))
     }
 
     // ── Network ──

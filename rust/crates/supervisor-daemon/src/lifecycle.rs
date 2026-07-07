@@ -43,6 +43,9 @@ pub enum RpcError {
     InsufficientResources(String),
     /// InvalidBackendError.
     InvalidBackend(String),
+    /// BackupNotFoundError: message is the backup_id itself (NOT_FOUND,
+    /// trailer code BACKUP_NOT_FOUND).
+    BackupNotFound(String),
     /// MicroVMInitError: the guest never signalled ready (INTERNAL,
     /// trailer code MICROVM_INIT_FAILED; the Python exception text is
     /// empty).
@@ -910,6 +913,151 @@ fn erase_volumes(
     Ok(())
 }
 
+/// `LocalSupervisor.restore_backup`: swap the rootfs for a verified backup
+/// archive's rootfs member, stopping and restarting the VM around the swap.
+/// Persistent QEMU VMs only (a program fails the rootfs-path resolution with
+/// InvalidBackend).
+pub fn restore_backup(
+    state: &DaemonState,
+    vm_id: &str,
+    backup_id: &str,
+) -> Result<(VmEntry, bool), RpcError> {
+    let lock = vm_lock(state, vm_id);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let rootfs_path = crate::backup::qemu_rootfs_path(&entry)?;
+    crate::backup::validate_backup_id(vm_id, backup_id)?;
+    let backup_dir = crate::backup::backup_directory(state)?;
+    let tar_path = backup_dir.join(format!("{backup_id}.tar"));
+    if !tar_path.exists() {
+        return Err(RpcError::BackupNotFound(backup_id.into()));
+    }
+
+    // The per-VM disk lock, shared with a running StartBackup: neither may
+    // touch the disks while the other converts or swaps them.
+    let disk_lock = state.backups.vm_lock(vm_id);
+    let _disk_guard = disk_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let staging = backup_dir.join(format!("{backup_id}.restore.qcow2"));
+    let outcome = restore_rootfs_swap(state, vm_id, &entry, &tar_path, &staging, &rootfs_path);
+    let _ = std::fs::remove_file(&staging);
+    outcome?;
+
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let running = unit_active(state, &entry.unit_name());
+    let status = status_snapshot(state, &entry);
+    if status != pb::VmStatus::Stopped {
+        state.events.emit(vm_id, pb::VmStatus::Stopped, status);
+    }
+    Ok((entry, running))
+}
+
+/// The stop/restore/restart core shared by restore_backup: extract and
+/// verify the archived rootfs, stop the running VM, swap the disk, restart.
+fn restore_rootfs_swap(
+    state: &DaemonState,
+    vm_id: &str,
+    entry: &VmEntry,
+    tar_path: &std::path::Path,
+    staging: &std::path::Path,
+    rootfs_path: &std::path::Path,
+) -> Result<(), RpcError> {
+    crate::backup::extract_rootfs_member(tar_path, staging)?;
+    // verify_qemu_disk: a check failure here propagates as INTERNAL (Python's
+    // uncaught CalledProcessError -> translate).
+    if let Err(error) = state.disk_tools.check(staging) {
+        return Err(RpcError::Internal(match error {
+            crate::backup::QemuImgError::CheckFailed(message)
+            | crate::backup::QemuImgError::Unavailable(message) => message,
+        }));
+    }
+    let old_status = status_snapshot(state, entry);
+    if entry_running(state, entry) {
+        stop_vm_execution(state, vm_id)?;
+        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+    }
+    crate::backup::restore_rootfs(staging, rootfs_path)?;
+    start_vm_execution(state, vm_id)
+}
+
+/// `LocalSupervisor.restore_from_image`: swap the rootfs for a QCOW2 image
+/// already staged on a host path. Rejects a non-QCOW2 upload (InvalidBackend)
+/// and one larger than the declared rootfs (a restore must not grow the disk).
+pub fn restore_from_image(
+    state: &DaemonState,
+    vm_id: &str,
+    image_path: &str,
+    max_virtual_size_bytes: u64,
+) -> Result<(VmEntry, bool), RpcError> {
+    let lock = vm_lock(state, vm_id);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let rootfs_path = crate::backup::qemu_rootfs_path(&entry)?;
+
+    let image = std::path::Path::new(image_path);
+    if !image.exists() {
+        return Err(RpcError::Internal(format!(
+            "staged restore image {} does not exist",
+            image.display()
+        )));
+    }
+    // qemu-img rejects anything that is not a valid QCOW2 with a non-zero
+    // exit: a client error (a bad upload) -> InvalidBackendError (a 400). A
+    // spawn failure (qemu-img missing) stays INTERNAL, like Python.
+    match state.disk_tools.check(image) {
+        Ok(()) => {}
+        Err(crate::backup::QemuImgError::CheckFailed(_)) => {
+            let name = image
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            return Err(RpcError::InvalidBackend(format!(
+                "Restore image {name} is not a valid QCOW2 disk"
+            )));
+        }
+        Err(crate::backup::QemuImgError::Unavailable(message)) => {
+            return Err(RpcError::Internal(message));
+        }
+    }
+    if max_virtual_size_bytes != 0 {
+        let new_size = state
+            .disk_tools
+            .virtual_size(image)
+            .map_err(RpcError::Internal)?;
+        if new_size > max_virtual_size_bytes {
+            return Err(RpcError::InvalidBackend(format!(
+                "New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size \
+                 ({max_virtual_size_bytes} bytes). Restore cannot increase disk size."
+            )));
+        }
+    }
+
+    let disk_lock = state.backups.vm_lock(vm_id);
+    let _disk_guard = disk_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let old_status = status_snapshot(state, &entry);
+    if entry_running(state, &entry) {
+        stop_vm_execution(state, vm_id)?;
+        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+    }
+    crate::backup::restore_rootfs(image, &rootfs_path)?;
+    start_vm_execution(state, vm_id)?;
+
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let running = unit_active(state, &entry.unit_name());
+    let status = status_snapshot(state, &entry);
+    if status != pb::VmStatus::Stopped {
+        state.events.emit(vm_id, pb::VmStatus::Stopped, status);
+    }
+    Ok((entry, running))
+}
+
 pub fn delete_vm(
     state: &DaemonState,
     vm_id: &str,
@@ -1380,14 +1528,27 @@ fn build_written_config(
             read_only: disk.readonly,
         })
         .collect();
+    // The confidential build (build_qemu_confidential_configuration) creates
+    // QemuGPU(pci_host=...) with the default supports_x_vga=True, unlike the
+    // plain path which passes the spec's flag.
+    let confidential_slice = confidential_config_slice(state, spec)?;
     let gpus = spec
         .gpus
         .iter()
         .map(|gpu| WrittenGpu {
             pci_host: gpu.pci_host.clone(),
-            supports_x_vga: gpu.supports_x_vga,
+            supports_x_vga: confidential_slice.is_some() || gpu.supports_x_vga,
         })
         .collect();
+    let (ovmf_path, sev_session_file, sev_dh_cert_file, sev_policy) = match confidential_slice {
+        Some(slice) => (
+            Some(slice.ovmf_path),
+            Some(slice.sev_session_file),
+            Some(slice.sev_dh_cert_file),
+            Some(slice.sev_policy),
+        ),
+        None => (None, None, None, None),
+    };
     Ok(WrittenControllerConfig {
         vm_id: vm_index,
         vm_hash: vm_hash.clone(),
@@ -1435,9 +1596,84 @@ fn build_written_config(
             interface_name,
             host_volumes,
             gpus,
+            ovmf_path,
+            sev_session_file,
+            sev_dh_cert_file,
+            sev_policy,
         },
         hypervisor: "qemu",
     })
+}
+
+/// The confidential SEV slice `build_qemu_confidential_configuration` fills,
+/// or `None` for a plain VM. Requires a resolved firmware_path (InvalidBackend
+/// otherwise: a confidential VM must never boot under a weaker config). The
+/// session/godh paths must match InitializeConfidential's writes under
+/// CONFIDENTIAL_SESSION_DIRECTORY/<vm_hash>.
+struct ConfidentialSlice {
+    ovmf_path: String,
+    sev_session_file: String,
+    sev_dh_cert_file: String,
+    sev_policy: u32,
+}
+
+fn confidential_config_slice(
+    state: &DaemonState,
+    spec: &pb::VmSpec,
+) -> Result<Option<ConfidentialSlice>, RpcError> {
+    let Some(tee) = &spec.tee else {
+        return Ok(None);
+    };
+    if tee.firmware_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "Confidential spec has no resolved firmware_path; refusing to build configuration"
+                .to_string(),
+        ));
+    }
+    let session_dir = state
+        .host
+        .settings
+        .confidential_session_directory
+        .join(&spec.vm_id);
+    Ok(Some(ConfidentialSlice {
+        ovmf_path: tee.firmware_path.clone(),
+        sev_session_file: session_dir
+            .join("vm_session.b64")
+            .to_string_lossy()
+            .into_owned(),
+        sev_dh_cert_file: session_dir
+            .join("vm_godh.b64")
+            .to_string_lossy()
+            .into_owned(),
+        // SEV policy crosses the boundary as a string; int(policy, 0) accepts
+        // hex ("0x1"), octal, binary and decimal forms.
+        sev_policy: parse_sev_policy(&tee.policy)?,
+    }))
+}
+
+/// Python `int(tee.policy, 0)`: base-prefixed or decimal. A malformed policy
+/// raises there (ValueError -> INTERNAL); mapped to INTERNAL here.
+fn parse_sev_policy(policy: &str) -> Result<u32, RpcError> {
+    let trimmed = policy.trim();
+    let parsed = if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        u32::from_str_radix(&hex.replace('_', ""), 16)
+    } else if let Some(octal) = trimmed
+        .strip_prefix("0o")
+        .or_else(|| trimmed.strip_prefix("0O"))
+    {
+        u32::from_str_radix(&octal.replace('_', ""), 8)
+    } else if let Some(binary) = trimmed
+        .strip_prefix("0b")
+        .or_else(|| trimmed.strip_prefix("0B"))
+    {
+        u32::from_str_radix(&binary.replace('_', ""), 2)
+    } else {
+        trimmed.replace('_', "").parse::<u32>()
+    };
+    parsed.map_err(|_| RpcError::Internal(format!("invalid SEV policy {policy:?}")))
 }
 
 /// Re-adopt a live-but-untracked controller (Python
@@ -1640,13 +1876,12 @@ fn create_vm_inner(
             ));
         }
     }
-    if request.tee.is_some() {
-        return Err(RpcError::Unimplemented(
-            "CreateVm for confidential VMs is not implemented yet by the Rust supervisor \
-             daemon (increment 6 ports the confidential mutations)"
-                .to_string(),
-        ));
-    }
+    // Confidential VMs (increment 6) ride the QEMU create path but are NOT
+    // started: the controller unit stays down until InitializeConfidential
+    // uploads the owner's session certificates. build_qemu_confidential_
+    // configuration produces the extra SEV fields; execution.start leaves it
+    // in awaiting_confidential_init.
+    let confidential = request.tee.is_some();
     if !request.persistent {
         // Python boots this path and fails inside AlephQemuInstance.start()
         // (NotImplementedError -> INTERNAL); refuse up front with the same
@@ -1826,24 +2061,34 @@ fn create_vm_inner(
             hostname: &request.hostname,
             has_gpu: !request.gpus.is_empty(),
             dns_nameservers: state.host.dns_nameservers.as_deref(),
+            confidential,
         }
         .create_image()?;
         controller_config::save_controller_config(&state.host.settings.execution_root, &written)?;
 
         with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
         let unit = controller_unit_name(&vm_id);
-        units::enable_and_start(&*state.units, &unit)?;
-        if let Err(error) = wait_for_controller_ready(state, &unit) {
-            // non_blocking_wait_for_boot: a failed boot stops and cleans up
-            // (stop_and_disable + graceful wait), then the create fails.
-            tracing::warn!(unit, error, "controller not running, stopping");
-            if let Err(stop_error) = units::stop_and_disable(&*state.units, &unit) {
-                tracing::warn!(unit, stop_error, "failed to stop the failed controller");
+        if confidential {
+            // execution.start for a confidential VM: setup/configure/
+            // start_guest_api happen, but `persistent and not is_confidential`
+            // is false, so the controller is NOT enabled/started. started_at
+            // is stamped in the else branch; the VM reports
+            // awaiting_confidential_init until InitializeConfidential runs.
+            with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
+        } else {
+            units::enable_and_start(&*state.units, &unit)?;
+            if let Err(error) = wait_for_controller_ready(state, &unit) {
+                // non_blocking_wait_for_boot: a failed boot stops and cleans up
+                // (stop_and_disable + graceful wait), then the create fails.
+                tracing::warn!(unit, error, "controller not running, stopping");
+                if let Err(stop_error) = units::stop_and_disable(&*state.units, &unit) {
+                    tracing::warn!(unit, stop_error, "failed to stop the failed controller");
+                }
+                wait_for_controller_stopped(state, &unit);
+                return Err(format!("controller failed to start: {error}"));
             }
-            wait_for_controller_stopped(state, &unit);
-            return Err(format!("controller failed to start: {error}"));
+            with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
         }
-        with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
 
         // Reuse persisted host ports across restarts; the agent reconciles
         // the rest through AddPortForward.
@@ -2757,6 +3002,95 @@ mod tests {
         let text = serde_json::to_string(&batches).unwrap();
         assert!(text.contains("aleph-vm-nat-4"));
         assert!(text.contains("aleph-vm-filter-4"));
+    }
+
+    fn confidential_spec(vm_id: &str, root: &Path, firmware: &str) -> pb::VmSpec {
+        let mut request = spec(vm_id, root);
+        request.tee = Some(pb::TeeConfig {
+            backend: pb::TeeBackend::Sev as i32,
+            policy: "0x5".to_string(),
+            session_dir: String::new(),
+            firmware_path: firmware.to_string(),
+        });
+        request
+    }
+
+    #[test]
+    fn create_confidential_defines_without_starting_the_unit() {
+        // Increment 6: a confidential VM rides the QEMU create path but the
+        // controller unit is never enabled/started; it reports
+        // awaiting_confidential_init until InitializeConfidential runs.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let firmware = root.join("OVMF_CSV.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = confidential_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, running) = create_vm(state, request).unwrap();
+        assert!(!running, "the unit was never started");
+        assert!(
+            harness.systemd.actions().is_empty(),
+            "no enable/start for a confidential VM, got {:?}",
+            harness.systemd.actions()
+        );
+        // starting_at AND started_at are stamped (execution.start's else
+        // branch); the reported status is awaiting_confidential_init.
+        assert_ne!(entry.times.starting_at_ns, 0);
+        assert_ne!(entry.times.started_at_ns, 0);
+        let info = crate::service::vm_info_message(&entry, false, now_ns());
+        assert!(info.awaiting_confidential_init);
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
+
+        // The written controller config carries the four SEV fields.
+        let written =
+            std::fs::read_to_string(root.join(format!("{vm_id}-controller.json"))).unwrap();
+        let parsed = parse_controller_config(&written).unwrap();
+        let VmConfiguration::Qemu(qemu) = parsed.vm else {
+            panic!("the written config must be QEMU");
+        };
+        let confidential = qemu.confidential().expect("the config is confidential");
+        assert_eq!(confidential.sev_policy, 5);
+        assert_eq!(confidential.ovmf_path, firmware.to_string_lossy());
+        assert!(
+            confidential
+                .sev_session_file
+                .ends_with(&format!("{vm_id}/vm_session.b64"))
+        );
+        assert!(
+            confidential
+                .sev_dh_cert_file
+                .ends_with(&format!("{vm_id}/vm_godh.b64"))
+        );
+    }
+
+    #[test]
+    fn sev_policy_parses_like_python_int_base_zero() {
+        assert_eq!(parse_sev_policy("0x5").unwrap(), 5);
+        assert_eq!(parse_sev_policy("5").unwrap(), 5);
+        assert_eq!(parse_sev_policy("0o17").unwrap(), 0o17);
+        assert_eq!(parse_sev_policy("0b101").unwrap(), 5);
+        assert_eq!(parse_sev_policy("  0x1_0  ").unwrap(), 16);
+        assert!(matches!(
+            parse_sev_policy("nope"),
+            Err(RpcError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn create_confidential_without_firmware_is_invalid_backend() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let request = confidential_spec(&hash('d'), &root, "");
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => assert_eq!(
+                message,
+                "Confidential spec has no resolved firmware_path; refusing to build configuration"
+            ),
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
     }
 
     #[test]
