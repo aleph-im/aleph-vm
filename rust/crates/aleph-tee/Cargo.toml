@@ -1,0 +1,20 @@
+[package]
+name = "aleph-tee"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SEV-SNP attestation library: report generation/parsing, AMD KDS cert-chain verification, QEMU arg generation, and attestation-embedded X.509"
+
+[dependencies]
+sev.workspace = true
+rcgen.workspace = true
+x509-parser.workspace = true
+der.workspace = true
+openssl.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
