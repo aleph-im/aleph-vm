@@ -133,12 +133,21 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
     assert info.cpu_frequency_mhz == 0
     assert info.memory_type == ""
     assert info.memory_clock_mhz == 0
-    assert info.numa_nodes == []
     assert info.gpus == []
     assert info.sev_supported is False
     assert info.sev_es_supported is False
     assert info.sev_snp_supported is False
     assert info.tdx_supported is False
+
+    # NUMA topology reporting is a Rust-only addition (increment C1): the Python
+    # daemon has no NUMA source, so this is verified against the same primary
+    # source the Rust daemon reads, /sys/devices/system/node, rather than the
+    # pre-C1 empty placeholder. A CONFIG_NUMA host (the CI default) has node0.
+    node_dirs = sorted(p for p in Path("/sys/devices/system/node").glob("node[0-9]*") if p.is_dir())
+    assert [n.index for n in info.numa_nodes] == sorted(int(p.name.removeprefix("node")) for p in node_dirs)
+    if node_dirs:
+        assert sum(n.cpu_count for n in info.numa_nodes) == os.cpu_count()
+        assert all(n.memory_mib > 0 for n in info.numa_nodes)
 
 
 @pytest.mark.asyncio
