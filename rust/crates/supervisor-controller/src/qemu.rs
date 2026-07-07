@@ -8,12 +8,14 @@
 //! systemd journal (matching the `vm-{hash}-stdout` / `-stderr` tags), blocks
 //! on the child, and escalates a graceful stop on SIGTERM.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use crate::config::QemuConfig;
+use crate::config::{Gpu, HostVolume, QemuConfig};
+use crate::cpuid::SevHostInfo;
 use crate::journal;
 use crate::qmp;
 
@@ -35,6 +37,51 @@ pub const UNIT_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// systemd SIGKILL deadline this code exists to beat.
 const QMP_CALL_BUDGET: Duration = Duration::from_secs(qmp::COMMAND_DEADLINE.as_secs() + 3);
 
+/// The qga chardev socket path as the Python f-string renders it. Python
+/// interpolates `qga_socket_path` unconditionally, so a `None` renders as the
+/// literal string "None" (the create path always sets it, so this only bites a
+/// hand-written config with the field absent). Shared by both argv builders.
+fn qga_socket_or_none(config: &QemuConfig) -> &str {
+    config.qga_socket_path.as_deref().unwrap_or("None")
+}
+
+/// Port of `QemuVM._get_host_volumes_args`: one `-drive` per host volume,
+/// `format=raw`, readonly toggled by the volume flag. Shared by both builders
+/// (the confidential `start()` reuses the same helper).
+fn host_volume_args(host_volumes: &[HostVolume]) -> Vec<String> {
+    let mut args = Vec::with_capacity(host_volumes.len() * 2);
+    for volume in host_volumes {
+        let read_only = if volume.read_only { "on" } else { "off" };
+        args.push("-drive".into());
+        args.push(format!(
+            "file={},format=raw,readonly={read_only},media=disk,if=virtio",
+            volume.path_on_host
+        ));
+    }
+    args
+}
+
+/// Port of `QemuVM._get_gpu_args`: nothing when no GPUs, otherwise the
+/// `-cpu host,host-phys-bits-limit=0x28` prefix and one vfio-pci `-device` per
+/// GPU (`x-vga=on` when the GPU supports it). Shared by both builders. Note the
+/// confidential base argv already carries an identical `-cpu` line, so the
+/// GPU-mode confidential argv repeats it, exactly as the Python does.
+fn gpu_args(gpus: &[Gpu]) -> Vec<String> {
+    if gpus.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["-cpu".into(), "host,host-phys-bits-limit=0x28".into()];
+    for gpu in gpus {
+        let mut device = format!("vfio-pci,host={},rombar=0", gpu.pci_host);
+        if gpu.supports_x_vga {
+            device.push_str(",x-vga=on");
+        }
+        args.push("-device".into());
+        args.push(device);
+    }
+    args
+}
+
 /// Build the QEMU argv for a non-confidential persistent VM, byte-identical
 /// to `QemuVM.start()`. `argv[0]` is the qemu binary path (the exec target).
 pub fn build_argv(config: &QemuConfig) -> Vec<String> {
@@ -42,11 +89,7 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
     // plain `pc` otherwise.
     let machine_type = if config.gpus.is_empty() { "pc" } else { "q35" };
 
-    // Python interpolates qga_socket_path unconditionally; a None renders as
-    // the literal string "None" in the f-string. Reproduce that quirk (the
-    // create path always sets it, so this only matters for a hand-written
-    // config with the field absent).
-    let qga_socket_path = config.qga_socket_path.as_deref().unwrap_or("None");
+    let qga_socket_path = qga_socket_or_none(config);
 
     let mut args: Vec<String> = vec![
         config.qemu_bin_path.clone(),
@@ -114,14 +157,7 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
         args.push("virtio-balloon-pci,free-page-reporting=on".into());
     }
 
-    for volume in &config.host_volumes {
-        let read_only = if volume.read_only { "on" } else { "off" };
-        args.push("-drive".into());
-        args.push(format!(
-            "file={},format=raw,readonly={read_only},media=disk,if=virtio",
-            volume.path_on_host
-        ));
-    }
+    args.extend(host_volume_args(&config.host_volumes));
 
     // The no-GPU migration pin: a deliberate SECOND -machine (QEMU takes the
     // last) plus a migratable CPU. GPU mode uses its own -cpu below.
@@ -133,27 +169,179 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
     }
 
     // GPU args appended last.
-    if !config.gpus.is_empty() {
-        args.push("-cpu".into());
-        args.push("host,host-phys-bits-limit=0x28".into());
-        for gpu in &config.gpus {
-            let mut device = format!("vfio-pci,host={},rombar=0", gpu.pci_host);
-            if gpu.supports_x_vga {
-                device.push_str(",x-vga=on");
-            }
-            args.push("-device".into());
-            args.push(device);
-        }
+    args.extend(gpu_args(&config.gpus));
+
+    args
+}
+
+/// Build the QEMU argv for a SEV / SEV-ES confidential persistent VM,
+/// byte-identical to `QemuConfidentialVM.start()`
+/// (src/aleph/vm/hypervisors/qemu_confidential/qemuvm.py). SEV-SNP is a
+/// separate path (increment B1).
+///
+/// `sev` carries the host-CPUID-derived `cbitpos` / `reduced-phys-bits`,
+/// injected (not read here) so the builder is testable off-SEV. The four
+/// confidential fields (`ovmf_path`, `sev_dh_cert_file`, `sev_session_file`,
+/// `sev_policy`) must be present; the dispatcher only routes here for a
+/// confidential-shaped config, so their absence is an internal invariant
+/// violation.
+pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
+    let qga_socket_path = qga_socket_or_none(config);
+    let ovmf_path = config
+        .ovmf_path
+        .as_deref()
+        .expect("confidential config carries ovmf_path");
+    let godh = config
+        .sev_dh_cert_file
+        .as_deref()
+        .expect("confidential config carries sev_dh_cert_file");
+    let session = config
+        .sev_session_file
+        .as_deref()
+        .expect("confidential config carries sev_session_file");
+    // Python stores `self.sev_policy = hex(config.sev_policy)`, so the policy is
+    // rendered as a Python `hex()` string: lowercase, "0x"-prefixed, no leading
+    // zeros (hex(1)=="0x1", hex(5)=="0x5", hex(48)=="0x30"). `format!("0x{:x}")`
+    // reproduces it exactly.
+    let policy = config
+        .sev_policy
+        .expect("confidential config carries sev_policy");
+    let sev_policy = format!("0x{policy:x}");
+
+    let mut args: Vec<String> = vec![
+        config.qemu_bin_path.clone(),
+        "-enable-kvm".into(),
+        "-nodefaults".into(),
+        "-m".into(),
+        // .count(): the bare MiB count QEMU expects ("-m 2048"); MiB's
+        // Display would render "2048 MiB".
+        config.mem_size_mb.count().to_string(),
+        "-smp".into(),
+        config.vcpu_count.to_string(),
+        // OVMF pflash FIRST, then the qcow2 rootfs (no file.locking=off here).
+        "-drive".into(),
+        format!("if=pflash,format=raw,unit=0,file={ovmf_path},readonly=on"),
+        "-drive".into(),
+        format!(
+            "file={},media=disk,if=virtio,format=qcow2",
+            config.image_path
+        ),
+        "-display".into(),
+        "none".into(),
+        // The confidential path keeps --no-reboot (the plain path dropped it).
+        "--no-reboot".into(),
+        "-monitor".into(),
+        format!("unix:{},server,nowait", config.monitor_socket_path),
+        // Note the ordering differs from the plain path: -qmp comes BEFORE the
+        // qga chardev / virtio-serial block here.
+        "-qmp".into(),
+        format!("unix:{},server,nowait", config.qmp_socket_path),
+        "-chardev".into(),
+        format!("socket,path={qga_socket_path},server=on,wait=off,id=qga0"),
+        "-device".into(),
+        "virtio-serial".into(),
+        "-device".into(),
+        "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".into(),
+        "-serial".into(),
+        "stdio".into(),
+        "-nographic".into(),
+        "-boot".into(),
+        "order=c,reboot-timeout=1".into(),
+        // Start paused: the CPU is resumed externally after secret injection,
+        // NOT by this controller.
+        "-S".into(),
+        "-object".into(),
+        format!(
+            "sev-guest,id=sev0,policy={sev_policy},cbitpos={},reduced-phys-bits={},\
+             dh-cert-file={godh},session-file={session}",
+            sev.cbitpos, sev.reduced_phys_bits
+        ),
+        "-machine".into(),
+        "q35,confidential-guest-support=sev0".into(),
+        // Always host CPU with host-phys-bits-limit (the plain path only did
+        // this in GPU mode).
+        "-cpu".into(),
+        "host,host-phys-bits-limit=0x28".into(),
+    ];
+
+    // NIC WITHOUT rombar=0 (the plain path adds rombar=0). Python truthiness:
+    // an empty string is skipped.
+    if let Some(interface_name) = &config.interface_name
+        && !interface_name.is_empty()
+    {
+        args.push("-device".into());
+        args.push("virtio-net-pci,netdev=net0".into());
+        args.push("-netdev".into());
+        args.push(format!(
+            "tap,id=net0,ifname={interface_name},script=no,downscript=no"
+        ));
     }
+
+    // cloud-init drive: identical to the plain path.
+    if let Some(cloud_init_drive_path) = &config.cloud_init_drive_path
+        && !cloud_init_drive_path.is_empty()
+    {
+        args.push("-drive".into());
+        args.push(format!(
+            "file={cloud_init_drive_path},media=cdrom,readonly=on,if=virtio"
+        ));
+    }
+
+    // Host volumes then GPU args, reusing the shared helpers. No balloon and no
+    // migration pin on the confidential path.
+    args.extend(host_volume_args(&config.host_volumes));
+    args.extend(gpu_args(&config.gpus));
 
     args
 }
 
 /// Spawn qemu and supervise it: block on the child, and on SIGTERM run the
 /// graceful-stop escalation. The port of `execute_persistent_vm` +
-/// `handle_persistent_vm` for the QEMU path.
+/// `handle_persistent_vm` for the non-confidential QEMU path.
 pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
     let argv = build_argv(config);
+    spawn_and_supervise(vm_hash, config, argv).await
+}
+
+/// Launch an existing SEV / SEV-ES confidential VM, the port of
+/// `QemuConfidentialVM.start()` plus its two pre-launch guards. The VM starts
+/// paused (`-S`); this controller does NOT inject the launch secret or resume
+/// the CPU (that is the supervisor session flow).
+pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
+    // Pre-launch guard (a): must be on an AMD SEV platform. The Python
+    // `secure_encryption_info()` returning None raises
+    // "Not running on an AMD SEV platform?"; our reader returns None off-SEV.
+    let sev =
+        SevHostInfo::read().ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+
+    // Pre-launch guard (b): the guest-owner certificate + session files must
+    // exist (Python raises FileNotFoundError otherwise). The dispatcher only
+    // routes a confidential-shaped config here, so both fields are present.
+    let godh = config
+        .sev_dh_cert_file
+        .as_deref()
+        .expect("confidential config carries sev_dh_cert_file");
+    let session = config
+        .sev_session_file
+        .as_deref()
+        .expect("confidential config carries sev_session_file");
+    if !Path::new(godh).is_file() || !Path::new(session).is_file() {
+        return Err("Missing guest owner certificates, cannot start the VM.".to_string());
+    }
+
+    let argv = build_confidential_argv(config, sev);
+    spawn_and_supervise(vm_hash, config, argv).await
+}
+
+/// The shared spawn + supervise lifecycle for both the plain and confidential
+/// paths: wire stdout/stderr to the systemd journal, block on the child, and
+/// on SIGTERM run the graceful-stop escalation. Only the argv differs between
+/// the two callers.
+async fn spawn_and_supervise(
+    vm_hash: &str,
+    config: &QemuConfig,
+    argv: Vec<String>,
+) -> Result<i32, String> {
     tracing::debug!(?argv, "QEMU args");
 
     // stdout/stderr to the systemd journal, tagged like the Python controller
