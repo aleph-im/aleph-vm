@@ -20,6 +20,7 @@ pub mod controller_config;
 pub mod envfile;
 pub mod error;
 pub mod events;
+pub mod firecracker;
 pub mod host;
 pub mod lifecycle;
 pub mod logs;

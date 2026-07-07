@@ -139,6 +139,11 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus);
     tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
     let allow_networking = host.settings.allow_vm_networking;
+    // The ephemeral Firecracker launcher (increment 4): programs are direct
+    // children of this daemon (design doc decision 8).
+    let launcher: Arc<dyn supervisor_daemon::firecracker::ProgramLauncher> = Arc::new(
+        supervisor_daemon::firecracker::FirecrackerLauncher::from_settings(&host.settings),
+    );
     let state = Arc::new(DaemonState {
         host,
         world: tokio::sync::RwLock::new(world),
@@ -153,6 +158,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         net_lock: std::sync::Mutex::new(()),
         pacing: Pacing::default(),
         events: supervisor_daemon::events::EventHub::default(),
+        programs: launcher,
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

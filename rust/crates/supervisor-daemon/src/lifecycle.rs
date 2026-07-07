@@ -20,13 +20,14 @@ use std::time::Duration;
 use supervisor_proto::pb;
 
 use crate::controller_config::{
-    self, VmConfiguration, WrittenControllerConfig, WrittenControllerSettings, WrittenGpu,
-    WrittenHostVolume, WrittenQemuVmConfiguration, parse_controller_config,
+    self, QemuVmConfig, VmConfiguration, WrittenControllerConfig, WrittenControllerSettings,
+    WrittenGpu, WrittenHostVolume, WrittenQemuVmConfiguration, parse_controller_config,
 };
+use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
 use crate::units::{self, controller_unit_name};
-use crate::world::{self, AttachedGpu, VmEntry, VmTimes, now_ns};
+use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
 use crate::{checks, cloudinit, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
@@ -42,6 +43,10 @@ pub enum RpcError {
     InsufficientResources(String),
     /// InvalidBackendError.
     InvalidBackend(String),
+    /// MicroVMInitError: the guest never signalled ready (INTERNAL,
+    /// trailer code MICROVM_INIT_FAILED; the Python exception text is
+    /// empty).
+    MicroVmInit(String),
     /// NotImplementedSupervisorError (UNIMPLEMENTED, trailer code INTERNAL).
     Unimplemented(String),
     /// InternalSupervisorError, the translating_errors catch-all.
@@ -162,11 +167,21 @@ fn network_interface(state: &DaemonState) -> String {
     state.host.network_interface.clone().unwrap_or_default()
 }
 
+/// Python `_is_running`: systemd for persistent VMs, times for ephemeral
+/// programs (`starting_at and not stopping_at`).
+pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
+    if entry.is_program {
+        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+    } else {
+        unit_active(state, &entry.unit_name())
+    }
+}
+
 /// Python `_status_snapshot`: the wire status of an entry right now, with a
 /// live unit query for the running flag. Every mutation snapshots it before
 /// acting so the emitted event carries the pre-mutation status.
 fn status_snapshot(state: &DaemonState, entry: &VmEntry) -> pb::VmStatus {
-    crate::service::vm_status(&entry.times, unit_active(state, &entry.unit_name()))
+    crate::service::vm_status(&entry.times, entry_running(state, entry))
 }
 
 fn chain_prefix(state: &DaemonState) -> &str {
@@ -184,10 +199,20 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Str
             ipv6.clone(),
         ));
     }
+    let vm_type = if entry.is_program {
+        VmType::Microvm
+    } else {
+        VmType::Instance
+    };
     let mut world = state.world.blocking_write();
     let mut ordinal = world.ipv6_dynamic_ordinal;
-    let (ipv4, ipv6) =
-        world::derive_tap_assignment(&state.host.settings, entry.vm_index, vm_id, &mut ordinal)?;
+    let (ipv4, ipv6) = world::derive_tap_assignment(
+        &state.host.settings,
+        entry.vm_index,
+        vm_id,
+        vm_type,
+        &mut ordinal,
+    )?;
     world.ipv6_dynamic_ordinal = ordinal;
     if let Some(entry) = world.entries.get_mut(vm_id) {
         entry.ipv4 = Some(ipv4.clone());
@@ -368,6 +393,11 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
         &state.host.settings,
         entry.vm_index,
         &entry.vm_hash,
+        if entry.is_program {
+            VmType::Microvm
+        } else {
+            VmType::Instance
+        },
         &mut ordinal,
     )
     .map(|(ipv4, _)| ipv4.address)
@@ -449,6 +479,81 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     // empty once the tap is gone).
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
     tracing::info!(vm_id, "VM stopped");
+    Ok(())
+}
+
+/// Python `VmExecution.stop()` for an ephemeral program: idempotent;
+/// stopping_at, record_usage (non-persistent VMs drop their persisted port
+/// mappings on stop), the port-redirect removal, the MicroVM teardown
+/// (halt attempt, kill, artifact removal) plus the nftables chains and the
+/// tap, then stopped_at. No systemd involvement.
+fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.times.stopped_at_ns != 0 {
+        tracing::debug!(vm_id, "already stopped");
+        return Ok(());
+    }
+    with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
+
+    // record_usage: non-persistent VMs will not restart, so their persisted
+    // port mappings go on stop, whatever keep_port_mappings said (Python
+    // deletes them here AND in delete_vm; both daemons agree).
+    ports::delete_port_mappings(
+        &state.host.settings.supervisor_database,
+        vm_id,
+        &ports::sqlalchemy_utc_now(),
+    )
+    .map_err(RpcError::Internal)?;
+
+    // removed_all_ports_redirection (udp then tcp, the Python
+    // SUPPORTED_PROTOCOL_FOR_REDIRECT order).
+    if !entry.port_forwards.is_empty() {
+        let device = format!("vmtap{}", entry.vm_index);
+        let guest_ip = guest_ipv4(state, &entry);
+        let _net = net_lock(state);
+        for forward in &entry.port_forwards {
+            for (active, protocol) in [(forward.udp, "udp"), (forward.tcp, "tcp")] {
+                if active {
+                    nft_remove_redirect(
+                        state,
+                        &device,
+                        &guest_ip,
+                        forward.host_port,
+                        forward.vm_port,
+                        protocol,
+                    )
+                    .map_err(RpcError::Internal)?;
+                }
+            }
+        }
+        with_entry_mut(state, vm_id, |entry| entry.port_forwards.clear());
+    }
+
+    // vm.teardown(): the MicroVM half first, then the network half
+    // (AlephFirecrackerExecutable.teardown order). The chain removal is
+    // unconditional there (teardown_nftables_for_vm on a VM without chains
+    // emits nothing); the tap only exists when the spec asked for internet.
+    if let Some(program) = &entry.program {
+        program.handle.teardown();
+    }
+    {
+        let _net = net_lock(state);
+        nft_teardown_vm(state, entry.vm_index);
+        if let (Some(ipv4), Some(ipv6)) = (&entry.ipv4, &entry.ipv6) {
+            let tap = TapAssignment::new(entry.vm_index, ipv4.clone(), ipv6.clone());
+            std::thread::sleep(state.pacing.tap_delete_delay);
+            if let Some(ndp) = &state.ndp {
+                ndp.delete_range(&tap.device_name, true)
+                    .map_err(RpcError::Internal)?;
+            }
+            if let Err(error) = state.taps.delete_tap(&tap) {
+                tracing::warn!(vm_id, error, "cannot delete the tap interface, continuing");
+            }
+        }
+    }
+
+    with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
+    tracing::info!(vm_id, "ephemeral program stopped");
     Ok(())
 }
 
@@ -600,6 +705,12 @@ pub fn stop_vm(state: &DaemonState, vm_id: &str) -> Result<VmEntry, RpcError> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.is_program {
+        return Err(RpcError::Unimplemented(
+            "Stopping an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                .to_string(),
+        ));
+    }
     let old_status = status_snapshot(state, &entry);
     stop_vm_execution(state, vm_id)?;
     // Python stop_vm: the event fires on every successful stop, including
@@ -614,6 +725,12 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.is_program {
+        return Err(RpcError::Unimplemented(
+            "Starting an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                .to_string(),
+        ));
+    }
     if unit_active(state, &entry.unit_name()) {
         // Python start_vm: the already-running short circuit emits nothing.
         return Ok((entry, true));
@@ -636,6 +753,30 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.is_program {
+        // Python reboot_vm, non-persistent branch: a real reboot; the
+        // supervisor holds the spec, so it stops the VM and recreates it
+        // from that spec (fresh vm_index, fresh tap) instead of returning
+        // a stopped husk.
+        let spec = entry
+            .spec
+            .clone()
+            .ok_or_else(|| RpcError::Internal("ephemeral VM without a spec".to_string()))?;
+        let old_status = status_snapshot(state, &entry);
+        stop_program_execution(state, vm_id)?;
+        state.world.blocking_write().entries.remove(vm_id);
+        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+        // Release the per-VM lock before the create re-acquires it
+        // (creation_lock first, then vm_lock).
+        drop(_guard);
+        let (entry, running) = create_vm_inner(state, spec)?;
+        state.events.emit(
+            vm_id,
+            pb::VmStatus::Stopped,
+            crate::service::vm_status(&entry.times, running),
+        );
+        return Ok((entry, running));
+    }
     let old_status = status_snapshot(state, &entry);
     let unit = entry.unit_name();
     // RestartUnit only queues a job: wait until the unit is confirmed
@@ -666,6 +807,21 @@ pub fn reinstall_vm(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.is_program {
+        // Python reinstall_vm, non-persistent branch: stop, forget, erase;
+        // the agent re-creates through the create path (it owns the
+        // message), so the stopped state is returned.
+        let old_status = status_snapshot(state, &entry);
+        stop_program_execution(state, vm_id)?;
+        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+        let stopped =
+            entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+        state.world.blocking_write().entries.remove(vm_id);
+        erase_volumes(&stopped, true, wipe_volumes).map_err(RpcError::Internal)?;
+        // Status is STOPPED, so no second event (the Python
+        // `if info.status is not VmStatus.STOPPED` guard).
+        return Ok((stopped, false));
+    }
     let old_status = status_snapshot(state, &entry);
     stop_vm_execution(state, vm_id)?;
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
@@ -696,8 +852,39 @@ fn erase_volumes(
     include_rootfs: bool,
     include_data_volumes: bool,
 ) -> Result<(), String> {
+    // The on-disk sources: the controller config for QEMU VMs, the spec's
+    // disks for ephemeral programs (SpecProgramResources: the ROOTFS disk
+    // plus the EXTRA disks, none of which reach a controller config).
+    let (rootfs_path, volumes): (String, Vec<(String, bool)>) = if entry.is_program {
+        let spec_disks = entry
+            .spec
+            .as_ref()
+            .map(|spec| spec.disks.as_slice())
+            .unwrap_or_default();
+        let rootfs = spec_disks
+            .iter()
+            .find(|disk| disk.role == pb::disk_config::DiskRole::Rootfs as i32)
+            .map(|disk| disk.path.clone())
+            .unwrap_or_default();
+        let extra = spec_disks
+            .iter()
+            .filter(|disk| disk.role == pb::disk_config::DiskRole::Extra as i32)
+            .map(|disk| (disk.path.clone(), disk.readonly))
+            .collect();
+        (rootfs, extra)
+    } else {
+        (
+            entry.config.image_path.clone(),
+            entry
+                .config
+                .host_volumes
+                .iter()
+                .map(|volume| (volume.path_on_host.clone(), volume.read_only))
+                .collect(),
+        )
+    };
     if include_rootfs {
-        let rootfs = std::path::Path::new(&entry.config.image_path);
+        let rootfs = std::path::Path::new(&rootfs_path);
         if rootfs.exists() {
             tracing::info!(path = %rootfs.display(), "deleting rootfs");
             std::fs::remove_file(rootfs).map_err(|error| {
@@ -706,18 +893,15 @@ fn erase_volumes(
         }
     }
     if include_data_volumes {
-        for volume in &entry.config.host_volumes {
-            if volume.read_only {
+        for (path_on_host, read_only) in &volumes {
+            if *read_only {
                 continue;
             }
-            tracing::info!(path = volume.path_on_host, "deleting volume");
-            if let Err(error) = std::fs::remove_file(&volume.path_on_host)
+            tracing::info!(path = path_on_host, "deleting volume");
+            if let Err(error) = std::fs::remove_file(path_on_host)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                return Err(format!(
-                    "cannot delete the volume {}: {error}",
-                    volume.path_on_host
-                ));
+                return Err(format!("cannot delete the volume {path_on_host}: {error}"));
             }
         }
     }
@@ -800,7 +984,11 @@ fn delete_tracked_vm(
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
 
     let old_status = status_snapshot(state, &entry);
-    stop_vm_execution(state, vm_id)?;
+    if entry.is_program {
+        stop_program_execution(state, vm_id)?;
+    } else {
+        stop_vm_execution(state, vm_id)?;
+    }
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     state.world.blocking_write().entries.remove(vm_id);
     // Delete releases the definition: the controller config and the
@@ -833,6 +1021,14 @@ fn update_port_redirects(
     requested: Vec<(u32, bool, bool)>,
 ) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    if entry.is_program && entry.ipv4.is_none() {
+        // Python: update_port_redirects dereferences vm.tap_interface,
+        // which is None for a program created without internet_access; the
+        // AttributeError aborts INTERNAL (text differs, ledger entry 33).
+        return Err(RpcError::Internal(format!(
+            "VM {vm_id} has no tap interface; cannot change port redirects"
+        )));
+    }
     // One global lock from allocation through persistence: without it, two
     // concurrent AddPortForwards for different VMs can both allocate the
     // same host_port (the bind probe is transient), and the loser has a
@@ -1310,6 +1506,8 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         gpus,
         spec: None,
         ordinal: 0, // assigned by insert_entry
+        is_program: false,
+        program: None,
     };
     {
         let mut world = state.world.blocking_write();
@@ -1421,11 +1619,17 @@ fn create_vm_inner(
     match request.backend() {
         pb::Backend::Qemu => {}
         pb::Backend::Firecracker => {
-            return Err(RpcError::Unimplemented(
-                "CreateVm for Firecracker programs is not implemented yet by the Rust \
-                 supervisor daemon (increment 4 ports the ephemeral launcher)"
-                    .to_string(),
-            ));
+            if request.persistent {
+                // Ephemeral programs landed with increment 4; persistent
+                // programs boot under systemd controller units and follow
+                // with the controller port (ledgered).
+                return Err(RpcError::Unimplemented(
+                    "CreateVm for persistent Firecracker programs is not implemented yet \
+                     by the Rust supervisor daemon"
+                        .to_string(),
+                ));
+            }
+            return create_program_vm(state, request);
         }
         pb::Backend::Unspecified => {
             // Python: BACKEND_FROM_PB[0] raises KeyError -> INTERNAL.
@@ -1463,9 +1667,10 @@ fn create_vm_inner(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    // Idempotency on a live, tracked VM.
+    // Idempotency on a live, tracked VM (times-based for a program entry
+    // holding this vm_id: its FIRECRACKER spec then conflicts).
     if let Some(entry) = entry_snapshot(state, &vm_id)
-        && unit_active(state, &entry.unit_name())
+        && entry_running(state, &entry)
         && !entry.is_stopping()
     {
         let entry = same_spec_or_conflict(&entry, &request)?;
@@ -1518,9 +1723,14 @@ fn create_vm_inner(
             .map_err(RpcError::Internal)?;
         let assignment = if state.host.settings.allow_vm_networking {
             let mut ordinal = world.ipv6_dynamic_ordinal;
-            let pair =
-                world::derive_tap_assignment(&state.host.settings, vm_index, &vm_id, &mut ordinal)
-                    .map_err(RpcError::Internal)?;
+            let pair = world::derive_tap_assignment(
+                &state.host.settings,
+                vm_index,
+                &vm_id,
+                VmType::Instance,
+                &mut ordinal,
+            )
+            .map_err(RpcError::Internal)?;
             world.ipv6_dynamic_ordinal = ordinal;
             Some(pair)
         } else {
@@ -1555,6 +1765,8 @@ fn create_vm_inner(
             gpus: validated_gpus,
             spec: Some(request.clone()),
             ordinal: 0, // assigned below
+            is_program: false,
+            program: None,
         };
         match stale_ordinal {
             Some(ordinal) => {
@@ -1669,6 +1881,275 @@ fn create_vm_inner(
     Ok((entry, running))
 }
 
+// ── Ephemeral Firecracker programs (increment 4) ────────────────────────
+
+/// Python `VmPool._create_firecracker_from_spec` + `VmExecution.start` for
+/// a non-persistent program: register, tap when the spec asks for internet
+/// (VmType.microvm addressing), boot through the launcher (config JSON,
+/// spawn, vsock ready handshake) and record the channel facts. No
+/// controller config is written and no persisted port mappings are
+/// preloaded (both Python behaviors).
+fn create_program_vm(
+    state: &DaemonState,
+    request: pb::VmSpec,
+) -> Result<(VmEntry, bool), RpcError> {
+    let Some(guest_channel) = request.guest_channel else {
+        // Checked before the creation lock, like the Python method.
+        return Err(RpcError::InvalidBackend(
+            "Firecracker spec VMs require a guest_channel".to_string(),
+        ));
+    };
+    let vm_id = request.vm_id.clone();
+
+    let _create_guard = state
+        .creation_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let lock = vm_lock(state, &vm_id);
+    let _vm_guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Idempotency on a live, tracked VM. Unlike the QEMU path there is no
+    // readopt probe: ephemeral programs never leave an on-disk config, and
+    // the Python method has none either.
+    if let Some(entry) = entry_snapshot(state, &vm_id)
+        && entry_running(state, &entry)
+        && !entry.is_stopping()
+    {
+        let entry = same_spec_or_conflict(&entry, &request)?;
+        return Ok((entry, true));
+    }
+
+    // The physical-memory backstop, then the prepare() validations in the
+    // Python order (SpecProgramResources.from_spec: kernel, then rootfs).
+    check_memory_backstop(state, request.memory_mib)?;
+    if request.kernel_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "A Firecracker spec requires a kernel_path".to_string(),
+        ));
+    }
+    let rootfs_path = require_rootfs(&request)?.path.clone();
+    let extra_disks: Vec<(String, bool)> = request
+        .disks
+        .iter()
+        .filter(|disk| disk.role == pb::disk_config::DiskRole::Extra as i32)
+        .map(|disk| (disk.path.clone(), disk.readonly))
+        .collect();
+    let internet_access = request
+        .network
+        .as_ref()
+        .is_some_and(|network| network.internet_access);
+
+    // Register the entry (Python registers the execution before prepare),
+    // allocating the vm_index and the microvm tap assignment under one
+    // world lock.
+    let (vm_index, assignment) = {
+        let mut world = state.world.blocking_write();
+        let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
+        let vm_index = world
+            .unique_vm_index(state.host.settings.start_id_index)
+            .map_err(RpcError::Internal)?;
+        let assignment = if state.host.settings.allow_vm_networking && internet_access {
+            let mut ordinal = world.ipv6_dynamic_ordinal;
+            let pair = world::derive_tap_assignment(
+                &state.host.settings,
+                vm_index,
+                &vm_id,
+                VmType::Microvm,
+                &mut ordinal,
+            )
+            .map_err(RpcError::Internal)?;
+            world.ipv6_dynamic_ordinal = ordinal;
+            Some(pair)
+        } else {
+            None
+        };
+        let now = now_ns();
+        let mut entry = VmEntry {
+            vm_hash: vm_id.clone(),
+            vm_index,
+            config: QemuVmConfig::for_program(
+                request.memory_mib,
+                assignment.as_ref().map(|_| format!("vmtap{vm_index}")),
+            ),
+            settings_slice: Default::default(),
+            times: VmTimes {
+                defined_at_ns: now,
+                preparing_at_ns: now,
+                prepared_at_ns: now,
+                ..VmTimes::default()
+            },
+            adopted_running: false,
+            ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
+            ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
+            port_forwards: Vec::new(),
+            gpus: Vec::new(),
+            spec: Some(request.clone()),
+            ordinal: 0, // assigned below
+            is_program: true,
+            program: None,
+        };
+        match stale_ordinal {
+            Some(ordinal) => {
+                entry.ordinal = ordinal;
+                world.entries.insert(vm_id.clone(), entry);
+            }
+            None => world.insert_entry(entry),
+        }
+        (vm_index, assignment)
+    };
+    let tap = assignment.map(|(ipv4, ipv6)| TapAssignment::new(vm_index, ipv4, ipv6));
+
+    // catch_unwind for the same reason as the QEMU create: a panic must
+    // take the cleanup path, not leak the entry/tap.
+    let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<crate::firecracker::BootedProgram, RpcError> {
+            if let Some(tap) = &tap {
+                let _net = net_lock(state);
+                if state.taps.interface_exists(&tap.device_name) {
+                    std::thread::sleep(state.pacing.tap_delete_delay);
+                    if let Some(ndp) = &state.ndp {
+                        ndp.delete_range(&tap.device_name, true)
+                            .map_err(RpcError::Internal)?;
+                    }
+                    state.taps.delete_tap(tap).map_err(RpcError::Internal)?;
+                }
+                state.taps.create_tap(tap).map_err(RpcError::Internal)?;
+                if let Some(ndp) = &state.ndp {
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
+                        .map_err(RpcError::Internal)?;
+                }
+                nft_setup_vm(state, vm_index, &tap.device_name).map_err(RpcError::Internal)?;
+            }
+
+            with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
+            // The ready-wait bound is workload policy carried by the spec;
+            // settings.INIT_TIMEOUT only covers channels that state none
+            // (SpecFirecrackerProgram.__init__).
+            let init_timeout = if guest_channel.ready_timeout_secs != 0 {
+                Duration::from_secs(u64::from(guest_channel.ready_timeout_secs))
+            } else {
+                Duration::from_secs_f64(state.host.settings.init_timeout.max(0.0))
+            };
+            let boot_request = ProgramBootRequest {
+                vm_index,
+                vm_hash: vm_id.clone(),
+                kernel_path: request.kernel_path.clone(),
+                rootfs_path: rootfs_path.clone(),
+                extra_disks: extra_disks.clone(),
+                vcpus: request.vcpus,
+                memory_mib: request.memory_mib,
+                tap_device: tap.as_ref().map(|tap| tap.device_name.clone()),
+                ready_port: guest_channel.ready_port,
+                init_timeout,
+            };
+            state
+                .programs
+                .boot(&boot_request)
+                .map_err(|error| match error {
+                    ProgramBootError::InitTimeout => {
+                        // MicroVMFailedInitError: empty message on the wire.
+                        RpcError::MicroVmInit(String::new())
+                    }
+                    ProgramBootError::Failed(message) => RpcError::Internal(message),
+                })
+        },
+    ))
+    .unwrap_or_else(|panic| {
+        Err(RpcError::Internal(format!(
+            "CreateVm panicked: {}",
+            panic_message(&*panic)
+        )))
+    });
+
+    match boot {
+        Ok(booted) => {
+            with_entry_mut(state, &vm_id, |entry| {
+                entry.times.started_at_ns = now_ns();
+                entry.program = Some(ProgramEntry {
+                    vsock_path: booted.vsock_path.clone(),
+                    ready_payload: booted.ready_payload.clone(),
+                    handle: booted.handle.clone(),
+                });
+            });
+            let entry =
+                entry_snapshot(state, &vm_id).ok_or_else(|| RpcError::NotFound(vm_id.clone()))?;
+            Ok((entry, true))
+        }
+        Err(error) => {
+            // The Python failure path (VmExecution.start's except plus the
+            // pool's): the launcher already tore the fvm down; the chain
+            // teardown is unconditional and the tap goes when it exists.
+            {
+                let _net = net_lock(state);
+                nft_teardown_vm(state, vm_index);
+                if let Some(tap) = &tap {
+                    std::thread::sleep(state.pacing.tap_delete_delay);
+                    if let Some(ndp) = &state.ndp
+                        && let Err(ndp_error) = ndp.delete_range(&tap.device_name, true)
+                    {
+                        tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
+                    }
+                    if let Err(delete_error) = state.taps.delete_tap(tap) {
+                        tracing::warn!(delete_error, "failed to delete the tap during cleanup");
+                    }
+                }
+            }
+            state.world.blocking_write().entries.remove(&vm_id);
+            Err(error)
+        }
+    }
+}
+
+/// Python `LocalSupervisor.run_program_code` + `_run_code_over_channel`:
+/// one request over the program's guest channel, the raw reply back.
+pub fn run_program_code(
+    state: &DaemonState,
+    vm_id: &str,
+    scope_msgpack: &[u8],
+    timeout_secs: f64,
+) -> Result<Vec<u8>, RpcError> {
+    // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
+    // holds it through the whole boot, so acquiring it means the boot
+    // finished (or failed and removed the entry). Released before the
+    // exchange: a long-running program request must not block mutations,
+    // and Python holds no lock here either.
+    let entry = {
+        let lock = vm_lock(state, vm_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?
+    };
+    if !entry.is_program {
+        return Err(RpcError::InvalidBackend(format!(
+            "VM {vm_id} is not a program; code can only be run on programs"
+        )));
+    }
+    let channel = entry
+        .program
+        .as_ref()
+        .map(|program| program.vsock_path.clone())
+        .unwrap_or_default();
+    if channel.is_empty() {
+        return Err(RpcError::Internal(format!(
+            "VM {vm_id} exposes no guest channel; cannot run program code"
+        )));
+    }
+    crate::firecracker::run_code_over_channel(&channel, scope_msgpack, timeout_secs).map_err(
+        |error| match error {
+            // VmInitNotConnectedError("MicroVM may have crashed") -> INTERNAL.
+            crate::firecracker::ChannelError::NotConnected => {
+                RpcError::Internal("MicroVM may have crashed".to_string())
+            }
+            // asyncio.TimeoutError: str() is empty -> INTERNAL "".
+            crate::firecracker::ChannelError::Timeout => RpcError::Internal(String::new()),
+            crate::firecracker::ChannelError::Io(message) => RpcError::Internal(message),
+        },
+    )
+}
+
 // ── RecreateNetwork ─────────────────────────────────────────────────────
 
 /// Python `LocalSupervisor.recreate_network`: flush every aleph chain,
@@ -1728,9 +2209,13 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     let running: Vec<&VmEntry> = entries
         .iter()
         .filter(|entry| {
-            states.get(&entry.unit_name()).copied().unwrap_or(false)
-                && entry.ipv4.is_some()
-                && networking_enabled(state, entry)
+            let running = if entry.is_program {
+                // Ephemeral programs have no unit; liveness is times-based.
+                entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+            } else {
+                states.get(&entry.unit_name()).copied().unwrap_or(false)
+            };
+            running && entry.ipv4.is_some() && networking_enabled(state, entry)
         })
         .collect();
     tracing::info!(
@@ -1786,9 +2271,15 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         (removed_chains, recreated_vms, failed_vms)
     };
 
-    // Step 5: reapply persisted port redirects (instances only; every
-    // adopted VM is one). Failures only log, like Python.
+    // Step 5: reapply persisted port redirects, instances only: the Python
+    // loop gates on `execution.is_instance`, so a running program's
+    // redirects are NOT reapplied after the flush (the shared wart; a
+    // program's chains come back in step 4, its DNAT rules do not).
+    // Failures only log, like Python.
     for entry in &running {
+        if entry.is_program {
+            continue;
+        }
         if !recreated_vms.contains(&entry.vm_hash) {
             continue;
         }
@@ -2064,6 +2555,7 @@ mod tests {
         systemd: Arc<FakeSystemd>,
         taps: Arc<FakeTapBackend>,
         nft: Arc<nft::StaticRuleset>,
+        programs: Arc<crate::firecracker::FakeProgramLauncher>,
         _tmp: tempfile::TempDir,
     }
 
@@ -2104,6 +2596,7 @@ mod tests {
         let systemd = Arc::new(FakeSystemd::new());
         let taps = Arc::new(FakeTapBackend::new());
         let nft_executor = Arc::new(nft::StaticRuleset::new(ruleset));
+        let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
         let mut state = crate::service::DaemonState::hermetic(
             host,
             world::WorldView::default(),
@@ -2112,11 +2605,13 @@ mod tests {
         );
         state.nft = nft_executor.clone();
         state.taps = taps.clone();
+        state.programs = programs.clone();
         Harness {
             state: Arc::new(state),
             systemd,
             taps,
             nft: nft_executor,
+            programs,
             _tmp: tmp,
         }
     }
@@ -3175,6 +3670,399 @@ mod tests {
             "the recreate batch must match the Python capture exactly \
              (protocol order included)"
         );
+    }
+
+    // ── Ephemeral Firecracker programs (increment 4) ─────────────────────
+
+    fn fc_spec(vm_id: &str, root: &Path, internet: bool) -> pb::VmSpec {
+        pb::VmSpec {
+            vm_id: vm_id.to_string(),
+            backend: pb::Backend::Firecracker as i32,
+            kernel_path: root.join("vmlinux.bin").to_string_lossy().into_owned(),
+            initrd_path: String::new(),
+            disks: vec![
+                pb::DiskConfig {
+                    path: root.join("rootfs.squashfs").to_string_lossy().into_owned(),
+                    readonly: true,
+                    format: pb::disk_config::Format::Squashfs as i32,
+                    role: pb::disk_config::DiskRole::Rootfs as i32,
+                },
+                pb::DiskConfig {
+                    path: root.join("data.img").to_string_lossy().into_owned(),
+                    readonly: false,
+                    format: pb::disk_config::Format::Raw as i32,
+                    role: pb::disk_config::DiskRole::Extra as i32,
+                },
+            ],
+            vcpus: 1,
+            memory_mib: 128,
+            tee: None,
+            network: Some(pb::NetworkConfig {
+                internet_access: internet,
+                requested_ipv6: String::new(),
+                ipv6_prefix_len: 0,
+            }),
+            gpus: Vec::new(),
+            numa_node: None,
+            persistent: false,
+            ssh_authorized_keys: Vec::new(),
+            hostname: String::new(),
+            guest_channel: Some(pb::GuestChannel {
+                ready_port: 52,
+                ready_timeout_secs: 7,
+            }),
+        }
+    }
+
+    #[test]
+    fn create_boots_an_ephemeral_program_end_to_end() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let request = fc_spec(&vm_id, &root, true);
+
+        let (entry, running) = create_vm(state, request.clone()).unwrap();
+        assert!(running);
+        assert!(entry.is_program);
+        assert_eq!(entry.vm_index, 4, "the first vm_index is START_ID_INDEX");
+        assert_ne!(entry.times.starting_at_ns, 0);
+        assert_ne!(entry.times.started_at_ns, 0);
+        let program = entry.program.as_ref().expect("the program booted");
+        assert_eq!(program.vsock_path, "/tmp/fake-vsock-4");
+        assert_eq!(
+            program.ready_payload,
+            crate::firecracker::FAKE_READY_PAYLOAD
+        );
+
+        // The microvm addressing: IPv4 from vm_index 4, IPv6 static scheme
+        // with the VmType.microvm prefix hextet 1 (instances use 3).
+        assert_eq!(entry.ipv4.as_ref().unwrap().address, "172.16.4.2");
+        assert!(
+            entry
+                .ipv6
+                .as_ref()
+                .unwrap()
+                .network_cidr
+                .starts_with("fc00:1:2:3:1:aaaa:aaaa:aaa"),
+            "got {:?}",
+            entry.ipv6
+        );
+        assert!(harness.taps.interface_exists("vmtap4"));
+
+        // The launcher got the resolved boot request.
+        let boots = harness.programs.boots();
+        assert_eq!(boots.len(), 1);
+        assert_eq!(boots[0].vm_index, 4);
+        assert_eq!(boots[0].vm_hash, vm_id);
+        assert!(boots[0].kernel_path.ends_with("vmlinux.bin"));
+        assert!(boots[0].rootfs_path.ends_with("rootfs.squashfs"));
+        assert_eq!(boots[0].extra_disks.len(), 1);
+        assert!(!boots[0].extra_disks[0].1, "the data disk is writable");
+        assert_eq!(boots[0].tap_device.as_deref(), Some("vmtap4"));
+        assert_eq!(boots[0].ready_port, 52);
+        assert_eq!(boots[0].init_timeout, Duration::from_secs(7));
+
+        // No controller config, no cloud-init seed: ephemeral programs
+        // leave nothing on disk (they cannot be adopted across restarts).
+        assert!(!root.join(format!("{vm_id}-controller.json")).exists());
+        assert!(!root.join(format!("cloud-init-{vm_id}.img")).exists());
+
+        // Idempotency: the identical spec returns the live VM, no reboot.
+        let (again, running) = create_vm(state, request.clone()).unwrap();
+        assert!(running);
+        assert_eq!(again.times.started_at_ns, entry.times.started_at_ns);
+        assert_eq!(harness.programs.boots().len(), 1, "no second boot");
+
+        // A different spec conflicts.
+        let mut different = request;
+        different.memory_mib = 512;
+        match create_vm(state, different) {
+            Err(RpcError::AlreadyExists(message)) => {
+                assert_eq!(
+                    message,
+                    format!("VM {vm_id} already exists with a different spec")
+                );
+            }
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ephemeral_create_without_internet_gets_no_tap() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let (entry, running) = create_vm(state, fc_spec(&hash('b'), &root, false)).unwrap();
+        assert!(running);
+        assert_eq!(entry.ipv4, None);
+        assert_eq!(entry.ipv6, None);
+        assert!(harness.taps.devices().is_empty());
+        let boots = harness.programs.boots();
+        assert_eq!(boots[0].tap_device, None);
+
+        // Port-forward mutations on a tap-less program fail INTERNAL (the
+        // Python AttributeError on vm.tap_interface).
+        match add_port_forward(
+            state,
+            &pb::AddPortForwardRequest {
+                vm_id: hash('b'),
+                host_port: 0,
+                vm_port: 8080,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+        ) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("no tap interface"), "{message}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ephemeral_create_rejections_match_the_python_prepare_order() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+
+        // No guest channel: InvalidBackendError, before any lock or check.
+        let mut request = fc_spec(&hash('c'), &root, false);
+        request.guest_channel = None;
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(message, "Firecracker spec VMs require a guest_channel");
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        // The memory backstop fires before the kernel validation.
+        let mut request = fc_spec(&hash('c'), &root, false);
+        request.kernel_path = String::new();
+        request.memory_mib = u64::MAX / 2;
+        match create_vm(state, request) {
+            Err(RpcError::InsufficientResources(_)) => {}
+            other => panic!("expected InsufficientResources, got {other:?}"),
+        }
+
+        // Kernel validation (SpecProgramResources.from_spec).
+        let mut request = fc_spec(&hash('c'), &root, false);
+        request.kernel_path = String::new();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(message, "A Firecracker spec requires a kernel_path");
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        // Rootfs validation (require_rootfs), after the kernel check.
+        let mut request = fc_spec(&hash('c'), &root, false);
+        request.disks.clear();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(message, "CreateVmSpec has no ROOTFS disk");
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        // Persistent programs: UNIMPLEMENTED (controller port territory).
+        let mut request = fc_spec(&hash('c'), &root, false);
+        request.persistent = true;
+        match create_vm(state, request) {
+            Err(RpcError::Unimplemented(_)) => {}
+            other => panic!("expected Unimplemented, got {other:?}"),
+        }
+
+        // Nothing was left behind.
+        assert!(state.world.blocking_read().is_empty());
+        assert!(harness.programs.boots().is_empty());
+    }
+
+    #[test]
+    fn a_failed_program_boot_cleans_up_and_maps_the_init_error() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        harness
+            .programs
+            .fail_next(crate::firecracker::ProgramBootError::InitTimeout);
+        match create_vm(state, fc_spec(&hash('d'), &root, true)) {
+            // MicroVMFailedInitError: an EMPTY message on the wire.
+            Err(RpcError::MicroVmInit(message)) => assert_eq!(message, ""),
+            other => panic!("expected MicroVmInit, got {other:?}"),
+        }
+        assert!(state.world.blocking_read().is_empty(), "the entry leaked");
+        assert!(
+            !harness.taps.interface_exists("vmtap4"),
+            "the tap was cleaned up"
+        );
+    }
+
+    #[test]
+    fn ephemeral_stop_and_start_answer_unimplemented_and_leave_the_vm_alone() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(state, fc_spec(&vm_id, &root, false)).unwrap();
+
+        match stop_vm(state, &vm_id) {
+            Err(RpcError::Unimplemented(message)) => {
+                assert_eq!(
+                    message,
+                    "Stopping an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                );
+            }
+            other => panic!("expected Unimplemented, got {other:?}"),
+        }
+        match start_vm(state, &vm_id) {
+            Err(RpcError::Unimplemented(message)) => {
+                assert_eq!(
+                    message,
+                    "Starting an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
+                );
+            }
+            other => panic!("expected Unimplemented, got {other:?}"),
+        }
+        // The failed calls did not break the VM.
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        assert!(entry_running(state, &entry));
+        assert!(harness.programs.teardowns().is_empty());
+    }
+
+    #[test]
+    fn ephemeral_delete_tears_down_the_process_ports_tap_and_entry() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        let mut events = state.events.subscribe();
+        create_vm(state, fc_spec(&vm_id, &root, true)).unwrap();
+        let info = add_port_forward(
+            state,
+            &pb::AddPortForwardRequest {
+                vm_id: vm_id.clone(),
+                host_port: 0,
+                vm_port: 8080,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+        )
+        .unwrap();
+        assert!(info.host_port >= ports::MIN_DYNAMIC_PORT);
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(state.world.blocking_read().is_empty());
+        assert_eq!(harness.programs.teardowns(), vec![vm_id.clone()]);
+        assert!(!harness.taps.interface_exists("vmtap4"));
+        // Non-persistent VMs drop their persisted mappings on stop
+        // (record_usage), keep_port_mappings notwithstanding.
+        assert!(
+            ports::load_port_forwards(&state.host.settings.supervisor_database, &vm_id)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Double delete: NOT_FOUND with the vm_id as message.
+        match delete_vm(state, &vm_id, false, false) {
+            Err(RpcError::NotFound(id)) => assert_eq!(id, vm_id),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        // Events: create then the delete's down transition.
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push((event.old_status, event.new_status));
+        }
+        use pb::VmStatus::{Defined, Running, Stopped};
+        let pair = |old: pb::VmStatus, new: pb::VmStatus| (old as i32, new as i32);
+        assert_eq!(seen, vec![pair(Defined, Running), pair(Running, Stopped)]);
+    }
+
+    #[test]
+    fn ephemeral_reboot_recreates_from_the_held_spec() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('0');
+        create_vm(state, fc_spec(&vm_id, &root, true)).unwrap();
+        let mut events = state.events.subscribe();
+
+        let (entry, running) = reboot_vm(state, &vm_id).unwrap();
+        assert!(running);
+        assert!(entry.is_program);
+        assert_ne!(entry.times.started_at_ns, 0);
+        assert_eq!(
+            harness.programs.boots().len(),
+            2,
+            "the reboot is a real recreation from the held spec"
+        );
+        assert_eq!(harness.programs.teardowns(), vec![vm_id.clone()]);
+
+        // The down-then-up pair, without a create event (the Python reboot
+        // calls the pool directly, not the emitting create_vm).
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push((event.old_status, event.new_status));
+        }
+        use pb::VmStatus::{Running, Stopped};
+        let pair = |old: pb::VmStatus, new: pb::VmStatus| (old as i32, new as i32);
+        assert_eq!(seen, vec![pair(Running, Stopped), pair(Stopped, Running)]);
+    }
+
+    #[test]
+    fn ephemeral_reinstall_erases_and_returns_the_stopped_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('1');
+        std::fs::write(root.join("rootfs.squashfs"), b"squash").unwrap();
+        std::fs::write(root.join("data.img"), b"data").unwrap();
+        create_vm(state, fc_spec(&vm_id, &root, false)).unwrap();
+
+        let (entry, running) = reinstall_vm(state, &vm_id, true).unwrap();
+        assert!(!running);
+        assert_ne!(entry.times.stopped_at_ns, 0);
+        assert!(!root.join("rootfs.squashfs").exists());
+        assert!(!root.join("data.img").exists());
+        // The agent re-creates through the create path; the VM is gone.
+        assert!(state.world.blocking_read().is_empty());
+        assert_eq!(harness.programs.teardowns(), vec![vm_id]);
+    }
+
+    #[test]
+    fn run_program_code_gates_match_the_python_messages() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+
+        // Unknown VM: NOT_FOUND.
+        match run_program_code(state, &hash('9'), b"\x80", 5.0) {
+            Err(RpcError::NotFound(id)) => assert_eq!(id, hash('9')),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        // A QEMU VM is not a program.
+        let vm_id = hash('2');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        match run_program_code(state, &vm_id, b"\x80", 5.0) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(
+                    message,
+                    format!("VM {vm_id} is not a program; code can only be run on programs")
+                );
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        // A program whose channel is unreachable (the fake path does not
+        // exist): the VmInitNotConnectedError message.
+        let program_id = hash('3');
+        create_vm(state, fc_spec(&program_id, &root, false)).unwrap();
+        match run_program_code(state, &program_id, b"\x80", 5.0) {
+            Err(RpcError::Internal(message)) => {
+                assert_eq!(message, "MicroVM may have crashed");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 
     // ── WatchEvents emissions ────────────────────────────────────────────

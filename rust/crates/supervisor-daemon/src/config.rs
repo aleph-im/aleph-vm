@@ -72,6 +72,16 @@ pub struct Settings {
     pub host_memory_reserved_mib: u64,
     /// conf.py ENABLE_QEMU_SUPPORT, default true (check() preconditions).
     pub enable_qemu_support: bool,
+    /// conf.py USE_JAILER, default true: run ephemeral Firecracker programs
+    /// under the jailer (production).
+    pub use_jailer: bool,
+    /// conf.py INIT_TIMEOUT, default 20.0: how long the ephemeral boot waits
+    /// for the guest's ready signal when the spec states no bound.
+    pub init_timeout: f64,
+    /// conf.py PRINT_SYSTEM_LOGS, default true: wire the Firecracker process
+    /// output to journald (vm-{hash}-stdout/-stderr) and enable the guest
+    /// console.
+    pub print_system_logs: bool,
     /// conf.py FIRECRACKER_PATH, default /opt/firecracker/firecracker.
     pub firecracker_path: PathBuf,
     /// conf.py JAILER_PATH, default /opt/firecracker/jailer.
@@ -199,6 +209,9 @@ impl Settings {
             .map(|value| u64::try_from(value).unwrap_or(0))
             .unwrap_or(2048);
         let enable_qemu_support = env.get_bool("ENABLE_QEMU_SUPPORT")?.unwrap_or(true);
+        let use_jailer = env.get_bool("USE_JAILER")?.unwrap_or(true);
+        let init_timeout = env.get_f64("INIT_TIMEOUT")?.unwrap_or(20.0);
+        let print_system_logs = env.get_bool("PRINT_SYSTEM_LOGS")?.unwrap_or(true);
         let firecracker_path = env
             .get("FIRECRACKER_PATH")
             .map(PathBuf::from)
@@ -277,6 +290,9 @@ impl Settings {
             start_id_index,
             host_memory_reserved_mib,
             enable_qemu_support,
+            use_jailer,
+            init_timeout,
+            print_system_logs,
             firecracker_path,
             jailer_path,
             linux_path,
@@ -349,6 +365,23 @@ impl EnvSlice {
                         key: format!("{ENV_PREFIX}{name}"),
                         value,
                         expected: "an integer",
+                    })
+            })
+            .transpose()
+    }
+
+    /// Float parsing; an unparseable value is a startup error, as it is
+    /// for pydantic's float fields.
+    fn get_f64(&self, name: &str) -> Result<Option<f64>, DaemonError> {
+        self.get(name)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| DaemonError::InvalidSetting {
+                        key: format!("{ENV_PREFIX}{name}"),
+                        value,
+                        expected: "a number",
                     })
             })
             .transpose()

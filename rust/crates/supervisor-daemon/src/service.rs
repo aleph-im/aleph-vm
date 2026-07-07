@@ -148,6 +148,9 @@ pub struct DaemonState {
     /// Lifecycle event fan-out behind WatchEvents (the Python
     /// `_event_queues` set).
     pub events: crate::events::EventHub,
+    /// The ephemeral Firecracker launcher (increment 4): programs are
+    /// direct children of the daemon, spawned and reaped through this seam.
+    pub programs: Arc<dyn crate::firecracker::ProgramLauncher>,
 }
 
 impl DaemonState {
@@ -173,6 +176,7 @@ impl DaemonState {
             net_lock: std::sync::Mutex::new(()),
             pacing: crate::lifecycle::Pacing::instant(),
             events: crate::events::EventHub::default(),
+            programs: Arc::new(crate::firecracker::FakeProgramLauncher::new()),
         }
     }
 }
@@ -349,13 +353,20 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
             })
             .unwrap_or_default()
     };
+    // `_backend_of`: the VMM only (FIRECRACKER for programs, QEMU
+    // otherwise); confidential computing rides confidential_mode.
+    let backend = if entry.is_program {
+        pb::Backend::Firecracker
+    } else {
+        pb::Backend::Qemu
+    };
     pb::VmInfo {
         vm_id: entry.vm_hash.clone(),
         status: vm_status(times, running) as i32,
         ipv4: Some(ip(&entry.ipv4)),
         ipv6: Some(ip(&entry.ipv6)),
         uptime_secs,
-        backend: pb::Backend::Qemu as i32,
+        backend: backend as i32,
         numa_node: None,
         status_message: String::new(),
         defined_at_ns: times.defined_at_ns,
@@ -380,8 +391,18 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
                 supports_x_vga: gpu.supports_x_vga,
             })
             .collect(),
-        guest_channel_path: String::new(),
-        guest_ready_payload: Vec::new(),
+        // `_guest_channel_path` / `_guest_ready_payload`: the MicroVM
+        // facts for programs, empty otherwise.
+        guest_channel_path: entry
+            .program
+            .as_ref()
+            .map(|program| program.vsock_path.clone())
+            .unwrap_or_default(),
+        guest_ready_payload: entry
+            .program
+            .as_ref()
+            .map(|program| program.ready_payload.clone())
+            .unwrap_or_default(),
         awaiting_confidential_init,
     }
 }
@@ -598,6 +619,11 @@ fn rpc_error_status(error: crate::lifecycle::RpcError) -> Status {
             pb::ErrorCode::InvalidBackend,
             message,
         ),
+        RpcError::MicroVmInit(message) => {
+            // MicroVMInitError: INTERNAL with the MICROVM_INIT_FAILED
+            // trailer (grpc_server.py STATUS_CODE_BY_ERROR).
+            status_with_error_detail(Code::Internal, pb::ErrorCode::MicrovmInitFailed, message)
+        }
         RpcError::Unimplemented(message) => {
             // NotImplementedSupervisorError: UNIMPLEMENTED, trailer INTERNAL.
             status_with_error_detail(Code::Unimplemented, pb::ErrorCode::Internal, message)
@@ -666,7 +692,13 @@ impl Supervisor for SupervisorService {
                 None => return Err(vm_not_found_status(&vm_id)),
             }
         };
-        let running = self.unit_running(entry.unit_name()).await?;
+        // Python _is_running: systemd for persistent VMs, times for
+        // ephemeral programs.
+        let running = if entry.is_program {
+            entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+        } else {
+            self.unit_running(entry.unit_name()).await?
+        };
         Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 
@@ -693,13 +725,23 @@ impl Supervisor for SupervisorService {
             let world = self.state.world.read().await;
             world.ordered_entries().into_iter().cloned().collect()
         };
-        let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
+        // One batched query covers the persistent VMs (`_running_states`);
+        // ephemeral programs are times-based, no unit to ask about.
+        let unit_names: Vec<String> = entries
+            .iter()
+            .filter(|entry| !entry.is_program)
+            .map(|entry| entry.unit_name())
+            .collect();
         let states = self.units_running(unit_names).await?;
         let now = now_ns();
         let vms = entries
             .iter()
             .map(|entry| {
-                let running = states.get(&entry.unit_name()).copied().unwrap_or(false);
+                let running = if entry.is_program {
+                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+                } else {
+                    states.get(&entry.unit_name()).copied().unwrap_or(false)
+                };
                 vm_info_message(entry, running, now)
             })
             .collect();
@@ -775,9 +817,20 @@ impl Supervisor for SupervisorService {
 
     async fn run_program_code(
         &self,
-        _request: Request<pb::RunProgramCodeRequest>,
+        request: Request<pb::RunProgramCodeRequest>,
     ) -> Result<Response<pb::RunProgramCodeResponse>, Status> {
-        Err(unimplemented_status("RunProgramCode"))
+        let state = self.state.clone();
+        let request = request.into_inner();
+        let reply = run_lifecycle(move || {
+            crate::lifecycle::run_program_code(
+                &state,
+                &request.vm_id,
+                &request.scope_msgpack,
+                request.timeout_secs,
+            )
+        })
+        .await?;
+        Ok(Response::new(pb::RunProgramCodeResponse { reply }))
     }
 
     async fn restore_from_image(
@@ -1125,6 +1178,8 @@ mod tests {
             gpus: Vec::new(),
             spec: None,
             ordinal: 0,
+            is_program: false,
+            program: None,
         }
     }
 
