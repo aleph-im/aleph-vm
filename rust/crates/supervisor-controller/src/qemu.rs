@@ -93,6 +93,15 @@ fn gpu_args(gpus: &[Gpu]) -> Vec<String> {
 /// Shared by the plain, SEV/SEV-ES and SNP memory backends so the numa/hugepage
 /// fragment is emitted identically wherever a memory backend appears.
 fn memory_backend_suffix(numa_node: Option<u32>, hugepage_size: Option<&str>) -> String {
+    // Invariant: the daemon only ever selects a hugepage size for a VM it also
+    // placed on a NUMA node (`place_vm_numa` sets `numa_node` and
+    // `hugepage_size` together). Make it explicit so no future caller can emit a
+    // bare `hugetlb=on` fragment without the matching `host-nodes` binding on
+    // the SNP `ram1` object. Debug-only, so release behaviour is unchanged.
+    debug_assert!(
+        hugepage_size.is_none() || numa_node.is_some(),
+        "hugepage_size set without numa_node: refusing to emit hugetlb without host-nodes"
+    );
     let mut suffix = String::new();
     if let Some(size) = hugepage_size {
         suffix.push_str(&format!(",hugetlb=on,hugetlbsize={size}"));
