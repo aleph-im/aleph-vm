@@ -213,6 +213,38 @@ impl VmEntry {
         controller_unit_name(&self.vm_hash)
     }
 
+    /// A minimal QEMU entry for tests that only read a few config fields
+    /// (backups read image_path / host_volumes / qga_socket_path).
+    #[cfg(test)]
+    pub fn test_qemu(vm_hash: &str, image_path: &str) -> Self {
+        let mut config = QemuVmConfig::for_program(256, None);
+        config.image_path = image_path.to_string();
+        Self {
+            vm_hash: vm_hash.to_string(),
+            vm_index: 4,
+            config,
+            settings_slice: controller_config::ControllerSettingsSlice::default(),
+            times: VmTimes::default(),
+            adopted_running: false,
+            ipv4: None,
+            ipv6: None,
+            port_forwards: Vec::new(),
+            gpus: Vec::new(),
+            spec: None,
+            ordinal: 0,
+            is_program: false,
+            program: None,
+        }
+    }
+
+    /// A minimal ephemeral-program entry for tests.
+    #[cfg(test)]
+    pub fn test_program(vm_hash: &str) -> Self {
+        let mut entry = Self::test_qemu(vm_hash, "");
+        entry.is_program = true;
+        entry
+    }
+
     /// Python `is_stopping`: stopping_at set, stopped_at not yet.
     pub fn is_stopping(&self) -> bool {
         self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0

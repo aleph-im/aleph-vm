@@ -123,9 +123,11 @@ requires_qemu = pytest.mark.skipif(
 requires_root = pytest.mark.skipif(not IS_ROOT, reason="needs root (TAP networking / nftables)")
 
 # Tests of RPC surfaces the Rust daemon does not serve yet (see the design
-# doc's increment table). Increment 4 un-skipped the Firecracker surface,
-# WatchEvents and StreamLogs; only the backup surface remains.
-_RUST_UNPORTED_FILES = {"test_backup_restore.py"}  # increment 5
+# doc's increment table). Increments 5 and 6 completed the port: the backup
+# surface and the confidential mutations are served, so nothing remains
+# unported. The backup/restore cycle runs on the rust leg (KVM-gated), the
+# confidential launch path is Tier-2 (SEV hardware).
+_RUST_UNPORTED_FILES: set[str] = set()
 _RUST_UNPORTED_TESTS: set[str] = set()
 
 
@@ -151,6 +153,11 @@ def pytest_collection_modifyitems(config, items):
             problems.append(f"the Firecracker guest kernel {FC_KERNEL} is missing")
         if not FC_RUNTIME.exists():
             problems.append(f"the Firecracker runtime squashfs {FC_RUNTIME} is missing")
+        # The QEMU cloud image backs the persistent-VM and backup/restore
+        # tests (KVM-gated on both matrix legs since increments 5-6); a leg
+        # without it would silently skip that whole surface (T7).
+        if QEMU_IMAGE is None or not QEMU_IMAGE.exists():
+            problems.append("the QEMU cloud image (AVM_ITEST_QEMU_IMAGE) is missing")
         if problems:
             msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
             raise RuntimeError(msg)

@@ -377,6 +377,17 @@ pub struct WrittenQemuVmConfiguration {
     pub interface_name: Option<String>,
     pub host_volumes: Vec<WrittenHostVolume>,
     pub gpus: Vec<WrittenGpu>,
+    // The QemuConfidentialVMConfiguration slice (increment 6). Declared after
+    // gpus, matching the pydantic model field order; all four are present for
+    // a confidential VM and absent (exclude_none) for a plain one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ovmf_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sev_session_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sev_dh_cert_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sev_policy: Option<u32>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -693,6 +704,10 @@ mod tests {
                     pci_host: "0000:01:00.0".to_string(),
                     supports_x_vga: true,
                 }],
+                ovmf_path: None,
+                sev_session_file: None,
+                sev_dh_cert_file: None,
+                sev_policy: None,
             },
             hypervisor: "qemu",
         };
@@ -737,6 +752,10 @@ mod tests {
                 interface_name: None,
                 host_volumes: Vec::new(),
                 gpus: Vec::new(),
+                ovmf_path: None,
+                sev_session_file: None,
+                sev_dh_cert_file: None,
+                sev_policy: None,
             },
             hypervisor: "qemu",
         };
