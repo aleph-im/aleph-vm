@@ -89,65 +89,88 @@ impl NumaTopology {
         });
 
         for entry in entries {
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| "non-UTF-8 node directory name".to_string())?;
-            let id: u32 = name
-                .strip_prefix("node")
-                .ok_or_else(|| format!("unexpected directory name {name}"))?
-                .parse()
-                .map_err(|error| format!("failed to parse node ID from {name}: {error}"))?;
-
-            let node_path = entry.path();
-
-            let cpulist_raw = std::fs::read_to_string(node_path.join("cpulist"))
-                .map_err(|error| format!("failed to read cpulist for {name}: {error}"))?;
-            let cpus = parse_cpulist(cpulist_raw.trim())?;
-
-            // 2 MiB hugepages: absent counts as zero (a node may expose no
-            // hugepage sysfs at all on a host that never reserved any).
-            let hp_2m_path = node_path.join("hugepages/hugepages-2048kB/nr_hugepages");
-            let total_2m_hugepages: u32 = std::fs::read_to_string(&hp_2m_path)
-                .unwrap_or_else(|_| "0".to_string())
-                .trim()
-                .parse()
-                .unwrap_or(0);
-
-            // 1 GiB hugepages (may not exist if not configured at boot).
-            let hp_1g_path = node_path.join("hugepages/hugepages-1048576kB/nr_hugepages");
-            let total_1g_hugepages: u32 = std::fs::read_to_string(&hp_1g_path)
-                .unwrap_or_else(|_| "0".to_string())
-                .trim()
-                .parse()
-                .unwrap_or(0);
-
-            // Per-node MemTotal from meminfo.
-            let meminfo_path = node_path.join("meminfo");
-            let meminfo = std::fs::read_to_string(&meminfo_path)
-                .map_err(|error| format!("failed to read meminfo for {name}: {error}"))?;
-            let total_ram_mb = (parse_memtotal_kb(&meminfo)
-                .map_err(|error| format!("failed to parse MemTotal for {name}: {error}"))?
-                / 1024) as u32;
-
-            tracing::info!(
-                node = id,
-                ?cpus,
-                total_2m_hugepages,
-                total_1g_hugepages,
-                total_ram_mb,
-                "detected NUMA node"
-            );
-            nodes.push(NumaNode {
-                id,
-                cpus,
-                total_2m_hugepages,
-                total_1g_hugepages,
-                total_ram_mb,
-            });
+            // A single node with a missing/unreadable/malformed cpulist or
+            // meminfo (or a bad directory name) is SKIPPED with a warning, not
+            // fatal to the whole topology: a partially-populated sysfs still
+            // yields the good nodes rather than degrading the feature host-wide
+            // to empty. The hugepage reads already degrade to zero on failure.
+            match Self::parse_node(&entry) {
+                Ok(node) => {
+                    tracing::info!(
+                        node = node.id,
+                        cpus = ?node.cpus,
+                        total_2m_hugepages = node.total_2m_hugepages,
+                        total_1g_hugepages = node.total_1g_hugepages,
+                        total_ram_mb = node.total_ram_mb,
+                        "detected NUMA node"
+                    );
+                    nodes.push(node);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        directory = %entry.path().display(),
+                        error,
+                        "skipping a NUMA node with unreadable or malformed sysfs"
+                    );
+                }
+            }
         }
 
         Ok(Self { nodes })
+    }
+
+    /// Parse one `node*` directory into a [`NumaNode`]. Returns `Err` (for the
+    /// caller to skip that node) when the directory name, cpulist, or meminfo
+    /// is missing/unreadable/malformed; the hugepage counts degrade to zero.
+    fn parse_node(entry: &std::fs::DirEntry) -> Result<NumaNode, String> {
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| "non-UTF-8 node directory name".to_string())?;
+        let id: u32 = name
+            .strip_prefix("node")
+            .ok_or_else(|| format!("unexpected directory name {name}"))?
+            .parse()
+            .map_err(|error| format!("failed to parse node ID from {name}: {error}"))?;
+
+        let node_path = entry.path();
+
+        let cpulist_raw = std::fs::read_to_string(node_path.join("cpulist"))
+            .map_err(|error| format!("failed to read cpulist for {name}: {error}"))?;
+        let cpus = parse_cpulist(cpulist_raw.trim())?;
+
+        // 2 MiB hugepages: absent counts as zero (a node may expose no
+        // hugepage sysfs at all on a host that never reserved any).
+        let hp_2m_path = node_path.join("hugepages/hugepages-2048kB/nr_hugepages");
+        let total_2m_hugepages: u32 = std::fs::read_to_string(&hp_2m_path)
+            .unwrap_or_else(|_| "0".to_string())
+            .trim()
+            .parse()
+            .unwrap_or(0);
+
+        // 1 GiB hugepages (may not exist if not configured at boot).
+        let hp_1g_path = node_path.join("hugepages/hugepages-1048576kB/nr_hugepages");
+        let total_1g_hugepages: u32 = std::fs::read_to_string(&hp_1g_path)
+            .unwrap_or_else(|_| "0".to_string())
+            .trim()
+            .parse()
+            .unwrap_or(0);
+
+        // Per-node MemTotal from meminfo.
+        let meminfo_path = node_path.join("meminfo");
+        let meminfo = std::fs::read_to_string(&meminfo_path)
+            .map_err(|error| format!("failed to read meminfo for {name}: {error}"))?;
+        let total_ram_mb = (parse_memtotal_kb(&meminfo)
+            .map_err(|error| format!("failed to parse MemTotal for {name}: {error}"))?
+            / 1024) as u32;
+
+        Ok(NumaNode {
+            id,
+            cpus,
+            total_2m_hugepages,
+            total_1g_hugepages,
+            total_ram_mb,
+        })
     }
 
     /// Number of NUMA nodes.
@@ -158,6 +181,18 @@ impl NumaTopology {
     /// True when no node was detected: NUMA placement is inert.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// True when placement and pinning are active: the host has MORE than one
+    /// NUMA node. Every `CONFIG_NUMA` kernel (the distro default) exposes a
+    /// `node0` even on a single-socket box, so a one-node host must be treated
+    /// exactly like a non-NUMA host: pinning to the only node is `AllowedCPUs`
+    /// = all host CPUs, a no-op, so no drop-in is written, no daemon-reload is
+    /// issued, no reservation is made, and `VmInfo.numa_node` stays None. The
+    /// topology is STILL reported in `HostInfo.numa_nodes` for a single node
+    /// (that is pure reporting). See divergence 73.
+    pub fn is_placement_active(&self) -> bool {
+        self.nodes.len() > 1
     }
 
     /// The node with the given ID, if present.
@@ -352,6 +387,13 @@ pub fn format_cpuset(cpus: &BTreeSet<u32>) -> String {
     result
 }
 
+/// The widest single cpulist range we will materialize. A kernel quirk or a
+/// corrupt sysfs value ("0-4294967295") would otherwise expand to billions of
+/// entries and OOM at boot; no real host has anywhere near this many CPUs per
+/// node, so a wider range is rejected (which, via `from_sysfs`, skips the
+/// node) rather than allocated.
+const MAX_CPULIST_RANGE: u32 = 4096;
+
 /// Parse a Linux cpulist string (e.g. "0-3,8-11") into a sorted set of CPU
 /// IDs.
 pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>, String> {
@@ -370,6 +412,16 @@ pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>, String> {
                 .trim()
                 .parse()
                 .map_err(|_| "invalid cpu range end".to_string())?;
+            if hi < lo {
+                return Err(format!("cpu range {lo}-{hi} ends before it starts"));
+            }
+            // Bound the range so a bogus cpulist cannot OOM the daemon at boot.
+            if hi - lo >= MAX_CPULIST_RANGE {
+                return Err(format!(
+                    "cpu range {lo}-{hi} spans more than {MAX_CPULIST_RANGE} CPUs; \
+                     refusing to materialize it"
+                ));
+            }
             cpus.extend(lo..=hi);
         } else {
             let cpu: u32 = part.parse().map_err(|_| "invalid cpu id".to_string())?;
@@ -547,6 +599,47 @@ mod tests {
         // 1G hugepages dir absent -> zero, not an error.
         assert_eq!(topo.nodes[0].total_1g_hugepages, 0);
         assert_eq!(topo.nodes[0].total_ram_mb, 128_000);
+    }
+
+    #[test]
+    fn from_sysfs_skips_a_bad_node_and_keeps_the_others() {
+        // FIX 5: one node with an unreadable/garbage cpulist must not abort
+        // the whole topology; the good nodes still come back.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        write_node(base, 0, "0-3", "0", None, 32_000_000);
+        write_node(base, 1, "4-7", "0", None, 32_000_000);
+        // Corrupt node 1's cpulist with a non-numeric value.
+        std::fs::write(base.join("node1/cpulist"), "not-a-cpulist\n").unwrap();
+        // And a node whose cpulist file is missing entirely.
+        let node2 = base.join("node2");
+        std::fs::create_dir_all(&node2).unwrap();
+        std::fs::write(
+            node2.join("meminfo"),
+            "Node 2 MemTotal:       32000000 kB\n",
+        )
+        .unwrap();
+
+        let topo = NumaTopology::from_sysfs(base).unwrap();
+        let ids: Vec<u32> = topo.nodes.iter().map(|node| node.id).collect();
+        assert_eq!(
+            ids,
+            vec![0],
+            "the good node survives; the bad ones are skipped"
+        );
+        assert_eq!(topo.node(0).unwrap().cpus, BTreeSet::from([0, 1, 2, 3]));
+    }
+
+    #[test]
+    fn parse_cpulist_rejects_an_absurd_range_without_oom() {
+        // FIX 6: a kernel-quirk range must be rejected by the guard, never
+        // materialized (this test would OOM if the guard were absent).
+        assert!(parse_cpulist("0-4294967295").is_err());
+        assert!(parse_cpulist("0-5000").is_err());
+        // A backwards range is rejected too (would underflow the width check).
+        assert!(parse_cpulist("7-3").is_err());
+        // A range at the cap boundary is still accepted.
+        assert_eq!(parse_cpulist("0-4095").unwrap().len(), 4096);
     }
 
     #[test]
