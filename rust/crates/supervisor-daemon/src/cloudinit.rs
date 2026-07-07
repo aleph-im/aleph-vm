@@ -7,9 +7,9 @@
 //! cloud-init parses both into the same structure; the parity target is
 //! the parsed mapping, asserted by the conformance suite against the
 //! actual Python functions (ledgered divergence: representation only).
-//! Increment 3 creates plain QEMU instances only, so the confidential
-//! bootcmds and the install_guest_agent=false branch stay unported until
-//! increment 6.
+//! Increment 6 adds the confidential create path: the LUKS growpart
+//! bootcmds and the install_guest_agent=false branch
+//! (build_qemu_confidential_configuration).
 
 use std::path::{Path, PathBuf};
 
@@ -41,9 +41,18 @@ pub fn fallback_hostname(vm_hash: &str) -> &str {
     }
 }
 
-/// Python `encode_user_data` (is_confidential=False,
-/// install_guest_agent=True: the plain-instance create path).
-pub fn user_data(hostname: &str, ssh_authorized_keys: &[String], has_gpu: bool) -> String {
+/// Python `encode_user_data`. The plain-instance create path uses
+/// is_confidential=False, install_guest_agent=True; the confidential create
+/// path (increment 6) uses is_confidential=True, install_guest_agent=False
+/// (the LUKS growpart bootcmds, no guest agent), mirroring
+/// build_qemu_confidential_configuration.
+pub fn user_data(
+    hostname: &str,
+    ssh_authorized_keys: &[String],
+    has_gpu: bool,
+    is_confidential: bool,
+    install_guest_agent: bool,
+) -> String {
     let mut config = serde_json::Map::new();
     config.insert("hostname".into(), json!(hostname));
     config.insert("disable_root".into(), json!(false));
@@ -51,32 +60,45 @@ pub fn user_data(hostname: &str, ssh_authorized_keys: &[String], has_gpu: bool) 
     config.insert("ssh_authorized_keys".into(), json!(ssh_authorized_keys));
     config.insert("resize_rootfs".into(), json!(true));
     config.insert("package_update".into(), json!(true));
+    let mut bootcmd: Vec<Value> = Vec::new();
+    if is_confidential {
+        // Confidential instances use LUKS: cloud-init's growpart cannot
+        // resize the container, so do growpart + cryptsetup resize + resize2fs
+        // in bootcmd (before cc_growpart/cc_resizefs).
+        bootcmd.push(json!(["sh", "-c", "growpart /dev/vda 2 || true"]));
+        bootcmd.push(json!(["sh", "-c", "cryptsetup resize cr_root || true"]));
+        bootcmd.push(json!(["sh", "-c", "resize2fs /dev/mapper/cr_root || true"]));
+    }
     if has_gpu {
         // PCI enumeration speed-up for large GPU BARs; the exact commands
         // of the Python builder.
+        bootcmd.push(json!([
+            "sed",
+            "-i",
+            "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 pci=realloc=off pci=noaer\"/",
+            "/etc/default/grub"
+        ]));
+        bootcmd.push(json!([
+            "sh",
+            "-c",
+            "command -v update-grub >/dev/null 2>&1 && update-grub || true"
+        ]));
+        bootcmd.push(json!([
+            "sh",
+            "-c",
+            "command -v grub2-mkconfig >/dev/null 2>&1 && grub2-mkconfig -o /boot/grub2/grub.cfg || true"
+        ]));
+    }
+    if !bootcmd.is_empty() {
+        config.insert("bootcmd".into(), Value::Array(bootcmd));
+    }
+    if install_guest_agent {
+        config.insert("packages".into(), json!(["qemu-guest-agent"]));
         config.insert(
-            "bootcmd".into(),
-            json!([
-                [
-                    "sed",
-                    "-i",
-                    "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 pci=realloc=off pci=noaer\"/",
-                    "/etc/default/grub"
-                ],
-                ["sh", "-c", "command -v update-grub >/dev/null 2>&1 && update-grub || true"],
-                [
-                    "sh",
-                    "-c",
-                    "command -v grub2-mkconfig >/dev/null 2>&1 && grub2-mkconfig -o /boot/grub2/grub.cfg || true"
-                ],
-            ]),
+            "runcmd".into(),
+            json!(["systemctl start qemu-guest-agent.service"]),
         );
     }
-    config.insert("packages".into(), json!(["qemu-guest-agent"]));
-    config.insert(
-        "runcmd".into(),
-        json!(["systemctl start qemu-guest-agent.service"]),
-    );
     format!("#cloud-config\n{}", Value::Object(config))
 }
 
@@ -142,6 +164,10 @@ pub struct CloudInitDrive<'a> {
     pub hostname: &'a str,
     pub has_gpu: bool,
     pub dns_nameservers: Option<&'a [String]>,
+    /// A confidential VM (increment 6): the LUKS growpart bootcmds and no
+    /// guest agent, like build_qemu_confidential_configuration's
+    /// is_confidential=True / install_guest_agent=False.
+    pub confidential: bool,
 }
 
 impl CloudInitDrive<'_> {
@@ -174,8 +200,14 @@ impl CloudInitDrive<'_> {
                 .map_err(|error| format!("cannot flush a temp file: {error}"))?;
             Ok(file)
         };
-        let user_data_file =
-            write_temp(&user_data(hostname, self.ssh_authorized_keys, self.has_gpu))?;
+        let user_data_file = write_temp(&user_data(
+            hostname,
+            self.ssh_authorized_keys,
+            self.has_gpu,
+            self.confidential,
+            // Confidential VMs install no guest agent.
+            !self.confidential,
+        ))?;
         let network_file = write_temp(&network_config(
             &ip,
             &ipv6,
@@ -254,9 +286,24 @@ mod tests {
                 "my-host",
                 &["ssh-ed25519 AAAA test@host".to_string()],
                 false,
+                false,
+                true,
             ),
         );
-        assert_matches_fixture("user-data-gpu.json", &user_data("my-host", &[], true));
+        assert_matches_fixture(
+            "user-data-gpu.json",
+            &user_data("my-host", &[], true, false, true),
+        );
+        assert_matches_fixture(
+            "user-data-confidential.json",
+            &user_data(
+                "my-host",
+                &["ssh-ed25519 AAAA test@host".to_string()],
+                false,
+                true,
+                false,
+            ),
+        );
     }
 
     #[test]
@@ -298,6 +345,7 @@ mod tests {
             hostname: "",
             has_gpu: false,
             dns_nameservers: None,
+            confidential: false,
         };
         assert_eq!(
             drive.image_path(),

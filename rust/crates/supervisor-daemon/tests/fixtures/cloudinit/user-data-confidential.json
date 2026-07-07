@@ -1,0 +1,2 @@
+#cloud-config
+{"bootcmd":[["sh","-c","growpart /dev/vda 2 || true"],["sh","-c","cryptsetup resize cr_root || true"],["sh","-c","resize2fs /dev/mapper/cr_root || true"]],"disable_root":false,"hostname":"my-host","package_update":true,"resize_rootfs":true,"ssh_authorized_keys":["ssh-ed25519 AAAA test@host"],"ssh_pwauth":false}
