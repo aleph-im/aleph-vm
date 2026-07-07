@@ -53,6 +53,19 @@ def test_user_data_parses_to_the_python_cloud_config():
     python_gpu = yaml.safe_load(encode_user_data("my-host", [], has_gpu=True).decode())
     assert _rust_fixture("user-data-gpu.json") == python_gpu
 
+    # The confidential create path (increment 6): the LUKS growpart bootcmds
+    # and no guest agent (is_confidential=True, install_guest_agent=False).
+    python_confidential = yaml.safe_load(
+        encode_user_data(
+            "my-host",
+            ["ssh-ed25519 AAAA test@host"],
+            has_gpu=False,
+            is_confidential=True,
+            install_guest_agent=False,
+        ).decode()
+    )
+    assert _rust_fixture("user-data-confidential.json") == python_confidential
+
 
 def test_network_config_parses_to_the_python_netplan_mapping():
     # The tap of the cargo fixture: vm_index 4 in the default pools.
