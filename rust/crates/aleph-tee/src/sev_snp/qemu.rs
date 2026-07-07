@@ -13,15 +13,28 @@ pub const DEFAULT_OVMF_PATH: &str = "/usr/local/share/ovmf-snp/OVMF.fd";
 /// Produces the following arguments:
 /// - `-machine q35,confidential-guest-support=sev0,memory-backend=ram1`
 /// - `-object memory-backend-memfd,id=ram1,size={memory_mb}M,share=true`
-/// - `-object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on,policy={policy}`
+/// - `-object sev-snp-guest,id=sev0,cbitpos={cbitpos},reduced-phys-bits={reduced_phys_bits},kernel-hashes=on,policy={policy}`
 /// - `-bios <ovmf_path>` (SEV-SNP requires OVMF firmware)
+///
+/// `cbitpos` (the memory-encryption C-bit position) and `reduced_phys_bits`
+/// (the guest physical-address-space reduction) are HOST hardware properties
+/// read from CPUID leaf `0x8000001F`; they are NOT measurement inputs (they
+/// configure memory encryption, not the launch digest). The caller injects them
+/// so this generator stays architecture-agnostic, never baking in a specific
+/// EPYC generation's values. On the current EPYC target CPUID reports
+/// `cbitpos=51, reduced_phys_bits=1`.
 ///
 /// `kernel-hashes=on` tells QEMU to populate the OVMF kernel hashing area with
 /// SHA-256 hashes of the kernel, initrd, and cmdline. The AmdSev OVMF variant's
 /// QemuKernelLoaderFsDxe uses BlobVerifierLibSevHashes to verify these hashes
 /// before loading the kernel: without this flag, the blob verifier fails and
 /// OVMF falls back to the embedded GRUB bootloader.
-pub fn sev_snp_qemu_args(config: &VmConfig, ovmf_path: &str) -> Vec<String> {
+pub fn sev_snp_qemu_args(
+    config: &VmConfig,
+    ovmf_path: &str,
+    cbitpos: u32,
+    reduced_phys_bits: u32,
+) -> Vec<String> {
     let policy = config.tee.policy.as_deref().unwrap_or(DEFAULT_POLICY);
 
     let hugetlb_opts = match config.hugepage_size {
@@ -50,7 +63,7 @@ pub fn sev_snp_qemu_args(config: &VmConfig, ovmf_path: &str) -> Vec<String> {
         memfd_opts,
         "-object".to_string(),
         format!(
-            "sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on,policy={policy}"
+            "sev-snp-guest,id=sev0,cbitpos={cbitpos},reduced-phys-bits={reduced_phys_bits},kernel-hashes=on,policy={policy}"
         ),
         // Strip QEMU's default devices (USB, floppy, etc.) to reduce
         // OVMF PCI enumeration time.
@@ -87,7 +100,7 @@ mod tests {
     #[test]
     fn test_sev_snp_args_with_policy() {
         let config = make_config(2048, Some("0x50000"));
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         // Find the sev-snp-guest object arg
         let sev_arg = args
@@ -108,7 +121,7 @@ mod tests {
     #[test]
     fn test_sev_snp_args_default_policy() {
         let config = make_config(2048, None);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let sev_arg = args
             .iter()
@@ -126,12 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn test_sev_snp_confidential_guest_parameters() {
-        // These values are load-bearing for SEV-SNP: cbitpos=51 and
-        // reduced-phys-bits=1 are the AMD EPYC C-bit position, and the machine
-        // must bind confidential-guest-support=sev0. Assert them by exact value.
+    fn test_sev_snp_confidential_guest_parameters_reflect_injected_values() {
+        // cbitpos and reduced-phys-bits are HOST hardware properties injected by
+        // the caller (read from CPUID leaf 0x8000001F), NOT hardcoded. Assert the
+        // emitted object reflects whatever pair the caller passed, and that the
+        // machine binds confidential-guest-support=sev0. The current EPYC target
+        // reports cbitpos=51, reduced_phys_bits=1, so that pair is used here.
         let config = make_config(2048, None);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let sev_arg = args
             .iter()
@@ -139,11 +154,11 @@ mod tests {
             .expect("should have sev-snp-guest arg");
         assert!(
             sev_arg.contains("cbitpos=51"),
-            "cbitpos must be 51 but got: {sev_arg}"
+            "cbitpos must reflect the injected 51 but got: {sev_arg}"
         );
         assert!(
             sev_arg.contains("reduced-phys-bits=1"),
-            "reduced-phys-bits must be 1 but got: {sev_arg}"
+            "reduced-phys-bits must reflect the injected 1 but got: {sev_arg}"
         );
         assert!(
             sev_arg.contains("id=sev0"),
@@ -161,9 +176,41 @@ mod tests {
     }
 
     #[test]
+    fn test_sev_snp_cbit_params_are_parameterized_not_hardcoded() {
+        // Inject a DIFFERENT (cbitpos, reduced_phys_bits) pair than the EPYC
+        // 51/1 default, proving the generator emits the caller-supplied host
+        // values rather than baking in a specific CPU generation.
+        let config = make_config(2048, None);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 47, 2);
+
+        let sev_arg = args
+            .iter()
+            .find(|a| a.contains("sev-snp-guest"))
+            .expect("should have sev-snp-guest arg");
+        assert!(
+            sev_arg.contains("cbitpos=47"),
+            "cbitpos must reflect the injected 47 but got: {sev_arg}"
+        );
+        assert!(
+            sev_arg.contains("reduced-phys-bits=2"),
+            "reduced-phys-bits must reflect the injected 2 but got: {sev_arg}"
+        );
+        // The literal EPYC defaults must NOT leak through when a different pair
+        // is injected.
+        assert!(
+            !sev_arg.contains("cbitpos=51"),
+            "cbitpos=51 must not be hardcoded: {sev_arg}"
+        );
+        assert!(
+            !sev_arg.contains("reduced-phys-bits=1"),
+            "reduced-phys-bits=1 must not be hardcoded: {sev_arg}"
+        );
+    }
+
+    #[test]
     fn test_memory_backend_matches_config() {
         let config = make_config(4096, None);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let mem_arg = args
             .iter()
@@ -179,7 +226,7 @@ mod tests {
     #[test]
     fn test_machine_arg_present() {
         let config = make_config(1024, None);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         // -cpu <val>, -machine <val>, -object <val>, -object <val>, -nodefaults, -bios <val>
         assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
@@ -196,7 +243,7 @@ mod tests {
         let mut config = make_config(2048, None);
         config.numa_node = Some(1);
         config.hugepage_size = Some(crate::types::HugePageSize::Size2M);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let mem_arg = args
             .iter()
@@ -217,7 +264,7 @@ mod tests {
     fn test_memory_backend_no_numa() {
         let mut config = make_config(2048, None);
         config.hugepage_size = Some(crate::types::HugePageSize::Size2M);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let mem_arg = args
             .iter()
@@ -234,7 +281,7 @@ mod tests {
     fn test_custom_ovmf_path() {
         let config = make_config(1024, None);
         let custom_path = "/opt/custom/OVMF.fd";
-        let args = sev_snp_qemu_args(&config, custom_path);
+        let args = sev_snp_qemu_args(&config, custom_path, 51, 1);
 
         let bios_idx = args
             .iter()
@@ -248,7 +295,7 @@ mod tests {
         let mut config = make_config(4096, None);
         config.numa_node = Some(0);
         config.hugepage_size = Some(crate::types::HugePageSize::Size1G);
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let mem_arg = args
             .iter()
@@ -265,7 +312,7 @@ mod tests {
     fn test_memory_backend_no_hugepages() {
         let mut config = make_config(1024, None);
         config.hugepage_size = None;
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let mem_arg = args
             .iter()

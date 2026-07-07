@@ -19,7 +19,16 @@ use std::path::Path;
 
 use serde::Deserialize;
 use supervisor_controller::config::QemuConfig;
+use supervisor_controller::cpuid::SevHostInfo;
 use supervisor_controller::qemu::{build_snp_argv, snp_tee_fragment};
+
+/// The EPYC target's host CPUID values. The committed fixtures were captured
+/// with these, so the fixture harness injects them; the runtime path reads them
+/// from `SevHostInfo::read()`.
+const EPYC_SEV_HOST_INFO: SevHostInfo = SevHostInfo {
+    cbitpos: 51,
+    reduced_phys_bits: 1,
+};
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
@@ -44,7 +53,9 @@ fn assert_parity(name: &str) {
     let config = QemuConfig::from_json(&fixture.config_json.to_string())
         .unwrap_or_else(|error| panic!("fixture {name} config did not parse: {error}"));
     assert!(config.is_snp(), "fixture {name} is not an SNP config");
-    let argv = build_snp_argv(&config);
+    // The fixtures encode the EPYC host CPUID values (cbitpos=51,
+    // reduced-phys-bits=1); inject them so the expected bytes hold.
+    let argv = build_snp_argv(&config, EPYC_SEV_HOST_INFO);
     assert_eq!(argv, fixture.expected_argv, "SNP argv mismatch for {name}");
 }
 
@@ -97,37 +108,72 @@ fn snp_tee_fragment_matches_the_aleph_tee_generator() {
         (Some(0), Some("1G"), Some(HugePageSize::Size1G)),
         (Some(1), Some("2M"), Some(HugePageSize::Size2M)),
     ];
+    // Cross at least two host CPUID (cbitpos, reduced-phys-bits) pairs: the EPYC
+    // target's 51/1 AND a non-51 pair (47/2). Injecting the SAME pair into both
+    // the controller fragment and the aleph-tee generator proves the two
+    // implementations agree on the host-derived value, and that neither
+    // hardcodes 51.
+    let cbit_cases: [(u32, u32); 2] = [(51, 1), (47, 2)];
     for (mem, policy, ovmf) in [
         (2048u64, 0x30000u32, "/var/lib/aleph/vm/ovmf/OVMF.fd"),
         (4096, 0x30000, "/opt/ovmf/OVMF.fd"),
         (1024, 0x50000, "/OVMF.fd"),
     ] {
         for (numa_node, hugepage_qemu, hugepage_size) in numa_hugepage_cases {
-            let generator_config = VmConfig {
-                vm_id: "oracle".to_string(),
-                kernel: None,
-                initrd: None,
-                disks: vec![],
-                vcpus: 2,
-                memory_mb: mem as u32,
-                tee: TeeConfig {
-                    backend: TeeType::SevSnp,
-                    // The daemon carries the policy as a u32 and the controller
-                    // renders it hex()-style; feed the generator the identical
-                    // rendering so the two are comparable.
-                    policy: Some(format!("0x{policy:x}")),
-                },
-                encrypted: false,
-                numa_node,
-                hugepage_size,
-            };
-            let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(&generator_config, ovmf);
-            let controller = snp_tee_fragment(mem, policy, ovmf, numa_node, hugepage_qemu);
-            assert_eq!(
-                controller, generator,
-                "controller SNP fragment diverged from the aleph-tee generator \
-                 (mem={mem}, policy={policy:#x}, numa={numa_node:?}, hugepage={hugepage_qemu:?})"
-            );
+            for (cbitpos, reduced_phys_bits) in cbit_cases {
+                let generator_config = VmConfig {
+                    vm_id: "oracle".to_string(),
+                    kernel: None,
+                    initrd: None,
+                    disks: vec![],
+                    vcpus: 2,
+                    memory_mb: mem as u32,
+                    tee: TeeConfig {
+                        backend: TeeType::SevSnp,
+                        // The daemon carries the policy as a u32 and the
+                        // controller renders it hex()-style; feed the generator
+                        // the identical rendering so the two are comparable.
+                        policy: Some(format!("0x{policy:x}")),
+                    },
+                    encrypted: false,
+                    numa_node,
+                    hugepage_size,
+                };
+                let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(
+                    &generator_config,
+                    ovmf,
+                    cbitpos,
+                    reduced_phys_bits,
+                );
+                let controller = snp_tee_fragment(
+                    mem,
+                    policy,
+                    ovmf,
+                    numa_node,
+                    hugepage_qemu,
+                    cbitpos,
+                    reduced_phys_bits,
+                );
+                assert_eq!(
+                    controller, generator,
+                    "controller SNP fragment diverged from the aleph-tee generator \
+                     (mem={mem}, policy={policy:#x}, numa={numa_node:?}, \
+                     hugepage={hugepage_qemu:?}, cbitpos={cbitpos}, \
+                     reduced_phys_bits={reduced_phys_bits})"
+                );
+                // The injected non-51 pair must actually appear (guards against a
+                // regression to a hardcoded 51/1 that would still make the two
+                // sides equal to each other).
+                let sev_obj = controller
+                    .iter()
+                    .find(|a| a.contains("sev-snp-guest"))
+                    .expect("fragment has a sev-snp-guest object");
+                assert!(
+                    sev_obj.contains(&format!("cbitpos={cbitpos}"))
+                        && sev_obj.contains(&format!("reduced-phys-bits={reduced_phys_bits}")),
+                    "fragment did not reflect the injected host values: {sev_obj}"
+                );
+            }
         }
     }
 }
