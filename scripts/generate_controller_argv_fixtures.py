@@ -34,8 +34,7 @@ from aleph.vm.supervisor_interface.configuration import (
 )
 
 OUTPUT_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "rust/crates/supervisor-controller/tests/conformance/controller_argv"
+    Path(__file__).resolve().parent.parent / "rust/crates/supervisor-controller/tests/conformance/controller_argv"
 )
 
 _captured: dict[str, list] = {}
@@ -90,9 +89,7 @@ def _cases() -> dict[str, QemuVMConfiguration]:
         # A NIC.
         "with_nic": _base(interface_name="vmtap3"),
         # A cloud-init drive.
-        "with_cloud_init": _base(
-            cloud_init_drive_path="/var/lib/aleph/vm/cloud-init-testhash.img"
-        ),
+        "with_cloud_init": _base(cloud_init_drive_path="/var/lib/aleph/vm/cloud-init-testhash.img"),
         # One read-only host volume.
         "host_volume_ro": _base(host_volumes=[_volume(f"{data}/ro.qcow2", True)]),
         # One read-write host volume.
@@ -107,9 +104,7 @@ def _cases() -> dict[str, QemuVMConfiguration]:
         # One GPU (supports_x_vga defaults to True).
         "gpu_x_vga": _base(gpus=[QemuGPU(pci_host="0000:01:00.0")]),
         # One GPU that does NOT support x-vga.
-        "gpu_no_x_vga": _base(
-            gpus=[QemuGPU(pci_host="0000:01:00.0", supports_x_vga=False)]
-        ),
+        "gpu_no_x_vga": _base(gpus=[QemuGPU(pci_host="0000:01:00.0", supports_x_vga=False)]),
         # Multiple GPUs, mixed x-vga.
         "gpu_multiple": _base(
             gpus=[
