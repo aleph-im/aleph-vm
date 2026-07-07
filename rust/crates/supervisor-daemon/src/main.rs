@@ -27,7 +27,7 @@ use supervisor_daemon::server::{self, SocketGuard};
 use supervisor_daemon::service::{DaemonState, HostState};
 use supervisor_daemon::tap::IpCommand;
 use supervisor_daemon::units::ZbusUnitStates;
-use supervisor_daemon::{checks, numa, ports, world};
+use supervisor_daemon::{checks, hugepages, numa, ports, world};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -142,7 +142,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     // NUMA topology (increment C1): detected once. A detection failure (no
     // sysfs, unreadable) disables CPU pinning rather than aborting the
     // daemon, mirroring how the other host-capability probes degrade.
-    let numa = numa::NumaTopology::detect().unwrap_or_else(|error| {
+    let mut numa = numa::NumaTopology::detect().unwrap_or_else(|error| {
         tracing::warn!(
             error,
             "NUMA topology detection failed; CPU pinning disabled"
@@ -150,6 +150,14 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         numa::NumaTopology::empty()
     });
     tracing::info!(nodes = numa.num_nodes(), "detected NUMA topology");
+    // Hugepage reservation (increment C2) is OPT-IN and only meaningful on a
+    // >1-node host (placement is inert otherwise). It writes host-wide
+    // nr_hugepages and updates the topology's per-node 2M pool in place, which
+    // the allocator built just below then draws from. Fail-safe per node.
+    if host.settings.numa_hugepages && numa.is_placement_active() {
+        tracing::info!("ALEPH_VM_NUMA_HUGEPAGES on: reserving 2M hugepages per NUMA node");
+        hugepages::reserve_2m_hugepages(&mut numa);
+    }
     let numa_ledger = std::sync::Mutex::new(numa::NumaAllocator::new(numa.clone()));
     // The ephemeral Firecracker launcher (increment 4): programs are direct
     // children of this daemon (design doc decision 8).

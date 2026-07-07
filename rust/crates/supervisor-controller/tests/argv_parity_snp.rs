@@ -84,39 +84,50 @@ fn every_snp_fixture_has_a_case() {
 /// the launched measurement no longer matches the B2a precomputed value.
 #[test]
 fn snp_tee_fragment_matches_the_aleph_tee_generator() {
-    use aleph_tee::types::{TeeConfig, TeeType, VmConfig};
+    use aleph_tee::types::{HugePageSize, TeeConfig, TeeType, VmConfig};
 
-    // Exercise a spread of (memory, policy, ovmf) so the whole rendered
-    // fragment is compared, not just its constant head.
+    // Exercise a spread of (memory, policy, ovmf) crossed with the C2 NUMA /
+    // hugepage combinations so the whole rendered fragment is compared,
+    // including the host-nodes / hugetlb suffix ordering, not just the head.
+    // `hugepage_qemu` is the "1G"/"2M" string the controller carries; the
+    // matching aleph-tee `HugePageSize` drives the generator.
+    let numa_hugepage_cases: [(Option<u32>, Option<&str>, Option<HugePageSize>); 4] = [
+        (None, None, None),
+        (Some(1), None, None),
+        (Some(0), Some("1G"), Some(HugePageSize::Size1G)),
+        (Some(1), Some("2M"), Some(HugePageSize::Size2M)),
+    ];
     for (mem, policy, ovmf) in [
         (2048u64, 0x30000u32, "/var/lib/aleph/vm/ovmf/OVMF.fd"),
         (4096, 0x30000, "/opt/ovmf/OVMF.fd"),
         (1024, 0x50000, "/OVMF.fd"),
     ] {
-        let generator_config = VmConfig {
-            vm_id: "oracle".to_string(),
-            kernel: None,
-            initrd: None,
-            disks: vec![],
-            vcpus: 2,
-            memory_mb: mem as u32,
-            tee: TeeConfig {
-                backend: TeeType::SevSnp,
-                // The daemon carries the policy as a u32 and the controller
-                // renders it hex()-style; feed the generator the identical
-                // rendering so the two are comparable.
-                policy: Some(format!("0x{policy:x}")),
-            },
-            encrypted: false,
-            numa_node: None,
-            hugepage_size: None,
-        };
-        let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(&generator_config, ovmf);
-        let controller = snp_tee_fragment(mem, policy, ovmf);
-        assert_eq!(
-            controller, generator,
-            "controller SNP fragment diverged from the aleph-tee generator \
-             (mem={mem}, policy={policy:#x})"
-        );
+        for (numa_node, hugepage_qemu, hugepage_size) in numa_hugepage_cases {
+            let generator_config = VmConfig {
+                vm_id: "oracle".to_string(),
+                kernel: None,
+                initrd: None,
+                disks: vec![],
+                vcpus: 2,
+                memory_mb: mem as u32,
+                tee: TeeConfig {
+                    backend: TeeType::SevSnp,
+                    // The daemon carries the policy as a u32 and the controller
+                    // renders it hex()-style; feed the generator the identical
+                    // rendering so the two are comparable.
+                    policy: Some(format!("0x{policy:x}")),
+                },
+                encrypted: false,
+                numa_node,
+                hugepage_size,
+            };
+            let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(&generator_config, ovmf);
+            let controller = snp_tee_fragment(mem, policy, ovmf, numa_node, hugepage_qemu);
+            assert_eq!(
+                controller, generator,
+                "controller SNP fragment diverged from the aleph-tee generator \
+                 (mem={mem}, policy={policy:#x}, numa={numa_node:?}, hugepage={hugepage_qemu:?})"
+            );
+        }
     }
 }

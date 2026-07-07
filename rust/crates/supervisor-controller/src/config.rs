@@ -177,6 +177,21 @@ pub struct QemuConfig {
     pub initrd_path: Option<String>,
     #[serde(default)]
     pub kernel_cmdline: Option<String>,
+
+    // NUMA memory binding (increment C2), Rust-only. Present exactly when the
+    // supervisor placed this VM on a NUMA node (a >1-node host); the argv then
+    // binds guest RAM to that host node (`host-nodes={node},policy=bind`) via a
+    // memory-backend. Absent for single-node / no-NUMA / unplaced VMs, which
+    // keeps their argv byte-identical to pre-C2 (parity). A Python controller
+    // reading such a config ignores it (`extra="ignore"`).
+    #[serde(default)]
+    pub numa_node: Option<u32>,
+    // Hugepage backing for the memory backend (increment C2), Rust-only and
+    // OPT-IN. Holds the QEMU `hugetlbsize` literal ("1G" or "2M") the daemon's
+    // allocator selected; absent means regular pages (no `hugetlb=on`). Only
+    // ever set alongside `numa_node`.
+    #[serde(default)]
+    pub hugepage_size: Option<String>,
 }
 
 impl QemuConfig {

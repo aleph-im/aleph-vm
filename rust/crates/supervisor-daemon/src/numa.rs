@@ -201,13 +201,42 @@ impl NumaTopology {
     }
 }
 
-/// Placement decision: which NUMA node and what cpuset string to pin.
+/// Hugepage size the allocator selected to back a VM's memory (increment C2).
+/// Renders to the QEMU `hugetlbsize` literal ("1G" / "2M"), which is also what
+/// the controller carries in the written config and the aleph-tee generator
+/// emits, so the whole chain stays byte-consistent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HugePageSize {
+    /// 1 GiB hugepages (preferred for 1G-aligned memory; needs boot-time
+    /// reservation).
+    Size1G,
+    /// 2 MiB hugepages.
+    Size2M,
+}
+
+impl HugePageSize {
+    /// The QEMU `hugetlbsize=` literal ("1G" or "2M"), also the string written
+    /// into the controller config's `hugepage_size` field.
+    pub fn as_qemu(self) -> &'static str {
+        match self {
+            HugePageSize::Size1G => "1G",
+            HugePageSize::Size2M => "2M",
+        }
+    }
+}
+
+/// Placement decision: which NUMA node, what cpuset string to pin, and (when
+/// hugepages are enabled) the hugepage size chosen to back the VM.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NumaPlacement {
     /// The NUMA node ID where the VM is placed.
     pub node: u32,
     /// Compact cpulist string (e.g. "0-3,8-11") for systemd `AllowedCPUs`.
     pub cpuset: String,
+    /// Hugepage size backing the VM's memory, or `None` for regular pages
+    /// (hugepages disabled, or no node had hugepage capacity: fail-safe
+    /// fallback to regular pages, never blocking the placement).
+    pub hugepage_size: Option<HugePageSize>,
 }
 
 /// Whether a placement failed because a requested node does not exist (a
@@ -222,15 +251,21 @@ pub enum PlacementError {
 }
 
 /// Allocator that packs VMs onto NUMA nodes, trying node 0 first, then node
-/// 1, etc. C1 tracks only per-node vCPU counts; the donor's 2M/1G hugepage
-/// pools are deferred to C2 (the [`NumaNode`] hugepage fields are kept for
-/// reporting and that follow-up).
+/// 1, etc. vCPU placement is pack-first and identical to C1; the C2 hugepage
+/// pools ([`NumaAllocator::allocated_2m_pages`] / `allocated_1g_pages`) are a
+/// SEPARATE, per-node accounting layered on top: the node is chosen purely on
+/// vCPU capacity (so placement is unchanged from C1), then a hugepage size is
+/// selected on that node if hugepages are enabled and it has the capacity.
 #[derive(Debug)]
 pub struct NumaAllocator {
     topology: NumaTopology,
     /// Per-node count of currently allocated vCPUs, indexed like
     /// `topology.nodes`.
     allocated_vcpus: Vec<u32>,
+    /// Per-node count of currently allocated 2 MiB hugepages (increment C2).
+    allocated_2m_pages: Vec<u32>,
+    /// Per-node count of currently allocated 1 GiB hugepages (increment C2).
+    allocated_1g_pages: Vec<u32>,
 }
 
 impl NumaAllocator {
@@ -240,6 +275,8 @@ impl NumaAllocator {
         Self {
             topology,
             allocated_vcpus: vec![0; n],
+            allocated_2m_pages: vec![0; n],
+            allocated_1g_pages: vec![0; n],
         }
     }
 
@@ -253,17 +290,32 @@ impl NumaAllocator {
         &self.topology
     }
 
-    /// Allocate `vcpus` on a NUMA node using the pack-first strategy.
+    /// Allocate `vcpus` (and, when `uses_hugepages`, `memory_mb` of hugepage
+    /// backing) on a NUMA node using the pack-first strategy.
     ///
     /// If `hint` is `Some(node_id)`, only that node is tried (the requested
     /// placement is honored); an unknown node is [`PlacementError::UnknownNode`]
     /// and an over-committed one is [`PlacementError::Insufficient`].
     /// Otherwise nodes are tried in order (0, 1, 2, ...) and the first one
     /// with enough free vCPUs is selected.
+    ///
+    /// Node selection depends ONLY on vCPU capacity, exactly as in C1, so
+    /// enabling hugepages never changes WHICH node a VM lands on. Once a node
+    /// is chosen, page-size selection (increment C2) runs on it when
+    /// `uses_hugepages` is true:
+    ///   - if `memory_mb` is 1G-aligned and the node has enough free 1G pages,
+    ///     use 1G (better pvalidate locality);
+    ///   - else if the node has enough free 2M pages, use 2M;
+    ///   - else `None` (regular pages): a fail-safe fallback so a node with
+    ///     vCPU room but no hugepage capacity still places the VM instead of
+    ///     failing. When `uses_hugepages` is false no hugepages are tracked and
+    ///     the result is always `None` (byte-identical to C1 behaviour).
     pub fn allocate(
         &mut self,
         vcpus: u32,
+        memory_mb: u32,
         hint: Option<u32>,
+        uses_hugepages: bool,
     ) -> Result<NumaPlacement, PlacementError> {
         let candidates: Vec<usize> = if let Some(node_id) = hint {
             match self
@@ -287,10 +339,23 @@ impl NumaAllocator {
             let node = &self.topology.nodes[index];
             let available = (node.cpus.len() as u32).saturating_sub(self.allocated_vcpus[index]);
             if vcpus <= available {
+                // Read the node fields into locals so the immutable topology
+                // borrow ends before the page-pool fields are mutated below.
+                let node_id = node.id;
+                let cpuset = format_cpuset(&node.cpus);
+                let total_1g = node.total_1g_hugepages;
+                let total_2m = node.total_2m_hugepages;
+
                 self.allocated_vcpus[index] += vcpus;
+                let hugepage_size = if uses_hugepages {
+                    self.reserve_hugepages(index, memory_mb, total_1g, total_2m)
+                } else {
+                    None
+                };
                 return Ok(NumaPlacement {
-                    node: node.id,
-                    cpuset: format_cpuset(&node.cpus),
+                    node: node_id,
+                    cpuset,
+                    hugepage_size,
                 });
             }
         }
@@ -298,6 +363,38 @@ impl NumaAllocator {
         Err(PlacementError::Insufficient(format!(
             "no NUMA node has {vcpus} free vCPUs for placement"
         )))
+    }
+
+    /// Reserve hugepages for a VM on the already-chosen node `index`, returning
+    /// the size selected (or `None` for regular pages). Prefers 1G for
+    /// 1G-aligned memory, falls back to 2M, then to regular pages. Updates the
+    /// per-node page pools when a hugepage size is taken. `total_1g`/`total_2m`
+    /// are the node's reserved pools (passed in to avoid re-borrowing topology).
+    fn reserve_hugepages(
+        &mut self,
+        index: usize,
+        memory_mb: u32,
+        total_1g: u32,
+        total_2m: u32,
+    ) -> Option<HugePageSize> {
+        // 1G pages first when the request is 1G-aligned.
+        if memory_mb.is_multiple_of(1024) {
+            let needed = memory_mb / 1024;
+            let available = total_1g.saturating_sub(self.allocated_1g_pages[index]);
+            if needed <= available {
+                self.allocated_1g_pages[index] += needed;
+                return Some(HugePageSize::Size1G);
+            }
+        }
+        // Fall back to 2M pages (round up to cover the request).
+        let needed = memory_mb.div_ceil(2);
+        let available = total_2m.saturating_sub(self.allocated_2m_pages[index]);
+        if needed <= available {
+            self.allocated_2m_pages[index] += needed;
+            return Some(HugePageSize::Size2M);
+        }
+        // No hugepage capacity: regular pages (fail-safe, never blocks).
+        None
     }
 
     /// Re-register `vcpus` on a known node without running the placement
@@ -695,17 +792,47 @@ mod tests {
         }
     }
 
+    /// A 2-node topology with the given per-node 2M/1G hugepage pools.
+    fn two_nodes_with_hugepages(
+        cpus0: &[u32],
+        hp2m0: u32,
+        hp1g0: u32,
+        cpus1: &[u32],
+        hp2m1: u32,
+        hp1g1: u32,
+    ) -> NumaTopology {
+        NumaTopology {
+            nodes: vec![
+                NumaNode {
+                    id: 0,
+                    cpus: cpus0.iter().copied().collect(),
+                    total_2m_hugepages: hp2m0,
+                    total_1g_hugepages: hp1g0,
+                    total_ram_mb: 64_000,
+                },
+                NumaNode {
+                    id: 1,
+                    cpus: cpus1.iter().copied().collect(),
+                    total_2m_hugepages: hp2m1,
+                    total_1g_hugepages: hp1g1,
+                    total_ram_mb: 64_000,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn allocator_packs_node_zero_before_node_one() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
 
-        // 2 vCPUs fit on node 0 (4 available).
-        let placement = alloc.allocate(2, None).unwrap();
+        // 2 vCPUs fit on node 0 (4 available). Hugepages off -> no size chosen.
+        let placement = alloc.allocate(2, 2048, None, false).unwrap();
         assert_eq!(placement.node, 0);
         assert_eq!(placement.cpuset, "0-3");
+        assert_eq!(placement.hugepage_size, None);
 
         // 4 vCPUs no longer fit on node 0 (2 left), spill to node 1.
-        let placement = alloc.allocate(4, None).unwrap();
+        let placement = alloc.allocate(4, 2048, None, false).unwrap();
         assert_eq!(placement.node, 1);
         assert_eq!(placement.cpuset, "4-7");
         assert_eq!(alloc.allocated_vcpus(0), 2);
@@ -716,7 +843,7 @@ mod tests {
     fn allocator_honors_a_valid_hint() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
         // Hint node 1 even though node 0 has room.
-        let placement = alloc.allocate(2, Some(1)).unwrap();
+        let placement = alloc.allocate(2, 2048, Some(1), false).unwrap();
         assert_eq!(placement.node, 1);
         assert_eq!(alloc.allocated_vcpus(0), 0);
     }
@@ -725,7 +852,7 @@ mod tests {
     fn allocator_rejects_an_unknown_hint() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1], &[2, 3]));
         assert!(matches!(
-            alloc.allocate(1, Some(9)),
+            alloc.allocate(1, 2048, Some(9), false),
             Err(PlacementError::UnknownNode(_))
         ));
     }
@@ -733,15 +860,15 @@ mod tests {
     #[test]
     fn allocator_rejects_when_capacity_is_exhausted() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
-        alloc.allocate(4, None).unwrap();
-        alloc.allocate(4, None).unwrap();
+        alloc.allocate(4, 2048, None, false).unwrap();
+        alloc.allocate(4, 2048, None, false).unwrap();
         assert!(matches!(
-            alloc.allocate(1, None),
+            alloc.allocate(1, 2048, None, false),
             Err(PlacementError::Insufficient(_))
         ));
         // An over-committed explicit hint is Insufficient, not UnknownNode.
         assert!(matches!(
-            alloc.allocate(1, Some(0)),
+            alloc.allocate(1, 2048, Some(0), false),
             Err(PlacementError::Insufficient(_))
         ));
     }
@@ -749,12 +876,48 @@ mod tests {
     #[test]
     fn allocator_release_frees_capacity() {
         let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
-        alloc.allocate(4, None).unwrap();
+        alloc.allocate(4, 2048, None, false).unwrap();
         // Node 0 full: the next placement spills to node 1.
-        assert_eq!(alloc.allocate(1, None).unwrap().node, 1);
+        assert_eq!(alloc.allocate(1, 2048, None, false).unwrap().node, 1);
         // Free node 0, and the next placement packs there again.
         alloc.release(0, 4);
-        assert_eq!(alloc.allocate(1, None).unwrap().node, 0);
+        assert_eq!(alloc.allocate(1, 2048, None, false).unwrap().node, 0);
+    }
+
+    #[test]
+    fn allocator_prefers_1g_pages_then_falls_back_to_2m_then_regular() {
+        // Node 0: 2 x 1G pages + plenty of 2M; node 1: only 2M pages.
+        let mut alloc = NumaAllocator::new(two_nodes_with_hugepages(
+            &[0, 1, 2, 3],
+            4096,
+            2,
+            &[4, 5, 6, 7],
+            4096,
+            0,
+        ));
+
+        // 2048 MB is 1G-aligned and node 0 has 2 free 1G pages -> 1G.
+        let placement = alloc.allocate(1, 2048, Some(0), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size1G));
+
+        // Node 0's 1G pool is now exhausted (2 used of 2); a further 1G-aligned
+        // request on node 0 falls back to 2M.
+        let placement = alloc.allocate(1, 2048, Some(0), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size2M));
+
+        // A non-1G-aligned request skips 1G outright and takes 2M.
+        let placement = alloc.allocate(1, 1500, Some(1), true).unwrap();
+        assert_eq!(placement.hugepage_size, Some(HugePageSize::Size2M));
+    }
+
+    #[test]
+    fn allocator_falls_back_to_regular_pages_when_no_hugepages_reserved() {
+        // A node with vCPU room but zero hugepages still places the VM (the
+        // fail-safe path): regular pages, never an error.
+        let mut alloc = NumaAllocator::new(two_nodes(&[0, 1, 2, 3], &[4, 5, 6, 7]));
+        let placement = alloc.allocate(2, 2048, Some(0), true).unwrap();
+        assert_eq!(placement.node, 0);
+        assert_eq!(placement.hugepage_size, None);
     }
 
     #[test]
@@ -770,7 +933,7 @@ mod tests {
         // node 0 already has 3 of its 4 vCPUs used, so a 2-vCPU VM spills.
         alloc.register(0, 3);
         assert_eq!(alloc.allocated_vcpus(0), 3);
-        assert_eq!(alloc.allocate(2, None).unwrap().node, 1);
+        assert_eq!(alloc.allocate(2, 2048, None, false).unwrap().node, 1);
     }
 
     // ── Drop-in helpers ─────────────────────────────────────────────────

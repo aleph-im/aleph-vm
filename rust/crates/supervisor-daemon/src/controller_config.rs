@@ -182,6 +182,17 @@ pub struct QemuVmConfig {
     initrd_path: Option<String>,
     #[serde(default)]
     kernel_cmdline: Option<String>,
+
+    // NUMA memory binding + hugepages (increment C2), Rust-only. Present when
+    // the supervisor placed this VM on a node; the controller then binds guest
+    // RAM to it. Carried here so an adopted config round-trips, though the
+    // daemon's own source of truth for placement is `VmEntry.numa_node` + the
+    // AllowedCPUs drop-in (reconcile), not this field. `pub` (informational):
+    // the daemon does not consume them, but a config on disk carries them.
+    #[serde(default)]
+    pub numa_node: Option<u32>,
+    #[serde(default)]
+    pub hugepage_size: Option<String>,
 }
 
 impl QemuVmConfig {
@@ -210,6 +221,8 @@ impl QemuVmConfig {
             kernel_path: None,
             initrd_path: None,
             kernel_cmdline: None,
+            numa_node: None,
+            hugepage_size: None,
         }
     }
 
@@ -460,6 +473,15 @@ pub struct WrittenQemuVmConfiguration {
     pub initrd_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_cmdline: Option<String>,
+    // NUMA memory binding + hugepages slice (increment C2), Rust-only. Both
+    // None (and so omitted via exclude_none) for single-node / no-NUMA /
+    // unplaced VMs, keeping their bytes identical to the pydantic writer and to
+    // pre-C2; set together when the supervisor placed the VM on a node (and, if
+    // hugepages are enabled and available, chose a page size).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numa_node: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hugepage_size: Option<String>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -837,6 +859,8 @@ mod tests {
                 kernel_path: None,
                 initrd_path: None,
                 kernel_cmdline: None,
+                numa_node: None,
+                hugepage_size: None,
             },
             hypervisor: "qemu",
         };
@@ -889,6 +913,8 @@ mod tests {
                 kernel_path: None,
                 initrd_path: None,
                 kernel_cmdline: None,
+                numa_node: None,
+                hugepage_size: None,
             },
             hypervisor: "qemu",
         };
